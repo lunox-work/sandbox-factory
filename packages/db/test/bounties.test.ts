@@ -17,6 +17,8 @@ import {
   followsJira,
   insertBounty,
   jiraContentChange,
+  refreshBounty,
+  textFollowsJira,
 } from "../src/bounties.js";
 import { createFakeDb, createSequencedFakeDb } from "./fake-db.js";
 
@@ -37,6 +39,7 @@ function bountyRow(overrides: Partial<BountyRow> = {}): BountyRow {
     approvedVersion: null,
     approvedBy: null,
     approvedAt: null,
+    textEditedAt: null,
     createdAt: new Date("2026-10-01T00:00:00Z"),
     updatedAt: new Date("2026-10-01T00:00:00Z"),
     ...overrides,
@@ -456,6 +459,27 @@ test("counts each category across the organizations given, and none of none", as
   );
 });
 
+test("counts each status across the organizations given, in one read, and none of none", async () => {
+  const fake = createSequencedFakeDb([
+    [{ total: 6, new: 3, scoped: 1, priced: 2, live: 0 }],
+  ]);
+  assert.deepEqual(
+    await createBountyStore(fake.db).statusCounts(["org_1"], {
+      category: "left-behind",
+    }),
+    { total: 6, statuses: { new: 3, scoped: 1, priced: 2, live: 0 } },
+  );
+  assert.equal(fake.calls.length, 1);
+  assert.ok(fake.calls.every(({ filtered }) => filtered === true));
+
+  const none = createFakeDb([]);
+  assert.deepEqual(await createBountyStore(none.db).statusCounts([]), {
+    total: 0,
+    statuses: { new: 0, scoped: 0, priced: 0, live: 0 },
+  });
+  assert.equal(none.calls.length, 0);
+});
+
 test("a scan's categories replace the bounty's, through its owner", async () => {
   const match = { id: "left-behind", label: "Left behind", reason: "Old" };
   const fake = createFakeDb([{ id: "bty_1" }]);
@@ -561,13 +585,59 @@ test("a stale or missing bounty is not changed", async () => {
   );
 });
 
-test("a Jira bounty's text is Jira's; its stack is the platform's", async () => {
+test("a Jira bounty's text changed here becomes the workspace's", async () => {
+  const jiraRow = {
+    row: bountyRow({ origin: "jira", inputTruncated: true }),
+    ...linked,
+  };
+  const fake = createSequencedFakeDb([
+    [jiraRow],
+    [
+      bountyRow({
+        origin: "jira",
+        description: "Mine now",
+        revision: 2,
+        version: 2,
+        textEditedAt: new Date("2026-10-02T00:00:00Z"),
+      }),
+    ],
+  ]);
+  const edited = await createBountyStore(fake.db).update(
+    "org_1",
+    "bty_1",
+    1,
+    { description: "Mine now" },
+    "user_2",
+  );
+  assert.ok(edited.ok);
+  const values = fake.calls[1]?.values;
+  assert.ok(values?.["textEditedAt"] instanceof Date);
+  // Written here, so no longer Jira's text cut short.
+  assert.equal(values?.["inputTruncated"], false);
+  assert.equal(values?.["version"], 2);
+  assert.equal(edited.bounty.textEditedAt, "2026-10-02T00:00:00.000Z");
+  // Still linked as it was read, but its text no longer follows the issue.
+  assert.equal(edited.bounty.jira?.key, "APP-3");
+  assert.equal(followsJira(edited.bounty), true);
+  assert.equal(textFollowsJira(edited.bounty), false);
+
+  // A bounty written here is not marked: there is no issue to stop following.
+  const manual = createSequencedFakeDb([
+    [{ row: bountyRow(), ...unlinked }],
+    [bountyRow({ title: "t", revision: 2, version: 2 })],
+  ]);
+  assert.ok(
+    (
+      await createBountyStore(manual.db).update("org_1", "bty_1", 1, {
+        title: "t",
+      })
+    ).ok,
+  );
+  assert.equal("textEditedAt" in (manual.calls[1]?.values ?? {}), false);
+});
+
+test("a Jira bounty's stack is the platform's", async () => {
   const jiraRow = { row: bountyRow({ origin: "jira" }), ...linked };
-  const refused = await createBountyStore(
-    createSequencedFakeDb([[jiraRow]]).db,
-  ).update("org_1", "bty_1", 1, { title: "Mine now" });
-  assert.equal(refused.ok, false);
-  if (!refused.ok) assert.equal(refused.reason, "jira-owned");
 
   // Its stack is the workspace's, and an unchanged one writes nothing.
   const stacked = createSequencedFakeDb([
@@ -749,6 +819,55 @@ test("a refresh writes Jira's text only when it differs", async () => {
     ),
     false,
   );
+});
+
+test("a refresh keeps text changed here, unless an issue is linked on purpose", async () => {
+  const edited = bountyRow({
+    description: "Ours",
+    textEditedAt: new Date("2026-10-02T00:00:00Z"),
+  });
+  const newer = { ...jiraText, description: "Jira's newer steps" };
+  // Its words stay; only Jira's components still come through.
+  assert.equal(jiraContentChange(edited, newer), null);
+  assert.deepEqual(
+    jiraContentChange(edited, { ...newer, components: ["Mailer"] }),
+    { components: ["Mailer"] },
+  );
+  const kept = createFakeDb([edited]);
+  assert.equal(
+    await createBountyStore(kept.db).refreshFromJira("org_1", "bty_1", newer),
+    false,
+  );
+  assert.equal(kept.calls.length, 1);
+
+  // Linked on purpose: Jira's text is taken, as a new version, and followed.
+  const adopted = createSequencedFakeDb([
+    [bountyRow({ revision: 2, version: 3, description: newer.description })],
+    [],
+  ]);
+  assert.equal(
+    await refreshBounty(adopted.db, "org_1", edited, newer, { adopt: true }),
+    true,
+  );
+  assert.equal(adopted.calls[0]?.values?.["textEditedAt"], null);
+  assert.equal(adopted.calls[0]?.values?.["description"], newer.description);
+  assert.equal(adopted.calls[0]?.values?.["version"], 2);
+  // Even when it already says what Jira says, it follows Jira again.
+  const same = createSequencedFakeDb([[bountyRow({ revision: 2 })]]);
+  assert.equal(
+    await refreshBounty(
+      same.db,
+      "org_1",
+      bountyRow({ textEditedAt: new Date() }),
+      jiraText,
+      {
+        adopt: true,
+      },
+    ),
+    true,
+  );
+  assert.equal(same.calls[0]?.values?.["textEditedAt"], null);
+  assert.equal("version" in (same.calls[0]?.values ?? {}), false);
 });
 
 test("a bounty is named by its id alone, and its columns are checked", () => {

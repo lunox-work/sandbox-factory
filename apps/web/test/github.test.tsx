@@ -67,6 +67,53 @@ interface Server {
   registerFailure?: { status: number; body: unknown };
   /** Disconnecting misses, as a connection deleted in another tab would. */
   disconnectMissing?: boolean;
+  /** How often a new repository's builds have been read. */
+  runReads: number;
+  /** Its map fails rather than builds. */
+  graphFails?: boolean;
+  /** No worker takes its runs up: every one stays queued. */
+  neverStarts?: boolean;
+}
+
+const snapshot = {
+  id: "rsn_2",
+  repoId: "ghr_2",
+  commitSha: "0123456789abcdef0123456789abcdef01234567",
+  ref: "refs/heads/main",
+  treeSha: "t".repeat(40),
+  treeTruncated: false,
+  fileCount: 3,
+  totalBytes: 300,
+  languages: {},
+  createdAt: "2026-10-01T00:00:00.000Z",
+};
+
+/** A builder's run on the new repository's snapshot. */
+function builderRun(tool: string, status: string) {
+  const params =
+    tool === "graphify"
+      ? { deadlineMinutes: 30 }
+      : tool === "abstractions" || tool === "data_model"
+        ? { deadlineMinutes: 30, builder: tool, graphRunId: "arn_graphify" }
+        : { deadlineMinutes: 30, builder: tool };
+  return {
+    id: `arn_${tool}`,
+    snapshotId: snapshot.id,
+    repoId: "ghr_2",
+    tool,
+    toolVersion: "test",
+    params,
+    status,
+    attempt: 0,
+    maxAttempts: 2,
+    errorCode: status === "failed" ? "tool_failed" : null,
+    errorDetail: null,
+    progress: null,
+    startedAt: null,
+    finishedAt: null,
+    deadlineAt: null,
+    createdAt: "2026-10-01T00:00:00.000Z",
+  };
 }
 
 let server: Server;
@@ -83,6 +130,7 @@ function json(body: unknown, status = 200) {
 
 beforeEach(() => {
   server = {
+    runReads: 0,
     connections: [connection],
     repositories: [registered],
     installationRepositories: [
@@ -241,6 +289,42 @@ beforeEach(() => {
         );
         return json({ repository: added }, 201);
       }
+      if (method === "GET" && path === `${base}/repositories/ghr_2/snapshots`) {
+        return json({ snapshots: [snapshot] });
+      }
+      if (method === "POST" && path === `${base}/repositories/ghr_2/builds`) {
+        return json({ runs: [] }, 202);
+      }
+      if (
+        method === "GET" &&
+        path === `${base}/repositories/ghr_2/runs?snapshotId=rsn_2`
+      ) {
+        server.runReads += 1;
+        if (server.neverStarts === true)
+          return json({
+            runs: [
+              "graphify",
+              "dependency_cruiser",
+              "abstractions",
+              "data_model",
+              "deepwiki",
+            ].map((tool) => builderRun(tool, "queued")),
+          });
+        // Under way when first read; finished, or its map failed, after.
+        const first = server.runReads === 1;
+        const finished = server.graphFails === true ? "failed" : "succeeded";
+        return json({
+          runs: [
+            builderRun("graphify", first ? "running" : finished),
+            ...(server.graphFails === true
+              ? []
+              : ["dependency_cruiser", "abstractions", "data_model"].map(
+                  (tool) => builderRun(tool, first ? "queued" : "succeeded"),
+                )),
+            builderRun("deepwiki", "running"),
+          ],
+        });
+      }
       if (
         method === "DELETE" &&
         path === `${base}/connections/ghc_1` &&
@@ -397,6 +481,19 @@ test("a successful connection is announced, and the outcome stripped from the UR
   expect(replaced).toEqual(["/o/acme/settings?connection=github"]);
 });
 
+test("coming back from linking an account opens its repositories dialog", async () => {
+  withOutcome("connected&githubConnection=ghc_1");
+  renderTab();
+
+  // From the first frame, not once the tab has drawn and read its list:
+  // the account's name fills in when it is read.
+  expect(screen.getByRole("dialog")).toBeDefined();
+  expect(
+    await screen.findByRole("dialog", { name: "Repositories on acme" }),
+  ).toBeDefined();
+  expect(replaced).toEqual(["/o/acme/settings?connection=github"]);
+});
+
 test("a claimed installation is a warning that names nobody", async () => {
   withOutcome("claimed");
   renderTab();
@@ -475,6 +572,10 @@ test("pick opens the picker, which links only a free installation", async () => 
     within(screen.getByTestId("github-outcome")).getByText("GitHub connected"),
   ).toBeDefined();
   expect(calls).toContain("POST /api/v1/orgs/org_1/github/connections");
+  // Registering a repository is the next step: its dialog opens unasked.
+  expect(
+    await screen.findByRole("dialog", { name: "Repositories on acme" }),
+  ).toBeDefined();
   // The list is still read again after linking, without being waited on.
   await waitFor(() => {
     expect(
@@ -549,12 +650,18 @@ test("connecting says it is on its way, until the page comes back from the cache
   ).toBe(false);
 });
 
-test("a repository is registered from what the installation can see", async () => {
+test("a repository is registered from what the installation can see, and built before the dialog lets go", async () => {
   renderTab();
 
   const dialog = await openRepositories();
-  // It says what registering does and does not read.
-  expect(within(dialog).getByText(/Code is read only by the/)).toBeDefined();
+  // It says what registering reads, and why it builds.
+  expect(
+    within(dialog).getByText(/only at a commit it was built at/),
+  ).toBeDefined();
+  // One registered before and never built offers its build.
+  expect(
+    within(dialog).getByRole("button", { name: "Build acme/widgets" }),
+  ).toBeDefined();
   // Already registered: listed above, not offered again below.
   const registeredHere = within(dialog).getByRole("list", {
     name: "Registered from acme",
@@ -578,13 +685,98 @@ test("a repository is registered from what the installation can see", async () =
     await within(dialog).findByText(/Every repository the App can see/),
   ).toBeDefined();
 
+  // Its first build runs here, and holds the dialog open until it is done.
+  const build = await within(dialog).findByTestId("repository-build");
+  expect(await within(build).findByText("Building 0123456…")).toBeDefined();
+  expect(calls).toContain(
+    "POST /api/v1/orgs/org_1/github/repositories/ghr_2/builds",
+  );
+  const waiting = within(dialog).getByRole("button", { name: "Building…" });
+  expect(waiting.hasAttribute("disabled")).toBe(true);
+  expect(
+    within(dialog).getByRole("button", { name: "Remove acme/widgets" }),
+  ).toHaveProperty("disabled", true);
+  fireEvent.keyDown(dialog, { key: "Escape" });
+  expect(screen.getByRole("dialog")).toBeDefined();
+
+  // The wiki is not waited on.
+  expect(
+    await within(build).findByText("Built at 0123456", undefined, {
+      timeout: 5_000,
+    }),
+  ).toBeDefined();
   fireEvent.click(within(dialog).getByRole("button", { name: "Done" }));
   await waitFor(() => {
     expect(screen.queryByRole("dialog")).toBeNull();
   });
   const table = screen.getByRole("list", { name: "Registered repositories" });
   expect(within(table).getByText("acme/gadgets")).toBeDefined();
-});
+}, 15_000);
+
+test("a first build whose map fails says so, and lets the dialog go", async () => {
+  server.graphFails = true;
+  renderTab();
+
+  const dialog = await openRepositories();
+  const offered = await within(dialog).findByRole("list", {
+    name: "Repositories to register",
+  });
+  fireEvent.click(
+    within(offered).getByRole("button", { name: "Register acme/gadgets" }),
+  );
+  const build = await within(dialog).findByTestId("repository-build");
+  expect(
+    await within(build).findByText(
+      "The analysis tool could not complete this run.",
+      undefined,
+      { timeout: 5_000 },
+    ),
+  ).toBeDefined();
+  expect(
+    within(build).getByRole("button", { name: "Try again" }),
+  ).toBeDefined();
+  expect(
+    within(dialog)
+      .getByRole("button", { name: "Done" })
+      .hasAttribute("disabled"),
+  ).toBe(false);
+}, 15_000);
+
+test("a first build no worker takes up lets the dialog go", async () => {
+  server.neverStarts = true;
+  renderTab();
+
+  const dialog = await openRepositories();
+  const offered = await within(dialog).findByRole("list", {
+    name: "Repositories to register",
+  });
+  fireEvent.click(
+    within(offered).getByRole("button", { name: "Register acme/gadgets" }),
+  );
+  const build = await within(dialog).findByTestId("repository-build");
+  expect(await within(build).findByText("Building 0123456…")).toBeDefined();
+  // Queued past the wait for a builder to start.
+  const now = Date.now();
+  const clock = vi.spyOn(Date, "now").mockReturnValue(now + 6 * 60_000);
+  try {
+    expect(
+      await within(build).findByText(
+        /No builder has started it yet/,
+        undefined,
+        {
+          timeout: 5_000,
+        },
+      ),
+    ).toBeDefined();
+  } finally {
+    clock.mockRestore();
+  }
+  expect(
+    within(dialog)
+      .getByRole("button", { name: "Done" })
+      .hasAttribute("disabled"),
+  ).toBe(false);
+}, 15_000);
 
 test("the search narrows what can be registered, and Escape clears it first", async () => {
   server.installationRepositories = [

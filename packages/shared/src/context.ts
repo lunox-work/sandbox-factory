@@ -114,7 +114,9 @@ export const bountyContextVersionDtoSchema = z.discriminatedUnion("source", [
  * - `unsynced`: it has one, and nothing synced from it yet. `latest` may
  *   still hold what an earlier source said.
  * - `current`: the latest sync is what the source says now.
- * - `ahead`: the source has moved past its latest sync.
+ * - `ahead`: the source has moved past its latest sync. For GitHub, the
+ *   repositories built now are not the ones it read: a commit it read at
+ *   is picked, not followed, so a newer build alone is not ahead.
  * - `unavailable`: the source cannot be read now; `reason` says why.
  */
 export const contextSyncStateSchema = z.enum([
@@ -141,6 +143,45 @@ export const bountyContextResponseSchema = z.object({
   github: bountyContextSourceStatusSchema,
 });
 
+/** A commit a repository was built at, which a bounty's scope can read. */
+export const builtCommitDtoSchema = z.object({
+  snapshotId: z.string(),
+  commitSha: z.string(),
+  /** The branch it was taken from, without `refs/heads/`. */
+  branch: z.string(),
+  createdAt: z.string(),
+});
+
+/**
+ * `GET .../bounties/:id/context/github/commits`: each of the workspace's
+ * repositories, the commit the scope holds it at, and the built commits it
+ * could hold instead, newest first.
+ */
+export const bountyGithubCommitsResponseSchema = z.object({
+  repositories: z.array(
+    z.object({
+      repoId: z.string(),
+      fullName: z.string(),
+      /** The commit the scope's latest version read; null for none. */
+      held: z.string().nullable(),
+      commits: z.array(builtCommitDtoSchema),
+    }),
+  ),
+});
+
+/**
+ * `PUT .../bounties/:id/context/github/commits`: the built snapshot to read
+ * each named repository at, by repository id. A repository not named stays
+ * at the commit the scope holds it at, or its newest built one.
+ */
+export const pinBountyGithubCommitsSchema = z.strictObject({
+  commits: z
+    .record(z.string().min(1), z.string().min(1))
+    .refine((commits) => Object.keys(commits).length > 0, {
+      message: "Name a repository's commit.",
+    }),
+});
+
 export type ContextSourceDto = z.infer<typeof contextSourceSchema>;
 export type ContextVersionsDto = z.infer<typeof contextVersionsSchema>;
 export type JiraContextDto = z.infer<typeof jiraContextSchema>;
@@ -156,3 +197,10 @@ export type BountyContextSourceStatusDto = z.infer<
   typeof bountyContextSourceStatusSchema
 >;
 export type BountyContextResponse = z.infer<typeof bountyContextResponseSchema>;
+export type BuiltCommitDto = z.infer<typeof builtCommitDtoSchema>;
+export type BountyGithubCommitsResponse = z.infer<
+  typeof bountyGithubCommitsResponseSchema
+>;
+export type PinBountyGithubCommitsInput = z.infer<
+  typeof pinBountyGithubCommitsSchema
+>;

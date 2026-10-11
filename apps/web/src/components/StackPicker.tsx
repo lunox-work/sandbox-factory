@@ -46,7 +46,11 @@ interface Option {
   readonly kind: StackKind | null;
 }
 
-/** A chip the repository brought: locked, and said to be so. */
+/**
+ * A chip the repository brought, said to be so. No lock: on a stack that is
+ * only shown, every chip is fixed, so a lock on some would mark a difference
+ * that is not there. The lock belongs to the picker, beside chips that can go.
+ */
 function InheritedChip({ name, from }: { name: string; from: string }) {
   return (
     <li
@@ -56,7 +60,6 @@ function InheritedChip({ name, from }: { name: string; from: string }) {
       <StackIcon name={name} className="size-3.5" />
       {name}
       <span className="sr-only">, detected in {from}</span>
-      <Lock aria-hidden="true" className="size-3 shrink-0" />
     </li>
   );
 }
@@ -82,8 +85,7 @@ function InheritedRow({ name, from }: { name: string; from: string }) {
 }
 
 /**
- * A stack shown, not edited: the repository's chips locked, then the
- * bounty's own. Nothing when both are empty.
+ * A stack shown, not edited: the repository's chips, then the bounty's own. Nothing when both are empty.
  */
 export function StackChips({
   inherited,
@@ -137,7 +139,10 @@ export function StackPicker({
   value: readonly string[];
   onChange: (next: string[]) => void;
   disabled?: boolean;
-  /** Focused as it mounts, and so open: put up to be picked from. */
+  /**
+   * Focused as it mounts, with its list closed until it is clicked, typed
+   * in or arrowed through.
+   */
   autoFocus?: boolean;
 }) {
   const listId = useId();
@@ -145,6 +150,8 @@ export function StackPicker({
   const [query, setQuery] = useState("");
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(0);
+  // The focus it mounts with is not a person asking for the list.
+  const mountFocus = useRef(autoFocus);
 
   const taken = (name: string) =>
     inherited.some((repo) => sameStackName(repo, name)) ||
@@ -226,7 +233,13 @@ export function StackPicker({
             setActive(0);
             setOpen(true);
           }}
-          onFocus={() => setOpen(true)}
+          onFocus={() => {
+            if (mountFocus.current) {
+              mountFocus.current = false;
+              return;
+            }
+            setOpen(true);
+          }}
           // Already focused after a pick, so focus alone would not reopen it.
           onClick={() => setOpen(true)}
           onBlur={() => setOpen(false)}

@@ -748,10 +748,35 @@
   }
 }
 
+/*
+  The bounty list narrowed otherwise: the new rows rise in, one after
+  another, while the table around them fades in. `backwards` holds only the
+  first frame, so once in, a row answers to its own styles again.
+*/
+.bounty-list-in {
+  animation: bounty-list-in 180ms ease-out backwards;
+}
+
+.bounty-row-in {
+  animation: activity-step-in 320ms cubic-bezier(0.2, 0, 0, 1) backwards;
+  animation-delay: calc(min(var(--row, 0), 12) * 22ms);
+}
+
+@keyframes bounty-list-in {
+  from {
+    opacity: 0;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   /* Still: the orb draws one frame of its own, the text keeps its plain
      muted colour. */
   .activity-step-enter {
+    animation: none;
+  }
+
+  .bounty-list-in,
+  .bounty-row-in {
     animation: none;
   }
 

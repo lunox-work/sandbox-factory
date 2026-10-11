@@ -1,21 +1,28 @@
 /**
  * A bounty's page is three steps, in order: its scope, its price (held by
  * its proposal) and its sandbox. Each is versioned, and each is built on a
- * version of the step before it. Nothing locks one step to another: the
- * scope can change under an approved price, and the price under a
- * published sandbox. A step built on an older version of the one before it
+ * version of the step before it. A step is changed only once the steps
+ * before it stand approved; unapproving one does not undo what was built
+ * on it, so the scope can change under an approved price, and the price
+ * under a published sandbox. A step built on an older version of the one before it
  * than that step is at now is behind, and says so on its tab and at the top
  * of its page, with the way back to the step it is behind.
  */
 
 import type {
+  BountyDto,
   BountyStagesDto,
   ScopeVersionDto,
   ContextSourceDto,
 } from "@sandbox-factory/shared";
-import { ChevronDown, ChevronRight, TriangleAlert } from "lucide-react";
+import { ChevronDown, ChevronRight, Lock, TriangleAlert } from "lucide-react";
 import { Fragment, type ReactNode } from "react";
-import { stageDrift, type StageDrift } from "sandbox-factory";
+import {
+  stageDrift,
+  stepHeldBy,
+  stepHeldReason,
+  type StageDrift,
+} from "sandbox-factory";
 
 import {
   DropdownMenu,
@@ -41,6 +48,18 @@ export const STEPS = [
   { value: "sandbox", label: "Sandbox" },
 ] as const;
 export type Step = (typeof STEPS)[number]["value"];
+
+/**
+ * Why a step cannot be changed yet, as its actions and its tab say it, while
+ * a step before it is not approved; null when it can be.
+ */
+export function heldReason(
+  step: "price" | "sandbox",
+  bounty: Pick<BountyDto, "version" | "approval" | "proposal">,
+): string | null {
+  const heldBy = stepHeldBy(step, bounty, bounty.proposal);
+  return heldBy === null ? null : stepHeldReason(step, heldBy);
+}
 
 /** A version as a step's tab and lineage name it. */
 const short = (version: number) => `v${version}`;
@@ -92,11 +111,14 @@ function contextText(step: "price" | "sandbox"): string {
 export function StepTriggers({
   stages,
   approved,
+  locks = { price: null, sandbox: null },
   ahead = [],
 }: {
   stages: BountyStagesDto;
   /** Which steps stand at an approved version. */
   approved: Readonly<Record<Step, boolean>>;
+  /** Why each later step cannot be changed yet; null when it can. */
+  locks?: Readonly<Record<"price" | "sandbox", string | null>>;
   /** The sources that have moved past their last sync. */
   ahead?: readonly ContextSourceDto[];
 }) {
@@ -115,6 +137,10 @@ export function StepTriggers({
       value === "scope" && ahead.length > 0 ? aheadText(ahead) : null,
     ].filter((text): text is string => text !== null);
     const behind = warnings.length === 0 ? null : warnings.join(" ");
+    const locked = value === "scope" ? null : locks[value];
+    // What the tab's tooltip says: what it is behind, then what holds it.
+    const tip =
+      [behind, locked].filter((text) => text !== null).join(" ") || null;
     const signed = approved[value];
     const content = (
       <span className="flex h-full items-center gap-2">
@@ -146,6 +172,9 @@ export function StepTriggers({
             className="size-3.5 text-amber-600 dark:text-amber-400"
           />
         )}
+        {locked !== null && (
+          <Lock aria-hidden className="text-muted-foreground size-3.5" />
+        )}
       </span>
     );
     return (
@@ -173,24 +202,66 @@ export function StepTriggers({
             .filter((part) => part !== null)
             .join(" ")}
           data-behind={behind === null ? undefined : true}
+          data-held={locked === null ? undefined : true}
         >
           {/*
             The tooltip hangs on what the tab holds, never on the tab: its
             trigger writes its own `data-state`, which would hide the tab's
             `active` from the underline and the tab's own styles.
           */}
-          {behind === null ? (
+          {tip === null ? (
             content
           ) : (
             <Tooltip>
               <TooltipTrigger asChild>{content}</TooltipTrigger>
-              <TooltipContent>{behind}</TooltipContent>
+              <TooltipContent>{tip}</TooltipContent>
             </Tooltip>
           )}
         </TabsTrigger>
       </Fragment>
     );
   });
+}
+
+/**
+ * At the top of a step's page while a step before it is not approved: why
+ * nothing on it can be changed yet, with the way to the step that holds
+ * it. Nothing while it can be.
+ */
+export function StepHeld({
+  step,
+  bounty,
+  onOpen,
+}: {
+  step: "price" | "sandbox";
+  bounty: Pick<BountyDto, "version" | "approval" | "proposal">;
+  /** Opens the step that holds it. */
+  onOpen: (step: Step) => void;
+}) {
+  const heldBy = stepHeldBy(step, bounty, bounty.proposal);
+  if (heldBy === null) return null;
+  return (
+    <div
+      role="status"
+      data-testid={`${step}-held`}
+      className="bg-muted/50 flex flex-wrap items-center gap-x-3 gap-y-2 rounded-lg border px-3 py-2.5 text-sm"
+    >
+      <Lock aria-hidden className="text-muted-foreground size-4 shrink-0" />
+      <p className="min-w-0 flex-1">
+        <span className="font-medium">Locked.</span>{" "}
+        <span className="text-muted-foreground">
+          {stepHeldReason(step, heldBy)}
+        </span>
+      </p>
+      <button
+        type="button"
+        className="focus-visible:ring-ring/50 cursor-pointer rounded-sm text-sm font-medium underline-offset-2 hover:underline focus-visible:ring-[3px] focus-visible:outline-none"
+        onClick={() => onOpen(heldBy)}
+      >
+        Open {heldBy === "scope" ? "Scope" : "Price"}
+      </button>
+    </div>
+  );
 }
 
 /**
@@ -250,6 +321,91 @@ export function StepLineage({
 }
 
 /**
+ * A step's version, the one card on its tab: the version's number on a
+ * tile, what is known of it, and the decision on it, level with each other;
+ * under them, the context it holds or was made with. The rest of the tab
+ * reads on the page itself, in ruled sections. The tile wears the brand
+ * once the version stands approved, grey until then. A step with no version
+ * yet has a dash on its tile and the way to make one for its decision.
+ */
+export function StepVersionCard({
+  step,
+  tile,
+  approved = false,
+  action,
+  error = null,
+  context,
+  children,
+}: {
+  step: Step;
+  /** The version as its tile names it, such as "v2"; a dash for none. */
+  tile: string;
+  approved?: boolean;
+  /** The decision on it, or the way to make the first. */
+  action?: ReactNode;
+  error?: string | null;
+  /** The context it holds or was made with, across the card's foot. */
+  context?: ReactNode;
+  /** What is known of the version, beside its tile. */
+  children: ReactNode;
+}) {
+  return (
+    <section
+      aria-label="Version"
+      data-testid={`${step}-version-card`}
+      className="bg-card relative overflow-hidden rounded-lg border shadow-xs before:absolute before:inset-x-0 before:top-0 before:h-0.5 before:bg-(image:--brand-gradient)"
+    >
+      <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-3 p-4">
+        <div className="flex min-w-0 items-center gap-3">
+          <span
+            aria-hidden="true"
+            className={cn(
+              "flex size-9 shrink-0 items-center justify-center rounded-lg font-mono text-xs font-semibold",
+              approved
+                ? "bg-(image:--brand-gradient) text-white shadow-sm shadow-blue-500/20"
+                : "bg-muted text-muted-foreground",
+            )}
+          >
+            {tile}
+          </span>
+          {children}
+        </div>
+        {action}
+      </div>
+      {error !== null && (
+        <p role="alert" className="text-destructive -mt-1 px-4 pb-3 text-xs">
+          {error}
+        </p>
+      )}
+      {context !== undefined && context !== null && (
+        <div className="bg-muted/40 border-t px-4 py-2.5">{context}</div>
+      )}
+    </section>
+  );
+}
+
+/**
+ * The line beside a version's tile when there is no version yet: what the
+ * step is waiting on, over why, at the height a version's own line has.
+ */
+export function NoVersion({
+  title,
+  children,
+}: {
+  title: string;
+  children?: ReactNode;
+}) {
+  return (
+    <span className="flex min-h-9 min-w-0 flex-col justify-center text-xs">
+      <span className="text-subheading">{title}</span>
+      {children !== undefined && (
+        <span className="text-muted-foreground">{children}</span>
+      )}
+    </span>
+  );
+}
+
+/**
  * The scope's version over its text, as a price and a sandbox have
  * theirs: the version, chosen from the others when there are several, and
  * under it when it was written. An earlier one is read, not changed.
@@ -270,7 +426,7 @@ export function ScopeVersion({
   onView: (version: number) => void;
 }) {
   const shown = versions.find(({ version }) => version === viewing);
-  const name = <span className="font-semibold">Version {viewing}</span>;
+  const name = <span className="text-subheading">Version {viewing}</span>;
   return (
     <span
       className="flex min-h-9 flex-col justify-center text-xs"

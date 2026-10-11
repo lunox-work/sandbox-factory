@@ -93,12 +93,6 @@ export function trailFor(
    */
   bountyName?: string | undefined,
   /**
-   * The workspace the bounty is in, named as the switcher names it:
-   * "Personal" for the person's own. Dropped until it is known, as the
-   * organization screens drop theirs.
-   */
-  bountyWorkspace?: TrailOrganization | undefined,
-  /**
    * The repository the last crumb names, on `org-repository`. Passed in for
    * the same reason as the bounty's, and read "Repository" until it arrives.
    */
@@ -135,22 +129,11 @@ export function trailFor(
       return [HOME, BOUNTIES, { label: "New bounty" }];
     case "bounty":
       /*
-        Under the list it opens over, then the workspace it is in, as its
-        address names them: `/bounties/acme/bty_1`. The workspace leads to
-        that workspace's own page, since the list is every workspace's.
+        Straight under the list it opens over. The workspace its address
+        names is left out: the list is every workspace's, and a crumb for it
+        is a detour to settings rather than a step back up.
       */
-      return bountyWorkspace === undefined
-        ? [HOME, BOUNTIES, { label: bountyName ?? "Bounty" }]
-        : [
-            HOME,
-            BOUNTIES,
-            {
-              label: bountyWorkspace.name,
-              screen: "org-settings",
-              slug: bountyWorkspace.slug,
-            },
-            { label: bountyName ?? "Bounty" },
-          ];
+      return [HOME, BOUNTIES, { label: bountyName ?? "Bounty" }];
     case "org-repository": {
       /*
         The GitHub crumb leads to the GitHub tab of the organization's
@@ -185,7 +168,6 @@ export function Breadcrumbs({
   screen,
   organization,
   bountyName,
-  bountyWorkspace,
   repositoryName,
   onNavigate,
 }: {
@@ -193,8 +175,6 @@ export function Breadcrumbs({
   organization?: TrailOrganization | undefined;
   /** The bounty `bounty` is showing; see `trailFor`. */
   bountyName?: string | undefined;
-  /** The workspace that bounty is in; see `trailFor`. */
-  bountyWorkspace?: TrailOrganization | undefined;
   /** The repository `org-repository` is showing; see `trailFor`. */
   repositoryName?: string | undefined;
   onNavigate: (
@@ -204,13 +184,7 @@ export function Breadcrumbs({
     connectionTab?: ConnectionTab,
   ) => void;
 }) {
-  const crumbs = trailFor(
-    screen,
-    organization,
-    bountyName,
-    bountyWorkspace,
-    repositoryName,
-  );
+  const crumbs = trailFor(screen, organization, bountyName, repositoryName);
 
   // Nothing to show on home, and a bare trail of one crumb is chrome rather
   // than navigation — it names where you are without offering a way up.

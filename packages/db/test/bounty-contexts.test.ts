@@ -189,6 +189,8 @@ test("a sync that finds what the latest version holds only moves its revision", 
   assert.equal(result.context.version, 2);
   assert.equal(result.context.revision, "r9");
   assert.equal(fake.calls[2]?.kind, "update");
+  // Where it was read moves with the revision, though the hash leaves it out.
+  assert.deepEqual(fake.calls[2]?.values?.content, jira);
 });
 
 test("the same content from another issue is a new version", async () => {

@@ -10,7 +10,12 @@
  */
 
 import { and, desc, eq, inArray, ne, sql } from "drizzle-orm";
-import type { TreeFacts } from "sandbox-factory";
+import {
+  REQUIRED_BUILDERS,
+  snapshotBuilt,
+  type AnalysisStatus,
+  type TreeFacts,
+} from "sandbox-factory";
 
 import type { Database } from "./errors.js";
 import { generateId } from "./mapping.js";
@@ -101,6 +106,12 @@ export interface RepoSnapshotStore {
     organizationId: string,
     repoId: string,
   ): Promise<StoredRepoSnapshot | null>;
+  /**
+   * A repository's built snapshots, newest first: those whose context
+   * builders have finished as `snapshotBuilt` in core says. The commits a
+   * bounty's scope can read the repository at.
+   */
+  built(organizationId: string, repoId: string): Promise<RepoSnapshotSummary[]>;
   create(
     organizationId: string,
     input: NewRepoSnapshot,
@@ -183,6 +194,54 @@ export function createRepoSnapshotStore(db: Database): RepoSnapshotStore {
         .limit(1)) as Joined[];
       const row = rows[0];
       return row === undefined ? null : toStored(row);
+    },
+
+    async built(organizationId, repoId) {
+      const runs = (await db
+        .select({
+          snapshotId: analysisRun.snapshotId,
+          tool: analysisRun.tool,
+          status: analysisRun.status,
+        })
+        .from(analysisRun)
+        .innerJoin(repoSnapshot, eq(repoSnapshot.id, analysisRun.snapshotId))
+        .innerJoin(githubRepo, eq(githubRepo.id, repoSnapshot.repoId))
+        .where(
+          and(
+            owned(organizationId),
+            eq(repoSnapshot.repoId, repoId),
+            inArray(analysisRun.tool, [...REQUIRED_BUILDERS]),
+          ),
+        )) as {
+        snapshotId: string | null;
+        tool: string;
+        status: AnalysisStatus;
+      }[];
+      const bySnapshot = new Map<string, typeof runs>();
+      for (const run of runs) {
+        if (run.snapshotId === null) continue;
+        bySnapshot.set(run.snapshotId, [
+          ...(bySnapshot.get(run.snapshotId) ?? []),
+          run,
+        ]);
+      }
+      const ids = [...bySnapshot]
+        .filter(([, each]) => snapshotBuilt(each))
+        .map(([id]) => id);
+      if (ids.length === 0) return [];
+      const rows = (await joined()
+        .where(
+          and(
+            owned(organizationId),
+            eq(repoSnapshot.repoId, repoId),
+            inArray(repoSnapshot.id, ids),
+          ),
+        )
+        .orderBy(
+          desc(repoSnapshot.createdAt),
+          desc(repoSnapshot.id),
+        )) as Joined[];
+      return rows.map(({ snapshot }) => toSummary(snapshot));
     },
 
     async create(organizationId, input) {

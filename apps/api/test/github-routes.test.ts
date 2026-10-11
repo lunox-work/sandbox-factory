@@ -236,6 +236,8 @@ test("one free installation in the person's list is linked, and the grant kept",
   const [connection] = await stores.connections.list("org_1");
   assert.equal(connection?.installationId, "9");
   assert.equal(connection?.accountLogin, "acme");
+  // Named, so the page opens its repositories dialog directly.
+  assert.equal(target.searchParams.get("githubConnection"), connection?.id);
   const grant = await stores.grants.get("org_1", dana.id);
   assert.equal(grant?.githubLogin, "dana");
 });
@@ -267,6 +269,7 @@ test("an installation linked to another organization is claimed, and nothing is 
   });
 
   assert.equal(named.searchParams.get("github"), "claimed");
+  assert.equal(named.searchParams.get("githubConnection"), null);
   assert.deepEqual(await stores.connections.list("org_1"), []);
   assert.equal(
     (await stores.connections.ownerOf("9"))?.organizationId,
@@ -302,6 +305,7 @@ test("a listed installation named in the query is linked, and an update refreshe
   assert.equal(again.searchParams.get("github"), "connected");
   const listed = await stores.connections.list("org_1");
   assert.equal(listed.length, 1);
+  assert.equal(first.searchParams.get("githubConnection"), listed[0]?.id);
   assert.equal(listed[0]?.repositorySelection, "all");
 });
 

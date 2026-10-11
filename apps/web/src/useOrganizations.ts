@@ -101,6 +101,9 @@ export function useOrganizations(
       queryClient.invalidateQueries({
         queryKey: queryKeys.me(userId, "bounties"),
       }),
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.me(userId, "bounty-statuses"),
+      }),
     ]);
   }, [queryClient, userId]);
 

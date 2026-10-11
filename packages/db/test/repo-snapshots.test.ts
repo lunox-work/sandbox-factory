@@ -102,6 +102,42 @@ test("findByCommit and current read one row, or null", async () => {
   assert.equal(await empty.current("org_1", "ghr_1"), null);
 });
 
+test("built reads the builders' runs, then the snapshots they finished, newest first", async () => {
+  const run = (snapshotId: string, tool: string, status: string) => ({
+    snapshotId,
+    tool,
+    status,
+  });
+  const fake = createSequencedFakeDb([
+    [
+      run("rsn_1", "graphify", "succeeded"),
+      run("rsn_1", "dependency_cruiser", "succeeded"),
+      run("rsn_1", "abstractions", "failed"),
+      run("rsn_1", "data_model", "succeeded"),
+      // Its map is still running: not built yet.
+      run("rsn_2", "graphify", "running"),
+    ],
+    [joined()],
+  ]);
+  const built = await createRepoSnapshotStore(fake.db).built("org_1", "ghr_1");
+  assert.deepEqual(
+    built.map(({ id }) => id),
+    ["rsn_1"],
+  );
+  assert.equal("facts" in (built[0] ?? {}), false);
+  assert.equal(fake.calls[0]?.filtered, true);
+  assert.equal(fake.calls[1]?.filtered, true);
+  assert.equal(fake.calls[1]?.ordered, true);
+
+  // Nothing built: the snapshots are not read at all.
+  const none = createSequencedFakeDb([[run("rsn_2", "graphify", "queued")]]);
+  assert.deepEqual(
+    await createRepoSnapshotStore(none.db).built("org_1", "ghr_1"),
+    [],
+  );
+  assert.equal(none.calls.length, 1);
+});
+
 test("create locks the live repository, then inserts ignoring a twin", async () => {
   const fake = createSequencedFakeDb([[{ id: "ghr_1" }], [row()]]);
   const created = await createRepoSnapshotStore(fake.db).create("org_1", input);

@@ -12,10 +12,13 @@
  * the rows the board's own search uses: key, summary, board. Under the
  * results sits the way to the workspace's Jira settings, where accounts are
  * connected and managed. Linking an issue makes the bounty follow it, so a
- * bounty with text of its own asks first: Jira's replaces it.
+ * bounty with text of its own asks first: Jira's replaces it. Text edited
+ * here is the bounty's own too: Jira no longer updates it, until an issue
+ * is picked again.
  *
- * Under each row, the source's sync: whether its context is in use and up
- * to date, and the way to sync it into the scope (`ContextSync`).
+ * Under each row, the source's context: whether it is in use and up to
+ * date, and the way to bring it into the scope (`ContextSync`): syncing the
+ * issue, in its row's menu, and picking each repository's commit.
  */
 
 import {
@@ -55,7 +58,11 @@ import {
 import type { Bounties } from "../../useBounties";
 import type { GithubRepos } from "../../useGithub";
 import { useJira } from "../../useJira";
-import { ContextSync, type BountyContextState } from "./BountyContext";
+import {
+  ContextSync,
+  ContextSyncMenu,
+  type BountyContextState,
+} from "./BountyContext";
 
 /** Opens a tab of the workspace's settings. */
 export type OpenSettings = (tab: ConnectionTab) => void;
@@ -86,19 +93,24 @@ export function BountyLinks({
   const headingId = useId();
   return (
     <section aria-labelledby={headingId} className="flex flex-col gap-2">
-      <h3 id={headingId} className="text-sm font-medium">
+      {/* Ruled under its heading, as the task's text is. */}
+      <h3
+        id={headingId}
+        className="eyebrow flex min-h-9 items-center border-b pb-2"
+      >
         Links
       </h3>
-      <div className="divide-y rounded-lg border">
+      <div className="flex flex-col">
         <RepositoriesLink
           organization={organization}
           repos={repos}
           onOpenSettings={onOpenSettings}
           sync={
             context === undefined ? null : (
-              <ContextSync source="github" context={context} canSync />
+              <ContextSync source="github" context={context} />
             )
           }
+          menu={null}
         />
         <JiraLink
           organization={organization}
@@ -109,7 +121,12 @@ export function BountyLinks({
           locked={locked}
           sync={
             context === undefined ? null : (
-              <ContextSync
+              <ContextSync source="jira" context={context} />
+            )
+          }
+          menu={
+            context === undefined ? null : (
+              <ContextSyncMenu
                 source="jira"
                 context={context}
                 canSync={bounty.jira !== null && bounty.jira.removedAt === null}
@@ -123,9 +140,10 @@ export function BountyLinks({
 }
 
 /**
- * One source: its mark and name over one line on the link, and its picker
- * beside them, as wide as the other row's so the two line up. Under them
- * on a narrow screen.
+ * One source, on three columns every row shares: its mark; its name over
+ * one line on the link, with its sync under them; and its control, as wide
+ * as the other row's so the two line up. The control goes under the name on
+ * a narrow screen.
  */
 function LinkRow({
   icon,
@@ -136,6 +154,7 @@ function LinkRow({
   error,
   control,
   sync,
+  menu,
 }: {
   icon: ReactNode;
   title: string;
@@ -146,35 +165,52 @@ function LinkRow({
   control: ReactNode;
   /** The source's sync, under the row. */
   sync?: ReactNode;
+  /** Its other actions, beside the control. */
+  menu?: ReactNode;
 }) {
   return (
-    <div className="flex flex-col gap-2 p-4">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:gap-6">
-        <div className="flex min-w-0 flex-1 flex-col gap-1">
-          <span
-            id={titleId}
-            className="flex items-center gap-2 text-sm font-medium"
-          >
-            <span className="flex size-4 shrink-0 items-center [&_svg]:size-4">
-              {icon}
-            </span>
-            {title}
-            {busy && (
-              <Loader2 className="text-muted-foreground size-3 animate-spin" />
-            )}
-          </span>
-          <span className="text-muted-foreground truncate text-xs">
-            {description}
-          </span>
+    <div className="grid grid-cols-[1rem_minmax(0,1fr)] gap-x-3 gap-y-2 py-3 sm:grid-cols-[1rem_minmax(0,1fr)_14rem] sm:gap-x-4">
+      <span className="flex h-5 items-center [&_svg]:size-4">{icon}</span>
+      <div className="flex min-w-0 flex-col gap-0.5">
+        <span
+          id={titleId}
+          className="flex h-5 items-center gap-2 text-sm font-medium"
+        >
+          {title}
+          {busy && (
+            <Loader2 className="text-muted-foreground size-3 animate-spin" />
+          )}
+        </span>
+        <span className="text-muted-foreground truncate text-xs">
+          {description}
+        </span>
+      </div>
+      {/*
+        The control and its menu as one split button: the control's right
+        corners squared where the menu's half joins it, on one shared border.
+      */}
+      <div className="col-start-2 flex sm:col-start-3 sm:row-start-1">
+        <div
+          className={cn(
+            "min-w-0 flex-1",
+            menu !== null && menu !== undefined && "*:rounded-r-none",
+          )}
+        >
+          {control}
         </div>
-        <div className="w-full sm:w-64 sm:shrink-0">{control}</div>
+        {menu}
       </div>
       {error !== null && (
-        <p role="alert" className="text-destructive text-xs">
+        <p
+          role="alert"
+          className="text-destructive col-span-full col-start-2 text-xs"
+        >
           {error}
         </p>
       )}
-      {sync}
+      {sync !== null && sync !== undefined && (
+        <div className="col-span-full col-start-2">{sync}</div>
+      )}
     </div>
   );
 }
@@ -192,11 +228,13 @@ function RepositoriesLink({
   repos,
   onOpenSettings,
   sync,
+  menu,
 }: {
   organization: MembershipDto;
   repos: GithubRepos;
   onOpenSettings: OpenSettings;
   sync: ReactNode;
+  menu: ReactNode;
 }) {
   const titleId = useId();
   const sources = repos.repos.filter(isWorkspaceSource);
@@ -217,13 +255,15 @@ function RepositoriesLink({
       busy={false}
       error={null}
       sync={sync}
+      menu={menu}
       control={
         <a
           href={settingsHref(organization, "github")}
           aria-describedby={titleId}
           className={cn(
             buttonVariants({ variant: "outline" }),
-            "w-full justify-start",
+            // The input's border, as the Jira picker and the menu have.
+            "border-input w-full justify-start",
           )}
           onClick={(event) => {
             if (!isPlainLeftClick(event)) return;
@@ -249,6 +289,9 @@ function issueValue(issue: { boardId: string; id: string }): string {
 /** The value while the issue followed is not among the results, or none is. */
 const UNLISTED = "";
 
+/** The issue linked now, listed on its own before anything is searched. */
+const CURRENT = "current";
+
 /**
  * The Jira issue the bounty follows, searched for across the workspace's
  * boards. The same picker whatever the workspace has connected: with no
@@ -262,6 +305,7 @@ function JiraLink({
   onOpenSettings,
   locked,
   sync,
+  menu,
 }: {
   organization: MembershipDto;
   bounty: BountyDto;
@@ -270,6 +314,7 @@ function JiraLink({
   onOpenSettings: OpenSettings;
   locked: boolean;
   sync: ReactNode;
+  menu: ReactNode;
 }) {
   const titleId = useId();
   const userId = useUserId();
@@ -312,10 +357,33 @@ function JiraLink({
 
   const link = bounty.jira;
   const follows = link !== null && link.removedAt === null;
+  // Its text is still the issue's, not edited here since.
+  const textFollows = follows && !bounty.textEdited;
 
+  /*
+    Before anything is typed, the list opens on the issue linked now, chosen,
+    rather than on a hint: picking it again changes nothing. Its summary is
+    not known here, so the bounty's title stands in while it follows it.
+  */
+  const current: ComboboxOption | null =
+    link === null || search !== ""
+      ? null
+      : {
+          value: CURRENT,
+          label: textFollows
+            ? bounty.title
+            : follows
+              ? "Linked; its text was edited here"
+              : "Gone from Jira",
+          icon: (
+            <span className="text-muted-foreground w-16 truncate font-mono text-xs">
+              {link.key}
+            </span>
+          ),
+        };
   // As the board's own search lists them: key, summary, and what sets
   // them apart, here the board.
-  const options: ComboboxOption[] = results.map((issue) => {
+  const searched: ComboboxOption[] = results.map((issue) => {
     const elsewhere = issue.bountyId !== null && issue.bountyId !== bounty.id;
     return {
       value: issueValue(issue),
@@ -330,8 +398,14 @@ function JiraLink({
       disabled: elsewhere,
     };
   });
+  const options = current === null ? searched : [current];
   const linked = results.find((issue) => issue.bountyId === bounty.id);
-  const value = linked === undefined ? UNLISTED : issueValue(linked);
+  const value =
+    current !== null
+      ? CURRENT
+      : linked === undefined
+        ? UNLISTED
+        : issueValue(linked);
 
   const save = async (
     send: () => ReturnType<Bounties["linkJira"]>,
@@ -351,26 +425,16 @@ function JiraLink({
     const chosen = { boardId: issue.boardId, issueId: issue.id };
     // Its text is Jira's already while it follows an issue: nothing of its
     // own is replaced.
-    if (follows) {
+    if (textFollows) {
       void save(() => bounties.linkJira(bounty.id, chosen)).then(setError);
     } else {
       setAsking({ ...chosen, key: issue.key });
     }
   };
 
+  // The accounts first, and removing the link last, in red: never what a
+  // stray Enter lands on.
   const actions: ComboboxAction[] = [
-    ...(link === null
-      ? []
-      : [
-          {
-            key: "unlink",
-            label: "Remove the link",
-            icon: <Unlink />,
-            onSelect: () => {
-              void save(() => bounties.unlinkJira(bounty.id)).then(setError);
-            },
-          },
-        ]),
     connected
       ? {
           key: "jira-settings",
@@ -386,6 +450,19 @@ function JiraLink({
           href: settingsHref(organization, "jira"),
           onSelect: () => onOpenSettings("jira"),
         },
+    ...(link === null
+      ? []
+      : [
+          {
+            key: "unlink",
+            label: "Remove the link",
+            icon: <Unlink />,
+            destructive: true,
+            onSelect: () => {
+              void save(() => bounties.unlinkJira(bounty.id)).then(setError);
+            },
+          },
+        ]),
   ];
 
   const description =
@@ -397,7 +474,7 @@ function JiraLink({
       )
     ) : follows ? (
       <>
-        Its title and description follow{" "}
+        {textFollows ? "Its title and description follow " : "Linked to "}
         {link.url === null ? (
           <span className="text-foreground font-mono">{link.key}</span>
         ) : (
@@ -411,7 +488,9 @@ function JiraLink({
             <ExternalLink className="size-3" />
           </a>
         )}
-        .
+        {textFollows
+          ? "."
+          : ". Its text was edited here, so Jira no longer updates it."}
       </>
     ) : (
       `${link.key} is gone from Jira; the bounty keeps its last text.`
@@ -422,7 +501,11 @@ function JiraLink({
       type="button"
       aria-label="Jira issue"
       aria-describedby={titleId}
-      className={comboboxTriggerClass}
+      // Its ring over the menu's half, not under it.
+      className={cn(
+        comboboxTriggerClass,
+        "relative focus-visible:z-10 data-[state=open]:z-10",
+      )}
     >
       {link === null ? (
         <span className="text-muted-foreground min-w-0 flex-1 truncate">
@@ -457,6 +540,7 @@ function JiraLink({
         busy={saving}
         error={error}
         sync={sync}
+        menu={menu}
         control={
           <Combobox
             label="Jira issue"
@@ -481,6 +565,8 @@ function JiraLink({
             }
             contentClassName="w-[26rem]"
             align="end"
+            // To the menu's edge, as wide as the whole split button.
+            alignOffset={-31}
             options={options}
             actions={actions}
             value={value}

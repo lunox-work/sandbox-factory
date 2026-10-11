@@ -197,6 +197,8 @@ export interface StoredBountyRun {
   /** The one bounty a `bounty`, `reprice` or `respec` run is about. */
   readonly bountyId: string | null;
   readonly kind: BountyRunKind;
+  /** Who asked for it; null once their account is gone. */
+  readonly startedBy: string | null;
   readonly sourceProposalId: string | null;
   readonly sourceRevision: number | null;
   /** What a `respec` run was asked to do; null for every other kind. */
@@ -228,6 +230,7 @@ function toDto(row: BountyRunRow): StoredBountyRun {
     boardId: row.boardId,
     bountyId: row.bountyId,
     kind: row.kind as StoredBountyRun["kind"],
+    startedBy: row.startedBy ?? null,
     sourceProposalId: row.sourceProposalId,
     sourceRevision: row.sourceRevision,
     respec: row.respec ?? null,

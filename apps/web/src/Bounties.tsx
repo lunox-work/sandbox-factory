@@ -51,7 +51,6 @@ import {
   Box,
   ExternalLink,
   FileText,
-  Inbox,
   Link2,
   Loader2,
   Maximize2,
@@ -65,12 +64,14 @@ import {
   useId,
   useRef,
   useState,
+  type CSSProperties,
   type ReactElement,
   type ReactNode,
 } from "react";
 
 import { Combobox } from "@/components/Combobox";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { DisabledReason } from "@/components/DisabledReason";
 import {
   ErrorBanner,
   LoadingLine,
@@ -78,6 +79,7 @@ import {
   RetryButton,
 } from "@/components/Message";
 import { Page, PageHeader } from "@/components/Page";
+import { RuledSection } from "@/components/ReadSection";
 import {
   PEEK_ACTION_CLASS,
   PEEK_ROW_ATTRIBUTE,
@@ -144,9 +146,13 @@ import {
   CategoryNote,
 } from "./features/bounties/Categories";
 import {
+  heldReason,
+  NoVersion,
   ScopeVersion,
+  StepHeld,
   StepLineage,
   StepTriggers,
+  StepVersionCard,
   STEPS,
   type Step,
 } from "./features/bounties/BountySteps";
@@ -155,7 +161,6 @@ import {
   StatusLabel,
   statusOf,
 } from "./features/bounties/BountyStatus";
-import { SandboxCard } from "./features/bounties/SandboxCard";
 import {
   PreviewPrice,
   PreviewReason,
@@ -172,6 +177,7 @@ import {
   useAllBounties,
   useBounties,
   useBountyCategories,
+  useBountyStatuses,
   type AllBounties,
   type BountyDraft,
   type Bounties,
@@ -298,6 +304,16 @@ export function Bounties({
     scope.source,
     scope.status,
   );
+  const statusCounts = useBountyStatuses(
+    scope.category,
+    scope.board?.boardId,
+    scope.source,
+  );
+  const narrowed =
+    scope.category !== undefined ||
+    scope.board !== undefined ||
+    scope.source !== undefined ||
+    scope.status !== undefined;
   /** The list narrowed otherwise; a bounty open over it stays open. */
   const narrow = (next: BountyListScope) =>
     replaceLocation(bountiesUrl(peek, next));
@@ -370,17 +386,28 @@ export function Bounties({
           aria-label="Filter bounties"
           className="flex flex-wrap items-center gap-2"
         >
+          <StatusFilter
+            counts={statusCounts.data}
+            selected={scope.status ?? null}
+            onSelect={(status) =>
+              narrow({ ...scope, status: status ?? undefined })
+            }
+          />
+          <button
+            type="button"
+            disabled={!narrowed}
+            onClick={() => narrow({})}
+            className="text-muted-foreground hover:text-foreground focus-visible:ring-ring/50 h-8 rounded-md px-1.5 text-sm font-medium transition-[color,opacity] outline-none focus-visible:ring-[3px] disabled:pointer-events-none disabled:opacity-40"
+          >
+            Clear all
+          </button>
+          {/* The rest at the row's end: what kind of work, and from where. */}
           <CategoryFilter
+            className="ml-auto"
             counts={counts.data}
             selected={scope.category ?? null}
             onSelect={(category) =>
               narrow({ ...scope, category: category ?? undefined })
-            }
-          />
-          <StatusFilter
-            selected={scope.status ?? null}
-            onSelect={(status) =>
-              narrow({ ...scope, status: status ?? undefined })
             }
           />
           <BoardFilter
@@ -409,14 +436,8 @@ export function Bounties({
           bounties={bounties}
           organizations={organizations}
           organizationsLoading={organizationsLoading}
-          viewer={viewer}
           peek={peek}
-          narrowed={
-            scope.category !== undefined ||
-            scope.board !== undefined ||
-            scope.source !== undefined ||
-            scope.status !== undefined
-          }
+          narrowed={narrowed}
           onOpen={open}
           onCreate={onCreate}
         />
@@ -948,27 +969,31 @@ function OpenBounty({
       repos={repos}
       canManage={manages}
       proposal={
-        proposalId === null ? null : (
-          <BountyProposal
-            key={proposalId}
-            organizationId={organization.id}
-            proposalId={proposalId}
-            bountyKey={bounty.jira?.key}
-            bountyTitle={bounty.title}
-            canDecide={manages}
-            scopeVersion={bounty.stages.price?.scopeVersion ?? null}
-            onChanged={() => {
-              void bounties.refresh();
-              opened.reload();
-            }}
-            onRemoved={() => {
-              void bounties.refresh();
-              setLanded(null);
-              setRemoved(proposalId);
-              opened.reload();
-            }}
-          />
-        )
+        proposalId === null
+          ? null
+          : (context) => (
+              <BountyProposal
+                context={context}
+                key={proposalId}
+                organizationId={organization.id}
+                proposalId={proposalId}
+                bountyKey={bounty.jira?.key}
+                bountyTitle={bounty.title}
+                canDecide={manages}
+                scopeVersion={bounty.stages.price?.scopeVersion ?? null}
+                held={heldReason("price", bounty)}
+                onChanged={() => {
+                  void bounties.refresh();
+                  opened.reload();
+                }}
+                onRemoved={() => {
+                  void bounties.refresh();
+                  setLanded(null);
+                  setRemoved(proposalId);
+                  opened.reload();
+                }}
+              />
+            )
       }
       onChange={opened.set}
       onReload={opened.reload}
@@ -986,7 +1011,6 @@ function BountyList({
   bounties,
   organizations,
   organizationsLoading,
-  viewer,
   peek,
   narrowed,
   onOpen,
@@ -995,8 +1019,6 @@ function BountyList({
   bounties: AllBounties;
   organizations: MembershipDto[];
   organizationsLoading: boolean;
-  /** Whoever is looking: the face their personal workspace wears. */
-  viewer: Viewer;
   /** The bounty open in the panel, whose card is marked; null for none. */
   peek: BountyAddress | null;
   /** A category or a board narrows the list, so empty says less. */
@@ -1010,7 +1032,16 @@ function BountyList({
     return <LoadingLine>Loading bounties…</LoadingLine>;
   }
   return (
-    <div className="flex flex-col gap-4">
+    // Narrowed otherwise, the rows shown step back until the new ones land,
+    // and those come in under a new key, so they rise in rather than swap.
+    <div
+      key={bounties.view}
+      aria-busy={bounties.switching}
+      className={cn(
+        "bounty-list-in flex flex-col gap-4 transition-opacity duration-200 motion-reduce:transition-none",
+        bounties.switching && "opacity-50",
+      )}
+    >
       {bounties.error !== null && (
         <RetryableError onRetry={bounties.retry}>
           {bounties.error}
@@ -1054,21 +1085,17 @@ function BountyList({
                 {bounties.more && "+"}{" "}
                 {bounties.bounties.length === 1 ? "bounty" : "bounties"}
               </span>
-              <span className={cn("hidden", WORKSPACE_CELL)}>Workspace</span>
               <span>Status</span>
               <span className="text-right">Price</span>
             </div>
             <ul className="divide-y" data-testid="bounty-list">
-              {bounties.bounties.map((bounty) => {
+              {bounties.bounties.map((bounty, index) => {
                 const address = addressOf(bounty, organizations);
                 return (
                   <BountyCard
                     key={bounty.id}
+                    index={index}
                     bounty={bounty}
-                    workspace={organizations.find(
-                      ({ id }) => id === bounty.organizationId,
-                    )}
-                    viewer={viewer}
                     address={address}
                     selected={
                       address !== undefined &&
@@ -1105,32 +1132,13 @@ function BountyList({
   );
 }
 
-/** Where a bounty came from, said in a few words, as its page names it. */
-function Source({ bounty }: { bounty: BountySummaryDto }) {
-  if (bounty.jira === null) {
-    return <span className="shrink-0">Created in Lunox</span>;
-  }
-  return (
-    <span className="inline-flex shrink-0 items-center gap-1">
-      <span className="size-3 shrink-0">
-        <JiraIcon />
-      </span>
-      {bounty.jira.removedAt === null ? "From Jira" : "Gone from Jira"}
-    </span>
-  );
-}
-
 /**
  * The list's columns, shared by its head and every row, set by how wide the
- * list itself is rather than the screen: beside an open panel it is
- * narrower, and the workspace, which the panel names, gives its column up
- * to the titles. Narrower still, as on a phone, each row stacks.
+ * list itself is rather than the screen. Narrow, as on a phone, each row
+ * stacks.
  */
 const ROW_GRID =
-  "gap-x-6 @xl:items-center @xl:grid-cols-[minmax(0,1fr)_10rem_5.5rem] @4xl:grid-cols-[minmax(0,1fr)_9rem_10rem_5.5rem]";
-
-/** The workspace column: under the title when stacked, and when wide. */
-const WORKSPACE_CELL = "@xl:hidden @4xl:flex";
+  "gap-x-6 @xl:items-center @xl:grid-cols-[minmax(0,1fr)_10rem_5.5rem]";
 
 /**
  * Under a bounty's title, in a few quiet words: its Jira issue's key, or
@@ -1195,8 +1203,8 @@ function ProposalPrice({
 
 /**
  * One bounty in the list, as a row of its table: why a scan picked it, as
- * its category's tile; its title over its Jira key and the reason; the
- * workspace it is in; where its proposal stands; and what it pays. On a
+ * its category's tile; its title over its Jira key and the reason; where
+ * its proposal stands; and what it pays. On a
  * phone the title takes the width and the rest goes under it.
  *
  * A click anywhere on it opens the bounty in the panel beside the list, a
@@ -1206,17 +1214,15 @@ function ProposalPrice({
  * from its page, never from its row.
  */
 function BountyCard({
+  index,
   bounty,
-  workspace,
-  viewer,
   address,
   selected,
   onOpen,
 }: {
+  /** Its place in the list, which staggers its rows coming in. */
+  index: number;
   bounty: BountySummaryDto;
-  /** The workspace it belongs to, once the workspaces are known. */
-  workspace: MembershipDto | undefined;
-  viewer: Viewer;
   /** Where it opens; undefined while its workspace is not known. */
   address: BountyAddress | undefined;
   /** It is the bounty open in the panel. */
@@ -1234,14 +1240,13 @@ function BountyCard({
     </span>
   );
   const headingClass = "flex min-w-0";
-  const workspaceName =
-    workspace === undefined ? null : workspaceLabel(workspace);
   return (
     // `relative` for the link's overlay, which makes the whole row its target.
     <li
       {...{ [PEEK_ROW_ATTRIBUTE]: "" }}
+      style={{ "--row": index } as CSSProperties}
       className={cn(
-        "hover:bg-muted/40 relative flex flex-col gap-3 px-4 py-3.5 transition-colors @xl:grid",
+        "bounty-row-in hover:bg-muted/40 relative flex flex-col gap-3 px-4 py-3.5 transition-colors @xl:grid",
         ROW_GRID,
         selected &&
           "bg-muted/70 hover:bg-muted/70 shadow-[inset_2px_0_0_var(--foreground)]",
@@ -1287,24 +1292,6 @@ function BountyCard({
       {/* Under the title when the list is narrow, on the tile's edge;
           columns beside it when it is wide enough. */}
       <div className="flex items-center gap-4 pl-11 @xl:contents">
-        <span
-          className={cn(
-            "flex min-w-0 items-center gap-2 text-xs",
-            WORKSPACE_CELL,
-          )}
-        >
-          {workspace !== undefined && (
-            <WorkspaceFace
-              organization={workspace}
-              viewer={viewer}
-              className="size-4 shrink-0"
-              squareRadius="rounded-[4px]"
-            />
-          )}
-          <span className="truncate" title={workspaceName ?? undefined}>
-            {workspaceName}
-          </span>
-        </span>
         <span
           className="min-w-0"
           data-testid={proposal === null ? undefined : "proposal-brief"}
@@ -1427,10 +1414,11 @@ function BountyDetail({
   repos: GithubRepos;
   canManage: boolean;
   /**
-   * Its proposal in full, or null while it has none. Made by the caller,
-   * which knows of a proposal made or removed since the bounty was read.
+   * Its proposal in full, or null while it has none, given the context it
+   * was sized with for its version's card. Made by the caller, which knows
+   * of a proposal made or removed since the bounty was read.
    */
-  proposal: ReactElement | null;
+  proposal: ((context: ReactNode) => ReactElement) | null;
   /** Holds the bounty as a save returned it. */
   onChange: (bounty: BountyDto) => void;
   /** Reads it again, after a change that does not return it. */
@@ -1487,13 +1475,23 @@ function BountyDetail({
   // Whether its sandbox is offered to be made, linked or generated here.
   const managesSandbox = canManage && !readOnly;
 
-  // A bounty following its Jira issue takes its text from Jira.
+  // Linked to a Jira issue that is still there.
   const followsJira = bounty.jira !== null && bounty.jira.removedAt === null;
+  // Its text is still Jira's: not changed here since it was linked. Saving
+  // new words makes it the workspace's, which Jira no longer overwrites.
+  const textFollowsJira = followsJira && !bounty.textEdited;
   /*
     An approved scope is held as it is: its title, text, links and stack
     are shown, not changed, until an owner or admin unapproves it.
   */
   const approvedScope = scopeApproved(bounty);
+  /*
+    Each step is changed only once the steps before it stand approved: the
+    price once the scope is, the sandbox once the price is too. Why, while
+    one is held; its actions say so on hover, its tab with a lock.
+  */
+  const priceHeld = heldReason("price", bounty);
+  const sandboxHeld = heldReason("sandbox", bounty);
   const [deciding, setDeciding] = useState(false);
   const [decisionError, setDecisionError] = useState<string | null>(null);
   const decideOverview = (decision: "approve" | "unapprove") => {
@@ -1561,81 +1559,89 @@ function BountyDetail({
   };
 
   /*
+    The context the price was sized with, across the foot of its version's
+    card as the scope's holds its own; none until it is sized.
+  */
+  const priceContext =
+    bounty.stages.price === null ? null : (
+      <StepContext
+        label="Sized with"
+        versions={bounty.stages.price.context}
+        held={heldContext}
+        names={contextNames}
+      />
+    );
+
+  /*
     The price in full, as its proposal holds it, under the text it was
-    sized from, since that is what it is reviewed against. It brings its
-    own cards, so it is not set in the part's.
+    sized from, since that is what it is reviewed against: its version's
+    card, then its parts in ruled sections. Until it is priced, the card
+    says so and offers the way to price it.
   */
   const proposalPart =
     proposal !== null ? (
-      <Part title="Price" framed={false} titleHidden={layout === "page"}>
-        {proposal}
-      </Part>
+      proposal(priceContext)
     ) : propose.pending ? (
       /*
         Being sized: each part of the proposal as the model returns it,
         in the places the proposal will put them.
       */
-      <Part title="Proposal" framed={false} titleHidden={layout === "page"}>
-        <div className="flex flex-col gap-6" data-testid="proposal-preview">
-          <div className="rounded-lg border p-4 sm:p-5">
-            <PreviewPrice run={propose.run} />
-          </div>
-          <PreviewReason run={propose.run} />
-          <PreviewScenarios run={propose.run} />
-        </div>
-      </Part>
+      <div className="flex flex-col gap-6" data-testid="proposal-preview">
+        <StepVersionCard step="price" tile="—" context={priceContext}>
+          <NoVersion title="Pricing…">
+            The scope is being sized and priced.
+          </NoVersion>
+        </StepVersionCard>
+        <RuledSection title="Price and size">
+          <PreviewPrice run={propose.run} />
+        </RuledSection>
+        <PreviewReason run={propose.run} flat />
+        <PreviewScenarios run={propose.run} flat />
+      </div>
     ) : (
-      <Part title="Price" titleHidden={layout === "page"}>
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <p className="text-muted-foreground text-sm">
-            Not priced yet.{" "}
-            {canManage
-              ? "Price it to have its scope sized and priced."
-              : "An owner or admin can price it."}
-          </p>
-          {canManage && (
-            <Button
-              type="button"
-              size="sm"
-              disabled={propose.pending}
-              onClick={() => void propose.start()}
-            >
-              {propose.pending ? (
-                <Loader2 className="animate-spin" />
-              ) : (
+      <StepVersionCard
+        step="price"
+        tile="—"
+        error={propose.error}
+        context={priceContext}
+        action={
+          canManage && (
+            <DisabledReason reason={priceHeld}>
+              <Button
+                type="button"
+                disabled={priceHeld !== null}
+                onClick={() => void propose.start()}
+              >
                 <Sparkles />
-              )}
-              {propose.pending ? "Pricing…" : "Price it"}
-            </Button>
-          )}
-        </div>
-        {propose.error !== null && (
-          <p role="alert" className="text-destructive text-xs">
-            {propose.error}
-          </p>
-        )}
-      </Part>
+                Price it
+              </Button>
+            </DisabledReason>
+          )
+        }
+      >
+        <NoVersion title="Not priced yet">
+          {canManage
+            ? "Price it to have its scope sized and priced."
+            : "An owner or admin can price it."}
+        </NoVersion>
+      </StepVersionCard>
     );
 
   /*
     The workspace the bounty belongs to, and so whose routes change it. It
-    is not moved between workspaces, so it is named, not offered. On a page,
-    where the bounty came from is said under it.
+    is not moved between workspaces, so it is named, not offered.
   */
   const workspacePart = (
     <Part title="Workspace" framed={false}>
-      <div className="flex flex-col gap-1.5">
-        <span className="flex min-w-0 items-center gap-2 text-sm font-medium">
-          <WorkspaceFace
-            organization={organization}
-            viewer={viewer}
-            className="size-5 shrink-0"
-            squareRadius="rounded-[5px]"
-          />
-          <span className="truncate">{workspaceLabel(organization)}</span>
-        </span>
-        {layout === "page" && <Source bounty={bounty} />}
-      </div>
+      <span className="flex min-w-0 items-center gap-2 text-sm font-medium">
+        <WorkspaceFace
+          organization={organization}
+          viewer={viewer}
+          className="size-5 shrink-0"
+          squareRadius="rounded-[5px]"
+        />
+        <span className="truncate">{workspaceLabel(organization)}</span>
+      </span>
     </Part>
   );
 
@@ -1647,12 +1653,15 @@ function BountyDetail({
   */
   const priced = proposal !== null ? bounty.proposal : null;
   const settled = priced?.status === "approved" ? priced : null;
+  // Two figures side by side, each labelled over its value, as a
+  // dashboard's stats read: what it pays, and the size that sets it.
   const price = (
-    <div className="mb-1 border-b pb-3">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <span
+    <dl className="-mx-4 -mt-4 grid grid-cols-[minmax(0,1fr)_6rem] border-b">
+      <div className="flex min-w-0 flex-col gap-1.5 px-4 py-3.5">
+        <dt className="text-muted-foreground text-xs">Price</dt>
+        <dd
           className={cn(
-            "text-2xl leading-none font-semibold tracking-tight",
+            "text-2xl leading-7 font-semibold tracking-tight wrap-anywhere",
             settled === null || settled.amountMinor === null
               ? "text-muted-foreground"
               : "tabular-nums",
@@ -1661,15 +1670,20 @@ function BountyDetail({
           {settled === null
             ? "—"
             : money(settled.amountMinor, settled.currency)}
-        </span>
-        <span className="flex items-center gap-1.5 text-sm">
-          <span className="text-muted-foreground">Size</span>
-          <Badge variant="outline" className="font-mono">
-            {settled?.complexity ?? "—"}
-          </Badge>
-        </span>
+        </dd>
       </div>
-    </div>
+      <div className="flex min-w-0 flex-col gap-1.5 border-l px-4 py-3.5">
+        <dt className="text-muted-foreground text-xs">Size</dt>
+        <dd
+          className={cn(
+            "font-mono text-2xl leading-7 font-semibold",
+            settled === null && "text-muted-foreground",
+          )}
+        >
+          {settled?.complexity ?? "—"}
+        </dd>
+      </div>
+    </dl>
   );
 
   // Where the sandbox stands: its status and whether it can be worked in.
@@ -1733,58 +1747,82 @@ function BountyDetail({
   const summaryPart = (
     <Part title="Summary">
       {price}
-      {sandboxStatus === false ? (
-        <p className="text-muted-foreground text-sm">No sandbox yet.</p>
-      ) : (
-        sandboxStatus
-      )}
+      <div className="flex items-start gap-3 pt-1">
+        <span
+          aria-hidden="true"
+          className="bg-muted text-muted-foreground flex size-8 shrink-0 items-center justify-center rounded-md [&>svg]:size-4"
+        >
+          <Box />
+        </span>
+        <div className="flex min-w-0 flex-col gap-1">
+          <span className="text-subheading">Sandbox</span>
+          {sandboxStatus === false ? (
+            <p className="text-muted-foreground text-sm">No sandbox yet.</p>
+          ) : (
+            sandboxStatus
+          )}
+        </div>
+      </div>
     </Part>
   );
 
-  // A page's sandbox is its cards alone, not a card around them; a panel
-  // lays its version out in a section of its own.
-  const sandboxPart = (
-    <Part title="Sandbox" titleHidden framed={false}>
-      {sandbox !== null ? (
-        <div className="flex flex-col gap-3">
-          {/*
-            With no repository, its versions are generated from the bounty;
-            once its sizing says the work touches one, that one can still be
-            linked to slice them from it instead.
-          */}
-          <SandboxGeneration
-            organizationId={bounty.organizationId}
-            workspace={organization.slug}
-            sandbox={sandbox}
-            canManage={canManage}
-            canGenerate={unlinked}
-            // A slice is generated from an approved bounty only: one with
-            // no proposal, or a draft one, is refused.
-            generationBlocked={
-              bounty.proposal === null
-                ? "Price the bounty and approve its price before generating its slice."
-                : bounty.proposal.status !== "approved"
-                  ? "Its price is pending. Approve it before generating its slice."
-                  : null
-            }
-            readOnly={readOnly}
-            onChanged={() => {
-              // The lists hold the bounty as last read too.
-              void bounties.refresh();
-              onReload();
-            }}
-          >
-            {unlinked && managesSandbox && repoToLink !== null && (
-              <div className="flex flex-wrap items-center justify-between gap-3 border-t pt-4">
-                <p className="text-muted-foreground text-sm">
-                  Its sizing says the work touches {repoToLink.fullName}. Link
-                  it to slice versions from its code instead.
-                </p>
+  /*
+    The context a sandbox version was made with, across the foot of its
+    version's card as the scope's holds its own; none until there is one.
+  */
+  const sandboxContext =
+    bounty.stages.sandbox === null ? null : (
+      <StepContext
+        label={unlinked ? "Generated with" : "Taken with"}
+        versions={bounty.stages.sandbox.context}
+        held={heldContext}
+        names={contextNames}
+      />
+    );
+
+  /*
+    A page's sandbox: its version's card, then its slice and where
+    submissions are held, in ruled sections; a panel lays its version out
+    in a section of its own. With no sandbox, the card says so and offers
+    the way to make one.
+  */
+  const sandboxPart =
+    sandbox !== null ? (
+      <div className="flex flex-col gap-6">
+        {/*
+          With no repository, its versions are generated from the bounty;
+          once its sizing says the work touches one, that one can still be
+          linked to slice them from it instead.
+        */}
+        <SandboxGeneration
+          organizationId={bounty.organizationId}
+          workspace={organization.slug}
+          sandbox={sandbox}
+          canManage={canManage}
+          canGenerate={unlinked}
+          // A slice is generated, and published, from an approved scope
+          // and price only.
+          generationBlocked={sandboxHeld}
+          readOnly={readOnly}
+          context={sandboxContext}
+          onChanged={() => {
+            // The lists hold the bounty as last read too.
+            void bounties.refresh();
+            onReload();
+          }}
+        >
+          {unlinked && managesSandbox && repoToLink !== null && (
+            <div className="flex flex-wrap items-center justify-between gap-3 border-t pt-4">
+              <p className="text-muted-foreground text-sm">
+                Its sizing says the work touches {repoToLink.fullName}. Link it
+                to slice versions from its code instead.
+              </p>
+              <DisabledReason reason={sandboxPending ? null : sandboxHeld}>
                 <Button
                   type="button"
                   variant="outline"
                   size="sm"
-                  disabled={sandboxPending}
+                  disabled={sandboxPending || sandboxHeld !== null}
                   onClick={() => {
                     setSandboxPending(true);
                     setSandboxError(null);
@@ -1804,59 +1842,65 @@ function BountyDetail({
                   )}
                   Link {repoToLink.fullName}
                 </Button>
-              </div>
-            )}
-          </SandboxGeneration>
-          <SandboxCard
-            icon={Inbox}
-            title="Submission"
-            description="Where successful submissions are held, once their work is accepted."
-          >
-            <p className="text-muted-foreground text-sm">
-              No successful submissions yet.
-            </p>
-          </SandboxCard>
-        </div>
-      ) : (
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <p className="text-muted-foreground text-sm">
-            No sandbox yet.
-            {!readOnly &&
-              (canManage
-                ? " Create one to slice the task contributors work in."
-                : " An owner or admin can create one.")}
-          </p>
-          {managesSandbox && (
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              disabled={sandboxPending}
-              onClick={() => {
-                setSandboxPending(true);
-                setSandboxError(null);
-                // Cut from the repository the bounty's sizing said its work
-                // touches; with none, its versions are generated.
-                void bounties.createSandbox(bounty.id).then((failure) => {
-                  setSandboxPending(false);
-                  if (failure === null) onReload();
-                  else setSandboxError(failure);
-                });
-              }}
-            >
-              {sandboxPending ? <Loader2 className="animate-spin" /> : <Box />}
-              Create sandbox
-            </Button>
+              </DisabledReason>
+            </div>
           )}
-        </div>
-      )}
-      {sandboxError !== null && (
-        <p role="alert" className="text-destructive text-xs">
-          {sandboxError}
-        </p>
-      )}
-    </Part>
-  );
+          {sandboxError !== null && (
+            <p role="alert" className="text-destructive text-xs">
+              {sandboxError}
+            </p>
+          )}
+        </SandboxGeneration>
+        <RuledSection title="Submission">
+          <p className="text-muted-foreground text-sm">
+            Where successful submissions are held, once their work is accepted.
+            None yet.
+          </p>
+        </RuledSection>
+      </div>
+    ) : (
+      <StepVersionCard
+        step="sandbox"
+        tile="—"
+        error={sandboxError}
+        action={
+          managesSandbox && (
+            <DisabledReason reason={sandboxPending ? null : sandboxHeld}>
+              <Button
+                type="button"
+                disabled={sandboxPending || sandboxHeld !== null}
+                onClick={() => {
+                  setSandboxPending(true);
+                  setSandboxError(null);
+                  // Cut from the repository the bounty's sizing said its work
+                  // touches; with none, its versions are generated.
+                  void bounties.createSandbox(bounty.id).then((failure) => {
+                    setSandboxPending(false);
+                    if (failure === null) onReload();
+                    else setSandboxError(failure);
+                  });
+                }}
+              >
+                {sandboxPending ? (
+                  <Loader2 className="animate-spin" />
+                ) : (
+                  <Box />
+                )}
+                Create sandbox
+              </Button>
+            </DisabledReason>
+          )
+        }
+      >
+        <NoVersion title="No sandbox yet">
+          {readOnly
+            ? undefined
+            : canManage
+              ? "Create one to slice the task contributors work in."
+              : "An owner or admin can create one."}
+        </NoVersion>
+      </StepVersionCard>
+    );
 
   /*
     The repositories its work touches, as its sizing said: nobody picks
@@ -1937,10 +1981,13 @@ function BountyDetail({
   const description = (
     <InlineDescription
       bounty={bounty}
-      locked={followsJira || readOnly || approvedScope}
+      locked={readOnly || approvedScope}
       // A page's scope tab heads it, so it reads as a field there.
       labelled={layout !== "page"}
       {...(layout === "page" ? { label: "Describe task" } : {})}
+      {...(textFollowsJira
+        ? { editNote: "Saving stops Jira updating this text." }
+        : {})}
       onSave={save}
     />
   );
@@ -1966,7 +2013,7 @@ function BountyDetail({
               as="h1"
               size="page"
               value={bounty.title}
-              locked={followsJira || approvedScope}
+              locked={approvedScope}
               onSave={save}
             />
             {/* Its workspace and source are named beside, not here too. */}
@@ -1986,6 +2033,7 @@ function BountyDetail({
               <StepTriggers
                 stages={bounty.stages}
                 ahead={sourcesAhead(context.status)}
+                locks={{ price: priceHeld, sandbox: sandboxHeld }}
                 approved={{
                   scope: approvedScope,
                   price: bounty.proposal?.status === "approved",
@@ -1997,27 +2045,22 @@ function BountyDetail({
                 }}
               />
             </TabsList>
-            <TabsContent value="scope" className="flex flex-col gap-8">
-              <div className="flex flex-col gap-3">
-                {/*
-                  Which version, and the decision on it, level with each
-                  other as a proposal's are. Only the latest is decided.
-                */}
-                <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
-                  <ScopeVersion
-                    versions={versions.data ?? []}
-                    current={bounty.version}
-                    viewing={earlier?.version ?? bounty.version}
-                    approvedAt={
-                      earlier === null && approvedScope
-                        ? (bounty.approval?.approvedAt ?? null)
-                        : null
-                    }
-                    onView={(version) =>
-                      setViewing(version === bounty.version ? null : version)
-                    }
-                  />
-                  {canManage && earlier === null && (
+            <TabsContent value="scope" className="flex flex-col gap-6">
+              {/*
+                The version, the decision on it and the context it holds:
+                the one card on the tab. The text and links under it read
+                on the page itself. Only the latest is decided; its number
+                wears the brand once it stands approved, and an earlier
+                one is only read.
+              */}
+              <StepVersionCard
+                step="scope"
+                tile={`v${earlier?.version ?? bounty.version}`}
+                approved={earlier === null && approvedScope}
+                error={decisionError}
+                action={
+                  canManage &&
+                  earlier === null && (
                     <Button
                       variant={approvedScope ? "outline" : "default"}
                       disabled={deciding}
@@ -2035,33 +2078,47 @@ function BountyDetail({
                           ? "Approving…"
                           : "Approve"}
                     </Button>
-                  )}
-                </div>
-                {decisionError !== null && (
-                  <p role="alert" className="text-destructive text-xs">
-                    {decisionError}
-                  </p>
-                )}
-                {/* The context the scope holds, as its links synced it. */}
-                <StepContext
-                  label="Holds"
-                  versions={heldContext}
-                  names={contextNames}
+                  )
+                }
+                context={
+                  // The context the scope holds, as its links synced it.
+                  <StepContext
+                    label="Holds"
+                    versions={heldContext}
+                    names={contextNames}
+                  />
+                }
+              >
+                <ScopeVersion
+                  versions={versions.data ?? []}
+                  current={bounty.version}
+                  viewing={earlier?.version ?? bounty.version}
+                  approvedAt={
+                    earlier === null && approvedScope
+                      ? (bounty.approval?.approvedAt ?? null)
+                      : null
+                  }
+                  onView={(version) =>
+                    setViewing(version === bounty.version ? null : version)
+                  }
                 />
-                {earlier === null ? (
-                  description
-                ) : (
-                  // An earlier version is read as it was, title and all.
-                  <section
-                    aria-label={`Version ${earlier.version}`}
-                    className="flex flex-col gap-2"
-                    data-testid="scope-earlier"
-                  >
-                    <h3 className="text-sm font-medium">{earlier.title}</h3>
-                    <BountyText description={earlier.description} />
-                  </section>
-                )}
-              </div>
+              </StepVersionCard>
+              {earlier === null ? (
+                description
+              ) : (
+                // An earlier version is read as it was, title and all.
+                <section
+                  aria-label={`Version ${earlier.version}`}
+                  className="flex flex-col gap-2"
+                  data-testid="scope-earlier"
+                >
+                  <h3 className="text-sm font-medium">{earlier.title}</h3>
+                  <BountyText
+                    description={earlier.description}
+                    framed={false}
+                  />
+                </section>
+              )}
               <BountyLinks
                 organization={organization}
                 bounty={bounty}
@@ -2073,7 +2130,10 @@ function BountyDetail({
                 locked={approvedScope}
               />
             </TabsContent>
-            <TabsContent value="price" className="flex flex-col gap-4">
+            <TabsContent value="price" className="flex flex-col gap-6">
+              {canManage && (
+                <StepHeld step="price" bounty={bounty} onOpen={selectPageTab} />
+              )}
               {/*
                 Named as its tab is, the Price step, as the sandbox's
                 lineage and the way to generate it name it too: the
@@ -2090,28 +2150,30 @@ function BountyDetail({
                 onOpen={selectPageTab}
               />
               {bounty.stages.price !== null && (
-                <>
-                  <ContextLineage
-                    step="price"
-                    versions={bounty.stages.price.context}
-                    held={heldContext}
-                    remedy={
-                      bounty.proposal?.status === "approved"
-                        ? "Unapprove the price, then re-analyze it to size it with the latest context."
-                        : "Re-analyze the price to size it with the latest context."
-                    }
-                  />
-                  <StepContext
-                    label="Sized with"
-                    versions={bounty.stages.price.context}
-                    held={heldContext}
-                    names={contextNames}
-                  />
-                </>
+                <ContextLineage
+                  step="price"
+                  versions={bounty.stages.price.context}
+                  held={heldContext}
+                  remedy={
+                    bounty.proposal?.status === "approved"
+                      ? "Unapprove the price, then re-analyze it to size it with the latest context."
+                      : "Re-analyze the price to size it with the latest context."
+                  }
+                />
               )}
-              {proposalPart}
+              {/* Named as its tab is, for what reads the page by its parts. */}
+              <section aria-label="Price" className="flex flex-col gap-6">
+                {proposalPart}
+              </section>
             </TabsContent>
-            <TabsContent value="sandbox" className="flex flex-col gap-4">
+            <TabsContent value="sandbox" className="flex flex-col gap-6">
+              {canManage && (
+                <StepHeld
+                  step="sandbox"
+                  bounty={bounty}
+                  onOpen={selectPageTab}
+                />
+              )}
               <StepLineage
                 step="sandbox"
                 stages={bounty.stages}
@@ -2123,26 +2185,20 @@ function BountyDetail({
                 onOpen={selectPageTab}
               />
               {bounty.stages.sandbox !== null && (
-                <>
-                  <ContextLineage
-                    step="sandbox"
-                    versions={bounty.stages.sandbox.context}
-                    held={heldContext}
-                    remedy={
-                      unlinked
-                        ? "Generate a new version to build with the latest context."
-                        : "A new version would freeze the latest context; slicing is not available from this page yet."
-                    }
-                  />
-                  <StepContext
-                    label={unlinked ? "Generated with" : "Taken with"}
-                    versions={bounty.stages.sandbox.context}
-                    held={heldContext}
-                    names={contextNames}
-                  />
-                </>
+                <ContextLineage
+                  step="sandbox"
+                  versions={bounty.stages.sandbox.context}
+                  held={heldContext}
+                  remedy={
+                    unlinked
+                      ? "Generate a new version to build with the latest context."
+                      : "A new version would freeze the latest context; slicing is not available from this page yet."
+                  }
+                />
               )}
-              {sandboxPart}
+              <section aria-label="Sandbox" className="flex flex-col gap-6">
+                {sandboxPart}
+              </section>
             </TabsContent>
           </Tabs>
         </div>
@@ -2269,8 +2325,8 @@ function BountyDetail({
                       target="_blank"
                       rel="noreferrer noopener"
                       title={
-                        followsJira
-                          ? "Follows its Jira issue. Open in Jira"
+                        textFollowsJira
+                          ? "Its text follows this Jira issue. Open in Jira"
                           : "Open in Jira"
                       }
                       className="focus-visible:ring-ring/50 inline-flex items-center gap-1.5 rounded-sm font-medium underline-offset-4 hover:underline focus-visible:ring-[3px] focus-visible:outline-none"
@@ -2282,10 +2338,16 @@ function BountyDetail({
                       <ExternalLink className="text-muted-foreground size-3" />
                     </a>
                   )}
-                  {!followsJira && (
+                  {!followsJira ? (
                     <span className="text-muted-foreground">
                       Gone from Jira; keeps its last text
                     </span>
+                  ) : (
+                    !textFollowsJira && (
+                      <span className="text-muted-foreground">
+                        Text edited here; Jira no longer updates it
+                      </span>
+                    )
                   )}
                 </span>
               )}
@@ -2417,7 +2479,7 @@ function Part({
         {title}
       </h3>
       {framed ? (
-        <div className="flex flex-col gap-2 rounded-lg border p-4">
+        <div className="bg-card flex flex-col gap-2 rounded-lg border p-4 shadow-xs">
           {children}
         </div>
       ) : (

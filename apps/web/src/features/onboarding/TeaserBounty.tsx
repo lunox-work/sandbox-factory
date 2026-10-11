@@ -27,7 +27,7 @@ import { money, wholeMoney } from "../../lib/format";
 import { KindDot } from "../../RubricScenarios";
 import { previewLine } from "../bounties/SizingPreview";
 import { pushLocation } from "../../navigation/location";
-import { BOUNTIES_PATH } from "../../routes";
+import { BOUNTIES_PATH, bountyPricePath } from "../../routes";
 
 type PreviewIssue = JiraBacklogPreviewDto["issues"][number];
 
@@ -60,6 +60,9 @@ export interface RepositoryAction {
  * Where the server offers GitHub, a ticket is sized beside the code, so a
  * workspace with no repository yet is told to add one when it presses the
  * button, rather than sized from the ticket alone without being asked.
+ *
+ * Sized on onboarding: the server syncs the workspace's repositories into
+ * its scope before sizing it, and approves the scope once it is sized.
  */
 export function TeaserBounty({
   organizationId,
@@ -69,6 +72,8 @@ export function TeaserBounty({
   canManage,
   sizingAvailable,
   boardBusy,
+  otherBusy = false,
+  resumeRunId,
   repositories,
   repositoryAction,
   githubRequired = false,
@@ -86,6 +91,10 @@ export function TeaserBounty({
   sizingAvailable: boolean;
   /** The whole board is being sized: a single ticket would be refused. */
   boardBusy: boolean;
+  /** Another ticket is being sized: one at a time. */
+  otherBusy?: boolean | undefined;
+  /** This ticket's run, already under way: followed rather than started. */
+  resumeRunId?: string | undefined;
   /** The workspace's repositories; none when it has connected none. */
   repositories: readonly ScanRepository[];
   repositoryAction?: RepositoryAction | undefined;
@@ -106,7 +115,7 @@ export function TeaserBounty({
       : repositories.length > 1
         ? `, reading ${repositories.length} repositories`
         : "";
-  const [runId, setRunId] = useState<string | null>(null);
+  const [runId, setRunId] = useState<string | null>(resumeRunId ?? null);
   const [starting, setStarting] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const following = useObservation({
@@ -120,6 +129,12 @@ export function TeaserBounty({
     startDelay: 1000,
   });
   const finished = useRef<string | null>(null);
+  // The board's runs can be read after this mounted: a run they name for
+  // this ticket is followed then, rather than offering to size it twice.
+  useEffect(() => {
+    if (resumeRunId === undefined || finished.current === resumeRunId) return;
+    setRunId((current) => current ?? resumeRunId);
+  }, [resumeRunId]);
   // What the run has made so far, filled into the placeholders below as
   // each part lands; nothing until it is asked for.
   const made = runId === null ? undefined : following.data;
@@ -130,14 +145,27 @@ export function TeaserBounty({
     const run = following.data;
     if (runId === null || run === undefined || finished.current === run.id)
       return;
-    const proposalId = run.outcomes[0]?.proposalId;
+    const outcome = run.outcomes[0];
+    const proposalId = outcome?.proposalId;
     if (proposalId === undefined && !terminalRun(run)) return;
     finished.current = run.id;
     setRunId(null);
     if (proposalId !== undefined)
-      void openProposal(organizationSlug, proposalId, onSized);
+      void openBounty(
+        organizationId,
+        organizationSlug,
+        { proposalId, bountyId: outcome?.bountyId },
+        onSized,
+      );
     else setMessage(`Could not size ${issue.key}. Try again in a moment.`);
-  }, [following.data, runId, issue.key, onSized, organizationSlug]);
+  }, [
+    following.data,
+    runId,
+    issue.key,
+    onSized,
+    organizationId,
+    organizationSlug,
+  ]);
 
   async function size() {
     setMessage(null);
@@ -148,9 +176,15 @@ export function TeaserBounty({
         boardId,
         issue.id,
         crypto.randomUUID(),
+        { onboarding: true },
       );
       if (body.proposalId !== undefined)
-        await openProposal(organizationSlug, body.proposalId, onSized);
+        await openBounty(
+          organizationId,
+          organizationSlug,
+          { proposalId: body.proposalId },
+          onSized,
+        );
       else if (body.run !== undefined) setRunId(body.run.id);
     } catch (error) {
       setMessage(
@@ -354,7 +388,7 @@ export function TeaserBounty({
               // it is not the screen's call to action and is drawn neutral.
               variant={needsCode ? "secondary" : "default"}
               className="w-full gap-2"
-              disabled={busy || !sizingAvailable || boardBusy}
+              disabled={busy || !sizingAvailable || boardBusy || otherBusy}
               onClick={() => (needsCode ? setAsking(true) : void size())}
             >
               {busy ? <Loader2 className="animate-spin" /> : <Sparkles />}
@@ -376,7 +410,9 @@ export function TeaserBounty({
                     ? "Needs GitHub connected first"
                     : boardBusy
                       ? "The whole board is being sized now."
-                      : `About a minute · one model call${reading}`}
+                      : otherBusy
+                        ? "Another ticket is being sized now."
+                        : `About a minute · one model call${reading}`}
               </p>
             )}
           </>
@@ -453,17 +489,29 @@ function ConnectGithubDialog({
 }
 
 /**
- * Opens the bounty a proposal was made for, on the tab its proposal is in:
- * what is cached is read again first, then the bounties page is named the
- * workspace and the proposal, which it opens as its bounty's page.
+ * Opens the bounty a proposal was made for, on the step its proposal is
+ * in: straight to its own page, never through the bounties list. A run
+ * names its bounty; a proposal that was there already is read for its
+ * own, here, so the page that opens is the bounty's from its first frame.
+ * What is cached is read again behind it, not waited for.
  */
-async function openProposal(
+async function openBounty(
+  organizationId: string,
   workspace: string,
-  proposalId: string,
+  made: { proposalId: string; bountyId?: string | undefined },
   refresh: () => Promise<void>,
 ): Promise<void> {
-  await refresh();
+  const bountyId =
+    made.bountyId ??
+    (await clients.pricing
+      .detail(organizationId, made.proposalId)
+      .then(({ proposal }) => proposal.bountyId)
+      .catch(() => undefined));
+  void refresh();
   pushLocation(
-    `${BOUNTIES_PATH}?${new URLSearchParams({ workspace, proposal: proposalId }).toString()}`,
+    bountyId === undefined
+      ? // Not read: the bounties page finds it from the proposal.
+        `${BOUNTIES_PATH}?${new URLSearchParams({ workspace, proposal: made.proposalId }).toString()}`
+      : bountyPricePath({ workspace, id: bountyId }),
   );
 }

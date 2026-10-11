@@ -13,6 +13,7 @@ import { GithubNotFound } from "@sandbox-factory/github";
 import { JiraApiError } from "@sandbox-factory/jira";
 import type {
   BountyContextResponse,
+  BountyGithubCommitsResponse,
   JiraContextDto,
   StoredTree,
 } from "@sandbox-factory/shared";
@@ -49,6 +50,7 @@ function bountyOf(overrides: Partial<StoredBounty> = {}): StoredBounty {
     revision: 1,
     version: 1,
     approval: null,
+    textEditedAt: null,
     jira: null,
     sandbox: null,
     createdAt: stamp,
@@ -159,7 +161,9 @@ function memoryContexts(initial: StoredBountyContext[] = []) {
       ) {
         const updated = {
           ...latest,
+          ref: input.ref,
           revision: input.revision,
+          content: input.content,
           checkedAt: stamp,
         } as StoredBountyContext;
         rows[rows.indexOf(latest)] = updated;
@@ -190,8 +194,13 @@ interface Setup {
   github?: false;
   /** The workspace's repositories; `repo` alone by default. */
   repos?: GithubRepoSummary[];
-  /** Each repository's newest snapshot, by id; `c2` on main by default. */
+  /**
+   * Each repository's newest build, by id; `c2` on main by default, and
+   * null for one never built.
+   */
   snapshots?: Record<string, Snapshot | null>;
+  /** Each repository's older builds, newest first, by id. */
+  older?: Record<string, Snapshot[]>;
   tree?: StoredTree | null;
   reader?: null;
   /** Repositories, by id, whose connection cannot read them. */
@@ -205,15 +214,20 @@ interface Snapshot {
   ref: string;
 }
 
+/** A build's snapshot id, named by its commit so a test can pick it. */
+const snapshotId = (commitSha: string) => `rsn_${commitSha}`;
+
 function harness(setup: Setup = {}) {
   let bounty = bountyOf(setup.bounty);
   const refreshed: unknown[] = [];
   const blobs: string[] = [];
   const contexts = memoryContexts(setup.contexts);
-  // Changed in place by a test, as a webhook's snapshot would move them.
+  // Changed in place by a test, as a finished build would move them.
   const snapshots: Record<string, Snapshot | null> = {
     ...setup.snapshots,
   };
+  const older: Record<string, Snapshot[]> = { ...setup.older };
+  const repos = [...(setup.repos ?? [repo])];
   const client: RunClientResult = setup.client ?? {
     ok: true,
     client: {
@@ -269,19 +283,29 @@ function harness(setup: Setup = {}) {
       : {
           githubContext: {
             repos: {
-              list: () => Promise.resolve(setup.repos ?? [repo]),
+              list: () => Promise.resolve(repos),
             },
             snapshots: {
-              current: (_org: string, repoId: string) =>
-                Promise.resolve(
-                  (snapshots[repoId] === undefined
+              built: (_org: string, repoId: string) => {
+                const newest =
+                  snapshots[repoId] === undefined
                     ? {
                         commitSha: "c2",
                         treeKey: `trees/${repoId}`,
                         ref: "refs/heads/main",
                       }
-                    : snapshots[repoId]) as never,
-                ),
+                    : snapshots[repoId];
+                return Promise.resolve(
+                  (newest === null
+                    ? []
+                    : [newest, ...(older[repoId] ?? [])].map((build) => ({
+                        ...build,
+                        id: snapshotId(build.commitSha),
+                        repoId,
+                        createdAt: stamp,
+                      }))) as never,
+                );
+              },
             },
             tree: () =>
               Promise.resolve(setup.tree === undefined ? tree : setup.tree),
@@ -308,18 +332,32 @@ function harness(setup: Setup = {}) {
     await next();
   });
   mountBountyContextRoutes(app, options);
-  const request = (method: string, path: string) =>
-    app.request(`/api/v1/orgs/org_1/${path}`, { method });
+  const request = (method: string, path: string, body?: unknown) =>
+    app.request(`/api/v1/orgs/org_1/${path}`, {
+      method,
+      ...(body === undefined
+        ? {}
+        : {
+            body: JSON.stringify(body),
+            headers: { "content-type": "application/json" },
+          }),
+    });
+  /** Picks a commit for each repository named, by its id. */
+  const pin = (commits: Record<string, string> = { ghr_1: snapshotId("c2") }) =>
+    request("PUT", "bounties/bty_7/context/github/commits", { commits });
   const context = async () =>
     (await (
       await request("GET", "bounties/bty_7/context")
     ).json()) as BountyContextResponse;
   return {
     request,
+    pin,
     context,
     refreshed,
     blobs,
     snapshots,
+    older,
+    repos,
     rows: contexts.rows,
     options,
   };
@@ -585,7 +623,7 @@ const web: GithubRepoSummary = {
   headSha: "w1",
 };
 
-test("a GitHub sync reads the documents at the repository's newest snapshot, title's words first", async () => {
+test("picking a commit reads the documents there, title's words first", async () => {
   const state = harness();
   const before = await state.context();
   assert.equal(before.github.state, "unsynced");
@@ -596,10 +634,7 @@ test("a GitHub sync reads the documents at the repository's newest snapshot, tit
     url: "https://github.com/acme/app",
   });
 
-  const response = await state.request(
-    "POST",
-    "bounties/bty_7/context/github/sync",
-  );
+  const response = await state.pin();
   assert.equal(response.status, 200);
   const body = (await response.json()) as { context: BountyContextResponse };
   const latest = body.context.github.latest;
@@ -622,7 +657,16 @@ test("a GitHub sync reads the documents at the repository's newest snapshot, tit
   assert.equal(state.rows[0]?.refId, WORKSPACE_REPOSITORIES);
 });
 
-test("a GitHub sync reads every connected repository, and names the ones it could not", async () => {
+test("GitHub is pinned, not synced", async () => {
+  const state = harness();
+  assert.equal(
+    (await state.request("POST", "bounties/bty_7/context/github/sync")).status,
+    404,
+  );
+  assert.equal(state.rows.length, 0);
+});
+
+test("a repository not picked is read at its newest build, and one never built is unread", async () => {
   const state = harness({
     repos: [repo, web],
     snapshots: { ghr_2: null },
@@ -635,10 +679,7 @@ test("a GitHub sync reads every connected repository, and names the ones it coul
   });
   assert.equal(before.github.liveRevision, "acme/app@c2");
 
-  const response = await state.request(
-    "POST",
-    "bounties/bty_7/context/github/sync",
-  );
+  const response = await state.pin();
   assert.equal(response.status, 200);
   const latest = ((await response.json()) as { context: BountyContextResponse })
     .context.github.latest;
@@ -652,85 +693,137 @@ test("a GitHub sync reads every connected repository, and names the ones it coul
   assert.deepEqual(state.blobs.sort(), ["acme/app:s1", "acme/app:s2"]);
 });
 
-test("a repository its connection cannot read is unread, and its sync is not ahead of itself", async () => {
+test("a repository its connection cannot read is unread, and is held where it was picked", async () => {
   const state = harness({ repos: [repo, web], unreadable: ["ghr_2"] });
-  const response = await state.request(
-    "POST",
-    "bounties/bty_7/context/github/sync",
-  );
+  const response = await state.pin();
   assert.equal(response.status, 200);
   const body = (await response.json()) as { context: BountyContextResponse };
   const latest = body.context.github.latest;
   assert.ok(latest?.source === "github" && "repositories" in latest.content);
   assert.deepEqual(latest.content.unread, ["acme/web"]);
-  // Where it stood counts, read or not, as the status measures it.
+  // Where it was picked counts, read or not, as the status measures it.
   assert.equal(latest.revision, "acme/app@c2\nacme/web@c2");
   assert.equal(body.context.github.state, "current");
-  assert.equal((await state.context()).github.state, "current");
 
-  // A new commit in it is still news.
+  // A newer build is offered, not followed: the scope is not behind it.
   state.snapshots["ghr_2"] = {
     commitSha: "w2",
     treeKey: "trees/w",
     ref: "refs/heads/main",
   };
-  assert.equal((await state.context()).github.state, "ahead");
+  const read = await state.context();
+  assert.equal(read.github.state, "current");
+  assert.equal(read.github.liveRevision, "acme/app@c2\nacme/web@w2");
 });
 
-test("a sync across repositories keeps each one's documents, and moves ahead with any of them", async () => {
+test("each repository is held at its own commit, and moving one back leaves the others", async () => {
   const state = harness({
     repos: [web, repo],
     snapshots: {
+      ghr_1: {
+        commitSha: "c3",
+        treeKey: "trees/ghr_1",
+        ref: "refs/heads/main",
+      },
       ghr_2: { commitSha: "w1", treeKey: "trees/w", ref: "refs/heads/dev" },
     },
+    older: {
+      ghr_1: [
+        { commitSha: "c2", treeKey: "trees/old", ref: "refs/heads/main" },
+      ],
+    },
   });
-  const response = await state.request(
-    "POST",
-    "bounties/bty_7/context/github/sync",
-  );
+  // An older commit than the newest build.
+  const response = await state.pin({ ghr_1: snapshotId("c2") });
   assert.equal(response.status, 200);
   const body = (await response.json()) as { context: BountyContextResponse };
   const latest = body.context.github.latest;
   assert.equal(body.context.github.state, "current");
-  // Where each stood, in name order whichever order they were listed in.
+  // Where each stands, in name order whichever order they were listed in.
   assert.equal(latest?.revision, "acme/app@c2\nacme/web@w1");
   assert.equal(latest?.ref, "2 repositories");
   assert.ok(latest?.source === "github" && "repositories" in latest.content);
   assert.deepEqual(
-    latest.content.repositories.map(({ fullName, branch, documents }) => [
+    latest.content.repositories.map(({ fullName, branch, commitSha }) => [
       fullName,
       branch,
-      documents.map(({ path }) => path),
+      commitSha,
     ]),
     [
-      ["acme/web", "dev", ["README.md", "docs/billing.md"]],
-      ["acme/app", "main", ["README.md", "docs/billing.md"]],
+      ["acme/web", "dev", "w1"],
+      ["acme/app", "main", "c2"],
     ],
   );
-  assert.deepEqual(state.blobs.sort(), [
-    "acme/app:s1",
-    "acme/app:s2",
-    "acme/web:s1",
-    "acme/web:s2",
-  ]);
 
-  // One repository moves on: the sync is behind the workspace.
-  state.snapshots.ghr_1 = {
-    commitSha: "c3",
-    treeKey: "trees/ghr_1",
+  // The picker lists each one's builds, and where the scope holds it.
+  const commits = (await (
+    await state.request("GET", "bounties/bty_7/context/github/commits")
+  ).json()) as BountyGithubCommitsResponse;
+  assert.deepEqual(
+    commits.repositories.map(({ repoId, held, commits }) => [
+      repoId,
+      held,
+      commits.map(({ snapshotId: id, branch }) => `${id}:${branch}`),
+    ]),
+    [
+      ["ghr_2", "w1", ["rsn_w1:dev"]],
+      ["ghr_1", "c2", ["rsn_c3:main", "rsn_c2:main"]],
+    ],
+  );
+
+  // A newer build of the other, then the first moved forward alone: the
+  // other stays where it is held, not at its newest build.
+  state.older.ghr_2 = [
+    { commitSha: "w1", treeKey: "trees/w", ref: "refs/heads/dev" },
+  ];
+  state.snapshots.ghr_2 = {
+    commitSha: "w2",
+    treeKey: "trees/w",
+    ref: "refs/heads/dev",
+  };
+  const again = (await (
+    await state.pin({ ghr_1: snapshotId("c3") })
+  ).json()) as { changed: boolean; context: BountyContextResponse };
+  assert.equal(
+    again.context.github.latest?.revision,
+    "acme/app@c3\nacme/web@w1",
+  );
+  // The same documents: the same version, read at the commits picked,
+  // which its content names too, not the commit it was first read at.
+  assert.equal(again.changed, false);
+  assert.equal(again.context.github.latest?.version, 1);
+  assert.equal(again.context.github.state, "current");
+  const moved = again.context.github.latest;
+  assert.ok(moved?.source === "github" && "repositories" in moved.content);
+  assert.deepEqual(
+    moved.content.repositories.map(({ fullName, commitSha }) => [
+      fullName,
+      commitSha,
+    ]),
+    [
+      ["acme/web", "w1"],
+      ["acme/app", "c3"],
+    ],
+  );
+});
+
+test("a repository connected and built since the scope read them is ahead", async () => {
+  const state = harness();
+  assert.equal((await state.pin()).status, 200);
+  assert.equal((await state.context()).github.state, "current");
+  // Connected, never built: nothing to read it at yet.
+  state.repos.push(web);
+  state.snapshots.ghr_2 = null;
+  assert.equal((await state.context()).github.state, "current");
+  // Built: the scope does not read it.
+  state.snapshots.ghr_2 = {
+    commitSha: "w1",
+    treeKey: "trees/w",
     ref: "refs/heads/main",
   };
-  const moved = await state.context();
-  assert.equal(moved.github.state, "ahead");
-  assert.equal(moved.github.liveRevision, "acme/app@c3\nacme/web@w1");
-
-  // Synced again, it reads the same documents and keeps the same version.
-  const again = (await (
-    await state.request("POST", "bounties/bty_7/context/github/sync")
-  ).json()) as { changed: boolean; context: BountyContextResponse };
-  assert.equal(again.changed, false);
-  assert.equal(again.context.github.state, "current");
-  assert.equal(again.context.github.latest?.version, 1);
+  assert.equal((await state.context()).github.state, "ahead");
+  assert.equal((await state.pin()).status, 200);
+  assert.equal((await state.context()).github.state, "current");
 });
 
 test("a version synced while a bounty named one repository is behind the workspace's, yet still held", async () => {
@@ -742,40 +835,78 @@ test("a version synced while a bounty named one repository is behind the workspa
     read.github.latest?.source === "github" &&
       !("repositories" in read.github.latest.content),
   );
-  // Sizing still reads it until the workspace's is synced over it.
+  // Sizing still reads it until the workspace's is picked over it.
   const held = await heldContext(state.options, "org_1", bountyOf());
   assert.equal(held.github?.version, 1);
 
-  assert.equal(
-    (await state.request("POST", "bounties/bty_7/context/github/sync")).status,
-    200,
-  );
+  assert.equal((await state.pin()).status, 200);
   const synced = await state.context();
   assert.equal(synced.github.state, "current");
   assert.equal(synced.github.latest?.version, 2);
 });
 
-test("a GitHub sync that cannot read says why", async () => {
-  for (const [setup, status, code] of [
+test("a pick that cannot be read says why", async () => {
+  for (const [setup, status, code, commits] of [
     [{ repos: [] }, 409, "no_repository"],
     [{ repos: [{ ...repo, syncStatus: "gone" }] }, 409, "no_repository"],
     [{ repos: [{ ...repo, role: "sandbox" }] }, 409, "no_repository"],
     [{ github: false }, 503, "unconfigured"],
-    [{ snapshots: { ghr_1: null } }, 409, "no_snapshot"],
-    [{ tree: null }, 409, "no_snapshot"],
-    [{ reader: null }, 409, "no_snapshot"],
+    [{}, 404, "repository_not_found", { ghr_9: snapshotId("c2") }],
+    // Only a built commit can be picked.
+    [{}, 409, "not_built", { ghr_1: snapshotId("c9") }],
+    [{ snapshots: { ghr_1: null } }, 409, "not_built"],
+    [
+      { repos: [repo, web], snapshots: { ghr_1: null, ghr_2: null } },
+      409,
+      "not_built",
+      { ghr_1: snapshotId("c2") },
+    ],
+    [{ tree: null }, 409, "unreadable"],
+    [{ reader: null }, 409, "unreadable"],
     [{ blobError: new GithubNotFound("gone") }, 409, "repository_gone"],
     [{ blobError: new Error("down") }, 502, "github_failed"],
   ] as const) {
     const state = harness(setup as Setup);
-    const response = await state.request(
-      "POST",
-      "bounties/bty_7/context/github/sync",
-    );
+    const response = await state.pin(commits);
     assert.equal(response.status, status, code);
     assert.equal(((await response.json()) as { code: string }).code, code);
     assert.equal(state.rows.length, 0, code);
   }
+  // A pick names at least one repository.
+  for (const body of [{}, { commits: {} }, null]) {
+    const response = await harness().request(
+      "PUT",
+      "bounties/bty_7/context/github/commits",
+      body,
+    );
+    assert.equal(response.status, 400);
+  }
+});
+
+test("the built commits are listed only where GitHub is set up, for a bounty that is there", async () => {
+  assert.equal(
+    (
+      await harness({ github: false }).request(
+        "GET",
+        "bounties/bty_7/context/github/commits",
+      )
+    ).status,
+    503,
+  );
+  assert.equal(
+    (
+      await harness().request(
+        "GET",
+        "bounties/bty_other/context/github/commits",
+      )
+    ).status,
+    404,
+  );
+  // Never picked: held nowhere.
+  const listed = (await (
+    await harness().request("GET", "bounties/bty_7/context/github/commits")
+  ).json()) as BountyGithubCommitsResponse;
+  assert.deepEqual(listed.repositories[0]?.held, null);
 });
 
 test("the repositories' status says when they cannot be read", async () => {
@@ -790,7 +921,7 @@ test("the repositories' status says when they cannot be read", async () => {
     assert.equal(read.github.state, state_);
     assert.equal(read.github.reason, reason);
   }
-  // None read yet: linked, with nowhere it stands.
+  // None built yet: linked, with nowhere it stands.
   const unread = await harness({ snapshots: { ghr_1: null } }).context();
   assert.equal(unread.github.state, "unsynced");
   assert.equal(unread.github.liveRevision, null);

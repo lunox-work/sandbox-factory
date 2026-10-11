@@ -1,16 +1,19 @@
 /**
- * What a bounty's sources add to it, synced on request: its Jira issue's
- * fields (type, priority, story points, estimates, links) and its
- * repository's documents. Each sync that finds something new is a version
- * of that source's context. The scope holds the latest of each; the
- * bounty is sized with them and the sandbox generated with them, and each
- * of those says which versions it was made with.
+ * What a bounty's sources add to it: its Jira issue's fields (type,
+ * priority, story points, estimates, links), synced on request, and the
+ * workspace's repositories' documents, each read at a commit picked from
+ * those it was built at. A repository can be moved back to an older build,
+ * and each is held at its own commit. Each read that finds something new
+ * is a version of that source's context. The scope holds the latest of
+ * each; the bounty is sized with them and the sandbox generated with them,
+ * and each of those says which versions it was made with.
  *
  * Two warnings, each where it is acted on. On the scope's links, a source
- * that has moved past its last sync is ahead, and syncing it brings the
- * scope up to date. On the price and the sandbox, a step made with an
- * older context version than the scope holds is behind on that source,
- * and making the step again brings it up to date.
+ * that has moved past its last read is ahead: an issue edited since, or a
+ * repository built since that the scope does not read. On the price and
+ * the sandbox, a step made with an older context version than the scope
+ * holds is behind on that source, and making the step again brings it up
+ * to date.
  */
 
 import { ApiError } from "@sandbox-factory/client";
@@ -18,11 +21,20 @@ import type {
   BountyContextResponse,
   BountyContextSourceStatusDto,
   BountyDto,
+  BountyGithubCommitsResponse,
   ContextSourceDto,
   ContextVersionsDto,
 } from "@sandbox-factory/shared";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { ChevronDown, Loader2, RefreshCw, TriangleAlert } from "lucide-react";
+import {
+  Check,
+  ChevronDown,
+  EllipsisVertical,
+  GitCommitHorizontal,
+  Loader2,
+  RefreshCw,
+  TriangleAlert,
+} from "lucide-react";
 import { useState, type ReactNode } from "react";
 import {
   contextDrift,
@@ -31,6 +43,13 @@ import {
 } from "sandbox-factory";
 
 import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
 
 import { clients, queryKeys, useUserId } from "../../data/query";
@@ -71,16 +90,32 @@ function contextKey(userId: string, bounty: BountyDto) {
   );
 }
 
+/** The query a bounty's repositories' built commits are read under. */
+function commitsKey(userId: string, bounty: BountyDto) {
+  return queryKeys.resource(
+    userId,
+    bounty.organizationId,
+    "bounty-github-commits",
+    bounty.id,
+  );
+}
+
 export interface BountyContextState {
   /** Where each source stands; null while it is read, or could not be. */
   readonly status: BountyContextResponse | null;
   readonly loading: boolean;
   /** Which source is being synced now. */
   readonly syncing: ContextSourceDto | null;
-  /** Why a source's last sync failed, by source. */
+  /** Why a source's last sync or pick failed, by source. */
   readonly errors: Partial<Record<ContextSourceDto, string>>;
-  /** Syncs a source; the bounty as it then is goes to `onChange`. */
-  sync(source: ContextSourceDto): Promise<void>;
+  /** Syncs the Jira issue; the bounty as it then is goes to `onChange`. */
+  sync(source: "jira"): Promise<void>;
+  /** Each repository's built commits; null while read, or unreadable. */
+  readonly commits: BountyGithubCommitsResponse | null;
+  /** The repository whose commit is being picked now. */
+  readonly pinning: string | null;
+  /** Reads a repository at a built commit; the others stay where held. */
+  pin(repoId: string, snapshotId: string): Promise<void>;
 }
 
 /**
@@ -100,19 +135,29 @@ export function useBountyContext(
     queryFn: ({ signal }) =>
       clients.bounties.bountyContext(bounty.organizationId, bounty.id, signal),
   });
+  const commits = useQuery({
+    queryKey: commitsKey(userId, bounty),
+    enabled,
+    queryFn: ({ signal }) =>
+      clients.bounties.bountyGithubCommits(
+        bounty.organizationId,
+        bounty.id,
+        signal,
+      ),
+  });
   const [syncing, setSyncing] = useState<ContextSourceDto | null>(null);
+  const [pinning, setPinning] = useState<string | null>(null);
   const [errors, setErrors] = useState<
     Partial<Record<ContextSourceDto, string>>
   >({});
-  const sync = async (source: ContextSourceDto) => {
-    setSyncing(source);
+  /** Runs a read of one source, keeping where each then stands. */
+  const read = async (
+    source: ContextSourceDto,
+    call: () => ReturnType<typeof clients.bounties.syncBountyContext>,
+  ) => {
     setErrors((current) => ({ ...current, [source]: undefined }));
     try {
-      const result = await clients.bounties.syncBountyContext(
-        bounty.organizationId,
-        bounty.id,
-        source,
-      );
+      const result = await call();
       queryClient.setQueryData(
         contextKey(userId, result.bounty),
         result.context,
@@ -126,9 +171,33 @@ export function useBountyContext(
             ? error.message
             : "Could not reach the server.",
       }));
-    } finally {
-      setSyncing(null);
     }
+  };
+  const sync = async (source: "jira") => {
+    setSyncing(source);
+    await read(source, () =>
+      clients.bounties.syncBountyContext(
+        bounty.organizationId,
+        bounty.id,
+        source,
+      ),
+    );
+    setSyncing(null);
+  };
+  const pin = async (repoId: string, snapshotId: string) => {
+    setPinning(repoId);
+    await read("github", () =>
+      clients.bounties.pinBountyGithubCommits(
+        bounty.organizationId,
+        bounty.id,
+        { commits: { [repoId]: snapshotId } },
+      ),
+    );
+    // Where each is held now, read again whatever the pick made of it.
+    await queryClient.invalidateQueries({
+      queryKey: commitsKey(userId, bounty),
+    });
+    setPinning(null);
   };
   return {
     status: query.data ?? null,
@@ -136,6 +205,9 @@ export function useBountyContext(
     syncing,
     errors,
     sync,
+    commits: commits.data ?? null,
+    pinning,
+    pin,
   };
 }
 
@@ -210,7 +282,7 @@ function holds(status: BountyContextSourceStatusDto): string | null {
     : `${plural(documents, "document")} from ${repositories.length} repositories`;
 }
 
-/** Why a source is ahead, or why it cannot be synced, in a sentence. */
+/** Why a source is ahead, in a sentence. */
 function aheadText(
   source: ContextSourceDto,
   status: BountyContextSourceStatusDto,
@@ -221,61 +293,76 @@ function aheadText(
   if (source === "jira") {
     return `${name} has changed in Jira since ${short(latest.version)} was synced. Sync to bring the change into the scope.`;
   }
-  const since = `since ${short(latest.version)} was synced`;
-  const was = commitsOf(latest.revision);
-  const now = commitsOf(status.liveRevision ?? "");
-  const sameSet =
-    status.liveRevision !== null &&
-    was.size === now.size &&
-    [...now.keys()].every((fullName) => was.has(fullName));
-  if (!sameSet)
-    return `The workspace's repositories have changed ${since}. Sync to read their documents again.`;
-  const moved = [...now].filter(([fullName, sha]) => was.get(fullName) !== sha);
-  const [one] = moved;
-  if (moved.length === 1 && one !== undefined) {
-    const [fullName, sha] = one;
-    return `${fullName} has new commits ${since} (${shortSha(was.get(fullName) ?? "")} → ${shortSha(sha)}). Sync to read its documents again.`;
-  }
-  return `${moved.length} repositories have new commits ${since}. Sync to read their documents again.`;
+  return `The workspace's built repositories have changed since ${short(latest.version)} read them. Pick a commit to read them again.`;
 }
 
 /**
- * Each repository's commit in a GitHub version's revision, which is one
- * `owner/name@sha` line per repository its sync found.
+ * The issue link's menu, the other half of a split button with its
+ * control: syncing its context into the scope, which is not the row's main
+ * action, so it is a click further away. The repositories are not synced:
+ * each is picked at a commit, under the row (`ContextSync`).
  */
-function commitsOf(revision: string): Map<string, string> {
-  return new Map(
-    revision.split("\n").flatMap((line): [string, string][] => {
-      const at = line.lastIndexOf("@");
-      return at <= 0 ? [] : [[line.slice(0, at), line.slice(at + 1)]];
-    }),
-  );
-}
-
-/**
- * Under a link's row: whether its sync is in use and up to date, what its
- * latest version holds, and the way to sync it. An ahead source says so,
- * and what syncing does about it.
- */
-export function ContextSync({
+export function ContextSyncMenu({
   source,
   context,
   canSync,
 }: {
-  source: ContextSourceDto;
+  source: "jira";
   context: BountyContextState;
   /** False while the source cannot be synced, such as with no link. */
   canSync: boolean;
 }) {
   const status = context.status?.[source] ?? null;
+  const busy = context.syncing === source;
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button
+          type="button"
+          variant="outline"
+          size="icon"
+          // Overlaps the control's right border, so the two share one line.
+          className="border-input text-muted-foreground hover:text-foreground -ml-px shrink-0 rounded-l-none focus-visible:z-10"
+          aria-label={`${SOURCE_NAME[source]} options`}
+        >
+          <EllipsisVertical className="size-4" />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="w-48">
+        <DropdownMenuItem
+          disabled={!canSync || busy || status?.state === "unlinked"}
+          onSelect={() => void context.sync(source)}
+        >
+          <RefreshCw />
+          Sync context
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
+/**
+ * Under a link's row: whether its sync is in use and up to date, and what
+ * its latest version holds. An ahead source says so, and what syncing does
+ * about it. Syncing itself is in the row's menu (`ContextSyncMenu`).
+ */
+export function ContextSync({
+  source,
+  context,
+}: {
+  source: ContextSourceDto;
+  context: BountyContextState;
+}) {
+  const status = context.status?.[source] ?? null;
   const [open, setOpen] = useState(false);
   const busy = context.syncing === source;
   const error = context.errors[source] ?? null;
+  const act = source === "jira" ? "Sync" : "Pick a commit";
   const unsyncedNote =
     status?.state === "unsynced"
       ? status.latest === null
-        ? "Sync to add what it says to sizing and the sandbox."
-        : `Its last sync, ${short(status.latest.version)}, was from ${status.latest.ref}. Sync to read this one.`
+        ? `${act} to add what it says to sizing and the sandbox.`
+        : `Its last read, ${short(status.latest.version)}, was from ${status.latest.ref}. ${act} to read this one.`
       : null;
   const line =
     status === null
@@ -285,17 +372,15 @@ export function ContextSync({
       : status.state === "unavailable"
         ? (REASONS[status.reason ?? ""] ?? "It cannot be read just now.")
         : status.state === "unlinked"
-          ? source === "jira"
+          ? // The repositories' row already says none is connected.
+            source === "jira"
             ? "Link an issue to sync its fields into the bounty."
-            : "Connect a repository to the workspace to sync its documents into the bounty."
+            : null
           : (unsyncedNote ?? holds(status));
   const warning = status === null ? null : aheadText(source, status);
   return (
-    <div
-      className="flex flex-col gap-2 border-t border-dashed pt-3"
-      data-testid={`${source}-context`}
-    >
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+    <div className="flex flex-col gap-2" data-testid={`${source}-context`}>
+      <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
         <span
           className={cn(
             "rounded-[4px] px-1.5 py-px text-2xs leading-4 font-medium whitespace-nowrap",
@@ -304,8 +389,16 @@ export function ContextSync({
         >
           {status === null ? "Context" : statePill(status)}
         </span>
-        <span className="text-muted-foreground min-w-0 flex-1 truncate text-xs">
-          {line}
+        <span className="text-muted-foreground flex min-w-0 flex-1 items-center gap-1.5 truncate text-xs">
+          {/* Said here, as the menu that started it has closed. */}
+          {busy || (source === "github" && context.pinning !== null) ? (
+            <>
+              <Loader2 className="size-3 shrink-0 animate-spin" />
+              {busy ? "Syncing…" : "Reading the commit picked…"}
+            </>
+          ) : (
+            line
+          )}
         </span>
         {status?.latest != null &&
           (status.state === "current" || status.state === "ahead") && (
@@ -318,22 +411,6 @@ export function ContextSync({
               </time>
             </span>
           )}
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          className="h-7 gap-1.5 px-2.5 text-xs"
-          disabled={!canSync || busy || status?.state === "unlinked"}
-          aria-label={`Sync ${SOURCE_NAME[source]} context`}
-          onClick={() => void context.sync(source)}
-        >
-          {busy ? (
-            <Loader2 className="size-3.5 animate-spin" />
-          ) : (
-            <RefreshCw className="size-3.5" />
-          )}
-          {busy ? "Syncing…" : "Sync"}
-        </Button>
       </div>
       {warning !== null && (
         <p
@@ -352,6 +429,7 @@ export function ContextSync({
           {error}
         </p>
       )}
+      {source === "github" && <RepositoryCommits context={context} />}
       {status?.latest != null && (
         <div className="flex flex-col gap-2">
           <button
@@ -373,6 +451,134 @@ export function ContextSync({
         </div>
       )}
     </div>
+  );
+}
+
+/**
+ * Each of the workspace's repositories, and the commit the scope reads it
+ * at: picked from those it was built at, newest first, older ones too. A
+ * repository never built has none to pick yet; it is built where it is
+ * registered.
+ */
+function RepositoryCommits({ context }: { context: BountyContextState }) {
+  const repositories = context.commits?.repositories ?? [];
+  if (repositories.length === 0) return null;
+  return (
+    <ul
+      aria-label="The commit each repository is read at"
+      className="flex flex-col divide-y rounded-md border"
+    >
+      {repositories.map((repository) => (
+        <RepositoryCommit
+          key={repository.repoId}
+          repository={repository}
+          context={context}
+        />
+      ))}
+    </ul>
+  );
+}
+
+function RepositoryCommit({
+  repository,
+  context,
+}: {
+  repository: BountyGithubCommitsResponse["repositories"][number];
+  context: BountyContextState;
+}) {
+  const { repoId, fullName, held, commits } = repository;
+  const busy = context.pinning === repoId;
+  const [newest] = commits;
+  const heldBuilt = commits.some(({ commitSha }) => commitSha === held);
+  const older =
+    held !== null &&
+    heldBuilt &&
+    newest !== undefined &&
+    newest.commitSha !== held;
+  return (
+    <li
+      className="flex min-h-10 items-center gap-3 px-3 py-1.5 text-xs"
+      data-testid="repository-commit"
+    >
+      <span className="flex min-w-0 flex-1 items-center gap-2">
+        <span className="truncate font-medium">{fullName}</span>
+        {older && (
+          <span className="bg-muted text-muted-foreground rounded-[4px] px-1.5 py-px text-2xs leading-4 font-medium whitespace-nowrap">
+            Older build
+          </span>
+        )}
+      </span>
+      {commits.length === 0 ? (
+        <span className="text-muted-foreground whitespace-nowrap">
+          Not built yet
+        </span>
+      ) : (
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="border-input h-7 shrink-0 gap-1.5 px-2 font-mono text-xs"
+              aria-label={`Commit ${fullName} is read at`}
+              disabled={context.pinning !== null}
+            >
+              {busy ? (
+                <Loader2 className="size-3.5 animate-spin" />
+              ) : (
+                <GitCommitHorizontal className="size-3.5" />
+              )}
+              {held === null ? "Pick" : shortSha(held)}
+              <ChevronDown className="text-muted-foreground size-3.5" />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent
+            align="end"
+            className="max-h-72 w-80 overflow-y-auto"
+          >
+            <DropdownMenuLabel className="text-muted-foreground text-xs font-normal">
+              {held !== null && !heldBuilt
+                ? `Read at ${shortSha(held)}, which was never built. Pick a built commit.`
+                : "Built commits, newest first"}
+            </DropdownMenuLabel>
+            {commits.map((commit) => {
+              const current = commit.commitSha === held;
+              return (
+                <DropdownMenuItem
+                  key={commit.snapshotId}
+                  onSelect={() => {
+                    if (!current) void context.pin(repoId, commit.snapshotId);
+                  }}
+                  className="gap-2 text-xs"
+                >
+                  <Check
+                    className={cn("size-3.5", !current && "invisible")}
+                    aria-hidden
+                  />
+                  <span className="font-mono">
+                    {shortSha(commit.commitSha)}
+                  </span>
+                  <span className="text-muted-foreground min-w-0 truncate">
+                    {commit.branch}
+                  </span>
+                  {commit === newest && (
+                    <span className="bg-muted rounded-[4px] px-1.5 text-2xs leading-4 font-medium">
+                      Latest
+                    </span>
+                  )}
+                  <time
+                    dateTime={commit.createdAt}
+                    className="text-muted-foreground ml-auto whitespace-nowrap"
+                  >
+                    {dateTime(commit.createdAt)}
+                  </time>
+                </DropdownMenuItem>
+              );
+            })}
+          </DropdownMenuContent>
+        </DropdownMenu>
+      )}
+    </li>
   );
 }
 
@@ -504,7 +710,7 @@ function SourceVersion({
 }) {
   return (
     <span
-      className="inline-flex min-w-0 items-center gap-1.5"
+      className="bg-background inline-flex h-6 min-w-0 items-center gap-1.5 rounded-md border pr-0.5 pl-1.5"
       data-testid={`context-${source}`}
     >
       <SourceIcon source={source} />
@@ -555,10 +761,10 @@ export function StepContext({
       : contextDrift(held, versions);
   return (
     <div
-      className="text-muted-foreground flex flex-wrap items-center gap-x-4 gap-y-1 text-xs"
+      className="text-muted-foreground flex flex-wrap items-center gap-x-2 gap-y-1.5 text-xs"
       data-testid="step-context"
     >
-      <span>{label} context</span>
+      <span className="eyebrow mr-1">{label} context</span>
       {(["jira", "github"] as const).map((source) => (
         <SourceVersion
           key={source}

@@ -295,17 +295,19 @@ export function InlineTitle({
 /**
  * The bounty's description, read as Markdown and written in place: its
  * pencil opens it as a text area, saved with Save or ⌘↵ and put back with
- * Cancel or Escape.
+ * Cancel or Escape. Save and Cancel take the pencil's place, beside the
+ * heading.
  *
  * Not `labelled` where something else heads it, as a page's tab does: its
- * heading is then a field's label over the text, and its pencil sits in the
- * text's corner.
+ * heading is then a field's label over the text, with its pencil beside it,
+ * and the text reads on the page, in no card of its own.
  */
 export function InlineDescription({
   bounty,
   locked,
   labelled = true,
   label = "Description",
+  editNote,
   onSave,
 }: {
   bounty: BountyDto;
@@ -313,6 +315,8 @@ export function InlineDescription({
   labelled?: boolean;
   /** What the field is called, as its heading or its label. */
   label?: string;
+  /** What saving does beyond the text, said under it while it is edited. */
+  editNote?: string;
   onSave: SaveField;
 }) {
   const headingId = useId();
@@ -345,16 +349,35 @@ export function InlineDescription({
     if (failure.conflict) setDraft(null);
   };
 
-  const text = (
-    <BountyText description={value} inputTruncated={bounty.inputTruncated} />
-  );
   const pencil = !locked && !mode.editing && (
     <EditButton
       ref={mode.pencil}
       label="Edit description"
-      className={labelled ? undefined : "absolute top-3 right-3"}
       onClick={mode.edit}
     />
+  );
+  // In the pencil's place while it is edited, so the row keeps its height.
+  const decide = mode.editing && (
+    <div className="-my-1 flex gap-2">
+      <Button
+        type="button"
+        variant="ghost"
+        size="sm"
+        disabled={saving}
+        onClick={close}
+      >
+        Cancel
+      </Button>
+      <Button
+        type="button"
+        size="sm"
+        disabled={saving}
+        onClick={() => void commit()}
+      >
+        {saving && <Loader2 className="animate-spin" />}
+        Save
+      </Button>
+    </div>
   );
 
   return (
@@ -362,32 +385,29 @@ export function InlineDescription({
       aria-labelledby={headingId}
       className={cn(
         "group/field relative flex min-w-0 flex-col gap-2",
-        fieldBox,
-        !locked && !mode.editing && readCard,
+        labelled && fieldBox,
+        labelled && !locked && !mode.editing && readCard,
       )}
     >
-      {labelled ? (
-        <div className="flex min-h-8 items-center justify-between gap-3">
-          <h3 id={headingId} className="eyebrow">
-            {label}
-          </h3>
-          {pencil}
-        </div>
-      ) : (
-        <h3 id={headingId} className="text-sm font-medium">
+      <div
+        className={cn(
+          "flex items-center justify-between gap-3",
+          // On a page, ruled under its heading as the links are.
+          labelled ? "min-h-8" : "min-h-9 border-b pb-2",
+        )}
+      >
+        <h3 id={headingId} className="eyebrow">
           {label}
         </h3>
-      )}
+        {pencil}
+        {decide}
+      </div>
       {!mode.editing ? (
-        labelled ? (
-          text
-        ) : (
-          // Its pencil in the corner of the card the text is read on.
-          <div className="relative">
-            {text}
-            {pencil}
-          </div>
-        )
+        <BountyText
+          description={value}
+          inputTruncated={bounty.inputTruncated}
+          framed={labelled}
+        />
       ) : (
         <div className="flex flex-col gap-2">
           <textarea
@@ -411,34 +431,13 @@ export function InlineDescription({
               }
             }}
           />
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <span
-              id={`${headingId}-hint`}
-              className="text-muted-foreground text-xs"
-            >
-              What should be true when it is done. Markdown works.
-            </span>
-            <div className="flex gap-2">
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                disabled={saving}
-                onClick={close}
-              >
-                Cancel
-              </Button>
-              <Button
-                type="button"
-                size="sm"
-                disabled={saving}
-                onClick={() => void commit()}
-              >
-                {saving && <Loader2 className="animate-spin" />}
-                Save
-              </Button>
-            </div>
-          </div>
+          <span
+            id={`${headingId}-hint`}
+            className="text-muted-foreground text-xs"
+          >
+            What should be true when it is done. Markdown works.
+            {editNote !== undefined && ` ${editNote}`}
+          </span>
         </div>
       )}
       <FieldError>{error}</FieldError>
@@ -573,7 +572,7 @@ function InlineField({
         {/* Names the control while there is one; the value is read under it. */}
         <label
           htmlFor={mode.editing ? id : undefined}
-          className="flex items-center gap-1.5 font-medium"
+          className="text-subheading flex items-center gap-1.5"
         >
           {label}
           {saving && (

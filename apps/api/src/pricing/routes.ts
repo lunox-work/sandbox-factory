@@ -35,6 +35,8 @@ import {
   priceFor,
   resetStep,
   SPEC_LIMITS,
+  stepHeldBy,
+  stepHeldReason,
   UNCATEGORIZED,
   validateRateCard,
   type RespecRefusal,
@@ -83,6 +85,17 @@ export function mountPricingRoutes<Env extends PricingAppEnv>(
 ): void {
   const supportedCurrencies =
     options.supportedCurrencies ?? new Set(Intl.supportedValuesOf("currency"));
+
+  /*
+    A price is changed only while its bounty's scope stands approved: the
+    refusal, or null when it does. A bounty gone is answered by the route.
+  */
+  const priceHeld = async (organizationId: string, bountyId: string) => {
+    const bounty = await options.bounties.get(organizationId, bountyId);
+    return bounty === null || stepHeldBy("price", bounty, null) === null
+      ? null
+      : PRICE_HELD;
+  };
 
   app.get("/api/v1/orgs/:orgId/rate-card", async (c) => {
     const { organizationId } = c.get("member");
@@ -329,6 +342,7 @@ export function mountPricingRoutes<Env extends PricingAppEnv>(
         startedBy: c.get("user").id,
         requestId: parsed.data.requestId,
         issueId: parsed.data.issueId,
+        ...(parsed.data.onboarding === true ? { onboarding: true } : {}),
       });
     } catch (error) {
       if (error instanceof InvalidBoardIdError) {
@@ -420,6 +434,8 @@ export function mountPricingRoutes<Env extends PricingAppEnv>(
     if (!parsed.success) {
       return c.json({ error: "Provide a valid requestId." }, 400);
     }
+    const held = await priceHeld(organizationId, c.req.param("id"));
+    if (held !== null) return c.json(held, 409);
     const started = await startBountyRun(options, {
       organizationId,
       bountyId: c.req.param("id"),
@@ -736,6 +752,15 @@ export function mountPricingRoutes<Env extends PricingAppEnv>(
       return c.json({ error: "Invalid proposal revision." }, 400);
     const denied = requireAdmin(c.get("member").role);
     if (denied !== null) return c.json(denied, 403);
+    const found = await options.proposals.get(
+      c.get("member").organizationId,
+      c.req.param("id"),
+    );
+    const held =
+      found === null
+        ? null
+        : await priceHeld(c.get("member").organizationId, found.bountyId);
+    if (held !== null) return c.json(held, 409);
     const result = await approveProposal(options, {
       organizationId: c.get("member").organizationId,
       proposalId: c.req.param("id"),
@@ -770,6 +795,8 @@ export function mountPricingRoutes<Env extends PricingAppEnv>(
       c.req.param("id"),
     );
     if (proposal === null) return c.json({ error: "Not found" }, 404);
+    const held = await priceHeld(organizationId, proposal.bountyId);
+    if (held !== null) return c.json(held, 409);
     if (proposal.revision !== parsed.data.expectedRevision) {
       return c.json(
         {
@@ -831,6 +858,8 @@ export function mountPricingRoutes<Env extends PricingAppEnv>(
       c.req.param("id"),
     );
     if (proposal === null) return c.json({ error: "Not found" }, 404);
+    const held = await priceHeld(organizationId, proposal.bountyId);
+    if (held !== null) return c.json(held, 409);
     const price =
       proposal.rubric === null ? null : rubricPrice(proposal.rubric, proposal);
     if (proposal.rubric === null || price === null)
@@ -1009,6 +1038,8 @@ export function mountPricingRoutes<Env extends PricingAppEnv>(
       c.req.param("id"),
     );
     if (proposal === null) return c.json({ error: "Not found" }, 404);
+    const held = await priceHeld(organizationId, proposal.bountyId);
+    if (held !== null) return c.json(held, 409);
     if (
       proposal.revision !== parsed.data.expectedRevision ||
       !["proposed", "approved"].includes(proposal.status)
@@ -1135,6 +1166,8 @@ export function mountPricingRoutes<Env extends PricingAppEnv>(
       c.req.param("id"),
     );
     if (proposal === null) return c.json({ error: "Not found" }, 404);
+    const held = await priceHeld(organizationId, proposal.bountyId);
+    if (held !== null) return c.json(held, 409);
     if (proposal.revision !== parsed.data.expectedRevision) {
       return c.json(
         {
@@ -1389,6 +1422,13 @@ function categoriesBody(counted: {
     })),
   };
 }
+
+/** A price changed while its bounty's scope is not approved. */
+const PRICE_HELD = {
+  code: "step_held",
+  heldBy: "scope",
+  error: stepHeldReason("price", "scope"),
+} as const;
 
 /** What each refused spec change is told. */
 const RESPEC_REFUSALS: Readonly<Record<RespecRefusal, string>> = {

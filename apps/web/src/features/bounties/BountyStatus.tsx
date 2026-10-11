@@ -9,7 +9,12 @@
  * whole, in green, for one live.
  */
 
-import type { BountySummaryDto } from "@sandbox-factory/shared";
+import type {
+  BountyStatusCountsDto,
+  BountySummaryDto,
+} from "@sandbox-factory/shared";
+import { ChevronRight } from "lucide-react";
+import { Fragment, useLayoutEffect, useRef, useState } from "react";
 import {
   BOUNTY_STATUSES,
   bountyStatus,
@@ -17,8 +22,6 @@ import {
 } from "sandbox-factory";
 
 import { cn } from "@/lib/utils";
-
-import { FilterSelect } from "./FilterSelect";
 
 export const STATUS_META: Record<
   BountyStatus,
@@ -124,69 +127,140 @@ export function StatusLabel({
   );
 }
 
-const ALL_STATUSES = "all";
+/** Where the highlight sits under the pressed status, and whether it slides there. */
+interface Highlight {
+  left: number;
+  width: number;
+  shown: boolean;
+  /** It moves from where it was; appearing, it fades in where it lands. */
+  slides: boolean;
+}
 
-/** Narrows the list to the bounties that far along. */
+/**
+ * Narrows the list to the bounties that far along: the four statuses side
+ * by side, in their order, so the whole way a bounty goes reads at once.
+ * One pressed narrows to it; pressed again, the list is every bounty. Each
+ * says how many stand there, once the counts are read.
+ *
+ * The pressed one sits on a highlight that slides from one to the next,
+ * so the eye follows the choice rather than finding it again.
+ */
 export function StatusFilter({
+  counts,
   selected,
   onSelect,
 }: {
+  counts: BountyStatusCountsDto | undefined;
   selected: BountyStatus | null;
   onSelect: (status: BountyStatus | null) => void;
 }) {
-  return (
-    <FilterSelect
-      data-testid="status-filter"
-      label="Status"
-      searchPlaceholder="Search statuses…"
-      value={selected ?? ALL_STATUSES}
-      onValueChange={(next) =>
-        onSelect(
-          next === ALL_STATUSES
+  const bar = useRef<HTMLDivElement>(null);
+  const [highlight, setHighlight] = useState<Highlight | null>(null);
+  // Measured before paint, and again whenever a count changes a width.
+  useLayoutEffect(() => {
+    const element = bar.current;
+    if (element === null) return;
+    const place = () => {
+      const target =
+        selected === null
+          ? null
+          : element.querySelector<HTMLElement>(
+              `[data-status-option="${selected}"]`,
+            );
+      setHighlight((previous) =>
+        target === null
+          ? // Let go, it fades where it was.
+            previous === null
             ? null
-            : (BOUNTY_STATUSES.find((status) => status === next) ?? null),
-        )
-      }
-      options={[
-        {
-          value: ALL_STATUSES,
-          label: "All statuses",
-          icon: <AllMark />,
-        },
-        ...BOUNTY_STATUSES.map((status) => ({
-          value: status,
-          label: STATUS_META[status].label,
-          // What each means is the row's tooltip; a menu of five reads at
-          // a glance without it.
-          keywords: [STATUS_META[status].meaning],
-          icon: <StatusMark status={status} />,
-        })),
-      ]}
-      icon={selected === null ? <AllMark /> : <StatusMark status={selected} />}
-      text={selected === null ? "All statuses" : STATUS_META[selected].label}
-      clearLabel="Show every status"
-      onClear={selected === null ? undefined : () => onSelect(null)}
-    />
-  );
-}
+            : { ...previous, shown: false }
+          : {
+              // To the fraction of a pixel, from inside the bar's border,
+              // where the highlight is placed from.
+              left:
+                target.getBoundingClientRect().left -
+                element.getBoundingClientRect().left -
+                element.clientLeft,
+              width: target.getBoundingClientRect().width,
+              shown: true,
+              slides: previous?.shown === true,
+            },
+      );
+    };
+    place();
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(place);
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [selected, counts]);
 
-/** The mark for no status chosen: a plain ring. */
-function AllMark() {
   return (
-    <svg
-      viewBox="0 0 14 14"
-      aria-hidden="true"
-      focusable="false"
-      className="text-muted-foreground size-3.5 shrink-0"
+    <div
+      ref={bar}
+      role="group"
+      aria-label="Status"
+      data-testid="status-filter"
+      className="bg-card relative inline-flex h-8 max-w-full min-w-0 items-stretch rounded-md border p-0.5 text-sm shadow-xs"
     >
-      <circle
-        cx="7"
-        cy="7"
-        r="6"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.5"
-      />
-    </svg>
+      {highlight !== null && (
+        <span
+          aria-hidden="true"
+          className="bg-muted ring-border/60 pointer-events-none absolute inset-y-0.5 left-0 rounded-[4px] ring-1 duration-300 ease-[cubic-bezier(0.2,0,0,1)] motion-reduce:transition-none"
+          style={{
+            width: highlight.width,
+            transform: `translateX(${highlight.left}px)`,
+            opacity: highlight.shown ? 1 : 0,
+            transitionProperty: highlight.slides
+              ? "transform, width, opacity"
+              : "opacity",
+          }}
+        />
+      )}
+      {BOUNTY_STATUSES.map((status, index) => {
+        const pressed = selected === status;
+        const { label, meaning } = STATUS_META[status];
+        const count = counts?.statuses[status];
+        return (
+          <Fragment key={status}>
+            {index > 0 && (
+              <ChevronRight
+                aria-hidden="true"
+                className="text-muted-foreground/60 relative size-3 shrink-0 self-center"
+              />
+            )}
+            <button
+              type="button"
+              data-status-option={status}
+              aria-pressed={pressed}
+              title={pressed ? "Show every status" : meaning}
+              onClick={() => onSelect(pressed ? null : status)}
+              className={cn(
+                "relative flex min-w-0 items-center gap-1.5 rounded-[4px] px-2 font-medium transition-colors duration-200 outline-none",
+                "focus-visible:ring-ring/50 focus-visible:ring-[3px]",
+                !pressed && "hover:bg-muted/50 hover:text-foreground",
+                // While one is chosen, the rest step back.
+                selected !== null && !pressed && "text-muted-foreground",
+              )}
+            >
+              <StatusMark
+                status={status}
+                className={cn(
+                  "transition-opacity duration-200",
+                  selected !== null && !pressed && "opacity-60",
+                )}
+              />
+              <span className="truncate">{label}</span>
+              {count !== undefined && (
+                <span
+                  data-testid="status-count"
+                  className="text-muted-foreground font-normal tabular-nums"
+                >
+                  {count}
+                </span>
+              )}
+            </button>
+          </Fragment>
+        );
+      })}
+    </div>
   );
 }

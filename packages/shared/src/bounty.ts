@@ -177,6 +177,11 @@ export const bountyDtoSchema = bountySummaryDtoSchema.extend({
   components: z.array(z.string()),
   /** True when Jira's description was longer than a bounty keeps. */
   inputTruncated: z.boolean(),
+  /**
+   * Its title or text was changed here since it was linked to Jira, so
+   * Jira's no longer overwrites it. Defaulted, so an older API still parses.
+   */
+  textEdited: z.boolean().default(false),
   createdBy: z.string().nullable(),
   stages: bountyStagesSchema,
 });
@@ -220,10 +225,26 @@ export const bountyListFilterSchema = z.object({
 });
 
 /**
+ * How many of the caller's bounties stand at each status, for the list's
+ * status bar: narrowed as the list is, but never by status, so each
+ * status keeps its count while one is chosen.
+ */
+export const bountyStatusCountsSchema = z.object({
+  total: z.number().int().nonnegative(),
+  statuses: z.object({
+    new: z.number().int().nonnegative(),
+    scoped: z.number().int().nonnegative(),
+    priced: z.number().int().nonnegative(),
+    live: z.number().int().nonnegative(),
+  }),
+});
+
+/**
  * How many bounties each category holds, for the list's filter: every
  * category in the registry, in its order, with a zero when none fit it. A
  * bounty in two counts in both, so the counts can sum past `total`.
  */
+
 export const bountyCategoryCountsSchema = z.object({
   total: z.number().int().nonnegative(),
   uncategorized: z.number().int().nonnegative(),
@@ -331,6 +352,7 @@ export type ScopeVersionDto = z.infer<typeof scopeVersionDtoSchema>;
 export type ScopeVersionList = z.infer<typeof scopeVersionListSchema>;
 export type BountyListResponse = z.infer<typeof bountyListResponseSchema>;
 export type BountyListFilter = z.infer<typeof bountyListFilterSchema>;
+export type BountyStatusCountsDto = z.infer<typeof bountyStatusCountsSchema>;
 export type BountyCategoryCountsDto = z.infer<
   typeof bountyCategoryCountsSchema
 >;

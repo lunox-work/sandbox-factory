@@ -117,8 +117,6 @@ test("every workspace's bounties list together, and only those", async ({
       .getByRole("listitem")
       .filter({ hasText: `${name} private bounty` });
     await expect(row).toBeVisible();
-    // Both are teams, so each row is tagged with its workspace.
-    await expect(row.getByText(name, { exact: true })).toBeVisible();
   }
   await expect(page.getByText("Hidden private bounty")).toHaveCount(0);
 

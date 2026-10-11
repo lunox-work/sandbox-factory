@@ -64,6 +64,14 @@ function detail(overrides: Record<string, unknown> = {}) {
   };
 }
 
+/**
+ * A bounty whose scope stands approved at its version, 1: its price, and
+ * once that is approved its sandbox, can be changed only then.
+ */
+const SCOPED = {
+  approval: { version: 1, approvedBy: "user_1", approvedAt: stamp },
+};
+
 const jiraLink = {
   issueId: "jri_1",
   boardId: "jrb_1",
@@ -316,6 +324,13 @@ function server(
   return { fetchMock, calls };
 }
 
+/** The bounty read with its scope approved, so it can be priced. */
+const scopedBounty: [string, string, () => Promise<Response>] = [
+  "GET",
+  "/bounties/bty_7",
+  () => json({ bounty: detail(SCOPED) }),
+];
+
 test("the workspace's bounties list from any source, with their proposals", async () => {
   vi.stubGlobal("fetch", server().fetchMock);
   render(<Bounties {...inAcme("member")} />);
@@ -424,7 +439,17 @@ test("the list filters by category, with how many each holds, and says why", asy
 });
 
 test("the list filters by how far its bounties have got, as its Status column says", async () => {
-  const { fetchMock, calls } = server();
+  const { fetchMock, calls } = server([
+    [
+      "GET",
+      "/me/bounty-statuses",
+      () =>
+        json({
+          total: 2,
+          statuses: { new: 1, scoped: 0, priced: 1, live: 0 },
+        }),
+    ],
+  ]);
   vi.stubGlobal("fetch", fetchMock);
   window.history.replaceState(null, "", BOUNTIES_PATH);
   render(<Bounties {...inAcme("member")} />);
@@ -435,19 +460,19 @@ test("the list filters by how far its bounties have got, as its Status column sa
     rows.map((row) => row.querySelector("[data-status]")?.textContent),
   ).toEqual(["New", "Priced"]);
 
-  const trigger = within(screen.getByTestId("status-filter")).getByRole(
-    "combobox",
-    { name: "Status" },
+  // All four at once, in the order a bounty goes through them.
+  // Each with how many stand there.
+  const bar = screen.getByTestId("status-filter");
+  await waitFor(() =>
+    expect(
+      within(bar)
+        .getAllByRole("button")
+        .map((segment) => segment.textContent),
+    ).toEqual(["New1", "Scoped0", "Priced1", "Live0"]),
   );
-  const options = await openCombobox(trigger);
-  expect(
-    within(options)
-      .getAllByRole("option")
-      .map((option) => option.textContent),
-  ).toEqual(["All statuses", "New", "Scoped", "Priced", "Live"]);
-  await userEvent.click(
-    within(options).getByRole("option", { name: /Priced/ }),
-  );
+  const priced = within(bar).getByRole("button", { name: /^Priced/ });
+  expect(priced.getAttribute("aria-pressed")).toBe("false");
+  await userEvent.click(priced);
   expect(window.location.search).toBe("?status=priced");
   await waitFor(() =>
     expect(
@@ -464,12 +489,33 @@ test("the list filters by how far its bounties have got, as its Status column sa
       ),
     ).toBe(true),
   );
-  expect(trigger.textContent).toContain("Priced");
-  // Cleared, the list is every bounty again.
-  await userEvent.click(
-    screen.getByRole("button", { name: "Show every status" }),
-  );
+  expect(priced.getAttribute("aria-pressed")).toBe("true");
+  // Its own counts are never narrowed by the status chosen.
+  expect(
+    calls.some(({ url }) => url.includes("/me/bounty-statuses?status")),
+  ).toBe(false);
+  // Pressed again, the list is every bounty again.
+  await userEvent.click(priced);
   expect(window.location.search).toBe("");
+  expect(priced.getAttribute("aria-pressed")).toBe("false");
+
+  // Clear all lets every filter go at once, and has nothing to do without.
+  const clear = screen.getByRole("button", { name: "Clear all" });
+  expect(clear).toHaveProperty("disabled", true);
+  await userEvent.click(within(bar).getByRole("button", { name: /^Live/ }));
+  await chooseOption(
+    within(screen.getByTestId("category-filter")).getByRole("combobox", {
+      name: "Category",
+    }),
+    /Unassigned/,
+  );
+  expect(new URLSearchParams(window.location.search).get("status")).toBe(
+    "live",
+  );
+  expect(clear).toHaveProperty("disabled", false);
+  await userEvent.click(clear);
+  expect(window.location.search).toBe("");
+  expect(clear).toHaveProperty("disabled", true);
 });
 
 test("a board's bounties: named, rescanned, and an issue found on it added", async () => {
@@ -937,7 +983,7 @@ const fromEach = [
   }),
 ];
 
-test("every workspace's bounties list together, a team's tagged with its name", async () => {
+test("every workspace's bounties list together, with no workspace column", async () => {
   const state = server([], fromEach);
   vi.stubGlobal("fetch", state.fetchMock);
   render(<Bounties {...inThree()} />);
@@ -949,10 +995,10 @@ test("every workspace's bounties list together, a team's tagged with its name", 
   );
   const rows = within(list).getAllByRole("listitem");
   expect(rows).toHaveLength(3);
-  // The person's own workspace is not named: the bounty is simply theirs.
-  expect(within(rows[0]!).queryByText("Ada Lovelace")).toBeNull();
-  expect(within(rows[1]!).getByText("Acme")).toBeDefined();
-  expect(within(rows[2]!).getByText("Beta")).toBeDefined();
+  // No row names its workspace; the panel does, once one is open.
+  expect(within(list).queryByText("Ada Lovelace")).toBeNull();
+  expect(within(list).queryByText("Acme")).toBeNull();
+  expect(within(list).queryByText("Beta")).toBeNull();
 });
 
 test("a bounty opens through its own workspace, as the role held there allows", async () => {
@@ -1557,10 +1603,12 @@ test("a bounty is shown with its repositories' stack and its own", async () => {
   expect(
     within(stack).getByRole("button", { name: "Remove Redis" }),
   ).toBeDefined();
-  // Opened on its list; Escape closes that, then the picker, back to the
-  // pencil, and the panel stays.
+  // Focused with its list closed until it is clicked; Escape closes that,
+  // then the picker, back to the pencil, and the panel stays.
   const field = within(panel).getByRole("combobox", { name: "Tech stack" });
   expect(document.activeElement).toBe(field);
+  expect(field.getAttribute("aria-expanded")).toBe("false");
+  await userEvent.click(field);
   expect(field.getAttribute("aria-expanded")).toBe("true");
   await userEvent.keyboard("{Escape}");
   expect(field.getAttribute("aria-expanded")).toBe("false");
@@ -1749,6 +1797,7 @@ test("an admin proposes a bounty from inside it, follows its sizing, and lands o
         });
       },
     ],
+    scopedBounty,
   ]);
   vi.stubGlobal("fetch", state.fetchMock);
   window.history.replaceState(null, "", "/bounties/acme/bty_7?tab=price");
@@ -1797,6 +1846,7 @@ test("an admin proposes a bounty from inside it, follows its sizing, and lands o
 test("a bounty that already has a proposal opens it without sizing", async () => {
   const state = server([
     ["POST", "/bounties/bty_7/propose", () => json({ proposalId: "bpr_9" })],
+    scopedBounty,
   ]);
   vi.stubGlobal("fetch", state.fetchMock);
   window.history.replaceState(null, "", "/bounties/acme/bty_7?tab=price");
@@ -1843,6 +1893,7 @@ test("a bounty already being sized follows the run under way", async () => {
           ),
         }),
     ],
+    scopedBounty,
   ]);
   vi.stubGlobal("fetch", state.fetchMock);
   window.history.replaceState(null, "", "/bounties/acme/bty_7?tab=price");
@@ -1871,6 +1922,7 @@ test("a proposal that could not start, or ended without one, says why", async ()
           409,
         ),
     ],
+    scopedBounty,
   ]);
   vi.stubGlobal("fetch", refused.fetchMock);
   window.history.replaceState(null, "", "/bounties/acme/bty_7?tab=price");
@@ -1899,6 +1951,7 @@ test("a proposal that could not start, or ended without one, says why", async ()
           202,
         ),
     ],
+    scopedBounty,
   ]);
   vi.stubGlobal("fetch", failed.fetchMock);
   render(<Shell {...inAcme("owner")} />);
@@ -1909,7 +1962,7 @@ test("a proposal that could not start, or ended without one, says why", async ()
   expect(await within(again).findByText(/needs reconnecting/)).toBeDefined();
 });
 
-test("a bounty following Jira is edited for its stack only", async () => {
+test("a bounty following Jira is edited here, its stack and its text", async () => {
   const state = server([
     [
       "GET",
@@ -1944,11 +1997,10 @@ test("a bounty following Jira is edited for its stack only", async () => {
     within(links).getByRole("link", { name: /APP-1/ }).getAttribute("href"),
   ).toBe("https://acme.atlassian.net/browse/APP-1");
 
-  // Its text is Jira's: shown, and not offered.
-  expect(within(panel).queryByRole("button", { name: "Rename" })).toBeNull();
+  // Its text is Jira's until it is changed here, which is offered.
   expect(
-    within(panel).queryByRole("button", { name: "Edit description" }),
-  ).toBeNull();
+    within(panel).getByRole("button", { name: "Edit description" }),
+  ).toBeDefined();
   // No repository is picked for it, from Jira or here.
   expect(
     within(panel).queryByRole("combobox", { name: "Repository" }),
@@ -1968,6 +2020,65 @@ test("a bounty following Jira is edited for its stack only", async () => {
     }),
   );
   expect(await screen.findByTestId("bounty-detail")).toBeDefined();
+});
+
+test("saving a Jira bounty's text says Jira no longer updates it", async () => {
+  const state = server([
+    [
+      "GET",
+      "/bounties/bty_1",
+      () =>
+        json({
+          bounty: detail({
+            ...fromJira,
+            description: "Export the filtered table.",
+          }),
+        }),
+    ],
+    [
+      "PATCH",
+      "/bounties/bty_1",
+      () =>
+        json({
+          bounty: detail({
+            ...fromJira,
+            description: "Export the filtered rows as CSV.",
+            textEdited: true,
+            revision: 2,
+          }),
+        }),
+    ],
+  ]);
+  vi.stubGlobal("fetch", state.fetchMock);
+  window.history.replaceState(null, "", "/bounties/acme/bty_1");
+  render(<Shell {...inAcme("member")} />);
+
+  const panel = await screen.findByTestId("bounty-detail");
+  await userEvent.click(
+    within(panel).getByRole("button", { name: "Edit description" }),
+  );
+  // Said before it is saved, not after.
+  expect(
+    within(panel).getByText(/Saving stops Jira updating this text\./),
+  ).toBeDefined();
+  const box = within(panel).getByRole("textbox", { name: "Describe task" });
+  await userEvent.clear(box);
+  await userEvent.type(box, "Export the filtered rows as CSV.");
+  await userEvent.click(within(panel).getByRole("button", { name: "Save" }));
+
+  await waitFor(() =>
+    expect(state.calls.find(({ method }) => method === "PATCH")?.body).toEqual({
+      expectedRevision: 1,
+      description: "Export the filtered rows as CSV.",
+    }),
+  );
+  const links = within(panel).getByRole("region", { name: "Links" });
+  expect(
+    await within(links).findByText(/Jira no longer updates it/),
+  ).toBeDefined();
+  expect(
+    within(links).queryByText(/Its title and description follow/),
+  ).toBeNull();
 });
 
 test("the page's repositories row leads to GitHub settings", async () => {
@@ -2183,8 +2294,20 @@ test("a bounty's Jira issue is let go from the same list, keeping its text", asy
   render(<Shell {...inAcme("member")} />);
   const page = await screen.findByTestId("bounty-detail");
   const links = within(page).getByRole("region", { name: "Links" });
-  await chooseOption(
+  // Opened, the list starts on the issue linked now, chosen and highlighted,
+  // with removing the link last: never what a stray Enter lands on.
+  await userEvent.click(
     await within(links).findByRole("button", { name: "Jira issue" }),
+  );
+  const list = await screen.findByRole("listbox", { name: "Jira issue" });
+  const items = within(list).getAllByRole("option");
+  expect(items[0]?.textContent).toContain("APP-1");
+  expect(items[0]?.getAttribute("aria-selected")).toBe("true");
+  expect(items[0]?.hasAttribute("data-active")).toBe(true);
+  expect(items.at(-1)?.textContent).toBe("Remove the link");
+  await userEvent.keyboard("{Escape}");
+  await chooseOption(
+    within(links).getByRole("button", { name: "Jira issue" }),
     "Remove the link",
   );
   await waitFor(() =>
@@ -2686,21 +2809,6 @@ test("a bounty is addressed the same in the panel and on its own page", () => {
     "Export to CSV",
   ]);
   expect(trail[1]?.screen).toBe("bounties");
-  // Then the workspace it is in, once known, leading to its page.
-  const inWorkspace = trailFor("bounty", undefined, "Export to CSV", {
-    name: "Personal",
-    slug: "lovelace-ada",
-  });
-  expect(inWorkspace.map(({ label }) => label)).toEqual([
-    "Home",
-    "Bounties",
-    "Personal",
-    "Export to CSV",
-  ]);
-  expect(inWorkspace[2]).toMatchObject({
-    screen: "org-settings",
-    slug: "lovelace-ada",
-  });
   // Until the bounty is read, the crumb says what it will be.
   expect(trailFor("bounty").at(-1)?.label).toBe("Bounty");
 });
@@ -2858,6 +2966,7 @@ test("a sandbox is made from the bounty alone, and seen after", async () => {
       () =>
         json({
           bounty: detail({
+            ...SCOPED,
             proposal: {
               ...approvedSummary,
               repositories: [{ repoId: "ghr_1", snapshotId: "rsn_1" }],
@@ -2907,6 +3016,11 @@ test("a sandbox that could not be made says why, and the bounty stays as it was"
           },
           409,
         ),
+    ],
+    [
+      "GET",
+      "/bounties/bty_7",
+      () => json({ bounty: detail({ ...SCOPED, proposal: approvedSummary }) }),
     ],
   ]);
   vi.stubGlobal("fetch", state.fetchMock);
@@ -3063,6 +3177,7 @@ test("a sandbox made without a repository links the one its sizing touches", asy
       () =>
         json({
           bounty: detail({
+            ...SCOPED,
             proposal: sizedTouching("ghr_1"),
             sandbox: sandboxOf({ sourceRepoId: linked ? "ghr_1" : null }),
           }),
@@ -3142,6 +3257,7 @@ test("a sandbox links the one repository its sizing touches that is still connec
         () =>
           json({
             bounty: detail({
+              ...SCOPED,
               // As the API counts them: the gone one is not a source.
               proposal: sizedTouching("ghr_1", "ghr_3"),
               sandbox: sandboxOf({ sourceRepoId: null }),
@@ -3181,6 +3297,7 @@ test("a sandbox without a repository says what links one, and a refused link say
         () =>
           json({
             bounty: detail({
+              ...SCOPED,
               proposal: sizedTouching("ghr_1"),
               sandbox: sandboxOf(),
             }),
@@ -3226,6 +3343,7 @@ test("several touched repositories offer no link", async () => {
         () =>
           json({
             bounty: detail({
+              ...SCOPED,
               proposal: sizedTouching("ghr_1", "ghr_2"),
               sandbox: sandboxOf(),
             }),
@@ -3262,7 +3380,11 @@ test("a sandbox whose sizing touches no repository generates its versions instea
         "/bounties/bty_7",
         () =>
           json({
-            bounty: detail({ sandbox: sandboxOf(), proposal: approvedSummary }),
+            bounty: detail({
+              ...SCOPED,
+              sandbox: sandboxOf(),
+              proposal: approvedSummary,
+            }),
           }),
       ],
     ]).fetchMock,
@@ -3275,9 +3397,13 @@ test("a sandbox whose sizing touches no repository generates its versions instea
   );
   expect(
     await within(part).findByText(
-      /No version yet\. Generate one: an agent writes a starter from the bounty's title, description and tech stack/,
+      /^Generate one: an agent writes a starter from the bounty's title, description and tech stack/,
     ),
   ).toBeDefined();
+  // Said once, on the version's card, which offers the first generation.
+  const card = within(part).getByTestId("sandbox-version-card");
+  expect(within(card).getByText("No version yet")).toBeDefined();
+  expect(within(card).getByRole("button", { name: "Generate" })).toBeDefined();
   // Nothing to link: the only way forward is to generate.
   expect(
     within(part)
@@ -3296,6 +3422,7 @@ test("a member is told who generates a sandbox's versions", async () => {
         () =>
           json({
             bounty: detail({
+              ...SCOPED,
               sandbox: sandboxOf(),
               proposal: approvedSummary,
             }),
@@ -3311,7 +3438,7 @@ test("a member is told who generates a sandbox's versions", async () => {
   );
   expect(
     await within(part).findByText(
-      /No version yet\. An owner or admin can generate one from the bounty\./,
+      /^An owner or admin can generate one from the bounty\./,
     ),
   ).toBeDefined();
   expect(within(part).queryByRole("button")).toBeNull();
@@ -3432,6 +3559,8 @@ function generatingServer(input: {
   generate?: () => Promise<Response>;
   /** Its proposal; approved by default, since a draft is not generated from. */
   proposal?: Record<string, unknown> | null;
+  /** Its scope's approval; approved by default, as its price waits on it. */
+  approval?: Record<string, unknown> | null;
   sandbox?: () => Record<string, unknown>;
   publish?: () => Promise<Response>;
   unpublish?: () => Promise<Response>;
@@ -3449,6 +3578,8 @@ function generatingServer(input: {
       () =>
         json({
           bounty: detail({
+            approval:
+              input.approval === undefined ? SCOPED.approval : input.approval,
             sandbox: sandboxOf(input.sandbox?.()),
             proposal:
               input.proposal === undefined ? approvedSummary : input.proposal,
@@ -4089,7 +4220,7 @@ test("a bounty not yet approved shows no price at a glance, however it is resize
     [
       "GET",
       "/bounties/bty_7",
-      () => json({ bounty: detail({ proposal: live() }) }),
+      () => json({ bounty: detail({ ...SCOPED, proposal: live() }) }),
     ],
   ]);
   vi.stubGlobal("fetch", state.fetchMock);
@@ -4490,7 +4621,7 @@ test("a version taken from a bounty not approved cannot be published, and says w
   ).toBeGreaterThan(0);
 });
 
-test("a version built from an approved bounty publishes while the bounty is a draft again", async () => {
+test("a version built from an approved price is not published while the price is a draft again, and says why", async () => {
   vi.stubGlobal(
     "fetch",
     generatingServer({
@@ -4507,10 +4638,20 @@ test("a version built from an approved bounty publishes while the bounty is a dr
   );
   const part = await sandboxPart();
   // Its header names the bounty version it was built on, once its
-  // provenance is read; then it can be published.
+  // provenance is read.
   expect(await within(part).findByText("· Price v1")).toBeDefined();
+  // Built from an approved price, but the sandbox waits on the price as it
+  // is now: approved again first.
   const publish = await within(part).findByRole("button", { name: "Publish" });
-  await waitFor(() => expect(publish.hasAttribute("disabled")).toBe(false));
+  expect(publish.hasAttribute("disabled")).toBe(true);
+  await userEvent.hover(publish.parentElement!);
+  expect(
+    (
+      await screen.findAllByText(
+        "Approve the price before changing the sandbox.",
+      )
+    ).length,
+  ).toBeGreaterThan(0);
 });
 
 test("an approval a published sandbox stands on is taken back, and the sandbox reads as behind", async () => {
@@ -4607,7 +4748,7 @@ test("an approval a published sandbox stands on is taken back, and the sandbox r
   expect(screen.queryByTestId("price-lineage")).toBeNull();
 });
 
-test("a bounty that is a draft, or has no proposal, generates no slice", async () => {
+test("a bounty whose price is a draft, or that has none, or whose scope is not approved, generates no slice, and says what holds it", async () => {
   vi.stubGlobal(
     "fetch",
     generatingServer({
@@ -4618,7 +4759,7 @@ test("a bounty that is a draft, or has no proposal, generates no slice", async (
   let part = await sandboxPart();
   expect(
     await within(part).findByText(
-      /No version yet\. Its price is pending\. Approve it before generating its slice\./,
+      /^Approve the price before changing the sandbox\./,
     ),
   ).toBeDefined();
   expect(
@@ -4628,6 +4769,7 @@ test("a bounty that is a draft, or has no proposal, generates no slice", async (
   ).toBe(true);
   cleanup();
 
+  // No price is held by the price alike.
   vi.stubGlobal(
     "fetch",
     generatingServer({ versions: () => [], proposal: null }).fetchMock,
@@ -4635,9 +4777,180 @@ test("a bounty that is a draft, or has no proposal, generates no slice", async (
   part = await sandboxPart();
   expect(
     await within(part).findByText(
-      /Price the bounty and approve its price before generating its slice\./,
+      /^Approve the price before changing the sandbox\./,
     ),
   ).toBeDefined();
+  cleanup();
+
+  // An approved price over a scope since unapproved waits on the scope first.
+  vi.stubGlobal(
+    "fetch",
+    generatingServer({ versions: () => [], approval: null }).fetchMock,
+  );
+  part = await sandboxPart();
+  expect(
+    await within(part).findByText(
+      /^Approve the scope and the price before changing the sandbox\./,
+    ),
+  ).toBeDefined();
+  expect(
+    within(part)
+      .getByRole("button", { name: "Generate" })
+      .hasAttribute("disabled"),
+  ).toBe(true);
+});
+
+/** What a held control's tooltip says, once the span around it is hovered. */
+async function reasonOn(control: HTMLElement) {
+  await userEvent.hover(control.parentElement!);
+  return (await screen.findByRole("tooltip")).textContent;
+}
+
+test("a price waits on an approved scope: its notice says why, and only unapproving and removing stay open", async () => {
+  // Not priced yet: it cannot be priced.
+  vi.stubGlobal("fetch", server().fetchMock);
+  window.history.replaceState(null, "", "/bounties/acme/bty_7?tab=price");
+  render(<Shell {...inAcme("admin")} />);
+  let page = await screen.findByTestId("bounty-detail");
+  const held = within(page).getByTestId("price-held");
+  expect(held.getAttribute("role")).toBe("status");
+  expect(held.textContent).toContain(
+    "Locked. Approve the scope before changing the price.",
+  );
+  const priceIt = within(page).getByRole("button", { name: "Price it" });
+  expect(priceIt.hasAttribute("disabled")).toBe(true);
+  expect(await reasonOn(priceIt)).toBe(
+    "Approve the scope before changing the price.",
+  );
+  // Its tab wears the lock.
+  expect(
+    within(page)
+      .getByRole("tab", { name: /^Price/ })
+      .hasAttribute("data-held"),
+  ).toBe(true);
+  cleanup();
+
+  // A proposed price is not approved, sized again or resized.
+  vi.stubGlobal("fetch", server([proposed]).fetchMock);
+  render(<Shell {...inAcme("admin")} />);
+  let peek = await screen.findByTestId("proposal-detail");
+  const approve = await within(peek).findByRole("button", { name: "Approve" });
+  expect(approve.hasAttribute("disabled")).toBe(true);
+  expect(await reasonOn(approve)).toBe(
+    "Approve the scope before changing the price.",
+  );
+  expect(
+    within(peek)
+      .getByRole("button", { name: "Re-analyze" })
+      .hasAttribute("disabled"),
+  ).toBe(true);
+  for (const size of within(
+    within(peek).getByRole("group", { name: "Resize" }),
+  ).getAllByRole("button"))
+    expect(size.hasAttribute("disabled")).toBe(true);
+  // Removing it is the way back, and is never held.
+  expect(
+    within(peek)
+      .getByRole("button", { name: "Remove" })
+      .hasAttribute("disabled"),
+  ).toBe(false);
+  cleanup();
+
+  // An approved price over a scope since unapproved can still be unapproved.
+  const state = server([approved]);
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: string, init?: RequestInit) =>
+      /\/proposals\/bpr_9$/.test(String(input))
+        ? json({
+            proposal: proposal({ status: "approved" }),
+            freshness: { freshness: "current", checkedAt: stamp },
+            liveSpec: null,
+            writebackOperations: [],
+          })
+        : state.fetchMock(input, init),
+    ),
+  );
+  render(<Shell {...inAcme("admin")} />);
+  page = await screen.findByTestId("bounty-detail");
+  peek = await within(page).findByTestId("proposal-detail");
+  expect(within(page).getByTestId("price-held")).toBeDefined();
+  expect(
+    (
+      await within(peek).findByRole("button", { name: "Unapprove" })
+    ).hasAttribute("disabled"),
+  ).toBe(false);
+});
+
+test("a sandbox waits on an approved price: its notice says why, and nothing is created", async () => {
+  vi.stubGlobal(
+    "fetch",
+    server([
+      [
+        "GET",
+        "/bounties/bty_7",
+        () =>
+          json({
+            bounty: detail({
+              ...SCOPED,
+              proposal: { ...approvedSummary, status: "proposed" },
+            }),
+          }),
+      ],
+    ]).fetchMock,
+  );
+  window.history.replaceState(null, "", "/bounties/acme/bty_7?tab=sandbox");
+  render(<Shell {...inAcme("owner")} />);
+  const page = await screen.findByTestId("bounty-detail");
+  const held = within(page).getByTestId("sandbox-held");
+  expect(held.getAttribute("role")).toBe("status");
+  expect(held.textContent).toContain(
+    "Locked. Approve the price before changing the sandbox.",
+  );
+  const part = within(page).getByRole("region", { name: "Sandbox" });
+  const create = within(part).getByRole("button", { name: "Create sandbox" });
+  expect(create.hasAttribute("disabled")).toBe(true);
+  expect(await reasonOn(create)).toBe(
+    "Approve the price before changing the sandbox.",
+  );
+  // The step that holds it is a click away.
+  await userEvent.click(
+    within(held).getByRole("button", { name: "Open Price" }),
+  );
+  await waitFor(() =>
+    expect(new URLSearchParams(window.location.search).get("tab")).toBe(
+      "price",
+    ),
+  );
+  // Its price is not held: the scope is approved.
+  expect(within(page).queryByTestId("price-held")).toBeNull();
+});
+
+test("a held step's notice opens the step that holds it, and is an owner's or admin's alone", async () => {
+  vi.stubGlobal("fetch", server().fetchMock);
+  window.history.replaceState(null, "", "/bounties/acme/bty_7?tab=sandbox");
+  render(<Shell {...inAcme("admin")} />);
+  let page = await screen.findByTestId("bounty-detail");
+  // Neither scope nor price approved: the scope holds it first.
+  const held = within(page).getByTestId("sandbox-held");
+  expect(held.textContent).toContain(
+    "Approve the scope and the price before changing the sandbox.",
+  );
+  await userEvent.click(
+    within(held).getByRole("button", { name: "Open Scope" }),
+  );
+  expect(
+    await within(page).findByRole("tab", { name: /^Scope/, selected: true }),
+  ).toBeDefined();
+  expect(new URLSearchParams(window.location.search).get("tab")).toBeNull();
+  cleanup();
+
+  // A member changes nothing here, so is told nothing of what holds it.
+  vi.stubGlobal("fetch", server().fetchMock);
+  window.history.replaceState(null, "", "/bounties/acme/bty_7?tab=price");
+  render(<Shell {...inAcme("member")} />);
+  page = await screen.findByTestId("bounty-detail");
+  expect(within(page).queryByTestId("price-held")).toBeNull();
 });
 
 test("the scope is versioned: an earlier one is read as it was, and the bounty sized from it warns", async () => {
@@ -4987,12 +5300,16 @@ test("each link says whether its sync is in use, warns when its source is ahead,
   render(<Shell {...inAcme("member")} />);
   const page = await screen.findByTestId("bounty-detail");
 
-  // The repository's sync is not in use yet, and says what syncing adds.
+  // The repositories are not read yet, and it says what picking adds.
   const github = await within(page).findByTestId("github-context");
   expect(await within(github).findByText("Not synced")).toBeDefined();
   expect(
-    within(github).getByText(/Sync to add what it says to sizing/),
+    within(github).getByText(/Pick a commit to add what it says to sizing/),
   ).toBeDefined();
+  // They are picked, not synced: their row has no menu.
+  expect(
+    within(page).queryByRole("button", { name: "GitHub options" }),
+  ).toBeNull();
 
   // Jira's is, at v2, and its issue has changed since.
   const jira = within(page).getByTestId("jira-context");
@@ -5023,8 +5340,12 @@ test("each link says whether its sync is in use, warns when its source is ahead,
     "none",
   );
 
+  // Syncing is in the row's menu, beside its picker.
   await userEvent.click(
-    within(jira).getByRole("button", { name: "Sync Jira context" }),
+    within(page).getByRole("button", { name: "Jira options" }),
+  );
+  await userEvent.click(
+    await screen.findByRole("menuitem", { name: "Sync context" }),
   );
   expect(await within(jira).findByText("Synced v3")).toBeDefined();
   expect(
@@ -5048,8 +5369,47 @@ test("each link says whether its sync is in use, warns when its source is ahead,
   ).toBe(false);
 });
 
-test("a refused sync says why, and an unlinked source cannot be synced", async () => {
+/** The built commits route, before the context route it would match. */
+function builtCommits(held: string | null) {
+  return [
+    "GET",
+    "/context/github/commits",
+    () =>
+      json({
+        repositories: [
+          {
+            repoId: "ghr_1",
+            fullName: "acme/app",
+            held,
+            commits: [
+              {
+                snapshotId: "rsn_new",
+                commitSha: "1111111aaaaaa",
+                branch: "main",
+                createdAt: stamp,
+              },
+              {
+                snapshotId: "rsn_old",
+                commitSha: "abcdef1234567",
+                branch: "main",
+                createdAt: stamp,
+              },
+            ],
+          },
+          {
+            repoId: "ghr_2",
+            fullName: "acme/web",
+            held: null,
+            commits: [],
+          },
+        ],
+      }),
+  ] as [string, string, (body: unknown) => Promise<Response>];
+}
+
+test("a refused sync or pick says why, and an unlinked source cannot be synced", async () => {
   const state = server([
+    builtCommits("abcdef1234567"),
     [
       "GET",
       "/bounties/bty_7/context",
@@ -5072,14 +5432,13 @@ test("a refused sync says why, and an unlinked source cannot be synced", async (
         }),
     ],
     [
-      "POST",
-      "/context/github/sync",
+      "PUT",
+      "/context/github/commits",
       () =>
         json(
           {
-            code: "no_snapshot",
-            error:
-              "The repository has no snapshot yet. Try again once it has been read.",
+            code: "not_built",
+            error: "acme/app has not been built at that commit.",
           },
           409,
         ),
@@ -5093,11 +5452,15 @@ test("a refused sync says why, and an unlinked source cannot be synced", async (
 
   const jira = await within(page).findByTestId("jira-context");
   expect(await within(jira).findByText("Not in use")).toBeDefined();
+  await userEvent.click(
+    within(page).getByRole("button", { name: "Jira options" }),
+  );
   expect(
-    within(jira)
-      .getByRole("button", { name: "Sync Jira context" })
-      .hasAttribute("disabled"),
-  ).toBe(true);
+    (
+      await screen.findByRole("menuitem", { name: "Sync context" })
+    ).getAttribute("aria-disabled"),
+  ).toBe("true");
+  await userEvent.keyboard("{Escape}");
 
   const github = within(page).getByTestId("github-context");
   expect(await within(github).findByText("Synced v1")).toBeDefined();
@@ -5111,12 +5474,102 @@ test("a refused sync says why, and an unlinked source cannot be synced", async (
     within(github).getByText("2 more documents left out for length."),
   ).toBeDefined();
 
+  // Each repository is read at its own commit: this one at an older build,
+  // that one never built.
+  const [app, web] = await within(github).findAllByTestId("repository-commit");
+  expect(within(app!).getByText("Older build")).toBeDefined();
+  expect(within(web!).getByText("Not built yet")).toBeDefined();
   await userEvent.click(
-    within(github).getByRole("button", { name: "Sync GitHub context" }),
+    within(app!).getByRole("button", { name: "Commit acme/app is read at" }),
   );
+  const items = await screen.findAllByRole("menuitem");
+  expect(items.map((item) => item.textContent)).toEqual([
+    expect.stringMatching(/^1111111main\s*Latest/),
+    expect.stringMatching(/^abcdef1main/),
+  ]);
+  await userEvent.click(items[0]!);
   expect((await within(github).findByRole("alert")).textContent).toContain(
-    "no snapshot yet",
+    "has not been built at that commit",
   );
+});
+
+test("picking a repository's commit reads it there, and says so", async () => {
+  const unread = {
+    state: "unlinked",
+    reason: null,
+    linked: null,
+    liveRevision: null,
+    latest: null,
+  };
+  const state = server([
+    builtCommits("1111111aaaaaa"),
+    [
+      "GET",
+      "/bounties/bty_7/context",
+      () =>
+        json({
+          jira: unread,
+          github: {
+            state: "current",
+            reason: null,
+            linked: { ref: "acme/app", url: "https://github.com/acme/app" },
+            liveRevision: "acme/app@1111111aaaaaa",
+            latest: {
+              ...githubContextVersion(1),
+              revision: "acme/app@1111111aaaaaa",
+            },
+          },
+        }),
+    ],
+    [
+      "PUT",
+      "/context/github/commits",
+      () =>
+        json({
+          bounty: detail(),
+          context: {
+            jira: unread,
+            github: {
+              state: "current",
+              reason: null,
+              linked: { ref: "acme/app", url: "https://github.com/acme/app" },
+              liveRevision: "acme/app@1111111aaaaaa",
+              latest: githubContextVersion(2),
+            },
+          },
+          changed: true,
+        }),
+    ],
+  ]);
+  vi.stubGlobal("fetch", state.fetchMock);
+  window.history.replaceState(null, "", "/bounties/acme/bty_7");
+  render(<Shell {...inAcme("member")} />);
+  const page = await screen.findByTestId("bounty-detail");
+  const github = await within(page).findByTestId("github-context");
+  expect(await within(github).findByText("Synced v1")).toBeDefined();
+  const [app] = await within(github).findAllByTestId("repository-commit");
+  // At its newest build, nothing marks it.
+  expect(within(app!).queryByText("Older build")).toBeNull();
+
+  // Moved back to the older one.
+  await userEvent.click(
+    within(app!).getByRole("button", { name: "Commit acme/app is read at" }),
+  );
+  await userEvent.click((await screen.findAllByRole("menuitem"))[1]!);
+  expect(await within(github).findByText("Synced v2")).toBeDefined();
+  expect(
+    state.calls.find(
+      ({ method, url }) =>
+        method === "PUT" && url.endsWith("/context/github/commits"),
+    )?.body,
+  ).toEqual({ commits: { ghr_1: "rsn_old" } });
+  // Where each is held is read again.
+  expect(
+    state.calls.filter(
+      ({ method, url }) =>
+        method === "GET" && url.endsWith("/context/github/commits"),
+    ).length,
+  ).toBeGreaterThan(1);
 });
 
 test("a GitHub context read from several repositories says so, and what it has not read", async () => {
@@ -5240,31 +5693,14 @@ async function githubAheadWarning(revision: string, live: string | null) {
   return (await within(github).findByRole("status")).textContent;
 }
 
-const SYNCED = "acme/app@abcdef1234567\nacme/web@1234567abcdef";
-
-test("a GitHub context ahead names the one repository with new commits, and its commits", async () => {
+test("a GitHub context ahead says the built repositories have changed since it was read", async () => {
   expect(
     await githubAheadWarning(
-      SYNCED,
+      "acme/app@abcdef1234567",
       "acme/app@abcdef1234567\nacme/web@7654321fedcba",
     ),
   ).toContain(
-    "acme/web has new commits since v1 was synced (1234567 → 7654321).",
-  );
-});
-
-test("a GitHub context ahead counts the repositories with new commits", async () => {
-  expect(
-    await githubAheadWarning(
-      SYNCED,
-      "acme/app@0000000aaaaaa\nacme/web@7654321fedcba",
-    ),
-  ).toContain("2 repositories have new commits since v1 was synced.");
-});
-
-test("a GitHub context ahead because the repositories changed says so", async () => {
-  expect(await githubAheadWarning(SYNCED, "acme/app@abcdef1234567")).toContain(
-    "The workspace's repositories have changed since v1 was synced.",
+    "The workspace's built repositories have changed since v1 read them. Pick a commit to read them again.",
   );
 });
 
@@ -5276,6 +5712,8 @@ test("a bounty sized and a sandbox generated with older context than the scope h
       () =>
         json({
           bounty: detail({
+            // Approved, so its tab's tooltip says what it is behind alone.
+            ...SCOPED,
             jira: jiraLink,
             stages: {
               scope: { version: 1, context: { jira: 2, github: 1 } },
@@ -5382,6 +5820,7 @@ test("a bounty being sized shows its scenarios, then its size and price, as each
         });
       },
     ],
+    scopedBounty,
   ]);
   vi.stubGlobal("fetch", state.fetchMock);
   window.history.replaceState(null, "", "/bounties/acme/bty_7?tab=bounty");
@@ -5435,6 +5874,7 @@ test("a size the model could not give previews as unsized, as the proposal will 
           },
         }),
     ],
+    scopedBounty,
   ]);
   vi.stubGlobal("fetch", state.fetchMock);
   window.history.replaceState(null, "", "/bounties/acme/bty_7?tab=bounty");
@@ -5464,7 +5904,7 @@ test("re-analyzing a proposal shows the new parts in place of the old as they la
     [
       "GET",
       "/bounties/bty_7",
-      () => json({ bounty: detail({ proposal: liveProposal() }) }),
+      () => json({ bounty: detail({ ...SCOPED, proposal: liveProposal() }) }),
     ],
     [
       "GET",

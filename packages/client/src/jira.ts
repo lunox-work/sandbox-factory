@@ -88,16 +88,28 @@ export class JiraManagementClient extends ApiClient {
       ),
     );
   }
+  /**
+   * Sizes one of a board's tickets. On onboarding, its scope takes the
+   * workspace's repositories first and is approved once it is sized.
+   */
   async proposeIssue(
     owner: string,
     boardId: string,
     issueId: string,
     requestId: string,
+    options: { onboarding?: boolean } = {},
   ) {
     return proposalActionResponseSchema.parse(
       await this.request(
         `${ownerPath(owner)}/jira/boards/${encodeURIComponent(boardId)}/issues`,
-        { method: "POST", body: JSON.stringify({ requestId, issueId }) },
+        {
+          method: "POST",
+          body: JSON.stringify({
+            requestId,
+            issueId,
+            ...(options.onboarding === true ? { onboarding: true } : {}),
+          }),
+        },
       ),
     );
   }

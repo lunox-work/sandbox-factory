@@ -64,6 +64,7 @@ function fixtureApp(token) {
       revision: 1,
       version: 1,
       approval: null,
+      textEditedAt: null,
       stages: { scope: { version: 1 }, price: null, sandbox: null },
       jira: null,
       sandbox: null,
@@ -133,6 +134,16 @@ function fixtureApp(token) {
             organizationIds.includes(bounty.organizationId),
           ).length;
           return { total, uncategorized: total, categories: {} };
+        },
+        // Written here and never approved, so every one is new.
+        statusCounts: async (organizationIds) => {
+          const total = [...rows.values()].filter((bounty) =>
+            organizationIds.includes(bounty.organizationId),
+          ).length;
+          return {
+            total,
+            statuses: { new: total, scoped: 0, priced: 0, live: 0 },
+          };
         },
         get: async (organizationId, bountyId) => {
           const bounty = rows.get(bountyId);

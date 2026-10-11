@@ -12,7 +12,8 @@
  * done to the whole board — sizing every candidate, scanning again — so the
  * scan below is only the tickets, and the one-at-a-time sizing beside them.
  * Sizing, of one ticket or all of them, waits for GitHub where the server
- * offers it: a ticket is sized beside the code.
+ * offers it: a ticket is sized beside the code. While one ticket is sized,
+ * the board stays as it is: no other board, and not the whole of this one.
  */
 
 import { isWorkspaceSource } from "@sandbox-factory/shared";
@@ -230,10 +231,8 @@ function BoardBar({
   needsCode: boolean;
   onChoose: (board: Board) => void;
 }) {
-  const { preview, summary, sizingAvailable, boardRun, sized } = useBacklogScan(
-    organizationId,
-    current.id,
-  );
+  const { preview, summary, sizingAvailable, boardRun, ticketRun, sized } =
+    useBacklogScan(organizationId, current.id);
   const [confirming, setConfirming] = useState(false);
   const candidates = summary?.candidates ?? 0;
 
@@ -246,11 +245,13 @@ function BoardBar({
         ? "Needs GitHub connected first"
         : boardRun !== undefined
           ? "Sizing the board now"
-          : summary === null
-            ? "Scanning…"
-            : candidates === 0
-              ? "Nothing left to size"
-              : null;
+          : ticketRun !== undefined
+            ? `Sizing ${ticketRun.planned[0]?.issueKey ?? "a ticket"} now`
+            : summary === null
+              ? "Scanning…"
+              : candidates === 0
+                ? "Nothing left to size"
+                : null;
 
   return (
     <div
@@ -268,6 +269,8 @@ function BoardBar({
           detail: board.projectKey ?? undefined,
         }))}
         value={current.id}
+        // Its ticket's teaser follows the run; another board would drop it.
+        disabled={ticketRun !== undefined}
         onValueChange={(boardId) => {
           const board = boards.find(({ id }) => id === boardId);
           if (board !== undefined) onChoose(board);
@@ -276,7 +279,7 @@ function BoardBar({
           <button
             type="button"
             aria-label={`Switch board — ${current.name}`}
-            className="hover:bg-muted/70 data-[state=open]:bg-muted focus-visible:ring-ring/50 flex h-12 min-w-0 flex-1 items-center gap-3 rounded-lg px-2 text-left transition-colors focus-visible:ring-[3px] focus-visible:outline-none"
+            className="hover:bg-muted/70 data-[state=open]:bg-muted focus-visible:ring-ring/50 flex h-12 disabled:pointer-events-none disabled:opacity-60 min-w-0 flex-1 items-center gap-3 rounded-lg px-2 text-left transition-colors focus-visible:ring-[3px] focus-visible:outline-none"
           >
             <span className="grid size-9 shrink-0 place-items-center rounded-lg border bg-[#2684FF]/8 [&_svg]:size-[1.125rem]">
               <JiraIcon />
@@ -310,7 +313,9 @@ function BoardBar({
             title="Board actions"
             className="text-muted-foreground hover:text-foreground data-[state=open]:bg-muted size-9 shrink-0"
           >
-            {boardRun !== undefined || preview.isFetching ? (
+            {boardRun !== undefined ||
+            ticketRun !== undefined ||
+            preview.isFetching ? (
               <Loader2 className="animate-spin" />
             ) : (
               <EllipsisVertical />

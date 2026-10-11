@@ -207,13 +207,7 @@ test("each screen's trail names every step above it", () => {
 test("a repository sits under its organization's GitHub tab", () => {
   // A repository has no list page of its own: the registered ones are on
   // the GitHub tab of settings, which is where the crumb before it leads.
-  const trail = trailFor(
-    "org-repository",
-    ACME,
-    undefined,
-    undefined,
-    "acme/widgets",
-  );
+  const trail = trailFor("org-repository", ACME, undefined, "acme/widgets");
   expect(trail.map((c) => c.label)).toEqual([
     "Home",
     "Workspaces",
@@ -268,7 +262,7 @@ test("no trail ends in a step that goes nowhere", () => {
     trailFor("new-bounty"),
     trailFor("org-settings", ACME),
     trailFor("org-settings"),
-    trailFor("org-repository", ACME, undefined, undefined, "acme/widgets"),
+    trailFor("org-repository", ACME, undefined, "acme/widgets"),
     trailFor("org-repository"),
   ];
 

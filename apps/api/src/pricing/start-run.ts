@@ -118,6 +118,12 @@ export async function startRun(
      * proposal back instead of a run.
      */
     readonly issueId?: string;
+    /**
+     * The one bounty was picked on onboarding: its scope takes the
+     * workspace's repositories before it is sized, and is approved once
+     * it is.
+     */
+    readonly onboarding?: boolean;
   },
 ): Promise<StartRunResult> {
   const { organizationId } = input;
@@ -167,6 +173,7 @@ export async function startRun(
       summary: found.summary,
       // Picked by a person, not by a category.
       categories: [],
+      ...(input.onboarding === true ? { onboarding: true } : {}),
     };
   }
 

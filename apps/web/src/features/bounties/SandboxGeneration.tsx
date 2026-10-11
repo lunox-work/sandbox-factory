@@ -27,6 +27,7 @@ import { isPublicationLive } from "sandbox-factory";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { DisabledReason } from "@/components/DisabledReason";
 import { RetryableError } from "@/components/Message";
+import { RuledSection } from "@/components/ReadSection";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -43,7 +44,7 @@ import { sandboxFilesPath } from "../../routes";
 import { LunoxMark } from "@/components/LunoxMark";
 
 import { PublishMenu } from "./PublishMenu";
-import { SandboxCard } from "./SandboxCard";
+import { NoVersion, StepVersionCard } from "./BountySteps";
 
 /** How often a generation in progress is asked about. */
 export const GENERATION_POLL_MS = 3_000;
@@ -130,6 +131,7 @@ export function SandboxGeneration({
   generationBlocked = null,
   readOnly = false,
   flat = false,
+  context = null,
   onChanged,
   children,
 }: {
@@ -145,8 +147,9 @@ export function SandboxGeneration({
   /** Whether its versions are generated; a linked one's are sliced. */
   canGenerate?: boolean;
   /**
-   * Why generating is refused for now, such as a bounty whose proposal is
-   * still a draft; null when it is not.
+   * Why generating and publishing are refused for now, such as a bounty
+   * whose scope or price is not approved; null when they are not.
+   * Unpublishing is the way back, and is never refused.
    */
   generationBlocked?: string | null;
   /**
@@ -162,6 +165,11 @@ export function SandboxGeneration({
    * them out in its own section, which names what a slice is.
    */
   flat?: boolean;
+  /**
+   * The context its version was made with, across the foot of the
+   * version's card; a flat one has no card to carry it.
+   */
+  context?: ReactNode;
   /** Under its versions, such as the way to link a repository. */
   children?: ReactNode;
 }) {
@@ -425,7 +433,8 @@ export function SandboxGeneration({
   else if (selected === null)
     body = (
       <p className="text-muted-foreground text-sm">
-        No version yet.
+        {/* A page's version card says it already. */}
+        {flat && "No version yet."}
         {!readOnly && canGenerate && generationBlocked !== null && (
           <> {generationBlocked}</>
         )}
@@ -536,117 +545,118 @@ export function SandboxGeneration({
   const approvedAt = source.data?.source?.approvedAt ?? null;
   const frozenAt = selected?.frozenAt ?? null;
   const versionName = selected !== null && (
-    <span className="font-semibold">Version {selected.version}</span>
+    <span className="text-subheading">Version {selected.version}</span>
   );
-  const versionHeader = selected !== null && (
-    <div className="flex items-center justify-between gap-3">
-      <span className="flex min-h-9 min-w-0 flex-col justify-center text-xs">
-        {all.length > 1 ? (
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <button
-                type="button"
-                className="focus-visible:ring-ring/50 -mx-1 flex w-fit items-center gap-1 rounded-sm px-1 hover:underline focus-visible:ring-[3px] focus-visible:outline-none"
-                aria-label={`Version ${selected.version}, choose another`}
-              >
-                {versionName}
-                <ChevronDown className="text-muted-foreground size-3.5" />
-              </button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="start" className="min-w-48">
-              {all.map((item) => (
-                <DropdownMenuItem
-                  key={item.id}
-                  onSelect={() =>
-                    setChosenId(item.id === latest?.id ? null : item.id)
-                  }
-                  className="justify-between gap-4"
-                >
-                  <span>Version {item.version}</span>
-                  <span className="text-muted-foreground text-xs">
-                    {item.id === sandbox.currentVersionId && live
-                      ? "Published"
-                      : item.id === latest?.id
-                        ? "Latest"
-                        : createdOn(item.createdAt)}
-                  </span>
-                </DropdownMenuItem>
-              ))}
-            </DropdownMenuContent>
-          </DropdownMenu>
-        ) : (
-          versionName
-        )}
-        <span className="text-muted-foreground flex flex-wrap gap-x-1">
-          {published && approvedAt !== null ? (
-            <span>
-              Published{" "}
-              <time dateTime={approvedAt}>{dateTime(approvedAt)}</time>
-              {expiresAt !== null && (
-                <>
-                  {" "}
-                  · Expires{" "}
-                  <time dateTime={expiresAt}>{dateTime(expiresAt)}</time>
-                </>
-              )}
-            </span>
-          ) : current && expiresAt !== null ? (
-            <span>
-              Expired <time dateTime={expiresAt}>{dateTime(expiresAt)}</time>
-            </span>
-          ) : frozenAt !== null ? (
-            <span>
-              Frozen <time dateTime={frozenAt}>{dateTime(frozenAt)}</time> · Not
-              published
-            </span>
-          ) : (
-            <span>Not published yet</span>
-          )}
-          {selected.id === latest?.id && <span>· Latest</span>}
-          {/* What it stands on: the step before it, by version. */}
-          {priceVersion !== null ? (
-            <span>· Price v{priceVersion}</span>
-          ) : (
-            source.data?.source != null && <span>· Price pending</span>
-          )}
-        </span>
-      </span>
-      {publishes &&
-        (published ? (
-          <>
-            <Button
-              variant="outline"
-              disabled={publishing}
-              onClick={() => setUnpublishing(true)}
+  const versionLine = selected !== null && (
+    <span className="flex min-h-9 min-w-0 flex-col justify-center text-xs">
+      {all.length > 1 ? (
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <button
+              type="button"
+              className="focus-visible:ring-ring/50 -mx-1 flex w-fit items-center gap-1 rounded-sm px-1 hover:underline focus-visible:ring-[3px] focus-visible:outline-none"
+              aria-label={`Version ${selected.version}, choose another`}
             >
-              Unpublish
-            </Button>
-            <ConfirmDialog
-              open={unpublishing}
-              onOpenChange={setUnpublishing}
-              title="Unpublish this version?"
-              description="Contributors lose access to the sandbox until a version is published again. The version itself is kept."
-              confirmLabel="Unpublish"
-              pendingLabel="Unpublishing…"
-              busy={publishing}
-              onConfirm={() => publish(null)}
-            />
-          </>
+              {versionName}
+              <ChevronDown className="text-muted-foreground size-3.5" />
+            </button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="start" className="min-w-48">
+            {all.map((item) => (
+              <DropdownMenuItem
+                key={item.id}
+                onSelect={() =>
+                  setChosenId(item.id === latest?.id ? null : item.id)
+                }
+                className="justify-between gap-4"
+              >
+                <span>Version {item.version}</span>
+                <span className="text-muted-foreground text-xs">
+                  {item.id === sandbox.currentVersionId && live
+                    ? "Published"
+                    : item.id === latest?.id
+                      ? "Latest"
+                      : createdOn(item.createdAt)}
+                </span>
+              </DropdownMenuItem>
+            ))}
+          </DropdownMenuContent>
+        </DropdownMenu>
+      ) : (
+        versionName
+      )}
+      <span className="text-muted-foreground flex flex-wrap gap-x-1">
+        {published && approvedAt !== null ? (
+          <span>
+            Published <time dateTime={approvedAt}>{dateTime(approvedAt)}</time>
+            {expiresAt !== null && (
+              <>
+                {" "}
+                · Expires{" "}
+                <time dateTime={expiresAt}>{dateTime(expiresAt)}</time>
+              </>
+            )}
+          </span>
+        ) : current && expiresAt !== null ? (
+          <span>
+            Expired <time dateTime={expiresAt}>{dateTime(expiresAt)}</time>
+          </span>
+        ) : frozenAt !== null ? (
+          <span>
+            Frozen <time dateTime={frozenAt}>{dateTime(frozenAt)}</time> · Not
+            published
+          </span>
         ) : (
-          <PublishMenu
-            disabledReason={
-              !publishable
-                ? "Only a version whose build passed can be published."
-                : !fromApproved
-                  ? "This version was not built from an approved price."
-                  : null
-            }
-            busy={publishing}
-            onPublish={(until) => void publish(until)}
-          />
-        ))}
-    </div>
+          <span>Not published yet</span>
+        )}
+        {selected.id === latest?.id && <span>· Latest</span>}
+        {/* What it stands on: the step before it, by version. */}
+        {priceVersion !== null ? (
+          <span>· Price v{priceVersion}</span>
+        ) : (
+          source.data?.source != null && <span>· Price pending</span>
+        )}
+      </span>
+    </span>
   );
+  const publishAction =
+    selected !== null &&
+    publishes &&
+    (published ? (
+      <>
+        <Button
+          variant="outline"
+          disabled={publishing}
+          onClick={() => setUnpublishing(true)}
+        >
+          Unpublish
+        </Button>
+        <ConfirmDialog
+          open={unpublishing}
+          onOpenChange={setUnpublishing}
+          title="Unpublish this version?"
+          description="Contributors lose access to the sandbox until a version is published again. The version itself is kept."
+          confirmLabel="Unpublish"
+          pendingLabel="Unpublishing…"
+          busy={publishing}
+          onConfirm={() => publish(null)}
+        />
+      </>
+    ) : (
+      <PublishMenu
+        disabledReason={
+          generationBlocked !== null
+            ? generationBlocked
+            : !publishable
+              ? "Only a version whose build passed can be published."
+              : !fromApproved
+                ? "This version was not built from an approved price."
+                : null
+        }
+        busy={publishing}
+        onPublish={(until) => void publish(until)}
+      />
+    ));
 
   const openButton = browsable && selectedId !== null && (
     <Button asChild>
@@ -662,16 +672,16 @@ export function SandboxGeneration({
     </Button>
   );
 
+  // On a page, the first generation is the version card's one action.
+  const firstOnCard = !flat && latest === null;
+  const rowGenerate = !firstOnCard && generateButton;
   const content = (
     <div className="flex flex-col gap-4" data-testid="sandbox-generation">
       {body}
-      {generates && selected !== null && generationBlocked !== null && (
-        <p className="text-muted-foreground text-sm">{generationBlocked}</p>
-      )}
-      {(openButton || generateButton) && (
+      {(openButton || rowGenerate) && (
         <div className="flex flex-wrap items-center gap-2">
           {openButton}
-          {generateButton}
+          {rowGenerate}
         </div>
       )}
       {children}
@@ -683,26 +693,53 @@ export function SandboxGeneration({
     </div>
   );
 
+  // A panel's section names what a slice is; its version heads it.
+  if (flat)
+    return (
+      <div className="flex flex-col gap-3">
+        {versionLine !== false && (
+          <div className="flex items-center justify-between gap-3">
+            {versionLine}
+            {publishAction}
+          </div>
+        )}
+        {content}
+      </div>
+    );
+
+  /*
+    A page's sandbox, laid out as its scope is: its version's card, the one
+    card on the tab, then the slice in a ruled section of its own.
+  */
   return (
-    <div className="flex flex-col gap-3">
-      {versionHeader}
-      {flat ? (
-        content
-      ) : (
-        <SandboxCard
-          icon={LunoxMark}
-          // The mark in the foreground's ink: white on the dark theme.
-          iconClassName="text-foreground"
-          title="Slice"
-          description={
-            canGenerate
-              ? "The task as a runnable project, written from the bounty. Only your workspace can see it; each generation is kept as a version."
-              : "Sliced from your repository, down to the task. Only your workspace can see it; each generation is kept as a version."
-          }
-        >
-          {content}
-        </SandboxCard>
-      )}
-    </div>
+    <>
+      <StepVersionCard
+        step="sandbox"
+        tile={selected === null ? "—" : `v${selected.version}`}
+        approved={published}
+        action={
+          selected === null ? firstOnCard && generateButton : publishAction
+        }
+        context={context}
+      >
+        {selected !== null ? (
+          versionLine
+        ) : (
+          <NoVersion
+            title={
+              versions.isPending ? "Reading its versions…" : "No version yet"
+            }
+          />
+        )}
+      </StepVersionCard>
+      <RuledSection title="Slice">
+        <p className="text-muted-foreground text-sm">
+          {canGenerate
+            ? "The task as a runnable project, written from the bounty. Only your workspace can see it; each generation is kept as a version."
+            : "Sliced from your repository, down to the task. Only your workspace can see it; each generation is kept as a version."}
+        </p>
+        {content}
+      </RuledSection>
+    </>
   );
 }

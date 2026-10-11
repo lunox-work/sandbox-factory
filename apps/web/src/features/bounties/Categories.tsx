@@ -95,17 +95,23 @@ export function CategoryFilter({
   counts,
   selected,
   onSelect,
+  className,
 }: {
   counts: BountyCategoryCountsDto | undefined;
   /** A category's id, `UNCATEGORIZED`, or null for all of them. */
   selected: string | null;
   onSelect: (category: string | null) => void;
+  /** Where it sits in the row. */
+  className?: string;
 }) {
   const value = selected ?? ALL_CATEGORIES;
   const active = chosenEntry(counts, selected);
   return (
     <FilterSelect
       data-testid="category-filter"
+      className={className}
+      // Near the row's end, so its list opens back across the row.
+      align="end"
       label="Category"
       searchPlaceholder="Search categories…"
       value={value}

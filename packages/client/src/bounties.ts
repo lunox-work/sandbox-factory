@@ -1,15 +1,17 @@
 import {
   proposalActionResponseSchema,
   bountyCategoryCountsSchema,
+  bountyStatusCountsSchema,
   bountyListResponseSchema,
   bountySizingResponseSchema,
   bountyResponseSchema,
   scopeVersionListSchema,
   bountyContextResponseSchema,
+  bountyGithubCommitsResponseSchema,
   syncBountyContextResponseSchema,
   type BountyListFilter,
-  type ContextSourceDto,
   type CreateBountyInput,
+  type PinBountyGithubCommitsInput,
   type LinkBountyJiraInput,
   type UpdateBountyInput,
 } from "@sandbox-factory/shared";
@@ -101,6 +103,20 @@ export class BountyClient extends ApiClient {
       }),
     );
   }
+  /**
+   * How many of the caller's bounties stand at each status, narrowed as
+   * the list is by everything but status.
+   */
+  async myBountyStatuses(
+    query: Pick<BountyListQuery, "category" | "board" | "source"> = {},
+    signal?: AbortSignal,
+  ) {
+    return bountyStatusCountsSchema.parse(
+      await this.request(`/api/v1/me/bounty-statuses?${pageParams(query)}`, {
+        signal,
+      }),
+    );
+  }
   async bounty(owner: string, id: string, signal?: AbortSignal) {
     return bountyResponseSchema.parse(
       await this.request(
@@ -128,14 +144,40 @@ export class BountyClient extends ApiClient {
     );
   }
   /**
-   * Reads one of its sources now and keeps what it found as the source's
-   * next context version, when it is new.
+   * Reads its Jira issue now and keeps what it found as the source's next
+   * context version, when it is new. GitHub is pinned instead
+   * (`pinBountyGithubCommits`).
    */
-  async syncBountyContext(owner: string, id: string, source: ContextSourceDto) {
+  async syncBountyContext(owner: string, id: string, source: "jira") {
     return syncBountyContextResponseSchema.parse(
       await this.request(
         `${ownerPath(owner)}/bounties/${encodeURIComponent(id)}/context/${source}/sync`,
         { method: "POST" },
+      ),
+    );
+  }
+  /** Each repository's built commits, and the one its scope holds. */
+  async bountyGithubCommits(owner: string, id: string, signal?: AbortSignal) {
+    return bountyGithubCommitsResponseSchema.parse(
+      await this.request(
+        `${ownerPath(owner)}/bounties/${encodeURIComponent(id)}/context/github/commits`,
+        { signal },
+      ),
+    );
+  }
+  /**
+   * Reads the repositories' documents at the built commits picked, each by
+   * its repository's id; the others stay where the scope holds them.
+   */
+  async pinBountyGithubCommits(
+    owner: string,
+    id: string,
+    input: PinBountyGithubCommitsInput,
+  ) {
+    return syncBountyContextResponseSchema.parse(
+      await this.request(
+        `${ownerPath(owner)}/bounties/${encodeURIComponent(id)}/context/github/commits`,
+        { method: "PUT", body: JSON.stringify(input) },
       ),
     );
   }

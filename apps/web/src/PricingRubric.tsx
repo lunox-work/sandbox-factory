@@ -45,7 +45,7 @@ import {
 
 import { LoadingLine } from "@/components/Message";
 import { ThinkingLine } from "@/components/Thinking";
-import { SectionHeading } from "@/components/ReadSection";
+import { RuledSection, SectionHeading } from "@/components/ReadSection";
 import { Button } from "@/components/ui/button";
 import {
   HoverCard,
@@ -203,6 +203,7 @@ export function PricingRubricBlock({
   busy,
   onUse,
   scenarios,
+  flat = false,
 }: {
   proposal: RubricProposal;
   /** Whether the viewer may put the rubric's size in force. */
@@ -211,6 +212,11 @@ export function PricingRubricBlock({
   onUse: () => void;
   /** The spec it scored, for its factors to open onto. */
   scenarios?: RubricScenarios | undefined;
+  /**
+   * Inside its bounty: a ruled section on the page, as the scope's text is,
+   * its rows across the page's column rather than inset in a card.
+   */
+  flat?: boolean;
 }) {
   const stored = proposal.rubric ?? null;
   const shown = scenarios?.shown;
@@ -231,104 +237,127 @@ export function PricingRubricBlock({
     rubric.size !== null &&
     rubric.size !== proposal.complexity;
 
+  // Each row's inset from the card's edge; flat, the page's column is it.
+  const inset = flat ? "" : "px-4 sm:px-5";
+  const table = (
+    <div
+      className={
+        flat ? "flex flex-col" : "bg-card overflow-hidden rounded-xl border"
+      }
+    >
+      {/* The total, set large, and what it is made of, as one bar. */}
+      <div className={cn("flex flex-col gap-4", flat ? "pb-4" : "p-4 sm:p-5")}>
+        <div className="flex flex-wrap items-start justify-between gap-x-6 gap-y-3">
+          <div className="flex min-w-0 flex-col gap-1">
+            <p
+              className="text-muted-foreground flex flex-wrap items-baseline gap-x-1.5 text-sm"
+              data-testid="rubric-total"
+            >
+              <span className="text-foreground text-3xl leading-none font-semibold tracking-tight tabular-nums">
+                {total}
+              </span>{" "}
+              points
+              {rubric.size !== null && (
+                <>
+                  {" "}
+                  <span aria-hidden>→</span>
+                  <span className="sr-only">is</span>{" "}
+                  <span
+                    key={rubric.size}
+                    className="border-primary/30 bg-primary/10 text-primary animate-in fade-in-0 zoom-in-90 rounded-[4px] border px-1.5 py-px font-mono text-xs font-semibold duration-300 motion-reduce:animate-none"
+                  >
+                    {rubric.size}
+                  </span>
+                </>
+              )}
+            </p>
+            <p
+              className="text-muted-foreground text-xs"
+              data-testid="rubric-source"
+            >
+              {earlier
+                ? `As revision ${shown.viewing} would score. The price goes with revision ${shown.current}.`
+                : sourceLine(proposal, rubric)}
+            </p>
+          </div>
+          {offer && (
+            <Button size="sm" variant="outline" disabled={busy} onClick={onUse}>
+              Use the rubric's {rubric.size}
+            </Button>
+          )}
+          {earlier && (
+            <Button
+              size="sm"
+              variant="outline"
+              data-testid="spec-earlier"
+              onClick={() => shown.onView(null)}
+            >
+              Show current
+            </Button>
+          )}
+        </div>
+
+        <Breakdown rubric={rubric} onPoint={setLit} />
+
+        <p
+          className="text-muted-foreground text-sm leading-relaxed"
+          data-testid="rubric-rationale"
+        >
+          {describeRubric(rubric as RubricAssessment)}
+        </p>
+      </div>
+
+      <div className="divide-y border-t">
+        {rubric.dimensions.map((dimension) => (
+          <DimensionRow
+            key={dimension.id}
+            dimension={dimension}
+            rubric={rubric}
+            lit={lit === dimension.id}
+            inset={inset}
+            scenarios={
+              scenarios !== undefined &&
+              (dimension.id === "scenarios" || dimension.id === "tests")
+                ? scenarios
+                : undefined
+            }
+          />
+        ))}
+      </div>
+      <div
+        className={cn(
+          "flex items-baseline justify-between border-t py-3 text-sm font-semibold",
+          inset,
+          !flat && "bg-muted/30",
+        )}
+      >
+        <span>Total</span>
+        <span className="tabular-nums">{total}</span>
+      </div>
+
+      <Ladder
+        rubric={rubric}
+        card={card}
+        current={proposal.complexity}
+        inset={inset}
+      />
+
+      <Rules rubric={rubric} inset={inset} flat={flat} />
+    </div>
+  );
+
+  if (flat)
+    return (
+      <RuledSection title="Why this price" data-testid="pricing-rubric">
+        {table}
+      </RuledSection>
+    );
   return (
     <section data-testid="pricing-rubric" aria-labelledby="pricing-rubric-head">
       <SectionHeading icon={<Calculator />} id="pricing-rubric-head">
         Why this price
       </SectionHeading>
-      <div className="bg-card overflow-hidden rounded-xl border">
-        {/* The total, set large, and what it is made of, as one bar. */}
-        <div className="flex flex-col gap-4 p-4 sm:p-5">
-          <div className="flex flex-wrap items-start justify-between gap-x-6 gap-y-3">
-            <div className="flex min-w-0 flex-col gap-1">
-              <p
-                className="text-muted-foreground flex flex-wrap items-baseline gap-x-1.5 text-sm"
-                data-testid="rubric-total"
-              >
-                <span className="text-foreground text-3xl leading-none font-semibold tracking-tight tabular-nums">
-                  {total}
-                </span>{" "}
-                points
-                {rubric.size !== null && (
-                  <>
-                    {" "}
-                    <span aria-hidden>→</span>
-                    <span className="sr-only">is</span>{" "}
-                    <span
-                      key={rubric.size}
-                      className="border-primary/30 bg-primary/10 text-primary animate-in fade-in-0 zoom-in-90 rounded-[4px] border px-1.5 py-px font-mono text-xs font-semibold duration-300 motion-reduce:animate-none"
-                    >
-                      {rubric.size}
-                    </span>
-                  </>
-                )}
-              </p>
-              <p
-                className="text-muted-foreground text-xs"
-                data-testid="rubric-source"
-              >
-                {earlier
-                  ? `As revision ${shown.viewing} would score. The price goes with revision ${shown.current}.`
-                  : sourceLine(proposal, rubric)}
-              </p>
-            </div>
-            {offer && (
-              <Button
-                size="sm"
-                variant="outline"
-                disabled={busy}
-                onClick={onUse}
-              >
-                Use the rubric's {rubric.size}
-              </Button>
-            )}
-            {earlier && (
-              <Button
-                size="sm"
-                variant="outline"
-                data-testid="spec-earlier"
-                onClick={() => shown.onView(null)}
-              >
-                Show current
-              </Button>
-            )}
-          </div>
-
-          <Breakdown rubric={rubric} onPoint={setLit} />
-
-          <p
-            className="text-muted-foreground text-sm leading-relaxed"
-            data-testid="rubric-rationale"
-          >
-            {describeRubric(rubric as RubricAssessment)}
-          </p>
-        </div>
-
-        <div className="divide-y border-t">
-          {rubric.dimensions.map((dimension) => (
-            <DimensionRow
-              key={dimension.id}
-              dimension={dimension}
-              rubric={rubric}
-              lit={lit === dimension.id}
-              scenarios={
-                scenarios !== undefined &&
-                (dimension.id === "scenarios" || dimension.id === "tests")
-                  ? scenarios
-                  : undefined
-              }
-            />
-          ))}
-        </div>
-        <div className="bg-muted/30 flex items-baseline justify-between border-t px-4 py-3 text-sm font-semibold sm:px-5">
-          <span>Total</span>
-          <span className="tabular-nums">{total}</span>
-        </div>
-
-        <Ladder rubric={rubric} card={card} current={proposal.complexity} />
-
-        <Rules rubric={rubric} />
-      </div>
+      {table}
     </section>
   );
 }
@@ -527,10 +556,13 @@ function DimensionRow({
   rubric,
   lit,
   scenarios,
+  inset,
 }: {
   dimension: Dimension;
   rubric: RubricAssessmentDto;
   lit: boolean;
+  /** Its inset from the edge it is set against. */
+  inset: string;
   /** For the dimensions the spec scores: the spec, to open onto. */
   scenarios: RubricScenarios | undefined;
 }) {
@@ -540,7 +572,8 @@ function DimensionRow({
   return (
     <div
       className={cn(
-        "px-4 py-3.5 transition-colors duration-300 sm:px-5",
+        "py-3.5 transition-colors duration-300",
+        inset,
         lit && "bg-muted/40",
       )}
       data-testid={`rubric-${dimension.id}`}
@@ -948,13 +981,15 @@ function Ladder({
   rubric,
   card,
   current,
+  inset,
 }: {
   rubric: RubricAssessmentDto;
   card: BountyProposalDto["rateCard"];
   current: BountyProposalDto["complexity"];
+  inset: string;
 }) {
   return (
-    <div className="border-t px-4 py-4 sm:px-5">
+    <div className={cn("border-t py-4", inset)}>
       <p className="text-muted-foreground mb-2.5 text-xs font-medium">
         Points to size, on this rate card
       </p>
@@ -1025,11 +1060,23 @@ function Ladder({
 }
 
 /** The rubric itself, folded: what each rule counts, scores and why. */
-function Rules({ rubric }: { rubric: RubricAssessmentDto }) {
+function Rules({
+  rubric,
+  inset,
+  flat,
+}: {
+  rubric: RubricAssessmentDto;
+  inset: string;
+  flat: boolean;
+}) {
   const rules = rubricRules(rubric.weightPoints);
   return (
     <details
-      className="group bg-muted/20 border-t px-4 py-3 text-xs sm:px-5"
+      className={cn(
+        "group border-t py-3 text-xs",
+        inset,
+        !flat && "bg-muted/20",
+      )}
       data-testid="rubric-rules"
     >
       <summary className="text-muted-foreground hover:text-foreground flex cursor-pointer list-none items-center gap-1 font-medium transition-colors [&::-webkit-details-marker]:hidden">

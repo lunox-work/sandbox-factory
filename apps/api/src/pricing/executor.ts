@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 
 import {
   followsJira,
+  textFollowsJira,
   type BountyProposalStore,
   type BountyRunStore,
   type BountySpecStore,
@@ -190,12 +191,25 @@ export interface BountyExecutorOptions {
     bounty: StoredBounty,
   ) => Promise<LatestBountyContext>;
   /**
+   * Syncs the workspace's repositories into a bounty's scope, as a person's
+   * GitHub sync does, for a ticket picked on onboarding. Absent, or failing,
+   * the ticket is sized with whatever its scope already holds.
+   */
+  readonly syncContextFor?: (
+    organizationId: string,
+    bounty: StoredBounty,
+    userId: string,
+  ) => Promise<void>;
+  /**
    * The outline of each of the workspace's repositories a bounty's work
-   * could touch, from its current snapshot, in name order; a repository
-   * with no snapshot yet has none. Absent, no draft is shown any.
+   * could touch, in name order, each from the built commit the bounty's
+   * GitHub context holds it at (else its newest build), so the outline and
+   * the documents are of one commit. A repository never built has none, so
+   * the draft cannot name it. Absent, no draft is shown any.
    */
   readonly outlinesFor?: (
     organizationId: string,
+    github: LatestBountyContext["github"],
   ) => Promise<readonly RepositoryOutlineRead[]>;
   readonly now?: () => Date;
   readonly leaseToken?: () => string;
@@ -534,11 +548,17 @@ export class BountyExecutor {
       run continues as the row the store hands back: sizing against the
       deadline it claimed with would cut a long run short.
     */
+    // A ticket picked on onboarding stays so in the plan written over it.
+    const onboarding = run.kind === "issue" && onboardingRun(run);
     const planned = await runs.recordPlan(
       organizationId,
       run.id,
       leaseToken,
-      candidates.map(planEntry),
+      candidates.map((candidate) =>
+        onboarding
+          ? { ...planEntry(candidate), onboarding: true }
+          : planEntry(candidate),
+      ),
     );
     if (planned === null) return;
 
@@ -555,11 +575,23 @@ export class BountyExecutor {
     );
     /*
       The repositories any bounty's work could touch: every one the
-      workspace has connected. Read once for the run, like the settings
-      above, so a backlog's bounties are drafted beside the same snapshots.
+      workspace has built. Read once for the run per set of commits a
+      scope holds them at, like the settings above, so a backlog's bounties
+      held alike are drafted beside the same snapshots.
     */
-    let outlines: Promise<readonly RepositoryOutlineRead[]> | undefined;
-    const outline = () => (outlines ??= this.#outlines(organizationId));
+    const outlines = new Map<
+      string,
+      Promise<readonly RepositoryOutlineRead[]>
+    >();
+    const outline = (github: LatestBountyContext["github"]) => {
+      const key = github === null ? "" : `${github.refId}\n${github.revision}`;
+      let read = outlines.get(key);
+      if (read === undefined) {
+        read = this.#outlines(organizationId, github);
+        outlines.set(key, read);
+      }
+      return read;
+    };
 
     const outcomes: BountyRunOutcome[] = [];
     let nextIndex = 0;
@@ -668,14 +700,57 @@ export class BountyExecutor {
     }
   }
 
+  /**
+   * The workspace's repositories, synced into a bounty's scope. One that
+   * cannot be synced leaves it as it was: sizing goes on without it.
+   */
+  async #syncContext(
+    organizationId: string,
+    bounty: StoredBounty,
+    userId: string,
+  ): Promise<void> {
+    const sync = this.#options.syncContextFor;
+    if (sync === undefined) return;
+    try {
+      await sync(organizationId, bounty, userId);
+    } catch (error) {
+      this.#options.onBackgroundError?.("bounty_context_sync_failed", error);
+    }
+  }
+
+  /**
+   * Approves a bounty's scope at the version it is at now. One that cannot
+   * be approved stays open, for a person to approve.
+   */
+  async #approveScope(
+    organizationId: string,
+    bountyId: string,
+    approvedBy: string,
+  ): Promise<void> {
+    const { bounties } = this.#options;
+    try {
+      const current = await bounties.get(organizationId, bountyId);
+      if (current === null) return;
+      await bounties.approve(
+        organizationId,
+        bountyId,
+        current.revision,
+        approvedBy,
+      );
+    } catch (error) {
+      this.#options.onBackgroundError?.("bounty_scope_approval_failed", error);
+    }
+  }
+
   /** The workspace's repositories' outlines, or none when they cannot be read. */
   async #outlines(
     organizationId: string,
+    github: LatestBountyContext["github"],
   ): Promise<readonly RepositoryOutlineRead[]> {
     const read = this.#options.outlinesFor;
     if (read === undefined) return [];
     try {
-      return await read(organizationId);
+      return await read(organizationId, github);
     } catch (error) {
       // The outlines help a weight; they are not what a size stands on, so
       // repositories that cannot be read leave the draft without them.
@@ -802,7 +877,8 @@ export class BountyExecutor {
       | { readonly code: string }
     >
   > {
-    if (bounty.jira === null || client === null || !followsJira(bounty)) {
+    // Its text changed here is what it asks for, not the issue's.
+    if (bounty.jira === null || client === null || !textFollowsJira(bounty)) {
       return { value: await stored(bounty) };
     }
     let spec: JiraIssueSpec;
@@ -1112,7 +1188,9 @@ export class BountyExecutor {
     scope: RunScope,
     signal: AbortSignal,
     stepSettings: StepSettings,
-    outlinesOf: () => Promise<readonly RepositoryOutlineRead[]>,
+    outlinesOf: (
+      github: LatestBountyContext["github"],
+    ) => Promise<readonly RepositoryOutlineRead[]>,
   ): Promise<{ value?: BountyRunOutcome; fatalCode?: string }> {
     const read = await this.#readCandidate(organizationId, candidate, scope);
     if (read.value === undefined) return { fatalCode: read.fatalCode };
@@ -1120,18 +1198,29 @@ export class BountyExecutor {
       return { value: { ...read.value.failed, status: "failed" } };
     }
     const { bounty, content, specHash, base } = read.value;
+    /*
+      A ticket picked on onboarding is sized beside the code without the
+      person syncing it first: its scope takes the repositories' documents
+      now, so the draft and the size read them and the price is not behind
+      its scope's context the moment it lands.
+    */
+    const onboardedBy =
+      run.kind === "issue" && onboardingRun(run) ? run.startedBy : null;
+    if (onboardedBy !== null)
+      await this.#syncContext(organizationId, bounty, onboardedBy);
+    // What its sources add, as synced: the draft and the size see it, and
+    // the proposal records which versions they saw.
+    const held = await this.#context(organizationId, bounty);
     // Each repository under a label of its own, the same in its outline
-    // and its documents, which the draft names the ones it touches by.
-    const outlines = await outlinesOf();
+    // and its documents, which the draft names the ones it touches by:
+    // outlined at the commits its documents were read at.
+    const outlines = await outlinesOf(held.github);
     const labels = new Map(
       outlines.map(({ fullName }, index) => [fullName, repositoryLabel(index)]),
     );
     const repositoryOutline = outlines
       .map(({ text }, index) => `=== ${repositoryLabel(index)} ===\n${text}`)
       .join("\n\n");
-    // What its sources add, as synced: the draft and the size see it, and
-    // the proposal records which versions they saw.
-    const held = await this.#context(organizationId, bounty);
     const sourceContext = renderSourceContext(
       {
         jira: held.jira?.content ?? null,
@@ -1395,6 +1484,15 @@ export class BountyExecutor {
       }
     }
 
+    // Sized on onboarding: its scope is approved, as the step the person
+    // would take next. One left unsized needs more said, so stays open.
+    if (
+      onboardedBy !== null &&
+      !technicalFailure &&
+      sizing.complexity !== "unsized"
+    )
+      await this.#approveScope(organizationId, bounty.id, onboardedBy);
+
     return {
       value: {
         ...base,
@@ -1438,6 +1536,11 @@ function baseOf(bounty: StoredBounty): OutcomeBase {
     issueKey: bounty.jira?.key ?? null,
     bountyId: bounty.id,
   };
+}
+
+/** A run sizing a ticket picked on onboarding. */
+function onboardingRun(run: StoredBountyRun): boolean {
+  return run.planned[0]?.onboarding === true;
 }
 
 function planEntry(candidate: Candidate): BountyRunPlannedIssue {

@@ -6,6 +6,7 @@ import {
   updateBountySchema,
 } from "@sandbox-factory/shared";
 import {
+  keepPreviousData,
   useInfiniteQuery,
   useQuery,
   useQueryClient,
@@ -25,7 +26,7 @@ import type {
   BountyDto,
   BountySummaryDto,
 } from "@sandbox-factory/shared";
-import { useCallback } from "react";
+import { useCallback, useState } from "react";
 import type { BountyStatus } from "sandbox-factory";
 
 /** How many bounties a page reads; the route's largest. */
@@ -62,6 +63,16 @@ export interface AllBounties {
   loading: boolean;
   error: string | null;
   more: boolean;
+  /**
+   * The list is narrowed otherwise and its new rows are on their way; until
+   * they land, the rows shown are the ones it had.
+   */
+  switching: boolean;
+  /**
+   * Which narrowing the rows shown are for: it changes when a new one's
+   * rows land, not when it is asked for, so the list can bring them in.
+   */
+  view: string;
   loadMore: () => Promise<void>;
   /** Reads the list again after it failed. */
   retry: () => void;
@@ -187,7 +198,15 @@ export function useAllBounties(filter: BountyFilter = {}): AllBounties {
         signal,
       ),
     getNextPageParam: (page) => page.nextCursor ?? undefined,
+    // Narrowed otherwise, the rows it had stay until the new ones land, so
+    // the list changes once rather than going blank in between.
+    placeholderData: keepPreviousData,
   });
+  const key = JSON.stringify([category, board, source, status]);
+  const [view, setView] = useState(key);
+  if (view !== key && query.data !== undefined && !query.isPlaceholderData) {
+    setView(key);
+  }
   const loadMore = useCallback(async () => {
     await query.fetchNextPage();
   }, [query.fetchNextPage]);
@@ -199,6 +218,8 @@ export function useAllBounties(filter: BountyFilter = {}): AllBounties {
     loading: query.isPending,
     error: query.isError ? "Could not load the bounties." : null,
     more: query.hasNextPage,
+    switching: query.isPlaceholderData,
+    view,
     loadMore,
     retry,
   };
@@ -231,6 +252,34 @@ export function useBountyCategories(
   });
 }
 
+/**
+ * How many of the person's bounties stand at each status, narrowed as the
+ * list is by everything but status, so each keeps its count while one is
+ * chosen.
+ */
+export function useBountyStatuses(
+  category: string | undefined,
+  board: string | undefined,
+  source?: "lunox",
+) {
+  const userId = useUserId();
+  return useQuery({
+    queryKey: [
+      ...queryKeys.me(userId, "bounty-statuses"),
+      { category, board, source },
+    ],
+    queryFn: ({ signal }) =>
+      clients.bounties.myBountyStatuses(
+        {
+          ...(category === undefined ? {} : { category }),
+          ...(board === undefined ? {} : { board }),
+          ...(source === undefined ? {} : { source }),
+        },
+        signal,
+      ),
+  });
+}
+
 export function useBounties(organizationId: string): Bounties {
   const userId = useUserId();
   const queryClient = useQueryClient();
@@ -242,6 +291,9 @@ export function useBounties(organizationId: string): Bounties {
       }),
       queryClient.invalidateQueries({
         queryKey: queryKeys.me(userId, "bounty-categories"),
+      }),
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.me(userId, "bounty-statuses"),
       }),
       ...[
         "bounties",

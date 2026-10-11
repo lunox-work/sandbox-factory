@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import { ApiError } from "@sandbox-factory/client";
 import { useProposalMutations } from "./mutations";
 import { ProposalPeek } from "./ProposalPeek";
@@ -22,6 +23,8 @@ export function BountyProposal({
   bountyTitle,
   canDecide,
   scopeVersion = null,
+  held = null,
+  context = null,
   onChanged,
   onRemoved,
 }: {
@@ -32,6 +35,10 @@ export function BountyProposal({
   canDecide: boolean;
   /** The scope version it was sized from, when one says what it did. */
   scopeVersion?: number | null;
+  /** Why its price cannot be changed yet; null when it can. */
+  held?: string | null;
+  /** The context it was sized with, across the foot of its version's card. */
+  context?: ReactNode;
   /** After a change has landed, for whatever shows the bounty's proposal. */
   onChanged: () => void;
   onRemoved: () => void;
@@ -79,7 +86,7 @@ export function BountyProposal({
     ...(bountyTitle === undefined ? {} : { liveTitle: bountyTitle }),
   };
   return (
-    <div className="flex flex-col gap-4">
+    <div className="flex flex-col gap-6">
       {error !== null && <ErrorBanner className="mt-0">{error}</ErrorBanner>}
       <ProposalPeek
         base={base}
@@ -95,6 +102,8 @@ export function BountyProposal({
         onRemoved={onRemoved}
         withinBounty
         scopeVersion={scopeVersion}
+        held={held}
+        context={context}
       />
     </div>
   );

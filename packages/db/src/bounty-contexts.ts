@@ -71,8 +71,9 @@ export interface BountyContextStore {
   /**
    * Keeps what a sync read. Content the latest version from the same
    * source already holds is that version, read again at a later revision:
-   * its `revision` and `checkedAt` move and `changed` is false. Anything
-   * else is the next version. Serialized per bounty, so two syncs at once
+   * its `revision` and `checkedAt` move, its content takes what the hash
+   * leaves out (where it was read: an issue's `updated`, each repository's
+   * commit) and `changed` is false. Anything else is the next version. Serialized per bounty, so two syncs at once
    * do not both take one number.
    */
   record(
@@ -184,7 +185,14 @@ export function createBountyContextStore(db: Database): BountyContextStore {
         ) {
           const rows = (await tx
             .update(bountyContext)
-            .set({ ref: input.ref, revision: input.revision, checkedAt: now })
+            .set({
+              ref: input.ref,
+              revision: input.revision,
+              // The same said, read elsewhere: a repository moved to an
+              // older build whose documents match names that commit now.
+              content: input.content,
+              checkedAt: now,
+            })
             .where(
               and(
                 eq(bountyContext.bountyId, bountyId),

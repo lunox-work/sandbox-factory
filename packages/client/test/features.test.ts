@@ -118,14 +118,26 @@ test("bounty transport retains conflicts and cancels without dispatch", async ()
   });
   assert.match(paths[2] ?? "", /^\/api\/v1\/me\/bounties\?cursor=page/);
   await client.myBounties();
+  // A list of bounties is not how many stand at each status.
+  await assert.rejects(client.myBountyStatuses({ category: "left-behind" }));
+  assert.match(
+    paths.at(-1) ?? "",
+    /^\/api\/v1\/me\/bounty-statuses\?category=left-behind$/,
+  );
   // An answer with no versions is not a list of them.
   await assert.rejects(client.scopeVersions("owner", "1"));
   assert.match(paths.at(-1) ?? "", /\/bounties\/1\/versions$/);
   // Nor is an empty answer a source's context, or a sync's.
   await assert.rejects(client.bountyContext("owner", "1"));
   assert.match(paths.at(-1) ?? "", /\/bounties\/1\/context$/);
-  await assert.rejects(client.syncBountyContext("owner", "1", "github"));
-  assert.match(paths.at(-1) ?? "", /\/bounties\/1\/context\/github\/sync$/);
+  await assert.rejects(client.syncBountyContext("owner", "1", "jira"));
+  assert.match(paths.at(-1) ?? "", /\/bounties\/1\/context\/jira\/sync$/);
+  await assert.rejects(client.bountyGithubCommits("owner", "1"));
+  assert.match(paths.at(-1) ?? "", /\/bounties\/1\/context\/github\/commits$/);
+  await assert.rejects(
+    client.pinBountyGithubCommits("owner", "1", { commits: { r: "s" } }),
+  );
+  assert.match(paths.at(-1) ?? "", /\/bounties\/1\/context\/github\/commits$/);
   await assert.rejects(client.bounty("owner", "1"));
   await assert.rejects(client.decideBounty("owner", "1", "approve", 2));
   assert.match(paths.at(-1) ?? "", /\/bounties\/1\/approve$/);
@@ -183,7 +195,7 @@ test("bounty transport retains conflicts and cancels without dispatch", async ()
     client.bounties("owner", {}, AbortSignal.abort(new Error("stopped"))),
     /stopped/,
   );
-  assert.equal(paths.length, 10);
+  assert.equal(paths.length, 13);
 });
 
 test("pricing detail and revision envelopes fail explicitly when malformed", async () => {
@@ -215,6 +227,25 @@ test("pricing detail and revision envelopes fail explicitly when malformed", asy
     await jira.proposeIssue("owner", "board", "1", "request"),
     {},
   );
+});
+
+test("sizing a ticket on onboarding says so in its request", async () => {
+  const bodies: unknown[] = [];
+  const jira = new JiraManagementClient({
+    baseUrl: "",
+    fetch: (async (_input, init) => {
+      bodies.push(JSON.parse(String(init?.body)));
+      return Response.json({});
+    }) as typeof fetch,
+  });
+  await jira.proposeIssue("owner", "board", "1", "request");
+  await jira.proposeIssue("owner", "board", "1", "request", {
+    onboarding: true,
+  });
+  assert.deepEqual(bodies, [
+    { requestId: "request", issueId: "1" },
+    { requestId: "request", issueId: "1", onboarding: true },
+  ]);
 });
 
 test("GitHub management validates installation and write envelopes", async () => {

@@ -400,6 +400,11 @@ function fixture(
     unready: boolean;
     /** The bounty's proposal is not approved. */
     unapproved: boolean;
+    /**
+     * The step before the sandbox that is not approved. Unless said, no
+     * bounty is read: the steps before are not what the rest test.
+     */
+    held: "scope" | "price";
   }> = {},
 ) {
   const published: { versionId: string; actor: string; expiresAt: string }[] =
@@ -662,6 +667,17 @@ function fixture(
       },
     },
     repos: { list: async () => workspaceRepos },
+    bounties: {
+      get: async (owner: string, id: string) =>
+        overrides.held === undefined || owner !== "org_1" || id !== "bty_1"
+          ? null
+          : {
+              id,
+              // Approved at version 1; held by the scope, it has moved on.
+              version: overrides.held === "scope" ? 2 : 1,
+              approval: { version: 1, approvedBy: "user_1", approvedAt: stamp },
+            },
+    },
     proposals: {
       liveForBounty: async (owner: string, bountyId: string) =>
         owner !== "org_1"
@@ -680,7 +696,7 @@ function fixture(
               complexity: "M",
               amountMinor: 10500,
               currency: "USD",
-              status: "approved",
+              status: overrides.held === "price" ? "proposed" : "approved",
               decidedAt: stamp,
               specRevision: 2,
               repositories: [{ repoId: "ghr_1", snapshotId: "rsn_1" }],
@@ -775,6 +791,41 @@ function fixture(
     launches: () => launches,
   };
 }
+
+test("a sandbox is changed only on an approved scope and price; unpublishing is not held", async () => {
+  for (const [held, error] of [
+    ["scope", "Approve the scope and the price before changing the sandbox."],
+    ["price", "Approve the price before changing the sandbox."],
+  ] as const) {
+    const f = fixture("owner", { held });
+    for (const [method, path, body] of [
+      ["POST", "", { bountyId: "bty_1" }],
+      ["PUT", "/sbx_1/source", undefined],
+      ["POST", "/sbx_1/starter", undefined],
+      ["POST", "/sbx_1/versions", { sliceRunId: "arn_slice" }],
+      ["PATCH", "/versions/sbv_1", { title: "Renamed" }],
+      ["POST", "/versions/sbv_1/build", undefined],
+      [
+        "POST",
+        "/versions/sbv_1/publish",
+        { expiresAt: "2026-10-09T00:00:00.000Z" },
+      ],
+    ] as const) {
+      const response = await f.request(method, path, body);
+      assert.equal(response.status, 409, `${held} ${method} ${path}`);
+      assert.deepEqual(await response.json(), {
+        code: "step_held",
+        heldBy: held,
+        error,
+      });
+    }
+    assert.deepEqual(f.created, []);
+    assert.deepEqual(f.patches, []);
+    assert.deepEqual(f.builds, []);
+    assert.deepEqual(f.published, []);
+    assert.equal((await f.request("POST", "/sbx_1/unpublish")).status, 200);
+  }
+});
 
 test("an admin publishes a version whose build passed, and unpublishes the sandbox", async () => {
   const f = fixture();
@@ -1819,6 +1870,8 @@ function starterFixture(
               title: "Sum a cart",
               description: "The cart adds up its prices.",
               stack: ["Zod"],
+              version: 1,
+              approval: { version: 1, approvedBy: "user_1", approvedAt: stamp },
               ...overrides.bounty,
             }
           : null,
@@ -2101,13 +2154,11 @@ test("generating is refused for members, a linked sandbox, an off-Node or empty 
       409,
       "task_not_ready",
     ],
-    // A bounty with no proposal, or a draft one, is not generated from.
-    [starterFixture("owner", { proposal: false }), 409, "task_not_ready"],
-    [
-      starterFixture("owner", { proposalStatus: "proposed" }),
-      409,
-      "task_not_ready",
-    ],
+    // A bounty with no proposal, a draft one, or a scope not approved is
+    // not generated from.
+    [starterFixture("owner", { proposal: false }), 409, "step_held"],
+    [starterFixture("owner", { proposalStatus: "proposed" }), 409, "step_held"],
+    [starterFixture("owner", { bounty: { approval: null } }), 409, "step_held"],
     [starterFixture("owner", { limit: true }), 409, "run_limit"],
     [
       starterFixture("owner", { created: "source_linked" }),
@@ -2133,7 +2184,7 @@ test("generating is refused for members, a linked sandbox, an off-Node or empty 
   }
   // Nothing was queued for a refusal before the run.
   assert.equal(cases[3]?.[0].enqueued.length, 0);
-  assert.equal(cases[12]?.[0].enqueued.length, 0);
+  assert.equal(cases[13]?.[0].enqueued.length, 0);
 });
 
 test("a generated version changes its listing, but not its transform or build, and has nothing to replay", async () => {

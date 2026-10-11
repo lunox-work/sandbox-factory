@@ -172,6 +172,17 @@ export function mountGithubRoutes<Env extends GithubAppEnv>(
   };
   const back = (path: string, outcome: GithubConnectOutcome) =>
     redirectTarget(appUrl, path, { github: outcome });
+  /**
+   * Back from a link: `connected` naming the connection made, so the page
+   * opens its repositories dialog straight away, or `claimed`.
+   */
+  const linked = (path: string, result: Awaited<ReturnType<typeof link>>) =>
+    result.status === "linked"
+      ? redirectTarget(appUrl, path, {
+          github: "connected",
+          githubConnection: result.connection.id,
+        })
+      : back(path, "claimed");
 
   /** A state for this flow, signed for this person and organization. */
   function stateFor(organizationId: string, userId: string, returnTo: string) {
@@ -359,9 +370,8 @@ export function mountGithubRoutes<Env extends GithubAppEnv>(
             ),
           );
         }
-        const result = await link(organizationId, installation);
         return c.redirect(
-          back(returnTo, result.status === "linked" ? "connected" : "claimed"),
+          linked(returnTo, await link(organizationId, installation)),
         );
       }
 
@@ -379,10 +389,7 @@ export function mountGithubRoutes<Env extends GithubAppEnv>(
       }
       const only = linkable.length === 1 ? linkable[0] : undefined;
       if (only !== undefined) {
-        const result = await link(organizationId, only);
-        return c.redirect(
-          back(returnTo, result.status === "linked" ? "connected" : "claimed"),
-        );
+        return c.redirect(linked(returnTo, await link(organizationId, only)));
       }
       // Several to choose from, or some visible that are not theirs: the
       // picker says which is which, and offers the install page as well.

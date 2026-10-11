@@ -449,25 +449,38 @@ adds context beyond its text, read only when a person asks: `POST
 (`JiraClient.issueContext`: type, status, priority, labels, components,
 releases, due date, story points found by the site's own field name,
 estimates, demand and links; never a person or a comment) and takes its
-text as a run's read does; `POST .../context/github/sync` reads the
-Markdown of every repository the workspace has connected, at each one's
-newest snapshot, chosen across them by `contextDocumentsAcross` in
-`packages/core/src/sources.ts` (every README, then guides and docs, a path
-naming a word of the title earlier, vendored code and boilerplate never)
-and cut to one set of caps. A repository with no snapshot yet is named as
-unread. A version synced while a bounty named one repository keeps that
-shape (`githubRepositories` reads either) and reads as `unsynced` until the
-workspace's are synced. Any
-member may sync, and an approved scope does not hold a sync back, as it
-does not hold back Jira's text. Each sync that finds something new is the
+text as a run's read does. Repositories are not synced but pinned: `GET
+.../context/github/commits` lists each connected repository's built
+commits (`RepoSnapshotStore.built`: snapshots whose graphify run succeeded
+and whose other builders have all finished, `snapshotBuilt` in core; the
+wiki is not waited on) with the commit the scope holds it at, read from
+the latest version's revision, and `PUT .../context/github/commits` with
+`{ commits: { repoId: snapshotId } }` reads the Markdown of every
+repository the workspace has connected, each at the built commit picked
+for it, else the one the scope holds it at while still built, else its
+newest build, so a repository can be moved back to an older build and
+each is held at its own. The documents are chosen across them by
+`contextDocumentsAcross` in `packages/core/src/sources.ts` (every README,
+then guides and docs, a path naming a word of the title earlier, vendored
+code and boilerplate never) and cut to one set of caps. A repository never
+built is named as unread; a commit that is not built is refused
+`not_built`. Sizing a ticket picked on onboarding reads them the same way
+with no picks. A version synced while a bounty named one repository keeps
+that shape (`githubRepositories` reads either) and reads as `unsynced`
+until the workspace's are picked. Any member may sync and pin, and an
+approved scope holds back neither, as it does not hold back Jira's text. Each sync that finds something new is the
 source's next version in `bounty_context` (migration 0056), kept with the
 revision it was read at (Jira's `updated`, the commit); one that finds the
-same content moves only that version's revision. The hash leaves those
+same content moves only that version's revision and where its content
+says it was read (a repository moved back to an older build whose
+documents match names that commit). The hash leaves those
 revisions out, so an edit to the issue's text or a commit that changes no
 document makes no version. `GET .../context` says where each source stands:
 `unlinked`, `unsynced` (including a latest version from an issue or
-repository since replaced), `current`, `ahead` (Jira's `updated`, or the
-newest snapshot's commit, is past the sync) or `unavailable` with a reason.
+repository since replaced), `current`, `ahead` (Jira's `updated` is past
+the sync; for GitHub, the repositories built now are not the ones it read,
+since a newer build of one is offered, not followed) or `unavailable` with
+a reason.
 The scope holds the latest version of each source while it came from the
 source linked now (`heldContext` in `apps/api/src/bounties/held-context.ts`),
 and that is the context sizing and generation are given:
@@ -736,14 +749,16 @@ the panel is a glance, read and not changed, in one column with no tabs: its
 details, a row each (status, price, why its scan picked it, sandbox, Jira
 issue, the repositories its sizing says the work touches, stack and
 workspace), its description, and its sandbox's version once it has one. The page's links name the workspace's repositories and lead
-to its GitHub settings, with their sync under them. Its proposal, and every
+to its GitHub settings, with each one's commit picker under them. Its proposal, and every
 change, are on its page, which the panel's Open as page leads to. On the page,
 a bounty with no price offers to make one on its Price tab; once it has
 one, that tab holds the live proposal in its peek, where it is
 reviewed and decided, without the peek's Spec tab or Jira link,
-since the bounty shows both. Each link on the scope has its sync under
-it: its state, what its latest version adds, a Sync button and, while its
-source is ahead, a warning. Each step names the context versions it holds
+since the bounty shows both. Each link on the scope has its context under
+it: its state, what its latest version adds, and, while its source is
+ahead, a warning; the issue's has a Sync item in its row's menu, and each
+repository a picker of its built commits, newest first, marked when an
+older build is held. Each step names the context versions it holds
 or was made with, and the price and sandbox steps warn at the top of their
 page when the scope holds newer context. The old `?bounty=…&workspace=…&proposal=…` query,
 the per-workspace `/o/:slug/bounties` and `/o/:slug/tickets?ticket=…`
@@ -938,7 +953,10 @@ their caps on `bounty_context` as the bounty's context (see Bounties).
 **A bounty names no repository, and neither does a board** (migration 0059
 dropped `bounty.repo_id` and `jira_board.source_repo_id`). Its work may
 touch any repository the workspace has connected, so sizing drafts each
-spec beside an outline of every one's current snapshot — module names with
+spec beside an outline of every one that is built, at the commit the
+bounty's scope holds it at (else its newest build), so the outline and the
+documents are of one commit and a repository never built cannot be named —
+module names with
 file counts and file types, under a neutral label each ("Repository 1"),
 sharing one cap of lines (`outlineLinesEach` in
 `apps/api/src/sizing/outline.ts`) — and the draft (`draft-v6`) names, by
@@ -980,7 +998,13 @@ reads the entities, enums and relations the repository's Prisma schema,
 Drizzle tables or SQL migrations declare, with the modules that touch them.
 The last two read graphify's map and are what the agents read. A repository
 has one context: every builder at one commit, the snapshot
-`github_repo.context_snapshot_id` names. "Build all"
+`github_repo.context_snapshot_id` names. A repository is built where it
+is registered: the repositories dialog, in settings and onboarding alike,
+waits for its first snapshot, starts "Build all" on it and stays open
+until the snapshot is built or its map fails
+(`apps/web/src/features/analysis/useRepositoryBuilds.ts`), one repository
+at a time so a set is never refused by the run cap halfway; one registered
+before and never built offers the same build there. "Build all"
 (`POST .../repositories/:id/builds`) on another snapshot moves it there; the
 page's rows and "View all" read that snapshot whichever one is chosen, and
 say when the chosen one differs. Runs on other snapshots stay cached, so

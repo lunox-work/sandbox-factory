@@ -100,6 +100,7 @@ function run(overrides: Partial<StoredBountyRun> = {}): StoredBountyRun {
     boardId: "jrb_1",
     bountyId: null,
     kind: "backlog",
+    startedBy: "usr_1",
     sourceProposalId: null,
     sourceRevision: null,
     respec: null,
@@ -192,6 +193,7 @@ function bounty(overrides: Partial<StoredBounty> = {}): StoredBounty {
     revision: 1,
     version: 1,
     approval: null,
+    textEditedAt: null,
     jira: {
       issueId: "jri_1",
       boardId: "jrb_1",
@@ -269,6 +271,10 @@ function harness(options: {
   touched?: readonly string[];
   /** What the context read answers; absent, the executor has no reader. */
   contextFor?: BountyExecutorOptions["contextFor"];
+  /** The onboarding sync; absent, the executor has none. */
+  syncContextFor?: BountyExecutorOptions["syncContextFor"];
+  /** Approving a scope fails with this, as a database fault would. */
+  approveError?: Error;
   onBackgroundError?: BountyExecutorOptions["onBackgroundError"];
   onProposalDrafted?: BountyExecutorOptions["onProposalDrafted"];
   profilingEnabled?: boolean;
@@ -288,6 +294,11 @@ function harness(options: {
   const refreshed: { bountyId: string; content: BountyContent }[] = [];
   const imported: BountyContent[] = [];
   const startedWritebacks: string[] = [];
+  const approvals: {
+    bountyId: string;
+    expectedRevision: number;
+    approvedBy: string;
+  }[] = [];
   const runs = {
     get: (_org: string, id: string) =>
       Promise.resolve(
@@ -441,6 +452,17 @@ function harness(options: {
       refreshed.push({ bountyId, content });
       return Promise.resolve(true);
     },
+    approve: (
+      _org: string,
+      bountyId: string,
+      expectedRevision: number,
+      approvedBy: string,
+    ) => {
+      if (options.approveError !== undefined)
+        return Promise.reject(options.approveError);
+      approvals.push({ bountyId, expectedRevision, approvedBy });
+      return Promise.resolve({ ok: true });
+    },
     categorize: (
       _org: string,
       bountyId: string,
@@ -559,6 +581,9 @@ function harness(options: {
     ...(options.contextFor === undefined
       ? {}
       : { contextFor: options.contextFor }),
+    ...(options.syncContextFor === undefined
+      ? {}
+      : { syncContextFor: options.syncContextFor }),
     ...(options.onBackgroundError === undefined
       ? {}
       : { onBackgroundError: options.onBackgroundError }),
@@ -586,6 +611,7 @@ function harness(options: {
     refreshed,
     imported,
     startedWritebacks,
+    approvals,
     caller,
   };
 }
@@ -741,6 +767,116 @@ test("an issue run sizes the one bounty it names, read fresh from Jira", async (
     (state.outcomes[0] as { proposalId?: string }).proposalId,
     "bpr_1",
   );
+});
+
+const onboardingPlan = [
+  { externalIssueId: "7", issueKey: "APP-7", summary: "Old", onboarding: true },
+];
+
+test("an onboarding issue run syncs the repositories into the scope before sizing, and approves it once sized", async () => {
+  const order: string[] = [];
+  const state = harness({
+    runOverrides: { kind: "issue", planned: onboardingPlan },
+    syncContextFor: (_org, synced, userId) => {
+      order.push(`sync ${synced.id} as ${userId}`);
+      return Promise.resolve();
+    },
+    contextFor: () => {
+      order.push("context");
+      return Promise.resolve({ jira: null, github: null });
+    },
+  });
+  await state.executor.execute("org_1", "brn_1");
+
+  assert.equal(state.finishes[0]?.status, "succeeded");
+  // Synced first, so the draft and the size read what it found.
+  assert.deepEqual(order, ["sync bty_1 as usr_1", "context"]);
+  // Kept in the plan written over the one it was started with.
+  assert.equal(
+    (state.plans[0] as { onboarding?: boolean }[])[0]?.onboarding,
+    true,
+  );
+  assert.deepEqual(state.approvals, [
+    { bountyId: "bty_1", expectedRevision: 1, approvedBy: "usr_1" },
+  ]);
+});
+
+test("an issue run not from onboarding syncs and approves nothing", async () => {
+  let synced = 0;
+  const state = harness({
+    runOverrides: {
+      kind: "issue",
+      planned: [{ externalIssueId: "7", issueKey: "APP-7", summary: "Old" }],
+    },
+    syncContextFor: () => {
+      synced += 1;
+      return Promise.resolve();
+    },
+  });
+  await state.executor.execute("org_1", "brn_1");
+
+  assert.equal(state.finishes[0]?.status, "succeeded");
+  assert.equal(synced, 0);
+  assert.deepEqual(state.approvals, []);
+});
+
+test("an onboarding issue run left unsized keeps its scope open", async () => {
+  const state = harness({
+    runOverrides: { kind: "issue", planned: onboardingPlan },
+    caller: sizing([
+      {
+        result: {
+          complexity: "unsized",
+          confidence: "low",
+          rationale: "Too little said.",
+          unsizedReason: "missing requirements",
+        },
+        actualModel: "actual-model",
+        usage: { inputTokens: 10, outputTokens: 5 },
+      },
+    ]),
+  });
+  await state.executor.execute("org_1", "brn_1");
+
+  assert.equal(state.proposalInputs.length, 1);
+  assert.deepEqual(state.approvals, []);
+});
+
+test("an onboarding issue run sizes on when its sync or approval fails", async () => {
+  const errors: string[] = [];
+  const state = harness({
+    runOverrides: { kind: "issue", planned: onboardingPlan },
+    syncContextFor: () => Promise.reject(new Error("GitHub is down")),
+    approveError: new Error("database refused"),
+    onBackgroundError: (code) => errors.push(code),
+  });
+  await state.executor.execute("org_1", "brn_1");
+
+  assert.equal(state.finishes[0]?.status, "succeeded");
+  assert.equal(
+    (state.outcomes[0] as { proposalId?: string }).proposalId,
+    "bpr_1",
+  );
+  assert.deepEqual(errors, [
+    "bounty_context_sync_failed",
+    "bounty_scope_approval_failed",
+  ]);
+});
+
+test("an onboarding issue run whose starter is gone syncs and approves nothing", async () => {
+  let synced = 0;
+  const state = harness({
+    runOverrides: { kind: "issue", planned: onboardingPlan, startedBy: null },
+    syncContextFor: () => {
+      synced += 1;
+      return Promise.resolve();
+    },
+  });
+  await state.executor.execute("org_1", "brn_1");
+
+  assert.equal(state.finishes[0]?.status, "succeeded");
+  assert.equal(synced, 0);
+  assert.deepEqual(state.approvals, []);
 });
 
 test("an issue run whose bounty was split into sub-tasks since it was picked sizes nothing", async () => {
@@ -926,6 +1062,31 @@ test("the workspace's repositories are outlined once for the run, each under its
       { repoId: "ghr_2", snapshotId: "rsn_2" },
     ]);
   }
+});
+
+test("each bounty is outlined at the commits its scope holds, once per set of them", async () => {
+  const asked: (string | null)[] = [];
+  const githubAt = (revision: string) =>
+    ({ refId: "workspace", revision, version: 1 }) as never;
+  const contexts: string[] = [];
+  const state = harness({
+    // The first two held alike, the third elsewhere.
+    contextFor: () => {
+      contexts.push("context");
+      return Promise.resolve({
+        jira: null,
+        github: githubAt(contexts.length === 3 ? "acme/app@c1" : "acme/app@c2"),
+      });
+    },
+    outlinesFor: (_organizationId, github) => {
+      asked.push(github?.revision ?? null);
+      return Promise.resolve(outlines);
+    },
+    candidates: [issue("1"), issue("2"), issue("3")],
+  });
+  await state.executor.execute("org_1", "brn_1");
+
+  assert.deepEqual(asked.sort(), ["acme/app@c1", "acme/app@c2"]);
 });
 
 test("a label the outline did not hold names no repository", async () => {
@@ -2081,6 +2242,24 @@ test("a bounty whose Jira issue has gone keeps its text and is sized from it", a
 
   assert.deepEqual(state.removed, ["jri_1"]);
   assert.equal(state.finishes[0]?.status, "succeeded");
+  assert.equal(
+    (state.caller.calls[0]?.input as { descriptionText: string })
+      .descriptionText,
+    "Clear acceptance criteria.",
+  );
+});
+
+test("a Jira bounty whose text was changed here is sized from that text", async () => {
+  const state = harness({
+    bounties: [bounty({ textEditedAt: "2026-10-02T00:00:00.000Z" })],
+    runOverrides: oneBountyRun("bty_1"),
+    specs: { "1": spec("1", { descriptionText: "Jira's older text." }) },
+  });
+  await state.executor.execute("org_1", "brn_1");
+
+  assert.equal(state.finishes[0]?.status, "succeeded");
+  // Jira's text is neither read for it nor written over it.
+  assert.deepEqual(state.refreshed, []);
   assert.equal(
     (state.caller.calls[0]?.input as { descriptionText: string })
       .descriptionText,

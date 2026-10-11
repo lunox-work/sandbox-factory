@@ -13,7 +13,11 @@ import type { BountyRunDto } from "@sandbox-factory/shared";
 import { ListChecks, Sparkles } from "lucide-react";
 import { priceFor } from "sandbox-factory";
 
-import { ModelCard, SectionHeading } from "@/components/ReadSection";
+import {
+  ModelCard,
+  RuledSection,
+  SectionHeading,
+} from "@/components/ReadSection";
 import { ThinkingLine } from "@/components/Thinking";
 
 import { money, plural } from "../../lib/format";
@@ -95,63 +99,103 @@ export function PreviewPrice({ run }: { run: Following }) {
   );
 }
 
-/** Why the model sized it so, once it has. */
-export function PreviewReason({ run }: { run: Following }) {
+/**
+ * Why the model sized it so, once it has. `flat` inside its bounty: a ruled
+ * section on the page, as the proposal's own will be, not a card.
+ */
+export function PreviewReason({
+  run,
+  flat = false,
+}: {
+  run: Following;
+  flat?: boolean;
+}) {
   const { sizing } = progressOf(run);
+  const reason =
+    sizing === undefined ? (
+      <Lines />
+    ) : (
+      <p className="text-sm leading-relaxed">
+        {sizing === null
+          ? "The model could not size this bounty."
+          : sizing.rationale}
+      </p>
+    );
+  if (flat)
+    return (
+      <RuledSection title="Why this size" data-testid="preview-reason">
+        {reason}
+      </RuledSection>
+    );
   return (
     <div data-testid="preview-reason">
       <SectionHeading icon={<Sparkles />} tone="model">
         Why this size
       </SectionHeading>
-      <ModelCard>
-        {sizing === undefined ? (
-          <Lines />
-        ) : (
-          <p className="text-sm leading-relaxed">
-            {sizing === null
-              ? "The model could not size this bounty."
-              : sizing.rationale}
-          </p>
-        )}
-      </ModelCard>
+      <ModelCard>{reason}</ModelCard>
     </div>
   );
 }
 
-/** The scenarios the bounty was drafted into, once they are. */
-export function PreviewScenarios({ run }: { run: Following }) {
+/**
+ * The scenarios the bounty was drafted into, once they are. `flat` inside
+ * its bounty: a ruled section on the page, not a card.
+ */
+export function PreviewScenarios({
+  run,
+  flat = false,
+}: {
+  run: Following;
+  flat?: boolean;
+}) {
   const { spec } = progressOf(run);
+  const count =
+    spec == null ? undefined : plural(spec.scenarios.length, "scenario");
+  const box = flat ? undefined : "rounded-lg border p-4";
+  const body =
+    spec === undefined ? (
+      <div className={box}>
+        <Lines />
+      </div>
+    ) : spec === null ? (
+      <p className="text-muted-foreground text-sm">
+        The scenarios could not be drafted.
+      </p>
+    ) : (
+      <div className={box}>
+        <p className="mb-2 text-sm font-medium">{spec.feature}</p>
+        <ul className="flex flex-col gap-1.5">
+          {spec.scenarios.map((scenario) => (
+            <li key={scenario.id} className="flex items-center gap-2 text-sm">
+              <KindDot kind={scenario.kind} />
+              <span className="min-w-0 break-words">{scenario.title}</span>
+            </li>
+          ))}
+        </ul>
+      </div>
+    );
+  if (flat)
+    return (
+      <RuledSection
+        title="Scenarios"
+        aside={
+          count === undefined ? undefined : (
+            <span className="text-muted-foreground text-xs tabular-nums">
+              {count}
+            </span>
+          )
+        }
+        data-testid="preview-scenarios"
+      >
+        {body}
+      </RuledSection>
+    );
   return (
     <div data-testid="preview-scenarios">
-      <SectionHeading
-        icon={<ListChecks />}
-        aside={
-          spec == null ? undefined : plural(spec.scenarios.length, "scenario")
-        }
-      >
+      <SectionHeading icon={<ListChecks />} aside={count}>
         Scenarios
       </SectionHeading>
-      {spec === undefined ? (
-        <div className="rounded-lg border p-4">
-          <Lines />
-        </div>
-      ) : spec === null ? (
-        <p className="text-muted-foreground text-sm">
-          The scenarios could not be drafted.
-        </p>
-      ) : (
-        <div className="rounded-lg border p-4">
-          <p className="mb-2 text-sm font-medium">{spec.feature}</p>
-          <ul className="flex flex-col gap-1.5">
-            {spec.scenarios.map((scenario) => (
-              <li key={scenario.id} className="flex items-center gap-2 text-sm">
-                <KindDot kind={scenario.kind} />
-                <span className="min-w-0 break-words">{scenario.title}</span>
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
+      {body}
     </div>
   );
 }

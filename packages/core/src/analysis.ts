@@ -135,6 +135,43 @@ export const GRAPH_READERS = [
 export function readsGraph(tool: AnalysisTool): boolean {
   return GRAPH_READERS.some((name) => name === tool);
 }
+/**
+ * The builders a snapshot waits on before it counts as built: every context
+ * builder but `deepwiki`, whose wiki waits on a model, is read only by
+ * people, and is unavailable where no DeepWiki-Open service is configured.
+ * It goes on building after the snapshot counts as built.
+ */
+export const REQUIRED_BUILDERS = CONTEXT_BUILDERS.filter(
+  (builder) => builder !== "deepwiki",
+);
+/**
+ * Whether a snapshot's runs make it built: its graphify map succeeded, which
+ * slices, scopes and the map readers all read, and every other required
+ * builder has finished, however it finished. A builder that fails on the
+ * repository (dependency-cruiser on a codebase it cannot read) does not
+ * keep its commit from being picked. Runs of any tool may be passed; only
+ * the required builders' are read.
+ */
+export function snapshotBuilt(
+  runs: readonly { readonly tool: string; readonly status: AnalysisStatus }[],
+): boolean {
+  const required = runs.filter((run) =>
+    REQUIRED_BUILDERS.some((builder) => builder === run.tool),
+  );
+  if (
+    !required.some(
+      (run) => run.tool === "graphify" && run.status === "succeeded",
+    )
+  )
+    return false;
+  return REQUIRED_BUILDERS.every((builder) =>
+    required.some(
+      (run) =>
+        run.tool === builder &&
+        (run.status === "succeeded" || run.status === "failed"),
+    ),
+  );
+}
 /** Bumped when the slice walk, extractor or artifact shapes change meaning. */
 export const SLICE_TOOL_VERSION = "slice@1";
 /** Bumped when the generated project, harness or baseline rules change meaning. */

@@ -620,7 +620,9 @@ export const linkInstallationRequestSchema = z.object({
 /**
  * How the connect callback ends, appended to the return path as `?github=`.
  *
- * - `connected` — an installation is linked.
+ * - `connected` — an installation is linked. When it is the one the person
+ *   chose, or the only one, `?githubConnection=` names its connection, and
+ *   the page opens that account's repositories dialog.
  * - `pick` — several free installations; the web app shows a picker.
  * - `cancelled` — the person declined on GitHub.
  * - `state` — the signed state was missing, expired or not theirs. Also what

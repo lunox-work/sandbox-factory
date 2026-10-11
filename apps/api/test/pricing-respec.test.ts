@@ -169,6 +169,7 @@ function respecRun(
     boardId: "jrb_1",
     bountyId: "bty_1",
     kind: "respec",
+    startedBy: "usr_1",
     sourceProposalId: "bpr_1",
     sourceRevision: 4,
     respec,
@@ -224,6 +225,13 @@ const storedBounty = {
   stack: [],
   createdBy: null,
   revision: 1,
+  // Its scope approved, as a price is changed only on one.
+  version: 1,
+  approval: {
+    version: 1,
+    approvedBy: "user_1",
+    approvedAt: "2026-10-01T00:00:00.000Z",
+  },
   jira: {
     issueId: "jri_1",
     boardId: "jrb_1",
@@ -233,6 +241,7 @@ const storedBounty = {
     siteUrl: "https://acme.atlassian.net",
     removedAt: null,
   },
+  textEditedAt: null,
   createdAt: "2026-10-01T00:00:00.000Z",
   updatedAt: "2026-10-01T00:00:00.000Z",
 };

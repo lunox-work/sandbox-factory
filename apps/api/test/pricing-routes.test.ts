@@ -50,6 +50,7 @@ const run: StoredBountyRun = {
   boardId: "jrb_1",
   bountyId: null,
   kind: "backlog",
+  startedBy: "usr_1",
   sourceProposalId: null,
   sourceRevision: null,
   respec: null,
@@ -470,7 +471,10 @@ function reviewProposal(
   };
 }
 
-/** The bounty a reviewed proposal prices: imported from board `jrb_1`. */
+/**
+ * The bounty a reviewed proposal prices: imported from board `jrb_1`, its
+ * scope approved, as a price is changed only on one.
+ */
 function jiraBounty(overrides: Partial<StoredBounty> = {}): StoredBounty {
   return {
     id: "bty_1",
@@ -485,7 +489,12 @@ function jiraBounty(overrides: Partial<StoredBounty> = {}): StoredBounty {
     createdBy: null,
     revision: 1,
     version: 1,
-    approval: null,
+    approval: {
+      version: 1,
+      approvedBy: "user_1",
+      approvedAt: "2026-01-01T00:00:00.000Z",
+    },
+    textEditedAt: null,
     jira: {
       issueId: "jri_1",
       boardId: "jrb_1",
@@ -1210,6 +1219,52 @@ test("approval rechecks Jira; resize, unapprove and remove do not", async () => 
   assert.equal(rejected.status, 404);
 });
 
+test("a price is changed only on an approved scope; unapprove and remove are not held", async () => {
+  const unscoped = jiraBounty({ approval: null });
+  const post = (
+    state: ReturnType<typeof reviewHarness>,
+    path: string,
+    body: object,
+  ) =>
+    state.app.request(`/api/v1/orgs/org_1/proposals/bpr_1/${path}`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+    });
+  for (const [path, body] of [
+    ["approve", { expectedRevision: 1 }],
+    ["resize", { expectedRevision: 1, complexity: "L" }],
+    ["rubric", { expectedRevision: 1 }],
+  ] as const) {
+    const state = reviewHarness(undefined, {}, unscoped);
+    const response = await post(state, path, body);
+    assert.equal(response.status, 409, path);
+    assert.deepEqual(await response.json(), {
+      code: "step_held",
+      heldBy: "scope",
+      error: "Approve the scope before changing the price.",
+    });
+    assert.equal(state.current().revision, 1, path);
+  }
+  // A scope approved at an earlier version holds the price too.
+  const moved = reviewHarness(undefined, {}, jiraBounty({ version: 2 }));
+  assert.equal(
+    (await post(moved, "approve", { expectedRevision: 1 })).status,
+    409,
+  );
+
+  const unapprove = reviewHarness(undefined, { status: "approved" }, unscoped);
+  assert.equal(
+    (await post(unapprove, "unapprove", { expectedRevision: 1 })).status,
+    200,
+  );
+  const remove = reviewHarness(undefined, {}, unscoped);
+  assert.equal(
+    (await post(remove, "remove", { expectedRevision: 1 })).status,
+    200,
+  );
+});
+
 test("approval waits for a Jira update still unresolved", async () => {
   // A withdrawal still on its way would race the approval's comment to the
   // issue, and hold the proposal's one delivery slot besides.
@@ -1492,6 +1547,22 @@ test("adding a bounty starts a one-bounty run for it", async () => {
   ]);
   // Read through the board, so a bounty from elsewhere cannot be sized here.
   assert.deepEqual(state.jql, ["issue = 7"]);
+});
+
+test("a bounty added on onboarding is planned as such", async () => {
+  const state = harness({ boardIssues: [bounty("7", "Add login")] });
+  const response = await state.app.request(
+    "/api/v1/orgs/org_1/jira/boards/jrb_1/issues",
+    {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ requestId, issueId: "7", onboarding: true }),
+    },
+  );
+  assert.equal(response.status, 202);
+  const [input] = state.created as { planned: { onboarding?: boolean }[] }[];
+  // The run syncs its scope first and approves it once sized.
+  assert.equal(input?.planned[0]?.onboarding, true);
 });
 
 test("an issue split into sub-tasks is listed but cannot be added", async () => {
