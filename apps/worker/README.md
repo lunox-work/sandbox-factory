@@ -97,10 +97,12 @@ the service's cached wiki for the repository, submits a task with the
 repository-scoped read token, polls the task until it completes, then reads
 the cached wiki. Without a URL deepwiki runs fail with
 `builder_unavailable`; a run with no repository fails `source_unavailable`.
-The service clones the repository's **default branch** itself and reads
-it with its own model; it does not read the worker's snapshot, so the wiki
-may describe a newer commit than the run names. The summary records the
-commit the run was asked for as `requestedCommitSha`. Outputs:
+The wiki is concise (four to six pages, no sections). The service clones
+the repository's **default branch** itself, fetches its head before each
+wiki (the local profile's patch; see `apps/worker/deepwiki/README.md`),
+and reads it with its own model; it does not read the worker's snapshot, so
+the wiki may describe a newer commit than the run names. The summary
+records the commit the run was asked for as `requestedCommitSha`. Outputs:
 `wiki/<name>.md` for every page (kind `wiki_page`, at most 500, one per
 page id), the name its id made file-safe, a long one cut to 100 characters
 with a short hash, a repeated one suffixed `-2`, `-3`,

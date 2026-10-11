@@ -178,7 +178,7 @@ test("a wiki is requested, awaited, read and written as pages", async () => {
       owner: "acme",
       repo: "widgets",
       language: "en",
-      comprehensive: true,
+      comprehensive: false,
       provider: "openai",
       excluded_dirs: [],
       excluded_files: [],

@@ -116,7 +116,7 @@ export const GRAPHIFY_TOOL_VERSION = "graphifyy@0.4.18+driver-1";
 export const DEPENDENCY_CRUISER_TOOL_VERSION =
   "dependency-cruiser@18.5.0+driver-3";
 /** Bumped when the DeepWiki-Open request or the artifacts written from its wiki change meaning. */
-export const DEEPWIKI_TOOL_VERSION = "deepwiki-open@driver-1";
+export const DEEPWIKI_TOOL_VERSION = "deepwiki-open@driver-2";
 /** Bumped when an extractor, a visibility rule or the index's shape changes meaning. */
 export const ABSTRACTIONS_TOOL_VERSION = "abstractions@2";
 /** Bumped when a recognizer, the replay rules or the model's shape change meaning. */

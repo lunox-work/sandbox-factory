@@ -249,7 +249,9 @@ export function createDeepwikiAdapter(options: DeepwikiOptions): ToolAdapter {
         owner,
         repo,
         language: LANGUAGE,
-        comprehensive: true,
+        // Concise: four to six pages rather than eight to twelve (in practice
+        // about twenty) in sections, which the console does not show.
+        comprehensive: false,
         ...(options.provider === undefined
           ? {}
           : { provider: options.provider }),
