@@ -1,20 +1,22 @@
 /**
  * The dotted thought-orb (`thinking-orbs`) in the two tones the app waits in.
  *
- * `plain` is the library's own orb, untouched: monochrome ink that follows
- * the theme. It stands beside a page reading what it already has, which
- * should look like no more than it is.
+ * `plain` is monochrome ink that follows the theme. It stands beside a page
+ * reading what it already has, which should look like no more than it is.
  *
  * `brand` is the same geometry in Lunox's ramp, for a model or an agent at
- * work: the one wait that is making something. The library tints in one
- * colour only, so this paints its frames itself: each mark's ink as alpha,
- * then the ramp filled through them. The library's tint is that ink as
- * coverage over the page in either theme, so depth reads the same in colour
- * as it does in grey.
+ * work: the one wait that is making something.
+ *
+ * Both are painted here rather than by the library's component: each mark's
+ * ink as alpha, then the tone filled through them, so depth reads the same in
+ * colour as it does in grey. Painting them ourselves also lets the marks be
+ * drawn heavier than the library's: at its tuned weights the inline orb read
+ * as a faint scatter beside text, so it is shown a size up with fuller dots
+ * and strokes, keeping the library's geometry and motion.
  */
 
 import { useEffect, useRef, useState } from "react";
-import { ThinkingOrb, type OrbSize, type OrbState } from "thinking-orbs";
+import type { OrbSize, OrbState } from "thinking-orbs";
 import {
   MODE_FRAMES,
   resolvePreset,
@@ -34,21 +36,23 @@ export function Orb({
   /** Which of the library's nine animations: what the wait is doing. */
   state: OrbState;
   tone: "brand" | "plain";
-  /** 20 sits in a line of text, 64 beside a heading; 32 between. */
+  /**
+   * The library's tuned design: 20 sits in a line of text, 64 beside a
+   * heading; 32 between. Shown `SCALE` larger than its name.
+   */
   size?: OrbSize;
   className?: string;
 }) {
-  return tone === "plain" ? (
-    <ThinkingOrb
-      aria-hidden="true"
-      state={state}
-      size={size}
-      className={cn("shrink-0", className)}
-    />
-  ) : (
-    <BrandOrb state={state} size={size} className={className} />
+  return (
+    <PaintedOrb state={state} tone={tone} size={size} className={className} />
   );
 }
+
+/** How much larger than its design an orb is shown: 20 shows at 24. */
+const SCALE = 1.2;
+/** How much fuller its dots and strokes are drawn than the library's. */
+const DOT_WEIGHT = 1.45;
+const LINE_WEIGHT = 1.7;
 
 /** The ramp's stops on light, from `--brand-gradient-vertical`. */
 const LIGHT_RAMP: readonly (readonly [number, string])[] = [
@@ -79,27 +83,28 @@ function ramp(ctx: CanvasRenderingContext2D, size: number): CanvasGradient {
 }
 
 /**
- * How much of the ramp a mark shows: the inverse of its paper ink, lifted a
- * little. Blue ink is darker than black is on light or white is on dark, so
- * at the library's own coverage the far side of the sphere goes out first;
- * the lift keeps it in view and barely moves the near dots.
+ * How much of the tone a mark shows: the inverse of its paper ink, lifted.
+ * At the library's own coverage the far side of the sphere all but goes out
+ * at inline size; the lift, and a floor under any mark with ink at all, keep
+ * it in view as depth rather than as gaps, and barely move the near dots.
  */
 function coverage(mark: { white: number; a?: number }): number {
   const ink = 1 - Math.min(1, Math.max(0, mark.white));
-  return ink ** 0.7 * (mark.a ?? 1);
+  return ink === 0 ? 0 : Math.max(0.18, ink ** 0.5) * (mark.a ?? 1);
 }
 
 function paint(
   ctx: CanvasRenderingContext2D,
   { dots, lines }: OrbFrame,
-  fill: CanvasGradient,
+  fill: CanvasGradient | string,
   size: number,
 ) {
   ctx.clearRect(0, 0, size, size);
   ctx.fillStyle = ctx.strokeStyle = "#000";
+  ctx.lineCap = "round";
   for (const line of lines) {
     ctx.globalAlpha = coverage(line);
-    ctx.lineWidth = line.w;
+    ctx.lineWidth = line.w * LINE_WEIGHT;
     ctx.beginPath();
     ctx.moveTo(line.x1, line.y1);
     ctx.lineTo(line.x2, line.y2);
@@ -108,7 +113,7 @@ function paint(
   for (const dot of dots) {
     ctx.globalAlpha = coverage(dot);
     ctx.beginPath();
-    ctx.arc(dot.x, dot.y, dot.r, 0, Math.PI * 2);
+    ctx.arc(dot.x, dot.y, dot.r * DOT_WEIGHT, 0, Math.PI * 2);
     ctx.fill();
   }
   ctx.globalAlpha = 1;
@@ -140,12 +145,14 @@ function useReducedMotion(): boolean {
  * every orb so two on a screen move together, stopped offscreen and on a
  * hidden tab, and a single still frame for reduced motion.
  */
-function BrandOrb({
+function PaintedOrb({
   state,
+  tone,
   size,
   className,
 }: {
   state: OrbState;
+  tone: "brand" | "plain";
   size: OrbSize;
   className?: string | undefined;
 }) {
@@ -157,12 +164,16 @@ function BrandOrb({
     const ctx = canvas?.getContext("2d");
     if (!canvas || !ctx) return;
     const dpr = Math.min(2, devicePixelRatio || 1);
-    canvas.width = canvas.height = Math.round(size * dpr);
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    canvas.width = canvas.height = Math.round(size * SCALE * dpr);
+    // Drawn in the design's own units, shown a size up.
+    ctx.setTransform(dpr * SCALE, 0, 0, dpr * SCALE, 0, 0);
 
     const { mode, speed, opts } = resolvePreset(state, size);
     const geometry = MODE_FRAMES[mode];
-    let fill = ramp(ctx, size);
+    // Plain is the theme's ink, read from the canvas's own `text-foreground`.
+    const tint = () =>
+      tone === "brand" ? ramp(ctx, size) : getComputedStyle(canvas).color;
+    let fill = tint();
     // The library's own still: t = 0.6 shows every state mid-gesture.
     const draw = () =>
       paint(
@@ -195,7 +206,7 @@ function BrandOrb({
     // A theme switch changes the ramp: the OS's, or `.dark`/`.light` forced
     // on the page.
     const retheme = () => {
-      fill = ramp(ctx, size);
+      fill = tint();
       if (!running) draw();
     };
     const scheme = matchMedia("(prefers-color-scheme: dark)");
@@ -228,14 +239,14 @@ function BrandOrb({
       scheme.removeEventListener("change", retheme);
       document.removeEventListener("visibilitychange", shown);
     };
-  }, [state, size, reduced]);
+  }, [state, tone, size, reduced]);
 
   return (
     <canvas
       ref={ref}
       aria-hidden="true"
-      className={cn("block shrink-0", className)}
-      style={{ width: size, height: size }}
+      className={cn("text-foreground block shrink-0", className)}
+      style={{ width: size * SCALE, height: size * SCALE }}
     />
   );
 }

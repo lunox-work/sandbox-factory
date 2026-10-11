@@ -59,22 +59,37 @@ export function ThinkingLine({
 }) {
   const elapsed = useElapsed(since);
   return (
+    // Where the line and the clock do not fit side by side, the clock drops
+    // under them rather than squeezing the line, and wraps its own words in
+    // a column too narrow for it. The line is never narrower than its
+    // longest word: its sweep is painted through the text, so a word
+    // spilling out of its box would be painted nowhere and vanish.
     <p
       role="status"
-      className={cn("flex min-w-0 items-center gap-2 text-sm", className)}
+      className={cn(
+        "flex min-w-0 flex-wrap items-center gap-x-4 gap-y-0.5 text-sm",
+        className,
+      )}
     >
-      <Orb tone="brand" state={state} />
-      <span className="thinking-text min-w-0">{children}</span>
+      <span className="flex items-center gap-2">
+        <Orb tone="brand" state={state} />
+        <span className="thinking-text">{children}</span>
+      </span>
       {elapsed !== null && (
         // Out of the live region: a clock that ticks would be read aloud
         // every second.
         <span
           aria-hidden="true"
-          className="text-muted-foreground ml-auto shrink-0 pl-2 text-xs tabular-nums"
+          className="text-muted-foreground ml-auto text-right text-xs tabular-nums"
           data-testid="thinking-elapsed"
         >
           {clock(elapsed)}
-          {expected !== undefined && ` · ${expected}`}
+          {expected !== undefined && (
+            <>
+              {" "}
+              <span className="whitespace-nowrap">· {expected}</span>
+            </>
+          )}
         </span>
       )}
     </p>
