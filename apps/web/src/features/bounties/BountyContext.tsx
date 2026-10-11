@@ -466,7 +466,7 @@ function RepositoryCommits({ context }: { context: BountyContextState }) {
   return (
     <ul
       aria-label="The commit each repository is read at"
-      className="flex flex-col divide-y rounded-md border"
+      className="flex flex-col divide-y"
     >
       {repositories.map((repository) => (
         <RepositoryCommit
@@ -497,10 +497,11 @@ function RepositoryCommit({
     newest.commitSha !== held;
   return (
     <li
-      className="flex min-h-10 items-center gap-3 px-3 py-1.5 text-xs"
+      className="flex min-h-10 items-center gap-3 py-1.5 text-xs"
       data-testid="repository-commit"
     >
       <span className="flex min-w-0 flex-1 items-center gap-2">
+        <SourceIcon source="github" />
         <span className="truncate font-medium">{fullName}</span>
         {older && (
           <span className="bg-muted text-muted-foreground rounded-[4px] px-1.5 py-px text-2xs leading-4 font-medium whitespace-nowrap">

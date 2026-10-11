@@ -67,7 +67,7 @@ import {
 /** Opens a tab of the workspace's settings. */
 export type OpenSettings = (tab: ConnectionTab) => void;
 
-/** The links under a bounty's text: the repositories, then its Jira issue. */
+/** The links under a bounty's text: its Jira issue, then the repositories. */
 export function BountyLinks({
   organization,
   bounty,
@@ -101,17 +101,6 @@ export function BountyLinks({
         Links
       </h3>
       <div className="flex flex-col">
-        <RepositoriesLink
-          organization={organization}
-          repos={repos}
-          onOpenSettings={onOpenSettings}
-          sync={
-            context === undefined ? null : (
-              <ContextSync source="github" context={context} />
-            )
-          }
-          menu={null}
-        />
         <JiraLink
           organization={organization}
           bounty={bounty}
@@ -133,6 +122,17 @@ export function BountyLinks({
               />
             )
           }
+        />
+        <RepositoriesLink
+          organization={organization}
+          repos={repos}
+          onOpenSettings={onOpenSettings}
+          sync={
+            context === undefined ? null : (
+              <ContextSync source="github" context={context} />
+            )
+          }
+          menu={null}
         />
       </div>
     </section>
