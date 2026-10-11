@@ -130,8 +130,14 @@ test("bounty transport retains conflicts and cancels without dispatch", async ()
   // Nor is an empty answer a source's context, or a sync's.
   await assert.rejects(client.bountyContext("owner", "1"));
   assert.match(paths.at(-1) ?? "", /\/bounties\/1\/context$/);
-  await assert.rejects(client.syncBountyContext("owner", "1", "github"));
-  assert.match(paths.at(-1) ?? "", /\/bounties\/1\/context\/github\/sync$/);
+  await assert.rejects(client.syncBountyContext("owner", "1", "jira"));
+  assert.match(paths.at(-1) ?? "", /\/bounties\/1\/context\/jira\/sync$/);
+  await assert.rejects(client.bountyGithubCommits("owner", "1"));
+  assert.match(paths.at(-1) ?? "", /\/bounties\/1\/context\/github\/commits$/);
+  await assert.rejects(
+    client.pinBountyGithubCommits("owner", "1", { commits: { r: "s" } }),
+  );
+  assert.match(paths.at(-1) ?? "", /\/bounties\/1\/context\/github\/commits$/);
   await assert.rejects(client.bounty("owner", "1"));
   await assert.rejects(client.decideBounty("owner", "1", "approve", 2));
   assert.match(paths.at(-1) ?? "", /\/bounties\/1\/approve$/);
@@ -189,7 +195,7 @@ test("bounty transport retains conflicts and cancels without dispatch", async ()
     client.bounties("owner", {}, AbortSignal.abort(new Error("stopped"))),
     /stopped/,
   );
-  assert.equal(paths.length, 11);
+  assert.equal(paths.length, 13);
 });
 
 test("pricing detail and revision envelopes fail explicitly when malformed", async () => {

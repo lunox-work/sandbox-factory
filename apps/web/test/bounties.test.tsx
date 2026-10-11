@@ -3397,9 +3397,13 @@ test("a sandbox whose sizing touches no repository generates its versions instea
   );
   expect(
     await within(part).findByText(
-      /No version yet\. Generate one: an agent writes a starter from the bounty's title, description and tech stack/,
+      /^Generate one: an agent writes a starter from the bounty's title, description and tech stack/,
     ),
   ).toBeDefined();
+  // Said once, on the version's card, which offers the first generation.
+  const card = within(part).getByTestId("sandbox-version-card");
+  expect(within(card).getByText("No version yet")).toBeDefined();
+  expect(within(card).getByRole("button", { name: "Generate" })).toBeDefined();
   // Nothing to link: the only way forward is to generate.
   expect(
     within(part)
@@ -3434,7 +3438,7 @@ test("a member is told who generates a sandbox's versions", async () => {
   );
   expect(
     await within(part).findByText(
-      /No version yet\. An owner or admin can generate one from the bounty\./,
+      /^An owner or admin can generate one from the bounty\./,
     ),
   ).toBeDefined();
   expect(within(part).queryByRole("button")).toBeNull();
@@ -4755,7 +4759,7 @@ test("a bounty whose price is a draft, or that has none, or whose scope is not a
   let part = await sandboxPart();
   expect(
     await within(part).findByText(
-      /No version yet\. Approve the price before changing the sandbox\./,
+      /^Approve the price before changing the sandbox\./,
     ),
   ).toBeDefined();
   expect(
@@ -4773,7 +4777,7 @@ test("a bounty whose price is a draft, or that has none, or whose scope is not a
   part = await sandboxPart();
   expect(
     await within(part).findByText(
-      /No version yet\. Approve the price before changing the sandbox\./,
+      /^Approve the price before changing the sandbox\./,
     ),
   ).toBeDefined();
   cleanup();
@@ -4786,7 +4790,7 @@ test("a bounty whose price is a draft, or that has none, or whose scope is not a
   part = await sandboxPart();
   expect(
     await within(part).findByText(
-      /No version yet\. Approve the scope and the price before changing the sandbox\./,
+      /^Approve the scope and the price before changing the sandbox\./,
     ),
   ).toBeDefined();
   expect(
@@ -5296,12 +5300,16 @@ test("each link says whether its sync is in use, warns when its source is ahead,
   render(<Shell {...inAcme("member")} />);
   const page = await screen.findByTestId("bounty-detail");
 
-  // The repository's sync is not in use yet, and says what syncing adds.
+  // The repositories are not read yet, and it says what picking adds.
   const github = await within(page).findByTestId("github-context");
   expect(await within(github).findByText("Not synced")).toBeDefined();
   expect(
-    within(github).getByText(/Sync to add what it says to sizing/),
+    within(github).getByText(/Pick a commit to add what it says to sizing/),
   ).toBeDefined();
+  // They are picked, not synced: their row has no menu.
+  expect(
+    within(page).queryByRole("button", { name: "GitHub options" }),
+  ).toBeNull();
 
   // Jira's is, at v2, and its issue has changed since.
   const jira = within(page).getByTestId("jira-context");
@@ -5361,8 +5369,47 @@ test("each link says whether its sync is in use, warns when its source is ahead,
   ).toBe(false);
 });
 
-test("a refused sync says why, and an unlinked source cannot be synced", async () => {
+/** The built commits route, before the context route it would match. */
+function builtCommits(held: string | null) {
+  return [
+    "GET",
+    "/context/github/commits",
+    () =>
+      json({
+        repositories: [
+          {
+            repoId: "ghr_1",
+            fullName: "acme/app",
+            held,
+            commits: [
+              {
+                snapshotId: "rsn_new",
+                commitSha: "1111111aaaaaa",
+                branch: "main",
+                createdAt: stamp,
+              },
+              {
+                snapshotId: "rsn_old",
+                commitSha: "abcdef1234567",
+                branch: "main",
+                createdAt: stamp,
+              },
+            ],
+          },
+          {
+            repoId: "ghr_2",
+            fullName: "acme/web",
+            held: null,
+            commits: [],
+          },
+        ],
+      }),
+  ] as [string, string, (body: unknown) => Promise<Response>];
+}
+
+test("a refused sync or pick says why, and an unlinked source cannot be synced", async () => {
   const state = server([
+    builtCommits("abcdef1234567"),
     [
       "GET",
       "/bounties/bty_7/context",
@@ -5385,14 +5432,13 @@ test("a refused sync says why, and an unlinked source cannot be synced", async (
         }),
     ],
     [
-      "POST",
-      "/context/github/sync",
+      "PUT",
+      "/context/github/commits",
       () =>
         json(
           {
-            code: "no_snapshot",
-            error:
-              "The repository has no snapshot yet. Try again once it has been read.",
+            code: "not_built",
+            error: "acme/app has not been built at that commit.",
           },
           409,
         ),
@@ -5428,15 +5474,102 @@ test("a refused sync says why, and an unlinked source cannot be synced", async (
     within(github).getByText("2 more documents left out for length."),
   ).toBeDefined();
 
+  // Each repository is read at its own commit: this one at an older build,
+  // that one never built.
+  const [app, web] = await within(github).findAllByTestId("repository-commit");
+  expect(within(app!).getByText("Older build")).toBeDefined();
+  expect(within(web!).getByText("Not built yet")).toBeDefined();
   await userEvent.click(
-    within(page).getByRole("button", { name: "GitHub options" }),
+    within(app!).getByRole("button", { name: "Commit acme/app is read at" }),
   );
-  await userEvent.click(
-    await screen.findByRole("menuitem", { name: "Sync context" }),
-  );
+  const items = await screen.findAllByRole("menuitem");
+  expect(items.map((item) => item.textContent)).toEqual([
+    expect.stringMatching(/^1111111main\s*Latest/),
+    expect.stringMatching(/^abcdef1main/),
+  ]);
+  await userEvent.click(items[0]!);
   expect((await within(github).findByRole("alert")).textContent).toContain(
-    "no snapshot yet",
+    "has not been built at that commit",
   );
+});
+
+test("picking a repository's commit reads it there, and says so", async () => {
+  const unread = {
+    state: "unlinked",
+    reason: null,
+    linked: null,
+    liveRevision: null,
+    latest: null,
+  };
+  const state = server([
+    builtCommits("1111111aaaaaa"),
+    [
+      "GET",
+      "/bounties/bty_7/context",
+      () =>
+        json({
+          jira: unread,
+          github: {
+            state: "current",
+            reason: null,
+            linked: { ref: "acme/app", url: "https://github.com/acme/app" },
+            liveRevision: "acme/app@1111111aaaaaa",
+            latest: {
+              ...githubContextVersion(1),
+              revision: "acme/app@1111111aaaaaa",
+            },
+          },
+        }),
+    ],
+    [
+      "PUT",
+      "/context/github/commits",
+      () =>
+        json({
+          bounty: detail(),
+          context: {
+            jira: unread,
+            github: {
+              state: "current",
+              reason: null,
+              linked: { ref: "acme/app", url: "https://github.com/acme/app" },
+              liveRevision: "acme/app@1111111aaaaaa",
+              latest: githubContextVersion(2),
+            },
+          },
+          changed: true,
+        }),
+    ],
+  ]);
+  vi.stubGlobal("fetch", state.fetchMock);
+  window.history.replaceState(null, "", "/bounties/acme/bty_7");
+  render(<Shell {...inAcme("member")} />);
+  const page = await screen.findByTestId("bounty-detail");
+  const github = await within(page).findByTestId("github-context");
+  expect(await within(github).findByText("Synced v1")).toBeDefined();
+  const [app] = await within(github).findAllByTestId("repository-commit");
+  // At its newest build, nothing marks it.
+  expect(within(app!).queryByText("Older build")).toBeNull();
+
+  // Moved back to the older one.
+  await userEvent.click(
+    within(app!).getByRole("button", { name: "Commit acme/app is read at" }),
+  );
+  await userEvent.click((await screen.findAllByRole("menuitem"))[1]!);
+  expect(await within(github).findByText("Synced v2")).toBeDefined();
+  expect(
+    state.calls.find(
+      ({ method, url }) =>
+        method === "PUT" && url.endsWith("/context/github/commits"),
+    )?.body,
+  ).toEqual({ commits: { ghr_1: "rsn_old" } });
+  // Where each is held is read again.
+  expect(
+    state.calls.filter(
+      ({ method, url }) =>
+        method === "GET" && url.endsWith("/context/github/commits"),
+    ).length,
+  ).toBeGreaterThan(1);
 });
 
 test("a GitHub context read from several repositories says so, and what it has not read", async () => {
@@ -5560,31 +5693,14 @@ async function githubAheadWarning(revision: string, live: string | null) {
   return (await within(github).findByRole("status")).textContent;
 }
 
-const SYNCED = "acme/app@abcdef1234567\nacme/web@1234567abcdef";
-
-test("a GitHub context ahead names the one repository with new commits, and its commits", async () => {
+test("a GitHub context ahead says the built repositories have changed since it was read", async () => {
   expect(
     await githubAheadWarning(
-      SYNCED,
+      "acme/app@abcdef1234567",
       "acme/app@abcdef1234567\nacme/web@7654321fedcba",
     ),
   ).toContain(
-    "acme/web has new commits since v1 was synced (1234567 → 7654321).",
-  );
-});
-
-test("a GitHub context ahead counts the repositories with new commits", async () => {
-  expect(
-    await githubAheadWarning(
-      SYNCED,
-      "acme/app@0000000aaaaaa\nacme/web@7654321fedcba",
-    ),
-  ).toContain("2 repositories have new commits since v1 was synced.");
-});
-
-test("a GitHub context ahead because the repositories changed says so", async () => {
-  expect(await githubAheadWarning(SYNCED, "acme/app@abcdef1234567")).toContain(
-    "The workspace's repositories have changed since v1 was synced.",
+    "The workspace's built repositories have changed since v1 read them. Pick a commit to read them again.",
   );
 });
 

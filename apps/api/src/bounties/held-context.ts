@@ -13,6 +13,7 @@ import type {
   GithubRepoSummary,
   LatestBountyContext,
   StoredBounty,
+  StoredBountyContext,
 } from "@sandbox-factory/db";
 import {
   githubRepositories,
@@ -53,6 +54,49 @@ export function repositoriesRevision(
     .map(({ fullName, commitSha }) => `${fullName}@${commitSha}`)
     .sort()
     .join("\n");
+}
+
+/**
+ * Each repository's commit in a GitHub version's revision, by full name:
+ * the commit the scope holds it at. A pick that read the same documents
+ * makes no new version but moves its revision, so this, not the content,
+ * says where each one is held.
+ */
+export function revisionCommits(revision: string): Map<string, string> {
+  return new Map(
+    revision.split("\n").flatMap((line): [string, string][] => {
+      const at = line.lastIndexOf("@");
+      return at <= 0 ? [] : [[line.slice(0, at), line.slice(at + 1)]];
+    }),
+  );
+}
+
+/**
+ * Each repository's commit in the GitHub version a scope holds, by full
+ * name; none for no version, or one synced while a bounty named one
+ * repository, which is not the workspace's.
+ */
+export function heldCommits(
+  github: Pick<StoredBountyContext, "refId" | "revision"> | null | undefined,
+): Map<string, string> {
+  return github == null || github.refId !== WORKSPACE_REPOSITORIES
+    ? new Map()
+    : revisionCommits(github.revision);
+}
+
+/**
+ * The built snapshot a repository is read at when none is picked: the one
+ * of the commit the scope holds it at while that is still built, else its
+ * newest build. A repository never built has none, and is neither read nor
+ * outlined, so sizing cannot name it.
+ */
+export function builtAt<T extends { readonly commitSha: string }>(
+  built: readonly T[],
+  heldSha: string | undefined,
+): T | null {
+  return (
+    built.find(({ commitSha }) => commitSha === heldSha) ?? built[0] ?? null
+  );
 }
 
 /**

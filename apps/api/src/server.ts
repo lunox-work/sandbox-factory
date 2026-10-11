@@ -61,7 +61,12 @@ import { resolveImageDigest } from "./image-digest.js";
 import { jiraClientFor, jiraClientsFor } from "./jira/credential.js";
 import { createApp } from "./routes.js";
 import { syncGithub } from "./bounties/context.js";
-import { connectedRepositories, heldContext } from "./bounties/held-context.js";
+import {
+  builtAt,
+  connectedRepositories,
+  heldCommits,
+  heldContext,
+} from "./bounties/held-context.js";
 import { installationClient } from "./github/credential.js";
 import {
   AnthropicCaller,
@@ -262,16 +267,28 @@ const bountyExecutor =
           if (!synced.ok && synced.status === 502)
             console.error("bounty_context_sync_failed", synced.code);
         },
-        outlinesFor: async (organizationId) => {
+        outlinesFor: async (organizationId, github) => {
           const repos = await connectedRepositories(
             githubRepos,
             organizationId,
           );
+          // Only a built commit is outlined, so the draft names only a
+          // repository the scope could read, at the commit it reads it.
+          const held = heldCommits(github);
           const read = await Promise.all(
-            repos.map(async (repo) => ({
-              repo,
-              snapshot: await repoSnapshots.current(organizationId, repo.id),
-            })),
+            repos.map(async (repo) => {
+              const at = builtAt(
+                await repoSnapshots.built(organizationId, repo.id),
+                held.get(repo.fullName),
+              );
+              return {
+                repo,
+                snapshot:
+                  at === null
+                    ? null
+                    : await repoSnapshots.get(organizationId, at.id),
+              };
+            }),
           );
           const outlined = read.flatMap(({ repo, snapshot }) =>
             snapshot === null ? [] : [{ repo, snapshot }],

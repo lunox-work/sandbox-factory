@@ -202,11 +202,14 @@ export interface BountyExecutorOptions {
   ) => Promise<void>;
   /**
    * The outline of each of the workspace's repositories a bounty's work
-   * could touch, from its current snapshot, in name order; a repository
-   * with no snapshot yet has none. Absent, no draft is shown any.
+   * could touch, in name order, each from the built commit the bounty's
+   * GitHub context holds it at (else its newest build), so the outline and
+   * the documents are of one commit. A repository never built has none, so
+   * the draft cannot name it. Absent, no draft is shown any.
    */
   readonly outlinesFor?: (
     organizationId: string,
+    github: LatestBountyContext["github"],
   ) => Promise<readonly RepositoryOutlineRead[]>;
   readonly now?: () => Date;
   readonly leaseToken?: () => string;
@@ -572,11 +575,23 @@ export class BountyExecutor {
     );
     /*
       The repositories any bounty's work could touch: every one the
-      workspace has connected. Read once for the run, like the settings
-      above, so a backlog's bounties are drafted beside the same snapshots.
+      workspace has built. Read once for the run per set of commits a
+      scope holds them at, like the settings above, so a backlog's bounties
+      held alike are drafted beside the same snapshots.
     */
-    let outlines: Promise<readonly RepositoryOutlineRead[]> | undefined;
-    const outline = () => (outlines ??= this.#outlines(organizationId));
+    const outlines = new Map<
+      string,
+      Promise<readonly RepositoryOutlineRead[]>
+    >();
+    const outline = (github: LatestBountyContext["github"]) => {
+      const key = github === null ? "" : `${github.refId}\n${github.revision}`;
+      let read = outlines.get(key);
+      if (read === undefined) {
+        read = this.#outlines(organizationId, github);
+        outlines.set(key, read);
+      }
+      return read;
+    };
 
     const outcomes: BountyRunOutcome[] = [];
     let nextIndex = 0;
@@ -730,11 +745,12 @@ export class BountyExecutor {
   /** The workspace's repositories' outlines, or none when they cannot be read. */
   async #outlines(
     organizationId: string,
+    github: LatestBountyContext["github"],
   ): Promise<readonly RepositoryOutlineRead[]> {
     const read = this.#options.outlinesFor;
     if (read === undefined) return [];
     try {
-      return await read(organizationId);
+      return await read(organizationId, github);
     } catch (error) {
       // The outlines help a weight; they are not what a size stands on, so
       // repositories that cannot be read leave the draft without them.
@@ -1172,7 +1188,9 @@ export class BountyExecutor {
     scope: RunScope,
     signal: AbortSignal,
     stepSettings: StepSettings,
-    outlinesOf: () => Promise<readonly RepositoryOutlineRead[]>,
+    outlinesOf: (
+      github: LatestBountyContext["github"],
+    ) => Promise<readonly RepositoryOutlineRead[]>,
   ): Promise<{ value?: BountyRunOutcome; fatalCode?: string }> {
     const read = await this.#readCandidate(organizationId, candidate, scope);
     if (read.value === undefined) return { fatalCode: read.fatalCode };
@@ -1180,15 +1198,6 @@ export class BountyExecutor {
       return { value: { ...read.value.failed, status: "failed" } };
     }
     const { bounty, content, specHash, base } = read.value;
-    // Each repository under a label of its own, the same in its outline
-    // and its documents, which the draft names the ones it touches by.
-    const outlines = await outlinesOf();
-    const labels = new Map(
-      outlines.map(({ fullName }, index) => [fullName, repositoryLabel(index)]),
-    );
-    const repositoryOutline = outlines
-      .map(({ text }, index) => `=== ${repositoryLabel(index)} ===\n${text}`)
-      .join("\n\n");
     /*
       A ticket picked on onboarding is sized beside the code without the
       person syncing it first: its scope takes the repositories' documents
@@ -1202,6 +1211,16 @@ export class BountyExecutor {
     // What its sources add, as synced: the draft and the size see it, and
     // the proposal records which versions they saw.
     const held = await this.#context(organizationId, bounty);
+    // Each repository under a label of its own, the same in its outline
+    // and its documents, which the draft names the ones it touches by:
+    // outlined at the commits its documents were read at.
+    const outlines = await outlinesOf(held.github);
+    const labels = new Map(
+      outlines.map(({ fullName }, index) => [fullName, repositoryLabel(index)]),
+    );
+    const repositoryOutline = outlines
+      .map(({ text }, index) => `=== ${repositoryLabel(index)} ===\n${text}`)
+      .join("\n\n");
     const sourceContext = renderSourceContext(
       {
         jira: held.jira?.content ?? null,

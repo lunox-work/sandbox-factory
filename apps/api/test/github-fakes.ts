@@ -540,11 +540,13 @@ type SnapshotRow = StoredRepoSnapshot & { organizationId: string };
  * The snapshot store over a `memoryGithub`'s repositories, keeping the
  * real one's rules: owner through the repository, one row per commit, no
  * new row for a `gone` repository, and pruning that spares what a proposal
- * references (`referenced`, which a test fills in).
+ * references (`referenced`, which a test fills in). Which snapshots are
+ * built is a test's to say (`builtIds`), as the fake keeps no runs.
  */
 export function memorySnapshots(stores: MemoryGithub): RepoSnapshotStore & {
   rows: Map<string, SnapshotRow>;
   referenced: Set<string>;
+  builtIds: Set<string>;
 } {
   const rows = new Map<string, SnapshotRow>();
   const referenced = new Set<string>();
@@ -592,9 +594,18 @@ export function memorySnapshots(stores: MemoryGithub): RepoSnapshotStore & {
       )
       .sort(newestFirst);
 
+  /** Snapshots whose builders have finished; a test marks them. */
+  const builtIds = new Set<string>();
   return {
     rows,
     referenced,
+    builtIds,
+    built: (organizationId, repoId) =>
+      Promise.resolve(
+        ofRepo(organizationId, repoId)
+          .filter((row) => builtIds.has(row.id))
+          .map(summary),
+      ),
     list: (organizationId, repoId, limit) =>
       Promise.resolve(
         ofRepo(organizationId, repoId).slice(0, limit).map(summary),

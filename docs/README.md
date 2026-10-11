@@ -8,10 +8,11 @@ product proposals and historical explainers are optional design context.
 
 - Native bounties and optional Jira imports share proposals, spec review and pricing.
 - A bounty names no repository: its work may touch any the workspace has
-  connected, and sizing says which. Its Jira issue and the workspace's
-  repositories are synced into it on request as versioned context: the
-  issue's fields and the repositories' documents. Sizing
-  and sandbox generation are given it, and each step says which versions it used.
+  connected, and sizing says which. Its Jira issue is synced into it on
+  request as versioned context, and the workspace's repositories' documents
+  are read at a built commit picked for each, older ones too. Sizing and
+  sandbox generation are given it, and each step says which versions it used.
+  A repository is built where it is registered, before the dialog lets go.
 - Until a workspace has done every onboarding step, onboarding is the only
   page the rail offers; after, home and bounties are, and onboarding is not.
   Onboarding has the ways in, the getting-started checklist, a GitHub

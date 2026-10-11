@@ -1,23 +1,29 @@
 /**
- * A bounty's sources, synced into it as context: its Jira issue's fields
+ * A bounty's sources, read into it as context: its Jira issue's fields
  * beyond its text, and the documents of the workspace's repositories, any
- * of which the bounty's work may touch. Each sync a person asks
- * for reads the source now and keeps what it found as the source's next
- * context version when it is new (`BountyContextStore.record`). Sizing and
- * generation read the context the bounty holds (`heldContext`) and record
- * the versions they were made with.
+ * of which the bounty's work may touch. Each read keeps what it found as
+ * the source's next context version when it is new
+ * (`BountyContextStore.record`). Sizing and generation read the context the
+ * bounty holds (`heldContext`) and record the versions they were made with.
+ *
+ * Jira is synced: read as it is now. A repository is pinned: read at a
+ * commit picked from the ones it was built at (`RepoSnapshotStore.built`),
+ * which may be older than its head, and each repository at its own.
  *
  * - `GET .../bounties/:id/context` says where each source stands against
- *   its latest sync: Jira's issue read for its `updated`, the repository's
- *   newest snapshot read for its commit.
+ *   its latest version: Jira's issue read for its `updated`; for GitHub,
+ *   whether the repositories built now are the ones it read.
  * - `POST .../bounties/:id/context/jira/sync` reads the issue's context and
  *   its text, which the bounty takes as a run's read does.
- * - `POST .../bounties/:id/context/github/sync` reads the documents at
- *   each connected repository's newest snapshot, under one set of caps.
+ * - `GET .../bounties/:id/context/github/commits` lists each repository's
+ *   built commits, and the one the scope holds it at.
+ * - `PUT .../bounties/:id/context/github/commits` reads the documents at
+ *   the commits picked, every other repository staying where it is held,
+ *   under one set of caps.
  *
- * Any member may read and sync, as any member may link a source. A sync is
- * not held back by an approved scope, as Jira's text is not: the steps
- * after it show what they were made with instead.
+ * Any member may read, sync and pin, as any member may link a source. None
+ * is held back by an approved scope, as Jira's text is not: the steps after
+ * it show what they were made with instead.
  */
 
 import type {
@@ -28,6 +34,7 @@ import type {
   LatestBountyContext,
   NewBountyContext,
   RepoSnapshotStore,
+  RepoSnapshotSummary,
   StoredBounty,
   StoredBountyContext,
 } from "@sandbox-factory/db";
@@ -36,6 +43,8 @@ import { JiraApiError, JiraAuthError } from "@sandbox-factory/jira";
 import {
   bountyContextResponseSchema,
   bountyContextVersionDtoSchema,
+  bountyGithubCommitsResponseSchema,
+  pinBountyGithubCommitsSchema,
   syncBountyContextResponseSchema,
   type BountyContextResponse,
   type BountyContextSourceStatusDto,
@@ -55,8 +64,10 @@ import {
 import type { RunClientResult } from "../pricing/executor.js";
 import { mapConcurrent } from "../pricing/review.js";
 import {
+  builtAt,
   connectedRepositories,
   contextHash,
+  heldCommits,
   repositoriesRevision,
   WORKSPACE_REPOSITORIES,
 } from "./held-context.js";
@@ -69,15 +80,15 @@ export interface DocumentReader {
 
 /**
  * What reading the repositories' documents needs: the workspace's
- * repositories, each one's newest snapshot and that snapshot's file list,
- * and a reader narrowed to one. Absent where GitHub or object storage is
- * not configured.
+ * repositories, each one's built snapshots and their file lists, and a
+ * reader narrowed to one. Absent where GitHub or object storage is not
+ * configured.
  */
 export interface GithubContextSource {
   readonly repos: {
     list(organizationId: string): Promise<readonly GithubRepoSummary[]>;
   };
-  readonly snapshots: Pick<RepoSnapshotStore, "current">;
+  readonly snapshots: Pick<RepoSnapshotStore, "built">;
   readonly tree: (treeKey: string) => Promise<StoredTree | null>;
   /** A reader for the repository; null when its connection cannot read. */
   readonly readerFor: (
@@ -232,13 +243,29 @@ function repositoriesLink(repos: readonly GithubRepoSummary[]): {
     : { ref: `${repos.length} repositories`, url: null };
 }
 
+/** Each repository with the commits it was built at, newest first. */
+async function builtRepositories(
+  source: GithubContextSource,
+  organizationId: string,
+  repos: readonly GithubRepoSummary[],
+): Promise<{ repo: GithubRepoSummary; built: RepoSnapshotSummary[] }[]> {
+  return Promise.all(
+    repos.map(async (repo) => ({
+      repo,
+      built: await source.snapshots.built(organizationId, repo.id),
+    })),
+  );
+}
+
 /**
  * Where the workspace's repositories stand against the bounty's latest
- * sync: ahead once any of them has a newer snapshot than the sync found,
- * or once the repositories with a snapshot are not those it found. One its
- * connection could not read counts at the snapshot it had, so a sync is
- * never ahead of itself. A version synced while a bounty named one repository is behind
- * the workspace's until synced again.
+ * version: ahead once the repositories built now are not the ones it read,
+ * as when one is connected and built, or removed. Each is read at a commit
+ * picked, not followed, so a newer build of one is not ahead: the picker
+ * offers it. One its connection could not read counts where it was picked,
+ * so a version is never ahead of itself. A version synced while a bounty
+ * named one repository is behind the workspace's until it is read again.
+ * `liveRevision` is where each built repository's newest build stands.
  */
 async function githubStatus(
   options: BountyContextOptions,
@@ -253,28 +280,30 @@ async function githubStatus(
   const repos = await connectedRepositories(source.repos, organizationId);
   if (repos.length === 0) return status("unlinked", { latest: synced });
   const linked = repositoriesLink(repos);
-  const snapshots = await Promise.all(
-    repos.map(async (repo) => ({
-      fullName: repo.fullName,
-      snapshot: await source.snapshots.current(organizationId, repo.id),
-    })),
+  const newest = (
+    await builtRepositories(source, organizationId, repos)
+  ).flatMap(({ repo, built: [first] }) =>
+    first === undefined
+      ? []
+      : [{ fullName: repo.fullName, commitSha: first.commitSha }],
   );
-  const read = snapshots.flatMap(({ fullName, snapshot }) =>
-    snapshot === null ? [] : [{ fullName, commitSha: snapshot.commitSha }],
-  );
-  const liveRevision = read.length === 0 ? null : repositoriesRevision(read);
+  const liveRevision =
+    newest.length === 0 ? null : repositoriesRevision(newest);
   if (
     latest.github === null ||
     latest.github.refId !== WORKSPACE_REPOSITORIES
   ) {
     return status("unsynced", { linked, liveRevision, latest: synced });
   }
-  return status(
-    liveRevision !== null && liveRevision !== latest.github.revision
-      ? "ahead"
-      : "current",
-    { linked, liveRevision, latest: synced },
-  );
+  const held = heldCommits(latest.github);
+  const sameSet =
+    held.size === newest.length &&
+    newest.every(({ fullName }) => held.has(fullName));
+  return status(sameSet || newest.length === 0 ? "current" : "ahead", {
+    linked,
+    liveRevision,
+    latest: synced,
+  });
 }
 
 async function contextStatus(
@@ -302,13 +331,13 @@ export type SyncResult =
     }
   | {
       readonly ok: false;
-      readonly status: 404 | 409 | 502 | 503;
+      readonly status: 400 | 404 | 409 | 502 | 503;
       readonly code: string;
       readonly error: string;
     };
 
 const refused = (
-  status: 404 | 409 | 502 | 503,
+  status: 400 | 404 | 409 | 502 | 503,
   code: string,
   error: string,
 ): SyncResult => ({ ok: false, status, code, error });
@@ -404,21 +433,25 @@ type Readable =
   | {
       readonly ok: false;
       readonly repo: GithubRepoSummary;
-      /** Its snapshot's commit, when it has one its connection cannot read. */
+      /** The commit picked, when it has one its connection cannot read. */
       readonly commitSha: string | null;
     };
 
 /**
- * Reads the documents at each connected repository's newest snapshot, and
- * keeps them as one version. A repository with no snapshot yet, or one its
- * connection cannot read, is named as unread; a sync reads at least one.
- * Also what sizing a ticket picked on onboarding syncs first.
+ * Reads the documents of each connected repository at one of its built
+ * commits, and keeps them as one version: the commit `picks` names for it
+ * (by repository id, a built snapshot's id), else the one the scope holds
+ * it at while that is still built, else its newest build. A repository
+ * never built, or one its connection cannot read, is named as unread; a
+ * read reads at least one. Also what sizing a ticket picked on onboarding
+ * reads first, with no picks.
  */
 export async function syncGithub(
   options: Pick<BountyContextOptions, "contexts" | "githubContext">,
   organizationId: string,
   bounty: StoredBounty,
   userId: string,
+  picks: Readonly<Record<string, string>> = {},
 ): Promise<SyncResult> {
   const source = options.githubContext;
   if (source === undefined) {
@@ -432,9 +465,41 @@ export async function syncGithub(
       "The workspace has no repository connected to sync.",
     );
   }
+  const unknown = Object.keys(picks).filter(
+    (repoId) => !repos.some((repo) => repo.id === repoId),
+  );
+  if (unknown.length > 0) {
+    return refused(
+      404,
+      "repository_not_found",
+      "A repository picked is not connected to the workspace.",
+    );
+  }
+  const latest = await options.contexts.latest(organizationId, bounty.id);
+  const held = heldCommits(latest?.github);
+  const builds = await builtRepositories(source, organizationId, repos);
+  const at: {
+    repo: GithubRepoSummary;
+    snapshot: RepoSnapshotSummary | null;
+  }[] = [];
+  for (const { repo, built } of builds) {
+    const picked = picks[repo.id];
+    if (picked !== undefined) {
+      const snapshot = built.find(({ id }) => id === picked);
+      if (snapshot === undefined) {
+        return refused(
+          409,
+          "not_built",
+          `${repo.fullName} has not been built at that commit.`,
+        );
+      }
+      at.push({ repo, snapshot });
+      continue;
+    }
+    at.push({ repo, snapshot: builtAt(built, held.get(repo.fullName)) });
+  }
   const readable: Readable[] = await Promise.all(
-    repos.map(async (repo): Promise<Readable> => {
-      const snapshot = await source.snapshots.current(organizationId, repo.id);
+    at.map(async ({ repo, snapshot }): Promise<Readable> => {
       if (snapshot === null) return { ok: false, repo, commitSha: null };
       const [tree, reader] = await Promise.all([
         source.tree(snapshot.treeKey),
@@ -456,11 +521,17 @@ export async function syncGithub(
     (entry): entry is Extract<Readable, { ok: true }> => entry.ok,
   );
   if (reading.length === 0) {
-    return refused(
-      409,
-      "no_snapshot",
-      "No connected repository has been read yet. Try again once one has.",
-    );
+    return readable.every((entry) => entry.commitSha === null)
+      ? refused(
+          409,
+          "not_built",
+          "No connected repository has been built yet. Try again once one has.",
+        )
+      : refused(
+          409,
+          "unreadable",
+          "No connected repository could be read just now. Check its GitHub connection.",
+        );
   }
   const chosen = contextDocumentsAcross(
     reading.map(({ blobs }) => ({ files: blobs })),
@@ -528,9 +599,9 @@ export async function syncGithub(
       source: "github",
       ref: repositoriesLink(reading.map(({ repo }) => repo)).ref,
       refId: WORKSPACE_REPOSITORIES,
-      // Where every snapshotted repository stood, read or not, as the
-      // status measures it: one its connection cannot read is unread here
-      // and is not new commits there, so the version is not ahead of itself.
+      // Where every built repository was picked, read or not, as the
+      // status and the next pick read it: one its connection cannot read
+      // is unread here and is still held at its commit.
       revision: repositoriesRevision(
         readable.flatMap((entry) =>
           entry.commitSha === null
@@ -563,21 +634,78 @@ export function mountBountyContextRoutes<Env extends BountyContextAppEnv>(
     return c.json(await contextStatus(options, organizationId, bounty));
   });
 
-  app.post(`${base}/:source/sync`, async (c) => {
+  // GitHub is not synced: its repositories are pinned, below.
+  app.post(`${base}/jira/sync`, async (c) => {
     const { organizationId } = c.get("member");
-    const source = c.req.param("source");
-    if (source !== "jira" && source !== "github") {
-      return c.json({ error: "Not found" }, 404);
-    }
     const bountyId = c.req.param("id");
     const bounty = await options.bounties.get(organizationId, bountyId);
     if (bounty === null) return c.json({ error: "Not found" }, 404);
-    const sync = source === "jira" ? syncJira : syncGithub;
-    const result = await sync(
+    const result = await syncJira(
       options,
       organizationId,
       bounty,
       c.get("user").id,
+    );
+    return answer(c, options, organizationId, bountyId, result);
+  });
+
+  app.get(`${base}/github/commits`, async (c) => {
+    const { organizationId } = c.get("member");
+    const bounty = await options.bounties.get(
+      organizationId,
+      c.req.param("id"),
+    );
+    if (bounty === null) return c.json({ error: "Not found" }, 404);
+    const source = options.githubContext;
+    if (source === undefined) {
+      return c.json(
+        { code: "unconfigured", error: "GitHub is not set up on this server." },
+        503,
+      );
+    }
+    const repos = await connectedRepositories(source.repos, organizationId);
+    const [builds, latest] = await Promise.all([
+      builtRepositories(source, organizationId, repos),
+      options.contexts.latest(organizationId, bounty.id),
+    ]);
+    const held = heldCommits(latest?.github);
+    return c.json(
+      bountyGithubCommitsResponseSchema.parse({
+        repositories: builds.map(({ repo, built }) => ({
+          repoId: repo.id,
+          fullName: repo.fullName,
+          held: held.get(repo.fullName) ?? null,
+          commits: built.map((snapshot) => ({
+            snapshotId: snapshot.id,
+            commitSha: snapshot.commitSha,
+            branch: snapshot.ref.replace(/^refs\/heads\//, ""),
+            createdAt: snapshot.createdAt,
+          })),
+        })),
+      }),
+    );
+  });
+
+  app.put(`${base}/github/commits`, async (c) => {
+    const { organizationId } = c.get("member");
+    const parsed = pinBountyGithubCommitsSchema.safeParse(
+      await c.req.json().catch(() => null),
+    );
+    if (!parsed.success) {
+      return c.json(
+        { code: "invalid", error: "Name a repository's commit." },
+        400,
+      );
+    }
+    const bountyId = c.req.param("id");
+    const bounty = await options.bounties.get(organizationId, bountyId);
+    if (bounty === null) return c.json({ error: "Not found" }, 404);
+    const result = await syncGithub(
+      options,
+      organizationId,
+      bounty,
+      c.get("user").id,
+      parsed.data.commits,
     );
     return answer(c, options, organizationId, bountyId, result);
   });

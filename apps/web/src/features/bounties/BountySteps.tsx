@@ -321,6 +321,91 @@ export function StepLineage({
 }
 
 /**
+ * A step's version, the one card on its tab: the version's number on a
+ * tile, what is known of it, and the decision on it, level with each other;
+ * under them, the context it holds or was made with. The rest of the tab
+ * reads on the page itself, in ruled sections. The tile wears the brand
+ * once the version stands approved, grey until then. A step with no version
+ * yet has a dash on its tile and the way to make one for its decision.
+ */
+export function StepVersionCard({
+  step,
+  tile,
+  approved = false,
+  action,
+  error = null,
+  context,
+  children,
+}: {
+  step: Step;
+  /** The version as its tile names it, such as "v2"; a dash for none. */
+  tile: string;
+  approved?: boolean;
+  /** The decision on it, or the way to make the first. */
+  action?: ReactNode;
+  error?: string | null;
+  /** The context it holds or was made with, across the card's foot. */
+  context?: ReactNode;
+  /** What is known of the version, beside its tile. */
+  children: ReactNode;
+}) {
+  return (
+    <section
+      aria-label="Version"
+      data-testid={`${step}-version-card`}
+      className="bg-card relative overflow-hidden rounded-lg border shadow-xs before:absolute before:inset-x-0 before:top-0 before:h-0.5 before:bg-(image:--brand-gradient)"
+    >
+      <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-3 p-4">
+        <div className="flex min-w-0 items-center gap-3">
+          <span
+            aria-hidden="true"
+            className={cn(
+              "flex size-9 shrink-0 items-center justify-center rounded-lg font-mono text-xs font-semibold",
+              approved
+                ? "bg-(image:--brand-gradient) text-white shadow-sm shadow-blue-500/20"
+                : "bg-muted text-muted-foreground",
+            )}
+          >
+            {tile}
+          </span>
+          {children}
+        </div>
+        {action}
+      </div>
+      {error !== null && (
+        <p role="alert" className="text-destructive -mt-1 px-4 pb-3 text-xs">
+          {error}
+        </p>
+      )}
+      {context !== undefined && context !== null && (
+        <div className="bg-muted/40 border-t px-4 py-2.5">{context}</div>
+      )}
+    </section>
+  );
+}
+
+/**
+ * The line beside a version's tile when there is no version yet: what the
+ * step is waiting on, over why, at the height a version's own line has.
+ */
+export function NoVersion({
+  title,
+  children,
+}: {
+  title: string;
+  children?: ReactNode;
+}) {
+  return (
+    <span className="flex min-h-9 min-w-0 flex-col justify-center text-xs">
+      <span className="text-subheading">{title}</span>
+      {children !== undefined && (
+        <span className="text-muted-foreground">{children}</span>
+      )}
+    </span>
+  );
+}
+
+/**
  * The scope's version over its text, as a price and a sandbox have
  * theirs: the version, chosen from the others when there are several, and
  * under it when it was written. An earlier one is read, not changed.

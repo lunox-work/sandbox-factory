@@ -7,7 +7,6 @@ import {
   ChevronDown,
   ChevronUp,
   ExternalLink,
-  ListChecks,
   Loader2,
   Minus,
   RefreshCw,
@@ -15,7 +14,13 @@ import {
   Target,
   TriangleAlert,
 } from "lucide-react";
-import { useEffect, useRef, useState, type ReactElement } from "react";
+import {
+  useEffect,
+  useRef,
+  useState,
+  type ReactElement,
+  type ReactNode,
+} from "react";
 import {
   priceFor,
   WEIGHT_POINTS,
@@ -26,13 +31,18 @@ import { dateTime, modelLabel, money } from "../../lib/format";
 import { capitalize, unweighed } from "./presentation";
 import { type EnrichedProposal } from "./types";
 import { SizeCard } from "./SizeCard";
+import { StepVersionCard } from "./BountySteps";
 import { PreviewPrice, PreviewReason, PreviewScenarios } from "./SizingPreview";
 import { useReanalyze } from "./useReanalyze";
 
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { DisabledReason } from "@/components/DisabledReason";
 import { ErrorBanner, RetryButton } from "@/components/Message";
-import { ModelCard, SectionHeading } from "@/components/ReadSection";
+import {
+  ModelCard,
+  RuledSection,
+  SectionHeading,
+} from "@/components/ReadSection";
 import { ThinkingLine } from "@/components/Thinking";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -113,6 +123,7 @@ export function ProposalPeek({
   withinBounty = false,
   scopeVersion = null,
   held = null,
+  context = null,
 }: {
   /** The organization's API root, for the reads the peek makes itself. */
   base: string;
@@ -153,6 +164,11 @@ export function ProposalPeek({
    * and are never held.
    */
   held?: string | null;
+  /**
+   * Inside its bounty, the context it was sized with, across the foot of
+   * its version's card.
+   */
+  context?: ReactNode;
 }) {
   const url = withinBounty ? null : (bounty?.url ?? proposal.liveUrl ?? null);
   const label = modelLabel(proposal.actualModel);
@@ -395,7 +411,7 @@ export function ProposalPeek({
             }
           />
         ) : (
-          <span className="font-semibold">{versionName}</span>
+          <span className="text-subheading">{versionName}</span>
         )}
       </span>
       <span className="flex flex-wrap gap-x-1">
@@ -504,127 +520,92 @@ export function ProposalPeek({
     />
   );
 
-  const price = (
-    <div className="flex flex-col gap-6" data-testid="proposal-bounty">
-      {/*
-        Inside its bounty, the decision first: which revision is being
-        decided and the button that decides it, before the long read it
-        rests on.
-      */}
-      {withinBounty && (
-        <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
-          {revision}
-          {decision}
-        </div>
-      )}
-      {/*
-        The proposal as one card: the status with the way to have
-        the model look again, then the amount level with the size
-        that sets it. The amount is the one number a reviewer is
-        here to agree to, so it is the one thing set large.
-      */}
-      <div className="flex flex-col gap-4 rounded-lg border p-4 sm:p-5">
-        {/* The state, and the way to have the model look again. */}
-        <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-3">
-          <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
-            <Badge variant="secondary" className="w-fit">
-              {capitalize(proposal.status)}
-            </Badge>
-            {/*
-              The complexity profile at work below, where the page is
-              read from: the price waits on it while the rubric does.
-            */}
-            {measuring !== null && !reanalyzing && (
-              <ThinkingLine
-                state={measuring}
-                className="text-muted-foreground text-xs"
-              >
-                {awaitingCode
-                  ? "Measuring the code; the price may change"
-                  : "Measuring the code"}
-              </ThinkingLine>
-            )}
-          </div>
-          {/* Sized again only while it is not approved: unapproved first. */}
-          {canDecide && (open || reanalyzing) && (
-            <DisabledReason reason={reanalyzing ? null : held}>
-              <button
-                type="button"
-                className="text-muted-foreground hover:text-foreground focus-visible:ring-ring/50 flex cursor-pointer items-center gap-1.5 rounded-sm text-sm underline-offset-4 transition-colors hover:underline focus-visible:ring-[3px] focus-visible:outline-none disabled:pointer-events-none disabled:opacity-50 aria-busy:opacity-100"
-                disabled={locked || (held !== null && !reanalyzing)}
-                aria-busy={reanalyzing}
-                onClick={reanalyze.start}
-              >
-                <RefreshCw
-                  className={`size-3.5 ${
-                    reanalyzing ? "animate-spin motion-reduce:animate-none" : ""
-                  }`}
-                />
-                {reanalyzing ? "Re-analyzing…" : "Re-analyze"}
-              </button>
-            </DisabledReason>
-          )}
-        </div>
+  // The way to have the model look again: sized again only while it is
+  // not approved, unapproved first.
+  const reanalyzeButton = canDecide && (open || reanalyzing) && (
+    <DisabledReason reason={reanalyzing ? null : held}>
+      <button
+        type="button"
+        className="text-muted-foreground hover:text-foreground focus-visible:ring-ring/50 flex cursor-pointer items-center gap-1.5 rounded-sm text-sm underline-offset-4 transition-colors hover:underline focus-visible:ring-[3px] focus-visible:outline-none disabled:pointer-events-none disabled:opacity-50 aria-busy:opacity-100"
+        disabled={locked || (held !== null && !reanalyzing)}
+        aria-busy={reanalyzing}
+        onClick={reanalyze.start}
+      >
+        <RefreshCw
+          className={`size-3.5 ${
+            reanalyzing ? "animate-spin motion-reduce:animate-none" : ""
+          }`}
+        />
+        {reanalyzing ? "Re-analyzing…" : "Re-analyze"}
+      </button>
+    </DisabledReason>
+  );
+  /*
+    The complexity profile at work below, where the page is read from: the
+    price waits on it while the rubric does.
+  */
+  const measuringLine = measuring !== null && !reanalyzing && (
+    <ThinkingLine state={measuring} className="text-muted-foreground text-xs">
+      {awaitingCode
+        ? "Measuring the code; the price may change"
+        : "Measuring the code"}
+    </ThinkingLine>
+  );
 
-        {/*
-          The amount level with the size that sets it, and the
-          sizing model level with the one warning a size can
-          carry: a two-by-two grid, each row centred on itself.
-          When a reviewer has overruled the model, a row of notes
-          sits between the two — what the model said on the left,
-          under the amount, and who set the size on the right,
-          under the size — one row, so the two are level whatever
-          the heights above them. On a phone it stacks in reading
-          order instead, the notes still sharing their line.
-        */}
-        {reanalyze.state.phase === "ended" && (
-          <p role="alert" className="text-destructive text-sm">
-            {reanalyze.state.line}
-          </p>
-        )}
-        {reanalyzing ? (
-          <PreviewPrice run={making} />
-        ) : (
-          <div className="grid grid-cols-1 items-center gap-x-6 gap-y-2.5 sm:grid-cols-[1fr_auto]">
-            <span
-              className={`text-3xl leading-none font-semibold tracking-tight sm:col-start-1 sm:row-start-1 ${
-                priced ? "tabular-nums" : "text-muted-foreground"
-              }`}
-            >
-              {money(amountMinor, proposal.currency)}
+  /*
+    The amount, the one number a reviewer is here to agree to and so the
+    one thing set large, level with the size that sets it.
+  */
+  const amount = (
+    <>
+      {reanalyze.state.phase === "ended" && (
+        <p role="alert" className="text-destructive text-sm">
+          {reanalyze.state.line}
+        </p>
+      )}
+      {reanalyzing ? (
+        <PreviewPrice run={making} />
+      ) : (
+        <div className="grid grid-cols-1 items-center gap-x-6 gap-y-2.5 sm:grid-cols-[1fr_auto]">
+          <span
+            className={`text-3xl leading-none font-semibold tracking-tight sm:col-start-1 sm:row-start-1 ${
+              priced ? "tabular-nums" : "text-muted-foreground"
+            }`}
+          >
+            {money(amountMinor, proposal.currency)}
+          </span>
+          {/* Who sized it, as a pill wearing the vendor's mark. */}
+          <span
+            className={`inline-flex w-fit items-center gap-1.5 rounded-full border py-1 pr-2.5 pl-2 text-xs sm:col-start-1 ${lowerRow}`}
+          >
+            <span className="flex size-3.5 shrink-0 items-center [&>svg]:size-3.5">
+              <ModelIcon model={proposal.actualModel} />
             </span>
-            {/* Who sized it, as a pill wearing the vendor's mark. */}
-            <span
-              className={`inline-flex w-fit items-center gap-1.5 rounded-full border py-1 pr-2.5 pl-2 text-xs sm:col-start-1 ${lowerRow}`}
-            >
-              <span className="flex size-3.5 shrink-0 items-center [&>svg]:size-3.5">
-                <ModelIcon model={proposal.actualModel} />
+            {label === null ? (
+              <span className="font-medium">{proposal.actualModel}</span>
+            ) : (
+              <span className="font-medium" title={proposal.actualModel}>
+                {label}
               </span>
-              {label === null ? (
-                <span className="font-medium">{proposal.actualModel}</span>
-              ) : (
-                <span className="font-medium" title={proposal.actualModel}>
-                  {label}
-                </span>
-              )}
-              {/*
+            )}
+            {/*
                 The model's confidence as a mark: up in green, level
                 in neutral, down in red. Named for assistive
                 technology and on hover, since a shape and a colour
                 alone say nothing to a screen reader.
               */}
-              <span
-                role="img"
-                aria-label={`${proposal.modelConfidence} confidence`}
-                title={`${proposal.modelConfidence} confidence`}
-                className={`flex shrink-0 items-center [&>svg]:size-3.5 ${CONFIDENCE_MARK[proposal.modelConfidence].tone}`}
-              >
-                {CONFIDENCE_MARK[proposal.modelConfidence].icon}
-              </span>
+            <span
+              role="img"
+              aria-label={`${proposal.modelConfidence} confidence`}
+              title={`${proposal.modelConfidence} confidence`}
+              className={`flex shrink-0 items-center [&>svg]:size-3.5 ${CONFIDENCE_MARK[proposal.modelConfidence].tone}`}
+            >
+              {CONFIDENCE_MARK[proposal.modelConfidence].icon}
             </span>
-            <div className="sm:col-start-2 sm:row-start-1 sm:justify-self-end">
-              {canDecide && open ? (
-                /*
+          </span>
+          <div className="sm:col-start-2 sm:row-start-1 sm:justify-self-end">
+            {canDecide && open ? (
+              /*
                       The size is the resize: a row of cards, one per size,
                       with the current size drawn as the larger one. That
                       card is disabled, since it is not a change, but kept
@@ -637,81 +618,130 @@ export function ProposalPeek({
                       size below it, which reads "S+" while it is the size
                       in force, and a click there sets the whole size.
                     */
-                <DisabledReason reason={held}>
-                  <div
-                    role="group"
-                    aria-label="Resize"
-                    className="flex min-h-12 flex-wrap items-center gap-1.5 sm:justify-end"
-                  >
-                    {complexity === "unsized" && (
-                      <SizeCard size="unsized" current />
-                    )}
-                    {WHOLE_BOUNTY_COMPLEXITIES.map((size) => {
-                      const current =
-                        complexity === size || complexity === `${size}+`;
-                      return (
-                        <SizeCard
-                          key={size}
-                          size={current ? complexity : size}
-                          current={current}
-                          disabled={
-                            locked || held !== null || complexity === size
-                          }
-                          onClick={() => void resizeTo(size)}
-                        />
-                      );
-                    })}
-                  </div>
-                </DisabledReason>
-              ) : (
-                <SizeCard size={proposal.complexity} current />
-              )}
-            </div>
-            {sizedBy !== "model" && (
-              <div className="text-muted-foreground flex items-baseline justify-between gap-x-6 text-xs sm:col-span-2 sm:row-start-2">
-                <span>the model said {proposal.modelComplexity}</span>
-                {/*
+              <DisabledReason reason={held}>
+                <div
+                  role="group"
+                  aria-label="Resize"
+                  className="flex min-h-12 flex-wrap items-center gap-1.5 sm:justify-end"
+                >
+                  {complexity === "unsized" && (
+                    <SizeCard size="unsized" current />
+                  )}
+                  {WHOLE_BOUNTY_COMPLEXITIES.map((size) => {
+                    const current =
+                      complexity === size || complexity === `${size}+`;
+                    return (
+                      <SizeCard
+                        key={size}
+                        size={current ? complexity : size}
+                        current={current}
+                        disabled={
+                          locked || held !== null || complexity === size
+                        }
+                        onClick={() => void resizeTo(size)}
+                      />
+                    );
+                  })}
+                </div>
+              </DisabledReason>
+            ) : (
+              <SizeCard size={proposal.complexity} current />
+            )}
+          </div>
+          {sizedBy !== "model" && (
+            <div className="text-muted-foreground flex items-baseline justify-between gap-x-6 text-xs sm:col-span-2 sm:row-start-2">
+              <span>the model said {proposal.modelComplexity}</span>
+              {/*
                 "Saved" hangs under who set the size, out of the flow, so
                 coming and going it moves nothing around it.
               */}
-                <span className="relative text-right">
-                  {sizedBy === "rubric"
-                    ? "set by the rubric"
-                    : chosen === null && step !== null && step.steps > 0
-                      ? `${step.base} set by a reviewer`
-                      : "set by a reviewer"}
-                  <span
-                    aria-hidden="true"
-                    className={`pointer-events-none absolute top-full right-0 pt-0.5 transition-[opacity,translate] duration-300 ease-out motion-reduce:transition-none ${
-                      saved
-                        ? "translate-y-0 opacity-100"
-                        : "-translate-y-1 opacity-0"
-                    }`}
-                  >
-                    Saved
-                  </span>
-                  <span role="status" className="sr-only">
-                    {saved ? "Saved" : ""}
-                  </span>
+              <span className="relative text-right">
+                {sizedBy === "rubric"
+                  ? "set by the rubric"
+                  : chosen === null && step !== null && step.steps > 0
+                    ? `${step.base} set by a reviewer`
+                    : "set by a reviewer"}
+                <span
+                  aria-hidden="true"
+                  className={`pointer-events-none absolute top-full right-0 pt-0.5 transition-[opacity,translate] duration-300 ease-out motion-reduce:transition-none ${
+                    saved
+                      ? "translate-y-0 opacity-100"
+                      : "-translate-y-1 opacity-0"
+                  }`}
+                >
+                  Saved
                 </span>
-              </div>
-            )}
-            {/*
+                <span role="status" className="sr-only">
+                  {saved ? "Saved" : ""}
+                </span>
+              </span>
+            </div>
+          )}
+          {/*
             The one warning a size can carry, level with the model
             and under the size it is about: an XL is a hint that
             the bounty is two.
           */}
-            {complexity === "XL" && (
-              <span
-                className={`flex items-center gap-1 text-xs text-amber-700 dark:text-amber-400 sm:col-start-2 sm:justify-self-end ${lowerRow}`}
-              >
-                <TriangleAlert className="size-3.5 shrink-0" />
-                Consider splitting
-              </span>
-            )}
+          {complexity === "XL" && (
+            <span
+              className={`flex items-center gap-1 text-xs text-amber-700 dark:text-amber-400 sm:col-start-2 sm:justify-self-end ${lowerRow}`}
+            >
+              <TriangleAlert className="size-3.5 shrink-0" />
+              Consider splitting
+            </span>
+          )}
+        </div>
+      )}
+    </>
+  );
+
+  const price = (
+    <div className="flex flex-col gap-6" data-testid="proposal-bounty">
+      {withinBounty ? (
+        /*
+          Inside its bounty, its version's card first, as the scope's is:
+          which version is being decided and the button that decides it,
+          over the context it was sized with, before the long read it rests
+          on. Then each part of that read in a ruled section of its own.
+        */
+        <>
+          <StepVersionCard
+            step="price"
+            tile={proposal.version > 0 ? `v${proposal.version}` : "—"}
+            approved={proposal.status === "approved"}
+            action={decision}
+            context={context}
+          >
+            {revision}
+          </StepVersionCard>
+          <RuledSection
+            title="Price and size"
+            aside={reanalyzeButton}
+            data-testid="proposal-price"
+          >
+            {measuringLine}
+            {amount}
+          </RuledSection>
+        </>
+      ) : (
+        /*
+          The proposal as one card: the status with the way to have the
+          model look again, then the amount level with the size that sets
+          it.
+        */
+        <div className="flex flex-col gap-4 rounded-lg border p-4 sm:p-5">
+          <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-3">
+            <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
+              <Badge variant="secondary" className="w-fit">
+                {capitalize(proposal.status)}
+              </Badge>
+              {measuringLine}
+            </div>
+            {reanalyzeButton}
           </div>
-        )}
-      </div>
+          {amount}
+        </div>
+      )}
 
       {/*
         Why the run offered this bounty at all, before why it is the
@@ -720,8 +750,12 @@ export function ProposalPeek({
         hand, which needs no case made.
       */}
       {proposal.categories !== undefined && proposal.categories.length > 0 && (
-        <div data-testid="proposal-categories">
-          <SectionHeading icon={<Target />}>Why this bounty</SectionHeading>
+        <ReadPart
+          flat={withinBounty}
+          icon={<Target />}
+          title="Why this bounty"
+          data-testid="proposal-categories"
+        >
           <ul className="flex flex-col gap-2">
             {proposal.categories.map((category) => (
               <li
@@ -743,7 +777,7 @@ export function ProposalPeek({
               </li>
             ))}
           </ul>
-        </div>
+        </ReadPart>
       )}
 
       {/*
@@ -752,13 +786,16 @@ export function ProposalPeek({
       */}
       {reanalyzing ? (
         <>
-          <PreviewReason run={making} />
+          <PreviewReason run={making} flat={withinBounty} />
           {/* Where the rubric would carry them, the scenarios come here. */}
-          {scenariosInRubric && <PreviewScenarios run={making} />}
+          {scenariosInRubric && (
+            <PreviewScenarios run={making} flat={withinBounty} />
+          )}
         </>
       ) : (
         <>
           <PricingRubricBlock
+            flat={withinBounty}
             proposal={proposal}
             canUse={canDecide && open && held === null}
             busy={locked}
@@ -783,33 +820,34 @@ export function ProposalPeek({
         rubric; beside one, its second opinion. What the spec gained
         since is marked on its scenarios.
       */}
-          <div>
-            <SectionHeading icon={<Sparkles />} tone="model">
-              {(proposal.rubric ?? null) === null
+          <ReadPart
+            flat={withinBounty}
+            icon={<Sparkles />}
+            tone="model"
+            title={
+              (proposal.rubric ?? null) === null
                 ? "Why this size"
-                : `The model's read: ${proposal.modelComplexity}`}
-            </SectionHeading>
-            <ModelCard>
-              <p className="text-sm leading-relaxed">
-                {proposal.modelRationale}
+                : `The model's read: ${proposal.modelComplexity}`
+            }
+          >
+            <p className="text-sm leading-relaxed">{proposal.modelRationale}</p>
+            {canDecide && unweighed(proposal) && (
+              <p
+                className="text-muted-foreground mt-3 border-t pt-3 text-xs"
+                data-testid="proposal-unweighed"
+              >
+                This size has no weighed scenarios, so a scenario added later
+                cannot move it. Re-analyze drafts and weighs them.
               </p>
-              {canDecide && unweighed(proposal) && (
-                <p
-                  className="text-muted-foreground mt-3 border-t pt-3 text-xs"
-                  data-testid="proposal-unweighed"
-                >
-                  This size has no weighed scenarios, so a scenario added later
-                  cannot move it. Re-analyze drafts and weighs them.
-                </p>
-              )}
-              {/* What the scenarios' own head says where they have a tab. */}
-              {withinBounty && outlines.length > 0 && (
-                <OutlineSource outlines={outlines} className="mt-3" />
-              )}
-            </ModelCard>
-          </div>
+            )}
+            {/* What the scenarios' own head says where they have a tab. */}
+            {withinBounty && outlines.length > 0 && (
+              <OutlineSource outlines={outlines} className="mt-3" />
+            )}
+          </ReadPart>
 
           <ComplexityProfileBlock
+            flat={withinBounty}
             read={profile}
             specRevision={proposal.specRevision}
           />
@@ -822,14 +860,11 @@ export function ProposalPeek({
         before the rubric, as a list, the last of the reasoning.
       */}
       {withinBounty && !scenariosInRubric && (
-        <div>
-          <SectionHeading icon={<ListChecks />}>Scenarios</SectionHeading>
-          {scenarioView}
-        </div>
+        <RuledSection title="Scenarios">{scenarioView}</RuledSection>
       )}
 
       {/* A rule before the decision: what follows is the act, not the record. */}
-      {(!withinBounty || remove !== false) && <Separator />}
+      {!withinBounty && <Separator />}
 
       {withinBounty ? (
         /*
@@ -856,14 +891,27 @@ export function ProposalPeek({
         </div>
       )}
 
-      {delivery !== undefined && (
-        <div>
-          <p className="text-muted-foreground mb-1.5 text-xs font-medium">
-            Jira
-          </p>
-          <DeliveryStatus operation={delivery} busy={locked} mutate={mutate} />
-        </div>
-      )}
+      {delivery !== undefined &&
+        (withinBounty ? (
+          <RuledSection title="Jira">
+            <DeliveryStatus
+              operation={delivery}
+              busy={locked}
+              mutate={mutate}
+            />
+          </RuledSection>
+        ) : (
+          <div>
+            <p className="text-muted-foreground mb-1.5 text-xs font-medium">
+              Jira
+            </p>
+            <DeliveryStatus
+              operation={delivery}
+              busy={locked}
+              mutate={mutate}
+            />
+          </div>
+        ))}
     </div>
   );
 
@@ -947,6 +995,42 @@ export function ProposalPeek({
           )}
         </TabsContent>
       </Tabs>
+    </div>
+  );
+}
+
+/**
+ * One part of the long read. Inside its bounty, a ruled section on the page
+ * itself, as the scope's text is; on its own, a heading with its icon over
+ * a card when the part is a model's word.
+ */
+function ReadPart({
+  flat,
+  icon,
+  tone = "plain",
+  title,
+  children,
+  ...props
+}: {
+  flat: boolean;
+  icon: ReactElement;
+  tone?: "plain" | "model";
+  title: string;
+  children: ReactNode;
+  "data-testid"?: string;
+}) {
+  if (flat)
+    return (
+      <RuledSection title={title} {...props}>
+        {children}
+      </RuledSection>
+    );
+  return (
+    <div {...props}>
+      <SectionHeading icon={icon} tone={tone}>
+        {title}
+      </SectionHeading>
+      {tone === "model" ? <ModelCard>{children}</ModelCard> : children}
     </div>
   );
 }

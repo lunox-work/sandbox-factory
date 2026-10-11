@@ -3,9 +3,44 @@
  * and the card that holds what a model said.
  */
 
-import type { ComponentProps, ReactNode } from "react";
+import { useId, type ComponentProps, type ReactNode } from "react";
 
 import { cn } from "@/lib/utils";
+
+/**
+ * A section of a bounty step's page: its name over a rule, then what it
+ * holds on the page itself, not in a card. A step's version is its one
+ * card; the scope's text and links are headed so, and the price's and the
+ * sandbox's parts are too. What the section adds up to, or the one action
+ * on it, sits at the rule's right end.
+ */
+export function RuledSection({
+  title,
+  aside,
+  className,
+  children,
+  ...props
+}: Omit<ComponentProps<"section">, "title"> & {
+  title: ReactNode;
+  aside?: ReactNode;
+}) {
+  const id = useId();
+  return (
+    <section
+      aria-labelledby={id}
+      className={cn("flex flex-col gap-3", className)}
+      {...props}
+    >
+      <div className="flex min-h-9 items-center justify-between gap-3 border-b pb-2">
+        <h3 id={id} className="eyebrow">
+          {title}
+        </h3>
+        {aside}
+      </div>
+      {children}
+    </section>
+  );
+}
 
 /**
  * A section's heading: a small tile wearing the section's icon, then its

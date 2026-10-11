@@ -1064,6 +1064,31 @@ test("the workspace's repositories are outlined once for the run, each under its
   }
 });
 
+test("each bounty is outlined at the commits its scope holds, once per set of them", async () => {
+  const asked: (string | null)[] = [];
+  const githubAt = (revision: string) =>
+    ({ refId: "workspace", revision, version: 1 }) as never;
+  const contexts: string[] = [];
+  const state = harness({
+    // The first two held alike, the third elsewhere.
+    contextFor: () => {
+      contexts.push("context");
+      return Promise.resolve({
+        jira: null,
+        github: githubAt(contexts.length === 3 ? "acme/app@c1" : "acme/app@c2"),
+      });
+    },
+    outlinesFor: (_organizationId, github) => {
+      asked.push(github?.revision ?? null);
+      return Promise.resolve(outlines);
+    },
+    candidates: [issue("1"), issue("2"), issue("3")],
+  });
+  await state.executor.execute("org_1", "brn_1");
+
+  assert.deepEqual(asked.sort(), ["acme/app@c1", "acme/app@c2"]);
+});
+
 test("a label the outline did not hold names no repository", async () => {
   const state = harness({
     outlinesFor: () => Promise.resolve(outlines),

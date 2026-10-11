@@ -14,6 +14,7 @@ import { clients } from "./data/query";
 import type { BountyProfileDto } from "@sandbox-factory/shared";
 
 import type { OrbState } from "@/components/Orb";
+import { RuledSection } from "@/components/ReadSection";
 import { RunActivity, useRunActivity } from "@/components/RunActivity";
 
 import { plural } from "./lib/format";
@@ -124,15 +125,18 @@ function named(names: readonly string[]): string {
 export function ComplexityProfileBlock({
   read,
   specRevision,
+  flat = false,
 }: {
   read: ProfileRead;
   /** The revision the proposal is at, to say when the profile is older. */
   specRevision: number | null | undefined;
+  /** Inside its bounty: a ruled section on the page, as the scope's are. */
+  flat?: boolean;
 }) {
   if (read.state === "loading") return null;
   if (read.state === "failed")
     return (
-      <Section>
+      <Section flat={flat}>
         <p className="text-muted-foreground text-sm">
           The complexity profile could not be loaded.{" "}
           {read.retry !== undefined && (
@@ -151,7 +155,7 @@ export function ComplexityProfileBlock({
   if (first === undefined) return null;
   const several = read.profiles.length > 1;
   return (
-    <Section>
+    <Section flat={flat}>
       {read.profiles.map((stored) =>
         several ? (
           <div key={stored.id} className="mt-2 first:mt-0">
@@ -311,7 +315,19 @@ function RepositoryProfile({
   );
 }
 
-function Section({ children }: { children: React.ReactNode }) {
+function Section({
+  flat,
+  children,
+}: {
+  flat: boolean;
+  children: React.ReactNode;
+}) {
+  if (flat)
+    return (
+      <RuledSection title="Complexity profile" data-testid="proposal-profile">
+        <div>{children}</div>
+      </RuledSection>
+    );
   return (
     <div data-testid="proposal-profile">
       <p className="text-muted-foreground mb-1.5 text-xs font-medium">

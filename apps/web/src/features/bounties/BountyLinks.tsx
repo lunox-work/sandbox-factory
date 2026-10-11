@@ -16,8 +16,9 @@
  * here is the bounty's own too: Jira no longer updates it, until an issue
  * is picked again.
  *
- * Under each row, the source's sync: whether its context is in use and up
- * to date, and the way to sync it into the scope (`ContextSync`).
+ * Under each row, the source's context: whether it is in use and up to
+ * date, and the way to bring it into the scope (`ContextSync`): syncing the
+ * issue, in its row's menu, and picking each repository's commit.
  */
 
 import {
@@ -109,11 +110,7 @@ export function BountyLinks({
               <ContextSync source="github" context={context} />
             )
           }
-          menu={
-            context === undefined ? null : (
-              <ContextSyncMenu source="github" context={context} canSync />
-            )
-          }
+          menu={null}
         />
         <JiraLink
           organization={organization}
