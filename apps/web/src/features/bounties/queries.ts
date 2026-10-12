@@ -109,3 +109,49 @@ export function useProposalDetail(owner: string, proposalId: string) {
   };
   return { detail, refresh, apply };
 }
+
+/**
+ * Reads a proposal that has just landed, and its spec, into the cache its
+ * views read from, so a page can swap what it showed while it was made for
+ * the proposal itself in one step, rather than through a loading line.
+ * Settles either way: a read that fails is tried again by the view.
+ */
+export function usePrefetchProposal(owner: string) {
+  const userId = useUserId();
+  const cache = useQueryClient();
+  return useCallback(
+    async (proposalId: string) => {
+      try {
+        const detail = await cache.fetchQuery({
+          queryKey: queryKeys.resource(
+            userId,
+            owner,
+            "proposal-detail",
+            proposalId,
+            undefined,
+          ),
+          queryFn: ({ signal }) =>
+            clients.pricing.detail(owner, proposalId, undefined, signal),
+        });
+        const { specRevision } = detail.proposal;
+        if (specRevision == null) return;
+        await cache.fetchQuery({
+          // As `useProposalSpec` keys the latest spec.
+          queryKey: queryKeys.resource(
+            userId,
+            owner,
+            "proposal-spec",
+            proposalId,
+            specRevision,
+            undefined,
+          ),
+          queryFn: ({ signal }) =>
+            clients.pricing.spec(owner, proposalId, signal),
+        });
+      } catch {
+        // The view reads it again and says why it could not.
+      }
+    },
+    [cache, userId, owner],
+  );
+}

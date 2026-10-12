@@ -1843,6 +1843,60 @@ test("an admin proposes a bounty from inside it, follows its sizing, and lands o
   ).toBeNull();
 });
 
+test("a proposal that lands keeps its parts on screen until it is read, not a loading line", async () => {
+  const state = server([
+    ["POST", "/bounties/bty_7/propose", () => json({ run: run() }, 202)],
+    [
+      "GET",
+      "/runs/brn_1",
+      () =>
+        json({
+          run: run(
+            [
+              {
+                externalIssueId: "bty_7",
+                issueKey: null,
+                bountyId: "bty_7",
+                proposalId: "bpr_9",
+                status: "proposed",
+              },
+            ],
+            "succeeded",
+          ),
+        }),
+    ],
+    scopedBounty,
+  ]);
+  // The proposal's read is held until released, as a slow one would be.
+  let asked = false;
+  let release = () => {};
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  vi.stubGlobal("fetch", (input: string, init?: RequestInit) => {
+    if (!String(input).endsWith("/proposals/bpr_9"))
+      return state.fetchMock(input, init);
+    asked = true;
+    return held.then(() => state.fetchMock(input, init));
+  });
+  window.history.replaceState(null, "", "/bounties/acme/bty_7?tab=price");
+  render(<Shell {...inAcme("admin")} />);
+  const detail = await screen.findByTestId("bounty-detail");
+  const part = within(detail).getByRole("region", { name: "Price" });
+  await userEvent.click(within(part).getByRole("button", { name: "Price it" }));
+  expect(await within(part).findByTestId("proposal-preview")).toBeDefined();
+
+  // Landed, and being read: what was shown of it stays.
+  await waitFor(() => expect(asked).toBe(true), { timeout: 3_000 });
+  expect(within(part).getByTestId("proposal-preview")).toBeDefined();
+  expect(within(detail).queryByText(/Loading the price/)).toBeNull();
+
+  release();
+  expect(await within(detail).findByTestId("proposal-detail")).toBeDefined();
+  expect(within(detail).queryByTestId("proposal-preview")).toBeNull();
+  expect(within(detail).queryByText(/Loading the price/)).toBeNull();
+});
+
 test("a bounty that already has a proposal opens it without sizing", async () => {
   const state = server([
     ["POST", "/bounties/bty_7/propose", () => json({ proposalId: "bpr_9" })],
@@ -4148,6 +4202,85 @@ test("a proposal waiting on its code is read again once the code is measured, an
     ({ method, url }) => method === "GET" && /\/proposals\/bpr_9$/.test(url),
   );
   expect(reads.length).toBeGreaterThanOrEqual(2);
+});
+
+test("a proposal whose code is being measured offers no re-analysis until it is", async () => {
+  const spec = {
+    feature: "Invitations",
+    background: [],
+    scenarios: [
+      {
+        id: "s1",
+        kind: "happy",
+        title: "One invitation",
+        steps: [{ keyword: "Then", text: "one email" }],
+        origin: "draft",
+        weight: "heavy",
+      },
+    ],
+    openQuestions: [],
+    assumptions: [],
+  } as const;
+  const waiting = proposal({
+    specRevision: 1,
+    rubric: assessRubric({ spec, code: { status: "pending" } }),
+  });
+  const { fetchMock } = server([
+    [
+      "GET",
+      "/bounties/bty_7",
+      () => json({ bounty: detail({ proposal: liveProposal() }) }),
+    ],
+    [
+      "GET",
+      "/profile",
+      () =>
+        json({
+          profiles: [
+            {
+              id: "bpf_1",
+              proposalId: "bpr_9",
+              specRevision: 1,
+              repository: "acme/app",
+              status: "scoping",
+              errorCode: null,
+              runErrorCode: null,
+              snapshotId: "rsn_1",
+              scopeRunId: "arn_1",
+              sliceRunId: null,
+              profile: null,
+              createdAt: stamp,
+              updatedAt: stamp,
+            },
+          ],
+        }),
+    ],
+    ["GET", "/spec", () => json({ spec: null })],
+    [
+      "GET",
+      "/proposals/bpr_9",
+      () =>
+        json({
+          proposal: waiting,
+          freshness: { freshness: "current", checkedAt: stamp },
+          liveSpec: null,
+          writebackOperations: [],
+        }),
+    ],
+  ]);
+  vi.stubGlobal("fetch", fetchMock);
+  window.history.replaceState(null, "", "/bounties/acme/bty_7?tab=price");
+  render(<Shell {...inAcme("admin")} />);
+  const page = await screen.findByTestId("bounty-detail");
+  const price = await within(page).findByTestId("proposal-price");
+  expect(
+    await within(price).findByText("Measuring the code; the price may change"),
+  ).toBeDefined();
+  // The price the measurement sets is on its way: asking again now would
+  // race it.
+  expect(
+    within(price).queryByRole("button", { name: "Re-analyze" }),
+  ).toBeNull();
 });
 
 test("a bounty's page keeps it at a glance, its context and workspace beside every tab", async () => {

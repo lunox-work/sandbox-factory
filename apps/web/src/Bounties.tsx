@@ -139,6 +139,7 @@ import {
   useBountyContext,
 } from "./features/bounties/BountyContext";
 import { BountyProposal } from "./features/bounties/BountyProposal";
+import { usePrefetchProposal } from "./features/bounties/queries";
 import { BoardFilter } from "./features/bounties/BoardScope";
 import {
   CategoryFilter,
@@ -1327,10 +1328,14 @@ function usePropose(
 ) {
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // A proposal this page watched being made, which fades in where its
+  // parts were rather than appearing as one read on opening would.
+  const [landed, setLanded] = useState(false);
   // The run sizing it, as last read: what it has made so far shows.
   const [run, setRun] = useState<BountyRunDto | undefined>(undefined);
   const controller = useRef<AbortController | null>(null);
   useEffect(() => () => controller.current?.abort(), []);
+  const prefetch = usePrefetchProposal(organizationId);
   const start = async (following?: string) => {
     controller.current?.abort();
     const current = new AbortController();
@@ -1347,9 +1352,17 @@ function usePropose(
       },
     );
     if (current.signal.aborted) return;
+    /*
+      The parts shown as they landed stay until the proposal is read, so
+      they give way to it in one step rather than to a loading line first.
+    */
+    if (result.ok) await prefetch(result.proposalId);
+    if (current.signal.aborted) return;
     setPending(false);
-    if (result.ok) onOpenProposal(result.proposalId);
-    else setError(result.error);
+    if (result.ok) {
+      setLanded(true);
+      onOpenProposal(result.proposalId);
+    } else setError(result.error);
   };
   /*
     A sizing already in flight, as after a reload mid-run: followed as if
@@ -1377,7 +1390,7 @@ function usePropose(
     void start(inFlight);
     // `start` is remade each render; the run's id is what matters here.
   }, [inFlight, pending]);
-  return { pending, error, run, start: () => start() };
+  return { pending, error, run, landed, start: () => start() };
 }
 
 /** Said when a save lost to someone else's, and the field now shows theirs. */
@@ -1580,7 +1593,13 @@ function BountyDetail({
   */
   const proposalPart =
     proposal !== null ? (
-      proposal(priceContext)
+      propose.landed ? (
+        <div className="animate-in fade-in slide-in-from-bottom-1 duration-500 ease-out motion-reduce:animate-none">
+          {proposal(priceContext)}
+        </div>
+      ) : (
+        proposal(priceContext)
+      )
     ) : propose.pending ? (
       /*
         Being sized: each part of the proposal as the model returns it,

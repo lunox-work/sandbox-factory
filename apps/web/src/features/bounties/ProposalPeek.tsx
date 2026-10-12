@@ -521,8 +521,10 @@ export function ProposalPeek({
   );
 
   // The way to have the model look again: sized again only while it is
-  // not approved, unapproved first.
-  const reanalyzeButton = canDecide && (open || reanalyzing) && (
+  // not approved, unapproved first, and not while the code is measured,
+  // since the price that measurement sets is still on its way.
+  const offersReanalyze = reanalyzing || (open && measuring === null);
+  const reanalyzeButton = canDecide && offersReanalyze && (
     <DisabledReason reason={reanalyzing ? null : held}>
       <button
         type="button"

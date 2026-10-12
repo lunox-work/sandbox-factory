@@ -19,10 +19,18 @@ import {
   SectionHeading,
 } from "@/components/ReadSection";
 import { ThinkingLine } from "@/components/Thinking";
+import { cn } from "@/lib/utils";
 
 import { money, plural } from "../../lib/format";
 import { KindDot } from "../../RubricScenarios";
 import { SizeCard } from "./SizeCard";
+
+/**
+ * How a part comes in as its call returns: rising into the place its
+ * skeleton held, so the page fills in rather than snapping.
+ */
+const LAND =
+  "animate-in fade-in slide-in-from-bottom-1 duration-500 ease-out motion-reduce:animate-none";
 
 /** The run being followed, or undefined until its first read lands. */
 type Following = BountyRunDto | undefined;
@@ -69,7 +77,7 @@ export function PreviewPrice({ run }: { run: Following }) {
       ) : (
         <>
           <span
-            className={`text-3xl leading-none font-semibold tracking-tight ${
+            className={`${LAND} text-3xl leading-none font-semibold tracking-tight ${
               complexity === "unsized"
                 ? "text-muted-foreground"
                 : "tabular-nums"
@@ -83,7 +91,9 @@ export function PreviewPrice({ run }: { run: Following }) {
               run.rateCard.currency,
             )}
           </span>
-          <div className="sm:col-start-2 sm:row-start-1 sm:justify-self-end">
+          <div
+            className={`${LAND} sm:col-start-2 sm:row-start-1 sm:justify-self-end`}
+          >
             <SizeCard size={complexity} current />
           </div>
         </>
@@ -115,7 +125,7 @@ export function PreviewReason({
     sizing === undefined ? (
       <Lines />
     ) : (
-      <p className="text-sm leading-relaxed">
+      <p className={`${LAND} text-sm leading-relaxed`}>
         {sizing === null
           ? "The model could not size this bounty."
           : sizing.rationale}
@@ -158,11 +168,11 @@ export function PreviewScenarios({
         <Lines />
       </div>
     ) : spec === null ? (
-      <p className="text-muted-foreground text-sm">
+      <p className={`${LAND} text-muted-foreground text-sm`}>
         The scenarios could not be drafted.
       </p>
     ) : (
-      <div className={box}>
+      <div className={cn(LAND, box)}>
         <p className="mb-2 text-sm font-medium">{spec.feature}</p>
         <ul className="flex flex-col gap-1.5">
           {spec.scenarios.map((scenario) => (
