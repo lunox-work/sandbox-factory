@@ -102,7 +102,7 @@ function adapterFor(run: ClaimedAnalysisRun): ToolAdapter {
     case "slice":
       return createSliceAdapter();
     case "sandbox_build":
-      return createSandboxBuildAdapter({ provider: evaluation });
+      return createSandboxBuildAdapter({ agent, provider: evaluation });
     case "scope":
       return createScopeAdapter(agent);
     case "fixtures":

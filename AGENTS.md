@@ -85,10 +85,11 @@ Docker or dev scripts. It preserves the setup and testing constraints.
 
 Commit, push, open a PR, merge, tag or deploy only when the user requests it.
 For authorized shipping, read [scripts/README.md](./scripts/README.md) and use
-`./scripts/ship.sh --title "fix: ..." --yes`. Exit 0 means PR open, not merged
-or deployed; report its URL without a local watcher. Refresh main before the
-next change. Keep one logical change per `fix/...` or `feat/...` branch and fill
-in the PR template.
+`./scripts/ship.sh --title "fix: ..." --yes`. It waits for the merge, then
+leaves main at the merge and deletes the branch; exit 0 means merged, not
+deployed. On exit 3, fix the blocker on the branch and re-run with `--branch`
+until it merges, then report the PR URL. Keep one logical change per `fix/...`
+or `feat/...` branch and fill in the PR template.
 
 - Ready same-repository PRs auto-merge on required checks, except Dependabot
   majors. CodeRabbit and unresolved review threads are advisory. Use a draft

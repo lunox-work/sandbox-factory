@@ -23,7 +23,12 @@ import {
   screenForPath,
 } from "../src/routes";
 import { Bounties, BountyPage, NewBountyPage } from "../src/Bounties";
-import { assessRubric, COMPLEXITY_PROFILE_VERSION } from "sandbox-factory";
+import {
+  assessRubric,
+  COMPLEXITY_PROFILE_VERSION,
+  SANDBOX_BUILD_RUN_VERSION,
+  SLICE_PUBLISHED_REASON,
+} from "sandbox-factory";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -1577,7 +1582,7 @@ test("a bounty is shown with its repositories' stack and its own", async () => {
   // until its pencil asks for one.
   await waitFor(() =>
     expect(
-      within(within(panel).getByRole("list", { name: "Tech stack" }))
+      within(within(panel).getByRole("group", { name: "Tech stack" }))
         .getAllByRole("listitem")
         .map((item) => item.title),
     ).toEqual(["Detected in acme/app", "Detected in acme/app", ""]),
@@ -4019,10 +4024,12 @@ function slicingServer(input: {
   slice: () => Record<string, unknown>;
   sliceVersion?: () => Promise<Response>;
   routes?: [string, string, (body: unknown) => Promise<Response>][];
+  /** What differs of the sandbox, beyond its repository. */
+  sandbox?: () => Record<string, unknown>;
 }) {
   return generatingServer({
     versions: input.versions,
-    sandbox: () => ({ sourceRepoId: "ghr_1" }),
+    sandbox: () => ({ sourceRepoId: "ghr_1", ...input.sandbox?.() }),
     source: () => slicedSource,
     routes: [
       ...(input.routes ?? []),
@@ -4093,6 +4100,117 @@ test("an admin slices a version from its sizing's slice, and follows its build",
       }) as HTMLButtonElement
     ).disabled,
   ).toBe(true);
+});
+
+test("a built draft holds Slice again, and says a new price cuts a new slice", async () => {
+  vi.stubGlobal(
+    "fetch",
+    slicingServer({
+      versions: () => [generatedVersion],
+      slice: () => sliceOf(),
+      routes: [
+        [
+          "GET",
+          "/github/runs/arn_build",
+          () =>
+            json({
+              run: buildRun({
+                status: "succeeded",
+                finishedAt: stamp,
+                toolVersion: SANDBOX_BUILD_RUN_VERSION,
+              }),
+            }),
+        ],
+      ],
+    }).fetchMock,
+  );
+  const part = await sandboxPart();
+  const again = await within(part).findByRole("button", {
+    name: "Slice again",
+  });
+  expect((again as HTMLButtonElement).disabled).toBe(true);
+  // The reason is on hover, from the span the disabled button sits in.
+  await userEvent.hover(again.parentElement!);
+  expect(
+    (
+      await screen.findAllByText(
+        "The latest version is already cut from this slice. Price it again to cut a new one.",
+      )
+    ).length,
+  ).toBeGreaterThan(0);
+});
+
+test("a sandbox whose publication is live holds Slice again until it is unpublished", async () => {
+  vi.stubGlobal(
+    "fetch",
+    slicingServer({
+      versions: () => [generatedVersion],
+      slice: () => sliceOf(),
+      // Built by an older builder, which would otherwise be sliced again.
+      routes: [
+        [
+          "GET",
+          "/github/runs/arn_build",
+          () =>
+            json({
+              run: buildRun({
+                status: "succeeded",
+                finishedAt: stamp,
+                toolVersion: "sandbox_build@1",
+              }),
+            }),
+        ],
+      ],
+      sandbox: () => ({
+        status: "published",
+        currentVersionId: "sbv_1",
+        expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+      }),
+    }).fetchMock,
+  );
+  const part = await sandboxPart();
+  const again = await within(part).findByRole("button", {
+    name: "Slice again",
+  });
+  await waitFor(() => expect((again as HTMLButtonElement).disabled).toBe(true));
+  await userEvent.hover(again.parentElement!);
+  expect(
+    (await screen.findAllByText(SLICE_PUBLISHED_REASON)).length,
+  ).toBeGreaterThan(0);
+});
+
+test("a draft an older builder built is sliced again, to be built by this one", async () => {
+  vi.stubGlobal(
+    "fetch",
+    slicingServer({
+      versions: () => [generatedVersion],
+      slice: () => sliceOf(),
+      routes: [
+        [
+          "GET",
+          "/github/runs/arn_build",
+          () =>
+            json({
+              run: buildRun({
+                status: "succeeded",
+                finishedAt: stamp,
+                toolVersion: "sandbox_build@1",
+              }),
+            }),
+        ],
+      ],
+    }).fetchMock,
+  );
+  const part = await sandboxPart();
+  await waitFor(async () =>
+    expect(
+      (
+        (await within(part).findByRole("button", {
+          name: "Slice again",
+        })) as HTMLButtonElement
+      ).disabled,
+    ).toBe(false),
+  );
 });
 
 test("a slice its sizing is still cutting holds Slice, and shows the scope agent at work", async () => {
@@ -4939,18 +5057,19 @@ test("a version whose build passed is published for a while from over the slice,
   await userEvent.click(
     await within(part).findByRole("button", { name: "Publish" }),
   );
-  const until = await screen.findByRole("dialog", { name: "Publish until" });
+  // A day, three, or a week from now, or a date of one's own.
+  const quick = await screen.findByRole("menu", { name: "Publish" });
   expect(state.calls.some(({ url }) => url.endsWith("/publish"))).toBe(false);
-  // Quick actions open beside it: a day, three, or a week from now.
-  await userEvent.click(
-    within(until).getByRole("button", { name: "Quick actions" }),
-  );
-  const quick = await screen.findByRole("menu");
   expect(
     within(quick)
       .getAllByRole("menuitem")
-      .map((item) => item.firstElementChild?.textContent),
-  ).toEqual(["1 day", "3 days", "7 days"]);
+      .map((item) => item.textContent),
+  ).toEqual([
+    expect.stringMatching(/^1 day/),
+    expect.stringMatching(/^3 days/),
+    expect.stringMatching(/^7 days/),
+    "Set a date",
+  ]);
   published = true;
   const before = Date.now();
   await userEvent.click(
@@ -4996,7 +5115,7 @@ test("a version whose build passed is published for a while from over the slice,
   ).toBe(true);
 });
 
-test("a day picked on the calendar publishes until its end", async () => {
+test("Set a date opens a calendar, and a day picked on it publishes until its end", async () => {
   const state = generatingServer({
     versions: () => [generatedVersion],
     run: () => ({ status: "succeeded", finishedAt: stamp }),
@@ -5012,7 +5131,15 @@ test("a day picked on the calendar publishes until its end", async () => {
   await userEvent.click(
     await within(part).findByRole("button", { name: "Publish" }),
   );
+  await userEvent.click(
+    within(await screen.findByRole("menu", { name: "Publish" })).getByRole(
+      "menuitem",
+      { name: "Set a date" },
+    ),
+  );
+  // The menu gives way to the calendar.
   const until = await screen.findByRole("dialog", { name: "Publish until" });
+  expect(screen.queryByRole("menu")).toBeNull();
   const named = (day: Date) =>
     day.toLocaleDateString(undefined, {
       weekday: "long",

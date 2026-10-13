@@ -59,19 +59,14 @@ import {
 } from "../agent/prompts.js";
 import { invalidInput } from "../agent/repo-tools.js";
 import type { ArtifactFile, ToolAdapter, ToolRunInput } from "./adapter.js";
-import {
-  baselineOf,
-  privateTestOutcome,
-  writeBuildOutputs,
-} from "./sandbox-build.js";
+import { reportedBaselineOf, writeBuildOutputs } from "./sandbox-build.js";
 import { sha256 } from "./slice/hash.js";
 import { checkStarter } from "./starter-check.js";
 
 /** Candidates one run may type-check, and run for real, before it must submit. */
 export const STARTER_CHECKS_MAX = 16;
 export const STARTER_RUNS_MAX = 5;
-/** How much of a failed step's output the agent is shown. */
-export const STEP_OUTPUT_CHARS = 4_000;
+export { STEP_OUTPUT_CHARS } from "./sandbox-build.js";
 export const STARTER_SET_PATH = "starter-set.json";
 
 const candidateSchema = starterSubmissionSchema.omit({
@@ -166,13 +161,6 @@ const pseudonymsProperties = {
   },
 };
 const pseudonymsSchema = starterSubmissionSchema.pick({ aliases: true });
-
-/** The tail of a step's output: where a failure usually says what it is. */
-function tail(text: string): string {
-  return text.length <= STEP_OUTPUT_CHARS
-    ? text
-    : `…${text.slice(-STEP_OUTPUT_CHARS)}`;
-}
 
 /** A candidate's files, as a step says them: "12 files". */
 function starterFiles(input: unknown): string {
@@ -273,53 +261,21 @@ export function createStarterAdapter(options: {
         runs += 1;
         const files = [...checked.project.files];
         const blockers = [...checked.project.blockers];
-        const failed: string[] = [];
-        const expected = new Map(
-          starter.hiddenTests.map((test) => [test.path, test.expectedBaseline]),
-        );
         // The hidden tests run against the renamed project, renamed with it.
         const hiddenTests = checked.starter.hiddenTests;
-        const { baseline, evaluator } = await baselineOf(provider, {
-          label: version.id,
-          files,
-          acceptanceTests: hiddenTests,
-          blockers,
-          signal: input.signal,
-          log: input.log,
-          now,
-          onStep: (step, output) => {
-            // A hidden test is judged by what it was expected to do.
-            const surprising =
-              step.name === "private-test"
-                ? privateTestOutcome(step, output.stdout) !==
-                  expected.get(step.path ?? "")
-                : !step.ok;
-            if (!surprising) return;
-            failed.push(
-              `--- ${step.path ?? step.name} (exit ${step.exitCode ?? "none"}${step.timedOut ? ", timed out" : ""})\n${tail(`${output.stdout}\n${output.stderr}`.trim())}`,
-            );
+        const { baseline, evaluator, report } = await reportedBaselineOf(
+          provider,
+          {
+            label: version.id,
+            files,
+            acceptanceTests: hiddenTests,
+            blockers,
+            signal: input.signal,
+            log: input.log,
+            now,
           },
-        });
-        const lines = [
-          baseline.ok ? "The baseline passes." : "The baseline does not pass.",
-          ...baseline.steps
-            .filter((step) => step.name !== "private-test")
-            .map((step) => `${step.name}: ${step.ok ? "ok" : "failed"}`),
-          ...baseline.privateTests.map(
-            (outcome) =>
-              `${outcome.path}: expected to ${outcome.expected}, ${outcome.observed === "error" ? "could not run" : `${outcome.observed}ed`}`,
-          ),
-          ...baseline.reasons.map((reason) => `Reason: ${reason}`),
-          ...failed,
-        ];
-        return {
-          files,
-          blockers,
-          baseline,
-          evaluator,
-          hiddenTests,
-          report: lines.join("\n"),
-        };
+        );
+        return { files, blockers, baseline, evaluator, hiddenTests, report };
       };
       // The table the starter tools rename by, until it is set again.
       let pseudonyms: StarterSubmission["aliases"] = [];

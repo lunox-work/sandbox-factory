@@ -26,7 +26,11 @@ import { ChevronDown, RefreshCw, Scissors, Sparkles } from "lucide-react";
 import { RunActivity } from "@/components/RunActivity";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 
-import { isPublicationLive } from "sandbox-factory";
+import {
+  isPublicationLive,
+  SANDBOX_BUILD_RUN_VERSION,
+  SLICE_PUBLISHED_REASON,
+} from "sandbox-factory";
 
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { DisabledReason } from "@/components/DisabledReason";
@@ -817,9 +821,11 @@ export function SandboxGeneration({
 
   /*
     A linked sandbox's versions are sliced, by an owner or admin. Held while
-    its sizing's slice is under way or cannot be had, and while the latest
-    draft is still the one its slice was cut into: slicing again would only
-    build it again.
+    its publication is live, as the API holds it, while its sizing's slice
+    is under way or cannot be had, and while the latest
+    draft is still the one its slice was cut into and built by the current
+    builder: slicing again would only build it again, so the reason says how
+    a new slice is had. A draft an older builder built is built again.
   */
   const sliceState = slice.data;
   const latestFromSlice =
@@ -829,21 +835,27 @@ export function SandboxGeneration({
     sliceState?.sliceRunId != null &&
     source.data?.source?.sliceRunId === sliceState.sliceRunId &&
     run.data?.status !== "failed" &&
+    (run.data === undefined ||
+      run.data.toolVersion === SANDBOX_BUILD_RUN_VERSION) &&
     (source.data.source.buildRunId !== null ||
       source.data.source.scope.blockers.length > 0);
   const sliceHeld =
     generationBlocked ??
-    (sliceState === undefined
-      ? slice.isError
-        ? "Its slice could not be read."
-        : "Reading its slice…"
-      : sliceUnderWay(sliceState)
-        ? "Its sizing is still cutting the slice."
-        : sliceState.status === "failed" || sliceState.status === "unavailable"
-          ? (sliceState.reason ?? "It cannot be sliced yet.")
-          : latestFromSlice
-            ? "The latest version is already cut from this slice."
-            : null);
+    // Contributors work in what it publishes.
+    (live
+      ? SLICE_PUBLISHED_REASON
+      : sliceState === undefined
+        ? slice.isError
+          ? "Its slice could not be read."
+          : "Reading its slice…"
+        : sliceUnderWay(sliceState)
+          ? "Its sizing is still cutting the slice."
+          : sliceState.status === "failed" ||
+              sliceState.status === "unavailable"
+            ? (sliceState.reason ?? "It cannot be sliced yet.")
+            : latestFromSlice
+              ? "The latest version is already cut from this slice. Price it again to cut a new one."
+              : null);
   const sliceBusy = slicing || generating;
   const sliceButton = slices && !versions.isPending && !versions.isError && (
     <DisabledReason reason={sliceBusy ? null : sliceHeld}>

@@ -51,6 +51,8 @@ import {
   canonicalJson,
   fixtureProblems,
   isFixturesParams,
+  isPublicationLive,
+  SLICE_PUBLISHED_REASON,
   normalizeStack,
   PRICED_BOUNTY_COMPLEXITIES,
   resolveScope,
@@ -752,7 +754,8 @@ export function versionService(options: SandboxRouteOptions) {
     const result = await options.runs.enqueue(owner, sourceSnapshotId, {
       tool: "sandbox_build",
       params: {
-        deadlineMinutes: 30,
+        // A draft with no hidden tests has an agent write them.
+        deadlineMinutes: AGENT_DEADLINE_MINUTES,
         sliceRunId,
         sandboxVersionId: stored.version.id,
         manifestSha256,
@@ -916,7 +919,9 @@ export function versionService(options: SandboxRouteOptions) {
    * where it stands. Once it is, a draft is cut from it as `create` cuts
    * one, its listing taken from the bounty and its task from the approved
    * proposal, and built when its scope has no blockers. The newest draft
-   * cut from the same slice is built again rather than cut twice.
+   * cut from the same slice is built again rather than cut twice. A
+   * sandbox whose publication is live is not sliced: contributors work in
+   * it, so it is unpublished first.
    */
   async function slice(
     owner: string,
@@ -924,6 +929,11 @@ export function versionService(options: SandboxRouteOptions) {
     sandbox: StoredSandbox,
     now: Date,
   ) {
+    if (isPublicationLive(sandbox, now))
+      return failure(
+        { error: SLICE_PUBLISHED_REASON, code: "published" },
+        "conflict",
+      );
     let state = await sliceState(owner, sandbox);
     const pending = (current: SandboxSliceDto) => ({
       ok: true as const,

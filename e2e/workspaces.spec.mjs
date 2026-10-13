@@ -74,7 +74,9 @@ test("a bounty created in the browser survives a document reload", async ({
     "The saved title and description remain visible after reopening the page.",
   );
   await expect(
-    page.getByTestId("bounty-detail").getByRole("list", { name: "Tech stack" }),
+    page
+      .getByTestId("bounty-detail")
+      .getByRole("group", { name: "Tech stack" }),
   ).toContainText("PostgreSQL");
   // Opened as a page of its own, whose trail leads back to the list.
   await page

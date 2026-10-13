@@ -693,10 +693,19 @@ ready, it cuts a draft as `POST .../versions` does, its listing taken from
 the bounty (title, description, the repository's and bounty's stack) and its
 task from the approved proposal, queues its build and answers 201 with the
 draft and the run. A draft whose scope has blockers is cut without a build
-(`run: null`), for them to be read. The newest unfrozen draft cut from the
-same slice run is built again rather than cut twice. The bounty's Sandbox tab
-follows the slice, with the scope agent's steps while it works, then the
-build, as it follows a generated version's run.
+(`run: null`), for them to be read. A sandbox whose publication is live is
+not sliced (`published`, 409): contributors work in it, so it is unpublished
+first. The newest unfrozen draft cut from the
+same slice run is built again rather than cut twice. A sliced draft starts
+with no hidden tests, and a sandbox none judges could never accept a
+submission, so a build whose baseline fails for that alone has an agent write
+them (`apps/worker/src/tools/hidden-tests.ts`): it reads the public project and
+the approved spec, and each candidate set is built in and run through a fresh
+baseline, as a starter's is. A set is kept only once its baseline passes; it
+then settles on the draft with the build's evidence when the run commits, with
+the transform it hashes to (`recordBuildOutput`), and later builds run it as
+written. The bounty's Sandbox tab follows the slice, with the scope agent's
+steps while it works, then the build, as it follows a generated version's run.
 
 **Publishing a version.** `POST .../sandboxes/versions/:vid/publish`
 (owners and admins) records who approved the version and when, freezes it,
