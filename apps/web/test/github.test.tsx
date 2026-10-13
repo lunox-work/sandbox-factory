@@ -289,6 +289,43 @@ beforeEach(() => {
         );
         return json({ repository: added }, 201);
       }
+      if (method === "GET" && path === `${base}/repositories/ghr_1/snapshots`) {
+        return json({
+          snapshots: [{ ...snapshot, id: "rsn_1", repoId: "ghr_1" }],
+        });
+      }
+      if (
+        method === "GET" &&
+        path.startsWith(`${base}/repositories/ghr_1/runs`)
+      ) {
+        return json({
+          runs: [
+            {
+              ...builderRun("deepwiki", "succeeded"),
+              id: "arn_wiki",
+              snapshotId: "rsn_1",
+              repoId: "ghr_1",
+            },
+          ],
+        });
+      }
+      if (method === "GET" && path === `${base}/runs/arn_wiki/artifacts`) {
+        return json({
+          artifacts: [
+            {
+              id: "art_intro",
+              runId: "arn_wiki",
+              kind: "manifest",
+              path: "pages/intro.md",
+              contentType: "text/markdown",
+              sizeBytes: 12,
+              sha256: "a".repeat(64),
+              meta: null,
+              createdAt: "2026-10-01T00:00:00.000Z",
+            },
+          ],
+        });
+      }
       if (method === "GET" && path === `${base}/repositories/ghr_2/snapshots`) {
         return json({ snapshots: [snapshot] });
       }
@@ -429,6 +466,41 @@ test("a registered row is a link to the repository's page, opened in the app on 
   // A modified click is the browser's: a new tab, nothing opened here.
   fireEvent.click(row, { metaKey: true });
   expect(opened).toEqual(["ghr_1"]);
+});
+
+test("a registered row's menu opens its page in a new tab, and offers no context before one is built", async () => {
+  renderTab("member");
+
+  const menu = await openMenu("acme/widgets");
+  const tab = within(menu).getByRole("menuitem", { name: "Open in new tab" });
+  expect(tab.getAttribute("href")).toBe("/o/acme/repositories/ghr_1");
+  expect(tab.getAttribute("target")).toBe("_blank");
+  expect(
+    within(menu)
+      .getByRole("menuitem", { name: "View context" })
+      .getAttribute("aria-disabled"),
+  ).toBe("true");
+});
+
+test("a registered row's menu opens the files its builders wrote", async () => {
+  server.repositories = [{ ...registered, contextSnapshotId: "rsn_1" }];
+  renderTab("member");
+
+  fireEvent.click(
+    within(await openMenu("acme/widgets")).getByRole("menuitem", {
+      name: "View context",
+    }),
+  );
+  const dialog = await screen.findByRole("dialog");
+  expect(
+    await within(dialog).findByText("acme/widgets @ 0123456", {
+      exact: false,
+    }),
+  ).toBeDefined();
+  expect(
+    await within(dialog).findByRole("button", { name: "intro.md" }),
+  ).toBeDefined();
+  expect(opened).toEqual([]);
 });
 
 test("connect navigates to the API, carrying where to come back to", async () => {

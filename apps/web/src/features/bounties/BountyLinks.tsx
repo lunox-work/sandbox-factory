@@ -129,7 +129,11 @@ export function BountyLinks({
           onOpenSettings={onOpenSettings}
           sync={
             context === undefined ? null : (
-              <ContextSync source="github" context={context} />
+              <ContextSync
+                source="github"
+                context={context}
+                organization={organization}
+              />
             )
           }
           menu={null}

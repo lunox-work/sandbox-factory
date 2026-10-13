@@ -27,10 +27,10 @@ import type {
   GithubRepoDto,
 } from "@sandbox-factory/shared";
 import {
-  ChevronRight,
   EllipsisVertical,
   ExternalLink,
   FolderGit2,
+  FolderOpen,
   Hammer,
   Link2,
   Loader2,
@@ -73,6 +73,7 @@ import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
 
 import { RepositoryBuildProgress } from "./features/analysis/RepositoryBuildProgress";
+import { RepositoryContextDialog } from "./features/analysis/RepositoryContext";
 import {
   buildBusy,
   useRepositoryBuilds,
@@ -239,6 +240,8 @@ export function GithubConnections({
   // so the notice never shows alone for a frame first.
   const picking = outcome === "pick" && manageable;
   const [redirecting, setRedirecting] = useState<Redirect | null>(null);
+  /** The repository whose context viewer is open, from its row's menu. */
+  const [viewing, setViewing] = useState<GithubRepoDto | null>(null);
 
   // Back from GitHub can restore this page from the browser's cache exactly
   // as it was left: mid-redirect, every control waiting.
@@ -303,6 +306,16 @@ export function GithubConnections({
         />
       )}
 
+      {viewing?.contextSnapshotId != null && (
+        <RepositoryContextDialog
+          owner={organizationId}
+          repoId={viewing.id}
+          fullName={viewing.fullName}
+          snapshotId={viewing.contextSnapshotId}
+          onClose={() => setViewing(null)}
+        />
+      )}
+
       {outcome !== null && !picking && (
         <OutcomeNotice
           {...describeGithubOutcome(outcome)}
@@ -354,6 +367,7 @@ export function GithubConnections({
               pathForScreen("org-repository", organizationSlug, repo.id)
             }
             onOpenRepo={onOpenRepository}
+            onViewContext={setViewing}
             onDisconnect={async () => {
               const result = await disconnect(connection.id);
               if (result.ok) await repos.refresh();
@@ -669,6 +683,7 @@ function InstallationCard({
   onManage,
   repositoryHref,
   onOpenRepo,
+  onViewContext,
   onDisconnect,
 }: {
   connection: GithubConnectionDto;
@@ -682,6 +697,8 @@ function InstallationCard({
   /** Where a repository's page is, for its row's link. */
   repositoryHref: (repo: GithubRepoDto) => string;
   onOpenRepo: ((repo: GithubRepoDto) => void) | undefined;
+  /** Opens a repository's context viewer, which the panel holds. */
+  onViewContext: (repo: GithubRepoDto) => void;
   /** Resolves to an error to show in the question, or nothing on success. */
   onDisconnect: () => Promise<string | undefined>;
 }) {
@@ -805,6 +822,7 @@ function InstallationCard({
           failed={reposFailed}
           href={repositoryHref}
           onOpen={onOpenRepo}
+          onViewContext={onViewContext}
           onManage={manageable && connection.healthy ? onManage : undefined}
         />
       </CardContent>
@@ -819,6 +837,7 @@ function RegisteredRepos({
   failed,
   href,
   onOpen,
+  onViewContext,
   onManage,
 }: {
   repos: GithubRepoDto[];
@@ -827,6 +846,7 @@ function RegisteredRepos({
   failed: boolean;
   href: (repo: GithubRepoDto) => string;
   onOpen: ((repo: GithubRepoDto) => void) | undefined;
+  onViewContext: (repo: GithubRepoDto) => void;
   /** Opens the repositories dialog; absent where nobody here can register. */
   onManage: (() => void) | undefined;
 }) {
@@ -850,7 +870,10 @@ function RegisteredRepos({
   return (
     <ul aria-label="Registered repositories" className="-mx-3 flex flex-col">
       {repos.map((repo) => (
-        <li key={repo.id}>
+        <li
+          key={repo.id}
+          className="hover:bg-muted/60 has-[a:focus-visible]:bg-muted/60 has-[[data-state=open]]:bg-muted/60 flex items-center rounded-lg pr-1 transition-colors"
+        >
           {/*
             A link, as a board's row is: the page has an address of its
             own, so a modified click opens it in a new tab and a plain one
@@ -858,7 +881,7 @@ function RegisteredRepos({
           */}
           <a
             href={href(repo)}
-            className="focus-visible:ring-ring/50 hover:bg-muted/60 focus-visible:bg-muted/60 flex w-full items-center gap-3 rounded-lg px-3 py-1.5 text-left transition-colors focus-visible:ring-2 focus-visible:outline-none"
+            className="focus-visible:ring-ring/50 flex min-w-0 flex-1 items-center gap-3 rounded-lg px-3 py-1.5 text-left focus-visible:ring-2 focus-visible:outline-none"
             onClick={(event) => {
               if (onOpen !== undefined && isPlainLeftClick(event)) {
                 event.preventDefault();
@@ -878,8 +901,34 @@ function RegisteredRepos({
                 aria-label="Private"
               />
             )}
-            <ChevronRight className="text-muted-foreground size-4 shrink-0" />
           </a>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="text-muted-foreground size-7 shrink-0"
+                aria-label={`${repo.fullName} options`}
+              >
+                <EllipsisVertical className="size-4" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-52">
+              <DropdownMenuItem asChild>
+                <a href={href(repo)} target="_blank" rel="noopener">
+                  <ExternalLink />
+                  Open in new tab
+                </a>
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                disabled={repo.contextSnapshotId === null}
+                onSelect={() => onViewContext(repo)}
+              >
+                <FolderOpen />
+                View context
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
         </li>
       ))}
     </ul>

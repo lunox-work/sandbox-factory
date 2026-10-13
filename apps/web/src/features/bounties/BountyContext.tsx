@@ -30,6 +30,8 @@ import {
   Check,
   ChevronDown,
   EllipsisVertical,
+  ExternalLink,
+  FolderOpen,
   GitCommitHorizontal,
   Loader2,
   RefreshCw,
@@ -55,6 +57,8 @@ import { cn } from "@/lib/utils";
 import { clients, queryKeys, useUserId } from "../../data/query";
 import { dateTime, plural } from "../../lib/format";
 import { JiraIcon, ProviderIcon } from "../../ProviderIcon";
+import { pathForScreen } from "../../routes";
+import { RepositoryContextDialog } from "../analysis/RepositoryContext";
 
 const SOURCE_NAME: Record<ContextSourceDto, string> = {
   jira: "Jira",
@@ -349,9 +353,12 @@ export function ContextSyncMenu({
 export function ContextSync({
   source,
   context,
+  organization,
 }: {
   source: ContextSourceDto;
   context: BountyContextState;
+  /** For the repositories' menus: their pages, and their files. */
+  organization?: Workspace | undefined;
 }) {
   const status = context.status?.[source] ?? null;
   const [open, setOpen] = useState(false);
@@ -429,7 +436,9 @@ export function ContextSync({
           {error}
         </p>
       )}
-      {source === "github" && <RepositoryCommits context={context} />}
+      {source === "github" && (
+        <RepositoryCommits context={context} organization={organization} />
+      )}
       {status?.latest != null && (
         <div className="flex flex-col gap-2">
           <button
@@ -458,38 +467,77 @@ export function ContextSync({
  * Each of the workspace's repositories, and the commit the scope reads it
  * at: picked from those it was built at, newest first, older ones too. A
  * repository never built has none to pick yet; it is built where it is
- * registered.
+ * registered. Each row's menu opens its page, or the files its builders
+ * wrote at the commit the scope reads.
  */
-function RepositoryCommits({ context }: { context: BountyContextState }) {
+function RepositoryCommits({
+  context,
+  organization,
+}: {
+  context: BountyContextState;
+  organization: Workspace | undefined;
+}) {
   const repositories = context.commits?.repositories ?? [];
+  const [viewing, setViewing] = useState<{
+    repoId: string;
+    fullName: string;
+    snapshotId: string;
+  } | null>(null);
   if (repositories.length === 0) return null;
   return (
-    <ul
-      aria-label="The commit each repository is read at"
-      className="flex flex-col divide-y"
-    >
-      {repositories.map((repository) => (
-        <RepositoryCommit
-          key={repository.repoId}
-          repository={repository}
-          context={context}
+    <>
+      <ul
+        aria-label="The commit each repository is read at"
+        className="flex flex-col divide-y"
+      >
+        {repositories.map((repository) => (
+          <RepositoryCommit
+            key={repository.repoId}
+            repository={repository}
+            context={context}
+            organization={organization}
+            onViewContext={setViewing}
+          />
+        ))}
+      </ul>
+      {viewing !== null && organization !== undefined && (
+        <RepositoryContextDialog
+          owner={organization.id}
+          {...viewing}
+          onClose={() => setViewing(null)}
         />
-      ))}
-    </ul>
+      )}
+    </>
   );
+}
+
+/** The workspace a bounty is in, as its repositories' menus address it. */
+interface Workspace {
+  id: string;
+  slug: string;
 }
 
 function RepositoryCommit({
   repository,
   context,
+  organization,
+  onViewContext,
 }: {
   repository: BountyGithubCommitsResponse["repositories"][number];
   context: BountyContextState;
+  organization: Workspace | undefined;
+  onViewContext: (repository: {
+    repoId: string;
+    fullName: string;
+    snapshotId: string;
+  }) => void;
 }) {
   const { repoId, fullName, held, commits } = repository;
   const busy = context.pinning === repoId;
   const [newest] = commits;
-  const heldBuilt = commits.some(({ commitSha }) => commitSha === held);
+  /** The build of the commit the scope reads, whose files the menu opens. */
+  const heldBuild = commits.find(({ commitSha }) => commitSha === held);
+  const heldBuilt = heldBuild !== undefined;
   const older =
     held !== null &&
     heldBuilt &&
@@ -576,6 +624,51 @@ function RepositoryCommit({
                 </DropdownMenuItem>
               );
             })}
+          </DropdownMenuContent>
+        </DropdownMenu>
+      )}
+      {organization !== undefined && (
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              className="text-muted-foreground -mr-1.5 size-7 shrink-0"
+              aria-label={`${fullName} options`}
+            >
+              <EllipsisVertical className="size-4" />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" className="w-52">
+            <DropdownMenuItem asChild>
+              <a
+                href={pathForScreen(
+                  "org-repository",
+                  organization.slug,
+                  repoId,
+                )}
+                target="_blank"
+                rel="noopener"
+              >
+                <ExternalLink />
+                Open in new tab
+              </a>
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              disabled={heldBuild === undefined}
+              onSelect={() => {
+                if (heldBuild !== undefined)
+                  onViewContext({
+                    repoId,
+                    fullName,
+                    snapshotId: heldBuild.snapshotId,
+                  });
+              }}
+            >
+              <FolderOpen />
+              View context
+            </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
       )}

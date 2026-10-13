@@ -5644,6 +5644,110 @@ function builtCommits(held: string | null) {
   ] as [string, string, (body: unknown) => Promise<Response>];
 }
 
+test("a repository's menu opens its page in a new tab, and the files built at the commit the scope reads", async () => {
+  const run = {
+    id: "arn_wiki",
+    snapshotId: "rsn_old",
+    repoId: "ghr_1",
+    tool: "deepwiki",
+    toolVersion: "test",
+    params: { deadlineMinutes: 30, builder: "deepwiki" },
+    status: "succeeded",
+    attempt: 0,
+    maxAttempts: 2,
+    errorCode: null,
+    errorDetail: null,
+    progress: null,
+    startedAt: null,
+    finishedAt: null,
+    deadlineAt: null,
+    createdAt: stamp,
+  };
+  const state = server([
+    builtCommits("abcdef1234567"),
+    [
+      "GET",
+      "/repositories/ghr_1/snapshots",
+      () =>
+        json({
+          snapshots: [
+            {
+              id: "rsn_old",
+              repoId: "ghr_1",
+              commitSha: "abcdef1234567",
+              ref: "refs/heads/main",
+              treeSha: "t".repeat(40),
+              treeTruncated: false,
+              fileCount: 3,
+              totalBytes: 300,
+              languages: {},
+              createdAt: stamp,
+            },
+          ],
+        }),
+    ],
+    ["GET", "/repositories/ghr_1/runs", () => json({ runs: [run] })],
+    [
+      "GET",
+      "/runs/arn_wiki/artifacts",
+      () =>
+        json({
+          artifacts: [
+            {
+              id: "art_intro",
+              runId: "arn_wiki",
+              kind: "manifest",
+              path: "pages/intro.md",
+              contentType: "text/markdown",
+              sizeBytes: 12,
+              sha256: "a".repeat(64),
+              meta: null,
+              createdAt: stamp,
+            },
+          ],
+        }),
+    ],
+    ["GET", "/bounties/bty_7", () => json({ bounty: detail() })],
+  ]);
+  vi.stubGlobal("fetch", state.fetchMock);
+  window.history.replaceState(null, "", "/bounties/acme/bty_7");
+  render(<Shell {...inAcme("member")} />);
+  const page = await screen.findByTestId("bounty-detail");
+  const github = within(page).getByTestId("github-context");
+  const [app, web] = await within(github).findAllByTestId("repository-commit");
+
+  // One never built has its page, but nothing to read.
+  await userEvent.click(
+    within(web!).getByRole("button", { name: "acme/web options" }),
+  );
+  expect(
+    (
+      await screen.findByRole("menuitem", { name: "View context" })
+    ).getAttribute("aria-disabled"),
+  ).toBe("true");
+  await userEvent.keyboard("{Escape}");
+
+  await userEvent.click(
+    within(app!).getByRole("button", { name: "acme/app options" }),
+  );
+  const tab = await screen.findByRole("menuitem", { name: "Open in new tab" });
+  expect(tab.getAttribute("href")).toBe("/o/acme/repositories/ghr_1");
+  expect(tab.getAttribute("target")).toBe("_blank");
+  await userEvent.click(screen.getByRole("menuitem", { name: "View context" }));
+
+  // At the older build the scope reads, not the newest.
+  const dialog = await screen.findByRole("dialog");
+  expect(
+    await within(dialog).findByText("acme/app @ abcdef1", { exact: false }),
+  ).toBeDefined();
+  expect(
+    await within(dialog).findByRole("button", { name: "intro.md" }),
+  ).toBeDefined();
+  expect(
+    state.calls.some(({ url }) => url.includes("runs?snapshotId=rsn_old")),
+  ).toBe(true);
+});
+
 test("a refused sync or pick says why, and an unlinked source cannot be synced", async () => {
   const state = server([
     builtCommits("abcdef1234567"),
