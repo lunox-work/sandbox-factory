@@ -693,7 +693,9 @@ ready, it cuts a draft as `POST .../versions` does, its listing taken from
 the bounty (title, description, the repository's and bounty's stack) and its
 task from the approved proposal, queues its build and answers 201 with the
 draft and the run. A draft whose scope has blockers is cut without a build
-(`run: null`), for them to be read. The newest unfrozen draft cut from the
+(`run: null`), for them to be read. A sandbox whose publication is live is
+not sliced (`published`, 409): contributors work in it, so it is unpublished
+first. The newest unfrozen draft cut from the
 same slice run is built again rather than cut twice. A sliced draft starts
 with no hidden tests, and a sandbox none judges could never accept a
 submission, so a build whose baseline fails for that alone has an agent write

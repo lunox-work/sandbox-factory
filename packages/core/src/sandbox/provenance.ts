@@ -34,6 +34,13 @@ export function isPublicationLive(
   return expiresAt === null || Date.parse(expiresAt) > now.getTime();
 }
 
+/**
+ * Why a sandbox whose publication is live is not sliced again: contributors
+ * work in the version it publishes, so it is unpublished first.
+ */
+export const SLICE_PUBLISHED_REASON =
+  "The sandbox is published. Unpublish it to slice a new version.";
+
 export const DEPENDENCY_RESOLUTIONS = [
   "included-code",
   "runtime-mock",

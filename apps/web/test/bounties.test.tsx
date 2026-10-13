@@ -27,6 +27,7 @@ import {
   assessRubric,
   COMPLEXITY_PROFILE_VERSION,
   SANDBOX_BUILD_RUN_VERSION,
+  SLICE_PUBLISHED_REASON,
 } from "sandbox-factory";
 
 afterEach(() => {
@@ -4023,10 +4024,12 @@ function slicingServer(input: {
   slice: () => Record<string, unknown>;
   sliceVersion?: () => Promise<Response>;
   routes?: [string, string, (body: unknown) => Promise<Response>][];
+  /** What differs of the sandbox, beyond its repository. */
+  sandbox?: () => Record<string, unknown>;
 }) {
   return generatingServer({
     versions: input.versions,
-    sandbox: () => ({ sourceRepoId: "ghr_1" }),
+    sandbox: () => ({ sourceRepoId: "ghr_1", ...input.sandbox?.() }),
     source: () => slicedSource,
     routes: [
       ...(input.routes ?? []),
@@ -4134,6 +4137,45 @@ test("a built draft holds Slice again, and says a new price cuts a new slice", a
         "The latest version is already cut from this slice. Price it again to cut a new one.",
       )
     ).length,
+  ).toBeGreaterThan(0);
+});
+
+test("a sandbox whose publication is live holds Slice again until it is unpublished", async () => {
+  vi.stubGlobal(
+    "fetch",
+    slicingServer({
+      versions: () => [generatedVersion],
+      slice: () => sliceOf(),
+      // Built by an older builder, which would otherwise be sliced again.
+      routes: [
+        [
+          "GET",
+          "/github/runs/arn_build",
+          () =>
+            json({
+              run: buildRun({
+                status: "succeeded",
+                finishedAt: stamp,
+                toolVersion: "sandbox_build@1",
+              }),
+            }),
+        ],
+      ],
+      sandbox: () => ({
+        status: "published",
+        currentVersionId: "sbv_1",
+        expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+      }),
+    }).fetchMock,
+  );
+  const part = await sandboxPart();
+  const again = await within(part).findByRole("button", {
+    name: "Slice again",
+  });
+  await waitFor(() => expect((again as HTMLButtonElement).disabled).toBe(true));
+  await userEvent.hover(again.parentElement!);
+  expect(
+    (await screen.findAllByText(SLICE_PUBLISHED_REASON)).length,
   ).toBeGreaterThan(0);
 });
 

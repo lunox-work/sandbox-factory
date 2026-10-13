@@ -11,7 +11,7 @@ import type {
   StoredSandboxVersion,
   StoredVersionSource,
 } from "@sandbox-factory/db";
-import { OPERATION_POLICY } from "sandbox-factory";
+import { OPERATION_POLICY, SLICE_PUBLISHED_REASON } from "sandbox-factory";
 import type {
   ApprovedTaskSnapshot,
   BoundaryContract,
@@ -429,6 +429,8 @@ function fixture(
     bounty: boolean;
     /** The sandbox has no versions yet. */
     noVersions: boolean;
+    /** `sbv_1` is published until this time. */
+    publishedUntil: string;
     /**
      * The sizing's profile of `bpr_1`'s spec revision 2 in `ghr_1`, with
      * what differs from a ready one; null for none. Unsaid, the routes
@@ -543,7 +545,14 @@ function fixture(
         owner !== "org_1"
           ? null
           : id === "sbx_1"
-            ? sandbox
+            ? overrides.publishedUntil === undefined
+              ? sandbox
+              : {
+                  ...sandbox,
+                  status: "published" as const,
+                  currentVersionId: "sbv_1",
+                  expiresAt: overrides.publishedUntil,
+                }
             : id === "sbx_bare"
               ? { ...sandbox, id: "sbx_bare", sourceRepoId: null }
               : id === "sbx_unlinked"
@@ -2555,6 +2564,29 @@ test("a ready slice is cut into a draft from the bounty and built", async () => 
     ((await mismatch.json()) as { code: string }).code,
     "slice_mismatch",
   );
+});
+
+test("a sandbox whose publication is live is not sliced again until unpublished", async () => {
+  const live = fixture("owner", {
+    profile: {},
+    bounty: true,
+    publishedUntil: "2026-10-03T00:00:00.000Z",
+  });
+  const refused = await live.request("POST", "/sbx_1/slice");
+  assert.equal(refused.status, 409);
+  assert.deepEqual(await refused.json(), {
+    error: SLICE_PUBLISHED_REASON,
+    code: "published",
+  });
+  assert.deepEqual(live.created, []);
+  assert.deepEqual(live.enqueued, []);
+  // A publication that has expired, by the routes' clock, holds nothing.
+  const expired = fixture("owner", {
+    profile: {},
+    bounty: true,
+    publishedUntil: "2026-10-01T00:00:00.000Z",
+  });
+  assert.equal((await expired.request("POST", "/sbx_1/slice")).status, 201);
 });
 
 test("a slice whose scope has blockers is cut but not built", async () => {
