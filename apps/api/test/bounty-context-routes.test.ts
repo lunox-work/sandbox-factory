@@ -701,6 +701,26 @@ test("picking a commit reads the documents there, title's words first", async ()
   assert.equal(state.rows[0]?.refId, WORKSPACE_REPOSITORIES);
 });
 
+test("an approved scope's context is held: no sync, no commit picked, still read", async () => {
+  const state = harness({
+    bounty: {
+      jira: jiraLink,
+      approval: { version: 1, approvedBy: "user_1", approvedAt: stamp },
+    },
+  });
+  const sync = await state.request("POST", "bounties/bty_7/context/jira/sync");
+  assert.equal(sync.status, 409);
+  assert.equal(
+    ((await sync.json()) as { code: string }).code,
+    "scope_approved",
+  );
+  const pin = await state.pin();
+  assert.equal(pin.status, 409);
+  assert.equal(state.rows.length, 0);
+  assert.equal(state.refreshed.length, 0);
+  assert.equal((await state.context()).jira.state, "unsynced");
+});
+
 test("GitHub is pinned, not synced", async () => {
   const state = harness();
   assert.equal(

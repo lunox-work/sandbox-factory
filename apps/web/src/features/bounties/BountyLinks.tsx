@@ -110,7 +110,7 @@ export function BountyLinks({
           locked={locked}
           sync={
             context === undefined ? null : (
-              <ContextSync source="jira" context={context} />
+              <ContextSync source="jira" context={context} locked={locked} />
             )
           }
           menu={
@@ -119,6 +119,7 @@ export function BountyLinks({
                 source="jira"
                 context={context}
                 canSync={bounty.jira !== null && bounty.jira.removedAt === null}
+                locked={locked}
               />
             )
           }
@@ -133,6 +134,7 @@ export function BountyLinks({
                 source="github"
                 context={context}
                 organization={organization}
+                locked={locked}
               />
             )
           }

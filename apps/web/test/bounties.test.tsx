@@ -5897,6 +5897,78 @@ test("each link says whether its sync is in use, warns when its source is ahead,
   ).toBe(false);
 });
 
+test("an approved scope says its sources are ahead, and offers no sync or pick", async () => {
+  const approved = detail({
+    ...SCOPED,
+    jira: jiraLink,
+    stages: {
+      scope: { version: 1, context: { jira: 2, github: 1 } },
+      price: null,
+      sandbox: null,
+    },
+  });
+  const state = server([
+    ["GET", "/jira/connections", () => json({ connections: [jiraConnection] })],
+    builtCommits("abcdef1234567"),
+    [
+      "GET",
+      "/bounties/bty_7/context",
+      () =>
+        json({
+          jira: {
+            state: "ahead",
+            reason: null,
+            linked: { ref: "APP-1", url: jiraLink.url },
+            liveRevision: "2026-10-07T00:00:00.000+0000",
+            latest: jiraContextVersion(2),
+          },
+          github: {
+            state: "ahead",
+            reason: null,
+            linked: { ref: "acme/app", url: "https://github.com/acme/app" },
+            liveRevision: "acme/app@1111111aaaaaa",
+            latest: githubContextVersion(1),
+          },
+        }),
+    ],
+    ["GET", "/bounties/bty_7", () => json({ bounty: approved })],
+  ]);
+  vi.stubGlobal("fetch", state.fetchMock);
+  window.history.replaceState(null, "", "/bounties/acme/bty_7");
+  render(<Shell {...inAcme("member")} />);
+  const page = await screen.findByTestId("bounty-detail");
+
+  // Still said, with what to do instead of a sync.
+  const jira = await within(page).findByTestId("jira-context");
+  expect(within(jira).getByRole("status").textContent).toBe(
+    "APP-1 has changed in Jira since v2 was synced. Unapprove the scope to read it again.",
+  );
+  expect(within(jira).queryByRole("button", { name: "Sync" })).toBeNull();
+  const github = within(page).getByTestId("github-context");
+  expect(within(github).getByRole("status").textContent).toContain(
+    "Unapprove the scope to read them again.",
+  );
+  // The commit is shown, not changed.
+  const picker = await within(github).findByRole("button", {
+    name: "Commit acme/app is read at",
+  });
+  expect(picker.hasAttribute("disabled")).toBe(true);
+  // Nor is it synced from the row's menu.
+  await userEvent.click(
+    within(page).getByRole("button", { name: "Jira options" }),
+  );
+  expect(
+    (
+      await screen.findByRole("menuitem", { name: "Sync context" })
+    ).getAttribute("data-disabled"),
+  ).not.toBeNull();
+  expect(
+    state.calls.some(
+      ({ method, url }) => method !== "GET" && url.includes("/context/"),
+    ),
+  ).toBe(false);
+});
+
 /** The built commits route, before the context route it would match. */
 function builtCommits(held: string | null) {
   return [

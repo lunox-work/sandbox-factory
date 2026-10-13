@@ -286,19 +286,28 @@ function holds(status: BountyContextSourceStatusDto): string | null {
     : `${plural(documents, "document")} from ${repositories.length} repositories`;
 }
 
-/** Why a source is ahead, in a sentence. */
+/** What an approved scope asks before a source is read again: an issue, or repositories. */
+const UNAPPROVE: Record<ContextSourceDto, string> = {
+  jira: "Unapprove the scope to read it again.",
+  github: "Unapprove the scope to read them again.",
+};
+
+/** Why a source is ahead, in a sentence, with what to do while locked. */
 function aheadText(
   source: ContextSourceDto,
   status: BountyContextSourceStatusDto,
+  locked: boolean,
 ): string | null {
   const latest = status.latest;
   if (status.state !== "ahead" || latest === null) return null;
   const name = status.linked?.ref ?? SOURCE_NAME[source];
   if (source === "jira") {
     // Syncing is the action beside it, so it is not said again here.
-    return `${name} has changed in Jira since ${short(latest.version)} was synced.`;
+    const changed = `${name} has changed in Jira since ${short(latest.version)} was synced.`;
+    return locked ? `${changed} ${UNAPPROVE.jira}` : changed;
   }
-  return `The workspace's built repositories have changed since ${short(latest.version)} read them. Pick a commit to read them again.`;
+  const changed = `The workspace's built repositories have changed since ${short(latest.version)} read them.`;
+  return `${changed} ${locked ? UNAPPROVE.github : "Pick a commit to read them again."}`;
 }
 
 /**
@@ -311,11 +320,14 @@ export function ContextSyncMenu({
   source,
   context,
   canSync,
+  locked = false,
 }: {
   source: "jira";
   context: BountyContextState;
   /** False while the source cannot be synced, such as with no link. */
   canSync: boolean;
+  /** Its scope is approved: its context is held as it is. */
+  locked?: boolean;
 }) {
   const status = context.status?.[source] ?? null;
   const busy = context.syncing === source;
@@ -335,7 +347,7 @@ export function ContextSyncMenu({
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="w-48">
         <DropdownMenuItem
-          disabled={!canSync || busy || status?.state === "unlinked"}
+          disabled={!canSync || locked || busy || status?.state === "unlinked"}
           onSelect={() => void context.sync(source)}
         >
           <RefreshCw />
@@ -356,11 +368,14 @@ export function ContextSync({
   source,
   context,
   organization,
+  locked = false,
 }: {
   source: ContextSourceDto;
   context: BountyContextState;
   /** For the repositories' menus: their pages, and their files. */
   organization?: Workspace | undefined;
+  /** Its scope is approved: no sync, and no commit picked. */
+  locked?: boolean;
 }) {
   const status = context.status?.[source] ?? null;
   const [open, setOpen] = useState(false);
@@ -370,8 +385,10 @@ export function ContextSync({
   const unsyncedNote =
     status?.state === "unsynced"
       ? status.latest === null
-        ? `${act} to add what it says to sizing and the sandbox.`
-        : `Its last read, ${short(status.latest.version)}, was from ${status.latest.ref}. ${act} to read this one.`
+        ? locked
+          ? `Not read into the approved scope. ${UNAPPROVE[source]}`
+          : `${act} to add what it says to sizing and the sandbox.`
+        : `Its last read, ${short(status.latest.version)}, was from ${status.latest.ref}. ${locked ? UNAPPROVE[source] : `${act} to read this one.`}`
       : null;
   const line =
     status === null
@@ -386,7 +403,7 @@ export function ContextSync({
             ? "Link an issue to sync its fields into the bounty."
             : null
           : (unsyncedNote ?? holds(status));
-  const warning = status === null ? null : aheadText(source, status);
+  const warning = status === null ? null : aheadText(source, status, locked);
   return (
     <div className="flex flex-col gap-2" data-testid={`${source}-context`}>
       <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
@@ -434,7 +451,7 @@ export function ContextSync({
             {warning}
           </p>
           {/* The repositories' action is their picker, just below. */}
-          {source === "jira" && (
+          {source === "jira" && !locked && (
             <Button
               type="button"
               variant="outline"
@@ -455,7 +472,11 @@ export function ContextSync({
         </p>
       )}
       {source === "github" && (
-        <RepositoryCommits context={context} organization={organization} />
+        <RepositoryCommits
+          context={context}
+          organization={organization}
+          locked={locked}
+        />
       )}
       {status?.latest != null && (
         <div className="flex flex-col gap-2">
@@ -491,9 +512,11 @@ export function ContextSync({
 function RepositoryCommits({
   context,
   organization,
+  locked,
 }: {
   context: BountyContextState;
   organization: Workspace | undefined;
+  locked: boolean;
 }) {
   const repositories = context.commits?.repositories ?? [];
   const [viewing, setViewing] = useState<{
@@ -514,6 +537,7 @@ function RepositoryCommits({
             repository={repository}
             context={context}
             organization={organization}
+            locked={locked}
             onViewContext={setViewing}
           />
         ))}
@@ -539,11 +563,14 @@ function RepositoryCommit({
   repository,
   context,
   organization,
+  locked,
   onViewContext,
 }: {
   repository: BountyGithubCommitsResponse["repositories"][number];
   context: BountyContextState;
   organization: Workspace | undefined;
+  /** Its scope is approved: the commit is shown, not changed. */
+  locked: boolean;
   onViewContext: (repository: {
     repoId: string;
     fullName: string;
@@ -588,7 +615,7 @@ function RepositoryCommit({
               size="sm"
               className="border-input h-7 shrink-0 gap-1.5 px-2 font-mono text-xs"
               aria-label={`Commit ${fullName} is read at`}
-              disabled={context.pinning !== null}
+              disabled={locked || context.pinning !== null}
             >
               {busy ? (
                 <Loader2 className="size-3.5 animate-spin" />

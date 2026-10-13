@@ -22,9 +22,9 @@
  *   the commits picked, every other repository staying where it is held,
  *   under one set of caps.
  *
- * Any member may read, sync and pin, as any member may link a source. None
- * is held back by an approved scope, as Jira's text is not: the steps after
- * it show what they were made with instead.
+ * Any member may read, sync and pin, as any member may link a source. An
+ * approved scope holds its context as it holds its text: a sync or a pick is
+ * refused until it is unapproved. Reading where each source stands is not.
  */
 
 import type {
@@ -58,6 +58,7 @@ import {
   contextDocumentsAcross,
   contextKeywords,
   keptDocumentsAligned,
+  scopeApproved,
   type GithubContext,
   type GithubRepositoryContext,
   type JiraContext,
@@ -73,7 +74,7 @@ import {
   repositoriesRevision,
   WORKSPACE_REPOSITORIES,
 } from "./held-context.js";
-import { detail, type BountyRouteOptions } from "./routes.js";
+import { detail, SCOPE_APPROVED, type BountyRouteOptions } from "./routes.js";
 
 /** Reads one repository's files by Git object id. */
 export interface DocumentReader {
@@ -680,6 +681,9 @@ export function mountBountyContextRoutes<Env extends BountyContextAppEnv>(
     const bountyId = c.req.param("id");
     const bounty = await options.bounties.get(organizationId, bountyId);
     if (bounty === null) return c.json({ error: "Not found" }, 404);
+    // A sync takes the issue's text and context, which an approved scope
+    // is held from.
+    if (scopeApproved(bounty)) return c.json(SCOPE_APPROVED, 409);
     const result = await syncJira(
       options,
       organizationId,
@@ -740,6 +744,7 @@ export function mountBountyContextRoutes<Env extends BountyContextAppEnv>(
     const bountyId = c.req.param("id");
     const bounty = await options.bounties.get(organizationId, bountyId);
     if (bounty === null) return c.json({ error: "Not found" }, 404);
+    if (scopeApproved(bounty)) return c.json(SCOPE_APPROVED, 409);
     const result = await syncGithub(
       options,
       organizationId,
