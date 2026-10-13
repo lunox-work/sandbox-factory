@@ -419,6 +419,44 @@ test("a mock needs no pin, and a choice must name a package the slice requires",
   );
 });
 
+test("the repository's own package is mocked, never installed by its name", () => {
+  const withWorkspace = (
+    choices?: Record<string, "runtime-mock" | "approved-package">,
+  ) =>
+    resolveScope({
+      manifest: {
+        ...manifest,
+        requiredBuildInputs: {
+          ...manifest.requiredBuildInputs,
+          packages: [
+            {
+              name: "@acme/shared",
+              version: "*",
+              declaredIn: "apps/web/package.json",
+              workspace: true,
+            },
+          ],
+        },
+      },
+      contract,
+      ...(choices === undefined ? {} : { choices }),
+    });
+  const mocked = withWorkspace();
+  assert.deepEqual(mocked.blockers, []);
+  assert.equal(
+    mocked.dependencies.find((d) => d.name === "@acme/shared")?.resolution,
+    "runtime-mock",
+  );
+  // `*` is a registry range, but the registry's package of that name is
+  // not this one.
+  const installed = withWorkspace({ "@acme/shared": "approved-package" });
+  assert.equal(installed.blockers[0]?.code, "dependency_unresolved");
+  assert.equal(
+    installed.dependencies.find((d) => d.name === "@acme/shared")?.resolution,
+    "unresolved",
+  );
+});
+
 test("only a registry version is installed; a URL, a path or an alias blocks", () => {
   const pinnedTo = (version: string) =>
     resolveScope({

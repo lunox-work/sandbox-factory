@@ -139,6 +139,11 @@ export interface RequiredBuildInputs {
     readonly name: string;
     readonly version: string | null;
     readonly declaredIn: string | null;
+    /**
+     * One of the repository's own workspace packages: its source lives
+     * here, not on the registry, so it is mocked and never installed.
+     */
+    readonly workspace?: true;
   }[];
 }
 

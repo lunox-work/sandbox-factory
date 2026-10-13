@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import ts from "typescript-compiler";
@@ -485,6 +485,76 @@ test("unresolved and dynamic imports block readiness and the compile reports the
     );
   } finally {
     await rm(out, { recursive: true, force: true });
+  }
+});
+
+test("an import of the repository's own workspace package is marked, not left unpinned", async () => {
+  const [out, source] = await Promise.all([
+    scratch("workspace"),
+    scratch("workspace-src"),
+  ]);
+  try {
+    const write = async (path: string, text: string) => {
+      await mkdir(dirname(join(source, path)), { recursive: true });
+      await writeFile(join(source, path), text);
+    };
+    await write(
+      "package.json",
+      JSON.stringify({ private: true, workspaces: ["apps/*", "packages/*"] }),
+    );
+    await write(
+      "packages/shared/package.json",
+      JSON.stringify({ name: "@acme/shared", version: "0.0.0" }),
+    );
+    await write(
+      "apps/web/package.json",
+      JSON.stringify({
+        name: "web",
+        dependencies: { "@acme/shared": "*", zod: "^4.0.0" },
+      }),
+    );
+    await write(
+      "apps/web/src/index.ts",
+      'import { greet } from "@acme/shared";\nimport { z } from "zod";\nexport const hello = greet(z.string().parse("x"));\n',
+    );
+    const { manifest, contract } = await runSlice(
+      out,
+      ["apps/web/src/index.ts"],
+      {
+        sourceDir: source,
+        graph: graphOf(
+          [
+            [
+              "apps/web/src/index.ts",
+              "dependency:apps/web/src/index.ts:external:@acme/shared",
+              "@acme/shared",
+            ],
+            [
+              "apps/web/src/index.ts",
+              "dependency:apps/web/src/index.ts:external:zod",
+              "zod",
+            ],
+          ],
+          { "0": ["apps/web/src/index.ts"] },
+        ),
+      },
+    );
+    assert.deepEqual(manifest.requiredBuildInputs.packages, [
+      {
+        name: "@acme/shared",
+        version: "*",
+        declaredIn: "apps/web/package.json",
+        workspace: true,
+      },
+      { name: "zod", version: "^4.0.0", declaredIn: "apps/web/package.json" },
+    ]);
+    assert.equal(
+      contract.blockers.some((b) => b.code === "missing_build_input"),
+      false,
+    );
+  } finally {
+    await rm(out, { recursive: true, force: true });
+    await rm(source, { recursive: true, force: true });
   }
 });
 

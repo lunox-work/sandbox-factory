@@ -43,6 +43,7 @@ import type {
 import type { StoredAnalysisRun, StoredArtifact } from "@sandbox-factory/db";
 import { AnalysisError } from "../errors.js";
 import { snapshotOf } from "./adapter.js";
+import { workspacePackages } from "./compiler-config.js";
 import type {
   ArtifactFile,
   ToolAdapter,
@@ -423,11 +424,11 @@ export async function analyseSlice(input: {
     });
   }
   const versions = new Map<string, Record<string, string> | null>();
-  const packages: {
-    name: string;
-    version: string | null;
-    declaredIn: string | null;
-  }[] = [];
+  const packages: SliceManifest["requiredBuildInputs"]["packages"][number][] =
+    [];
+  // The repository's own packages are not on the registry (or are someone
+  // else's there): the graph leaves their imports bare, and they are mocked.
+  const workspaces = workspacePackages(input.sourceDir);
   for (const name of [
     ...new Set([...packageFiles.keys()].map(packageNameOf)),
   ].sort(compare)) {
@@ -441,6 +442,10 @@ export async function analyseSlice(input: {
       name,
       versions,
     );
+    if (workspaces.has(name)) {
+      packages.push({ name, ...pinned, workspace: true });
+      continue;
+    }
     packages.push({ name, ...pinned });
     if (pinned.version === null)
       blockers.push({
