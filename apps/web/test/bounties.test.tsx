@@ -5057,18 +5057,19 @@ test("a version whose build passed is published for a while from over the slice,
   await userEvent.click(
     await within(part).findByRole("button", { name: "Publish" }),
   );
-  const until = await screen.findByRole("dialog", { name: "Publish until" });
+  // A day, three, or a week from now, or a date of one's own.
+  const quick = await screen.findByRole("menu", { name: "Publish" });
   expect(state.calls.some(({ url }) => url.endsWith("/publish"))).toBe(false);
-  // Quick actions open beside it: a day, three, or a week from now.
-  await userEvent.click(
-    within(until).getByRole("button", { name: "Quick actions" }),
-  );
-  const quick = await screen.findByRole("menu");
   expect(
     within(quick)
       .getAllByRole("menuitem")
-      .map((item) => item.firstElementChild?.textContent),
-  ).toEqual(["1 day", "3 days", "7 days"]);
+      .map((item) => item.textContent),
+  ).toEqual([
+    expect.stringMatching(/^1 day/),
+    expect.stringMatching(/^3 days/),
+    expect.stringMatching(/^7 days/),
+    "Set a date",
+  ]);
   published = true;
   const before = Date.now();
   await userEvent.click(
@@ -5114,7 +5115,7 @@ test("a version whose build passed is published for a while from over the slice,
   ).toBe(true);
 });
 
-test("a day picked on the calendar publishes until its end", async () => {
+test("Set a date opens a calendar, and a day picked on it publishes until its end", async () => {
   const state = generatingServer({
     versions: () => [generatedVersion],
     run: () => ({ status: "succeeded", finishedAt: stamp }),
@@ -5130,7 +5131,15 @@ test("a day picked on the calendar publishes until its end", async () => {
   await userEvent.click(
     await within(part).findByRole("button", { name: "Publish" }),
   );
+  await userEvent.click(
+    within(await screen.findByRole("menu", { name: "Publish" })).getByRole(
+      "menuitem",
+      { name: "Set a date" },
+    ),
+  );
+  // The menu gives way to the calendar.
   const until = await screen.findByRole("dialog", { name: "Publish until" });
+  expect(screen.queryByRole("menu")).toBeNull();
   const named = (day: Date) =>
     day.toLocaleDateString(undefined, {
       weekday: "long",
