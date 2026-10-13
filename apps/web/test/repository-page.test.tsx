@@ -1110,7 +1110,7 @@ test("the page shows the stack detected in the repository", async () => {
     ],
   });
   renderPage();
-  const detected = await screen.findByRole("list", { name: "Tech stack" });
+  const detected = await screen.findByRole("group", { name: "Tech stack" });
   expect(
     within(detected)
       .getAllByRole("listitem")

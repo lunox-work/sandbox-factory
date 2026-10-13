@@ -1582,7 +1582,7 @@ test("a bounty is shown with its repositories' stack and its own", async () => {
   // until its pencil asks for one.
   await waitFor(() =>
     expect(
-      within(within(panel).getByRole("list", { name: "Tech stack" }))
+      within(within(panel).getByRole("group", { name: "Tech stack" }))
         .getAllByRole("listitem")
         .map((item) => item.title),
     ).toEqual(["Detected in acme/app", "Detected in acme/app", ""]),

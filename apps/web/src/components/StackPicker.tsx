@@ -18,6 +18,7 @@
 import { Lock, Plus, X } from "lucide-react";
 import {
   STACK_CATALOG,
+  STACK_KINDS,
   STACK_LIMITS,
   canonicalStackName,
   sameStackName,
@@ -84,8 +85,14 @@ function InheritedRow({ name, from }: { name: string; from: string }) {
   );
 }
 
+/** A name the catalog lacks has no kind, so it is headed as this, last. */
+const OTHER_LABEL = "Other";
+
 /**
- * A stack shown, not edited: the repository's chips, then the bounty's own. Nothing when both are empty.
+ * A stack shown, not edited: one list per kind, in `STACK_KINDS` order, each
+ * under its heading, and the names the catalog lacks last. Within a kind,
+ * the repository's chips come before the bounty's own. Nothing when both are
+ * empty.
  */
 export function StackChips({
   inherited,
@@ -100,18 +107,55 @@ export function StackChips({
     (name) => !inherited.some((repo) => sameStackName(repo, name)),
   );
   if (inherited.length === 0 && added.length === 0) return null;
+  const chips = [
+    ...inherited.map((name) => ({ name, detected: true })),
+    ...added.map((name) => ({ name, detected: false })),
+  ];
+  const groups = [
+    ...STACK_KINDS.map((kind) => ({
+      label: STACK_KIND_LABELS[kind],
+      chips: chips.filter(({ name }) => stackTechnology(name)?.kind === kind),
+    })),
+    {
+      label: OTHER_LABEL,
+      chips: chips.filter(({ name }) => stackTechnology(name) === undefined),
+    },
+  ].filter((group) => group.chips.length > 0);
   return (
-    <ul className="flex flex-wrap gap-x-4 gap-y-2" aria-label="Tech stack">
-      {inherited.map((name) => (
-        <InheritedChip key={`repo:${name}`} name={name} from={inheritedFrom} />
+    <div className="flex flex-col gap-3" role="group" aria-label="Tech stack">
+      {groups.map((group) => (
+        <div key={group.label} className="flex flex-col gap-1.5">
+          <div
+            aria-hidden="true"
+            className="text-muted-foreground text-xs font-medium"
+          >
+            {group.label}
+          </div>
+          <ul
+            className="flex flex-wrap gap-x-4 gap-y-2"
+            aria-label={group.label}
+          >
+            {group.chips.map(({ name, detected }) =>
+              detected ? (
+                <InheritedChip
+                  key={`repo:${name}`}
+                  name={name}
+                  from={inheritedFrom}
+                />
+              ) : (
+                <li
+                  key={name}
+                  className="inline-flex items-center gap-1.5 text-sm"
+                >
+                  <StackIcon name={name} className="size-4" />
+                  {name}
+                </li>
+              ),
+            )}
+          </ul>
+        </div>
       ))}
-      {added.map((name) => (
-        <li key={name} className="inline-flex items-center gap-1.5 text-sm">
-          <StackIcon name={name} className="size-4" />
-          {name}
-        </li>
-      ))}
-    </ul>
+    </div>
   );
 }
 

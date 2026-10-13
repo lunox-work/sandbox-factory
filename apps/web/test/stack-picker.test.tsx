@@ -4,7 +4,7 @@ import { STACK_LIMITS } from "sandbox-factory";
 import { useState } from "react";
 import { expect, test } from "vitest";
 
-import { StackPicker } from "../src/components/StackPicker";
+import { StackChips, StackPicker } from "../src/components/StackPicker";
 
 function Picker({
   inherited = [],
@@ -126,4 +126,31 @@ test("what is chosen is listed under the field, each row ending in its remove bu
   // removing is not picking.
   expect(document.activeElement).toBe(field);
   expect(field.getAttribute("aria-expanded")).toBe("false");
+});
+
+test("a shown stack is split by kind, the catalog's order, the rest last", () => {
+  render(
+    <StackChips
+      inherited={["React", "TypeScript", "Docker"]}
+      inheritedFrom="acme/app"
+      own={["PostgreSQL", "Hono", "In-house queue"]}
+    />,
+  );
+  const stack = screen.getByRole("group", { name: "Tech stack" });
+  expect(
+    within(stack)
+      .getAllByRole("list")
+      .map((list) => [
+        list.getAttribute("aria-label"),
+        within(list)
+          .getAllByRole("listitem")
+          .map((item) => item.textContent?.replace(/, detected in .*/, "")),
+      ]),
+  ).toEqual([
+    ["Languages", ["TypeScript"]],
+    ["Frameworks", ["React", "Hono"]],
+    ["Data & messaging", ["PostgreSQL"]],
+    ["Tools", ["Docker"]],
+    ["Other", ["In-house queue"]],
+  ]);
 });
