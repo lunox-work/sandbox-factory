@@ -251,6 +251,26 @@ test("a reviewer's size stands; the rubric is recorded beside it", async () => {
   assert.equal(h.writes[0]?.input.rubric.size, "M");
 });
 
+test("a rubric size two whole sizes from the model's waits for a reviewer", async () => {
+  // The rubric scores this profile M; a model's XS is too far to replace.
+  const held = harness(
+    proposal({ modelComplexity: "XS", complexity: "XS", amountMinor: 1 }),
+  );
+  await held.pricer.settled(OWNER, profile());
+  assert.equal(held.writes[0]?.input.rubric.size, "M");
+  assert.equal(held.writes[0]?.input.price, null);
+
+  // One size and a half apart, the rubric still takes over.
+  const taken = harness(proposal({ modelComplexity: "S", complexity: "S" }));
+  await taken.pricer.settled(OWNER, profile());
+  assert.equal(taken.writes[0]?.input.price?.complexity, "M");
+
+  // A size the rubric set, it goes on setting however far it moves.
+  const kept = harness(proposal({ sizedBy: "rubric", complexity: "XS" }));
+  await kept.pricer.settled(OWNER, profile());
+  assert.equal(kept.writes[0]?.input.price?.complexity, "M");
+});
+
 test("a failed profile is recorded as failed, and sizes nothing", async () => {
   const failed = profile({
     status: "failed",

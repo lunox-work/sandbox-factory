@@ -36,6 +36,26 @@ export const SLICE_BLOCKER_CODES = [
 ] as const;
 export type SliceBlockerCode = (typeof SLICE_BLOCKER_CODES)[number];
 
+/**
+ * The blockers a contributor meets in the code itself: an import that
+ * resolves to no file, a dynamic import of a computed name. Every other
+ * code is the slicer's own build falling short (a compile error in its
+ * fixture, a configuration it could not read, a language it cannot
+ * extract), which says how well the code was measured, not how hard the
+ * work is, and one cause can raise dozens of them.
+ */
+export const WORK_BLOCKER_CODES: readonly SliceBlockerCode[] = [
+  "unresolved_import",
+  "dynamic_dependency",
+];
+
+const WORK_BLOCKERS: ReadonlySet<SliceBlockerCode> = new Set(
+  WORK_BLOCKER_CODES,
+);
+
+export const isWorkBlocker = (blocker: Pick<SliceBlocker, "code">): boolean =>
+  WORK_BLOCKERS.has(blocker.code);
+
 export interface SliceBlocker {
   readonly code: SliceBlockerCode;
   readonly file: string | null;
@@ -269,6 +289,24 @@ function summarizePackages(
     .map(({ specifier, service }) => ({ specifier, service }));
 }
 
+/**
+ * The blockers a summary lists: the work's first, then the slicer's own,
+ * each in the contract's order, up to the limit. The pricing profile counts
+ * the work's blockers from this list, and the contract sorts by code, which
+ * puts `unresolved_import` after every `compile_error` and
+ * `missing_build_input`: a plain cut of a noisy build would drop exactly
+ * the blockers that are scored.
+ */
+function summarizeBlockers(
+  blockers: readonly SliceBlocker[],
+): readonly SliceBlocker[] {
+  if (blockers.length <= SUMMARY_LIMITS.blockers) return blockers;
+  return [
+    ...blockers.filter(isWorkBlocker),
+    ...blockers.filter((blocker) => !isWorkBlocker(blocker)),
+  ].slice(0, SUMMARY_LIMITS.blockers);
+}
+
 function summarizeModules(modules: readonly BoundaryModule[]): {
   modules: SummaryModule[];
   truncated: boolean;
@@ -327,7 +365,7 @@ export function boundarySummary(
         .slice(0, SUMMARY_LIMITS.environment)
         .map(({ name }) => name),
     },
-    blockers: contract.blockers.slice(0, SUMMARY_LIMITS.blockers),
+    blockers: summarizeBlockers(contract.blockers),
     truncated:
       outbound.truncated ||
       inbound.truncated ||

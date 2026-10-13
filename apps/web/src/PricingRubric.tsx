@@ -38,6 +38,7 @@ import {
   RUBRIC_BANDS,
   RUBRIC_DIMENSIONS,
   rubricBand,
+  rubricNeedsReview,
   rubricRules,
   rubricSize,
   type RubricAssessment,
@@ -116,8 +117,12 @@ function sourceLine(proposal: RubricProposal, rubric: RubricAssessmentDto) {
       : `${model}: the rubric needs the code to size.`;
   }
   const who = proposal.sizedBy === "reviewer" ? "A reviewer" : "The model";
-  return rubric.size === proposal.complexity
-    ? `${who} set this size, and the rubric agrees.`
+  if (rubric.size === proposal.complexity)
+    return `${who} set this size, and the rubric agrees.`;
+  // The rubric held back rather than take over: say why it did not.
+  return proposal.sizedBy === "model" &&
+    rubricNeedsReview(proposal.complexity, rubric.size)
+    ? `The model set this size; the rubric says ${rubric.size}, too far apart to take without a reviewer.`
     : `${who} set this size; the rubric says ${rubric.size}.`;
 }
 

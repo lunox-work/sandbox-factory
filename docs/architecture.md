@@ -789,7 +789,7 @@ Respec keeps the base, card, and step settings without another sizing call;
 reprice uses the current card and starts fresh.
 
 **The pricing rubric sizes a proposal once its code is measured**
-(`packages/core/src/pricing/rubric.ts`, `rubric-v2`). It scores three
+(`packages/core/src/pricing/rubric.ts`, `rubric-v3`). It scores three
 dimensions from countable evidence. Scenarios are scored by weight, with the
 step's points, plus open questions. Test cases are one per scenario, plus each
 outcome step after a test's first. Code comes from the complexity profiles:
@@ -800,15 +800,25 @@ the assessment (`bounty_proposal.rubric`, migration 0051) with the code
 `pending` or `unavailable`, so the model's size stands. When the profiler
 settles a profile, `RubricPricer` (`apps/api/src/pricing/rubric.ts`)
 re-scores the current spec and sets `sized_by = 'rubric'` on a proposed
-proposal. A reviewer-sized proposal only has the assessment recorded, and an
-approved one is not touched. A respec of a rubric-sized proposal is priced at
+proposal. A reviewer-sized proposal only has the assessment recorded, as
+does a model-sized one whose rubric size is two whole sizes or more away
+(`rubricNeedsReview`): a gap that wide means the model or the measurement
+misread the bounty, and a reviewer takes the rubric's size or leaves it.
+An approved proposal is not touched. A respec of a rubric-sized proposal is priced at
 the rubric's score of the changed spec, and the step still records what
 changed. `POST .../proposals/:id/rubric` puts the rubric's size back over a
 reviewer's resize. The code is scored over every repository the work
 touches: one profile each, counts summed and modules named by repository.
 `rubric-v2` adds four points per repository beyond the first for the
 integration across them, and charges modules beyond each repository's
-first, so crossing into another repository is charged once. The rubric has
+first, so crossing into another repository is charged once. `rubric-v3`
+scores only the work's slice blockers (an unresolved or dynamic import, once
+per kind and file; the profile's `workBlockers`) and at most two of them.
+The slicer's own build failures, such as a compile error per line from one
+config it could not read, are shown in the evidence but not scored. The
+boundary summary the profile reads lists the work's blockers ahead of the
+slicer's own, so its cap (`SUMMARY_LIMITS.blockers`) never drops a scored
+one behind a noisy build. The rubric has
 a size once every profile is ready, and one failed fails the code. The code
 is all of the repositories or none: when a touched repository's snapshot is
 gone by the time the proposal is written, none is profiled and the code is

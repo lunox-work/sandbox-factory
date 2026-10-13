@@ -49,7 +49,14 @@ import type {
   ToolInputs,
   ToolRunInput,
 } from "./adapter.js";
-import { SHIM_PATH, compileFixture, packageShim } from "./slice/fixture.js";
+import {
+  SHIM_PATH,
+  compileFixture,
+  packageShim,
+  packageUses,
+  UNTYPED_PACKAGE_CODES,
+  UNTYPED_PACKAGE_OPTIONS,
+} from "./slice/fixture.js";
 import { gitBlobId, gitFileMode, sha256 } from "./slice/hash.js";
 import {
   declarationPathFor,
@@ -361,13 +368,29 @@ export async function analyseSlice(input: {
     const fixture = new Map<string, string>(texts);
     for (const stub of stubs)
       fixture.set(declarationPathFor(stub.module), stub.text);
-    const shim = packageShim(shimmed);
+    // What the slice and its stubs read of each package, so the names it
+    // uses as types are declared as types.
+    const packageNames = new Set(shimmed);
+    const shim = packageShim(
+      shimmed,
+      packageUses(
+        fixture,
+        (specifier) =>
+          isBare(specifier) &&
+          (packageNames.has(packageNameOf(specifier)) ||
+            isNodeBuiltin(specifier)),
+      ),
+    );
     fixture.set(SHIM_PATH, shim);
     compilation = compileFixture({
       root: input.sourceDir,
       files: fixture,
-      compilerOptions: boundary.compilerOptions,
+      compilerOptions: {
+        ...boundary.compilerOptions,
+        ...UNTYPED_PACKAGE_OPTIONS,
+      },
       shimmedPackages: shimmed,
+      ignoredCodes: UNTYPED_PACKAGE_CODES,
     });
     for (const diagnostic of compilation.diagnostics.slice(0, 20))
       blockers.push({

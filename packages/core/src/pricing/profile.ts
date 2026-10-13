@@ -26,7 +26,11 @@
 import type { TreeFacts } from "../repo/tree.js";
 import { CI_FILE_NAMES, modulesFor } from "../repo/tree.js";
 import { entryPointPath } from "../slice/graph.js";
-import type { StubCoverage } from "../slice/manifest.js";
+import {
+  isWorkBlocker,
+  type SliceBlocker,
+  type StubCoverage,
+} from "../slice/manifest.js";
 import type { ScopePattern, ScopeSubmission } from "../slice/scope.js";
 import { countScenarios } from "./spec.js";
 import type { ScenarioKind, SpecDraft } from "./spec.js";
@@ -65,6 +69,21 @@ export type ProfileErrorCode = (typeof PROFILE_ERROR_CODES)[number];
 const CI_FILES = new Set(CI_FILE_NAMES);
 
 /**
+ * The work's blockers (`WORK_BLOCKER_CODES`, from the slice manifest), once
+ * per kind and file. The summary lists them ahead of the slicer's own, so
+ * the count holds however many of those a noisy build raised.
+ */
+export function workBlockers(
+  blockers: readonly Pick<SliceBlocker, "code" | "file">[],
+): number {
+  return new Set(
+    blockers
+      .filter(isWorkBlocker)
+      .map(({ code, file }) => `${code}\0${file ?? ""}`),
+  ).size;
+}
+
+/**
  * Whether an infrastructure path `TreeFacts` lists is CI configuration: a
  * CI directory, or a CI file it lists by path (`.gitlab-ci.yml`).
  */
@@ -84,7 +103,13 @@ export interface ComplexityProfile {
     /** The modules the included files sit in, sorted. */
     readonly modules: readonly string[];
     readonly stubCoverage: StubCoverage;
+    /** Every blocker the slice reported, the slicer's own included. */
     readonly blockers: number;
+    /**
+     * Of those, the work's (`WORK_BLOCKER_CODES`), once per kind and file.
+     * Absent on a profile measured before it was counted.
+     */
+    readonly workBlockers?: number;
     /** Whether the slice may advance to a sandbox. */
     readonly ready: boolean;
   };
@@ -139,6 +164,8 @@ export interface ProfileSlice {
     readonly includedBytes: number;
     readonly blockers: number;
   };
+  /** The blockers it lists, up to the summary's limit. */
+  readonly blockers: readonly Pick<SliceBlocker, "code" | "file">[];
   readonly included: readonly string[];
   readonly externals: {
     readonly packages: readonly { readonly service: string }[];
@@ -185,6 +212,7 @@ export function buildComplexityProfile(input: ProfileInput): ComplexityProfile {
       modules: modulesFor(facts, slice.included),
       stubCoverage: slice.stubCoverage,
       blockers: slice.counts.blockers,
+      workBlockers: workBlockers(slice.blockers),
       ready: slice.ready,
     },
     touchedModules,

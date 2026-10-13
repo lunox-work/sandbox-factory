@@ -339,7 +339,18 @@ test("over a reviewer's size the rubric's is offered back", async () => {
   expect(screen.getByTestId("rubric-source").textContent).toBe(
     "The model set this size; the rubric says M.",
   );
-  expect(screen.queryByRole("button")).toBeNull();
+  expect(screen.queryByRole("button")).toBeNull(); // Two whole sizes apart, the rubric waited for a reviewer, and says so.
+  rerender(
+    <PricingRubricBlock
+      proposal={proposal({ sizedBy: "model", complexity: "XS" })}
+      canUse={false}
+      busy={false}
+      onUse={onUse}
+    />,
+  );
+  expect(screen.getByTestId("rubric-source").textContent).toBe(
+    "The model set this size; the rubric says M, too far apart to take without a reviewer.",
+  );
 });
 
 /** The spec as a revision of it, read. */

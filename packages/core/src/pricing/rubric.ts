@@ -34,7 +34,11 @@
  * stored assessment can be recomputed and compared.
  */
 
-import type { PricedComplexity } from "../sizing.js";
+import {
+  PRICED_BOUNTY_COMPLEXITIES,
+  type BountyComplexity,
+  type PricedComplexity,
+} from "../sizing.js";
 import type { StubCoverage } from "../slice/manifest.js";
 import type { ComplexityProfile } from "./profile.js";
 import type { Scenario, SpecDraft } from "./spec.js";
@@ -47,8 +51,11 @@ import {
 /**
  * Stored with every assessment. `rubric-v2` scores the code over every
  * repository the work touches, and adds the integration across them.
+ * `rubric-v3` scores only the work's slice blockers, and at most
+ * `RUBRIC_LIMITS.blockers` of them: the slicer's own build failures, one
+ * missing config raising a compile error per line, no longer size a bounty.
  */
-export const RUBRIC_VERSION = "rubric-v2";
+export const RUBRIC_VERSION = "rubric-v3";
 
 /** What each factor adds. Scenario weights are the step's (`weight.ts`). */
 export const RUBRIC_POINTS = {
@@ -73,7 +80,7 @@ export const RUBRIC_POINTS = {
   untestedModule: 2,
   /** When a touched module holds schema migrations. */
   migrations: 4,
-  /** Per slice blocker. */
+  /** Per slice blocker in the work, up to `RUBRIC_LIMITS.blockers`. */
   blocker: 2,
   /** By how much of the cut-away code the slice's stubs keep. */
   stubs: { full: 0, partial: 1, "names-only": 2 } satisfies Record<
@@ -83,6 +90,37 @@ export const RUBRIC_POINTS = {
   /** When the repository has an analogous pattern to follow: a discount. */
   pattern: -2,
 } as const;
+
+/** How many of a factor's items are scored at most. */
+export const RUBRIC_LIMITS = {
+  /**
+   * Blockers: a slice is cut once, and the contributor works around what
+   * it could not cut, so past a couple more of them is no more work.
+   */
+  blockers: 2,
+} as const;
+
+/**
+ * How far apart, in priced sizes, the rubric's size and the one in force
+ * may be before the rubric waits for a reviewer rather than taking over:
+ * two whole sizes (XS to M, S to L). A gap that wide means the model or
+ * the measurement has read the bounty wrong, and a reviewer says which.
+ */
+export const RUBRIC_REVIEW_DISTANCE = 4;
+
+/**
+ * Whether the rubric's size is too far from the one in force to take over
+ * without a reviewer. An unsized proposal has nothing to disagree with.
+ */
+export function rubricNeedsReview(
+  inForce: BountyComplexity,
+  size: PricedComplexity,
+): boolean {
+  if (inForce === "unsized") return false;
+  const position = (complexity: PricedComplexity) =>
+    PRICED_BOUNTY_COMPLEXITIES.indexOf(complexity);
+  return Math.abs(position(size) - position(inForce)) >= RUBRIC_REVIEW_DISTANCE;
+}
 
 /**
  * The slice's size, in KB of code to read, as points: under the first
@@ -256,8 +294,8 @@ export function rubricRules(
       id: "blockers",
       dimension: "code",
       label: "Slice blockers",
-      scoring: `${P.blocker} each`,
-      why: "Something the slice could not cut cleanly, which the contributor works around.",
+      scoring: `${P.blocker} each, at most ${RUBRIC_LIMITS.blockers} counted`,
+      why: "An import the slice could not follow, which the contributor works around. The slicer's own build failures are shown but not scored: they measure the tool, not the work.",
     },
     {
       id: "pattern",
@@ -519,6 +557,13 @@ function combined(measured: readonly MeasuredRepository[]) {
         )
       ] ?? "full",
     blockers: sum(each(({ profile }) => profile.slice.blockers)),
+    // A profile from before the work's were counted apart scores them all,
+    // up to the limit, as it was measured.
+    workBlockers: sum(
+      each(
+        ({ profile }) => profile.slice.workBlockers ?? profile.slice.blockers,
+      ),
+    ),
     pattern:
       pattern?.profile.pattern == null
         ? null
@@ -526,6 +571,21 @@ function combined(measured: readonly MeasuredRepository[]) {
           ? `${pattern.repository}:${pattern.profile.pattern.path}`
           : pattern.profile.pattern.path,
   };
+}
+
+function blockerEvidence(work: number, all: number): string {
+  const tool = Math.max(0, all - work);
+  const counted =
+    work > RUBRIC_LIMITS.blockers
+      ? `${plural(work, "blocker")}, ${RUBRIC_LIMITS.blockers} counted`
+      : work === 0
+        ? tool === 0
+          ? "None"
+          : "None in the work"
+        : plural(work, "blocker");
+  return tool === 0
+    ? counted
+    : `${counted}; ${tool} from the slicer's own build, not scored`;
 }
 
 function codeFactors(measured: readonly MeasuredRepository[]): RubricFactor[] {
@@ -589,8 +649,8 @@ function codeFactors(measured: readonly MeasuredRepository[]): RubricFactor[] {
     {
       id: "blockers",
       label: "Slice blockers",
-      evidence: code.blockers === 0 ? "None" : plural(code.blockers, "blocker"),
-      points: code.blockers * P.blocker,
+      evidence: blockerEvidence(code.workBlockers, code.blockers),
+      points: Math.min(code.workBlockers, RUBRIC_LIMITS.blockers) * P.blocker,
     },
     {
       id: "pattern",

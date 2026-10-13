@@ -6,6 +6,7 @@ import {
   PATH_LIST_MAX,
   buildComplexityProfile,
   treeFacts,
+  workBlockers,
 } from "../src/index.js";
 import type { ProfileInput, Scenario } from "../src/index.js";
 
@@ -55,6 +56,7 @@ const input: ProfileInput = {
     stubCoverage: "full",
     ready: true,
     counts: { includedFiles: 3, includedBytes: 10_000, blockers: 0 },
+    blockers: [],
     included: [
       "src/scheduler/interview.ts",
       "src/scheduler/calendar.ts",
@@ -80,6 +82,7 @@ test("a profile measures the slice, where the change lands and what guards it", 
     modules: ["src/mailer", "src/scheduler"],
     stubCoverage: "full",
     blockers: 0,
+    workBlockers: 0,
     ready: true,
   });
   assert.deepEqual(profile.touchedModules, ["src/mailer", "src/scheduler"]);
@@ -239,4 +242,32 @@ test("a scenario of a retired kind is left out of the counts, not NaN", () => {
     JSON.stringify(profile.spec.kinds),
   );
   assert.equal(Object.hasOwn(profile.spec.kinds, "retired-kind"), false);
+});
+
+test("the work's blockers are counted apart from the slicer's own build, once per kind and file", () => {
+  const blockers = [
+    // One missing config, and the compile errors it raises line by line.
+    { code: "missing_build_input", file: "apps/web/tsconfig.json" },
+    ...Array.from({ length: 12 }, () => ({
+      code: "compile_error" as const,
+      file: "apps/web/src/Notice.tsx",
+    })),
+    { code: "no_extractor", file: null },
+    { code: "unresolved_import", file: "src/a.ts" },
+    { code: "unresolved_import", file: "src/a.ts" },
+    { code: "unresolved_import", file: "src/b.ts" },
+    { code: "dynamic_dependency", file: "src/a.ts" },
+  ] as const;
+  assert.equal(workBlockers(blockers), 3);
+  const profile = buildComplexityProfile({
+    ...input,
+    slice: {
+      ...input.slice,
+      ready: false,
+      counts: { ...input.slice.counts, blockers: blockers.length },
+      blockers,
+    },
+  });
+  assert.equal(profile.slice.blockers, 18);
+  assert.equal(profile.slice.workBlockers, 3);
 });

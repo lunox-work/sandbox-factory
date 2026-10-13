@@ -10,8 +10,11 @@ import {
   PRICED_BOUNTY_COMPLEXITIES,
   RUBRIC_BANDS,
   RUBRIC_DIMENSIONS,
+  RUBRIC_LIMITS,
+  RUBRIC_REVIEW_DISTANCE,
   RUBRIC_VERSION,
   rubricBand,
+  rubricNeedsReview,
   rubricRules,
   rubricSize,
   type ComplexityProfile,
@@ -108,7 +111,7 @@ const points = (
 test("the worked example scores 19 points, which is M", () => {
   const assessment = assessRubric({ spec, code: measured });
   assert.equal(assessment.version, RUBRIC_VERSION);
-  assert.equal(RUBRIC_VERSION, "rubric-v2");
+  assert.equal(RUBRIC_VERSION, "rubric-v3");
   assert.deepEqual(
     assessment.dimensions.map(({ id, points, measured }) => [
       id,
@@ -547,4 +550,53 @@ test("the rules name every factor an assessment can carry, written from the numb
     byId.get("context")?.scoring,
     "under 16 KB 0, under 48 KB 1, under 128 KB 2, under 320 KB 4, 320 KB or more 6",
   );
+});
+
+test("only the work's slice blockers score, and at most a couple of them", () => {
+  const blockers = (slice: Partial<ComplexityProfile["slice"]>) => {
+    const assessment = assessRubric({
+      spec,
+      code: measuredIn({ ...profile, slice: { ...profile.slice, ...slice } }),
+    });
+    const factor = assessment.dimensions
+      .find(({ id }) => id === "code")
+      ?.factors.find(({ id }) => id === "blockers");
+    return [factor?.evidence, factor?.points];
+  };
+  // A slice whose own build failed: one missing config and the compile
+  // errors it raised, none of them the contributor's to work around.
+  assert.deepEqual(blockers({ blockers: 13, workBlockers: 0, ready: false }), [
+    "None in the work; 13 from the slicer's own build, not scored",
+    0,
+  ]);
+  assert.deepEqual(blockers({ blockers: 3, workBlockers: 1 }), [
+    "1 blocker; 2 from the slicer's own build, not scored",
+    2,
+  ]);
+  assert.deepEqual(blockers({ blockers: 5, workBlockers: 5 }), [
+    `5 blockers, ${RUBRIC_LIMITS.blockers} counted`,
+    RUBRIC_LIMITS.blockers * 2,
+  ]);
+  // A profile measured before the work's were counted apart scores them
+  // all as it was measured, up to the same limit.
+  assert.deepEqual(blockers({ blockers: 13 }), [
+    `13 blockers, ${RUBRIC_LIMITS.blockers} counted`,
+    RUBRIC_LIMITS.blockers * 2,
+  ]);
+  assert.match(
+    rubricRules().find(({ id }) => id === "blockers")?.scoring ?? "",
+    /at most 2 counted/,
+  );
+});
+
+test("a rubric size two whole sizes from the one in force waits for a reviewer", () => {
+  assert.equal(RUBRIC_REVIEW_DISTANCE, 4);
+  assert.equal(rubricNeedsReview("XS", "L"), true);
+  assert.equal(rubricNeedsReview("XS", "M"), true);
+  assert.equal(rubricNeedsReview("L", "S"), true);
+  assert.equal(rubricNeedsReview("XS", "S+"), false);
+  assert.equal(rubricNeedsReview("M", "M+"), false);
+  assert.equal(rubricNeedsReview("XS+", "M+"), true);
+  // Nothing in force to disagree with.
+  assert.equal(rubricNeedsReview("unsized", "XL"), false);
 });

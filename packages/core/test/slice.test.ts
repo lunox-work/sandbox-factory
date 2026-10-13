@@ -18,10 +18,12 @@ import {
   toolVersionOf,
   OPERATION_POLICY,
   SUMMARY_LIMITS,
+  WORK_BLOCKER_CODES,
 } from "../src/index.js";
 import type {
   BoundaryContract,
   BoundaryModule,
+  SliceBlocker,
   SliceManifest,
 } from "../src/index.js";
 
@@ -721,6 +723,52 @@ test("the boundary summary is bounded and reports truncation", () => {
   assert.equal(big.outbound.length, SUMMARY_LIMITS.modules);
   assert.equal(big.outbound[0]?.symbols.length, SUMMARY_LIMITS.symbols);
   assert.equal(big.outbound[0]?.truncated, true);
+});
+
+test("the boundary summary caps blockers and keeps the work's ahead of the slicer's", () => {
+  const blocker = (
+    code: SliceBlocker["code"],
+    file: string,
+    detail: string = code,
+  ): SliceBlocker => ({ code, file, location: null, detail });
+  // As the contract sorts them: by code, so the slicer's own build failures
+  // all come before the one unresolved import the rubric scores.
+  const blockers = [
+    ...Array.from({ length: 20 }, (_, i) =>
+      blocker("compile_error", "src/main.ts", `TS2307 #${i}`),
+    ),
+    ...Array.from({ length: SUMMARY_LIMITS.blockers }, (_, i) =>
+      blocker(
+        "missing_build_input",
+        `src/pkg-${String(i).padStart(2, "0")}.ts`,
+      ),
+    ),
+    blocker("no_extractor", "src/legacy.rb"),
+    blocker("unresolved_import", "src/main.ts"),
+  ];
+  const crowded = boundarySummary(
+    { ...contract, blockers },
+    { ...manifest, meta: { ...manifest.meta, blockers: blockers.length } },
+  );
+  assert.equal(crowded.blockers.length, SUMMARY_LIMITS.blockers);
+  assert.equal(crowded.counts.blockers, blockers.length);
+  assert.deepEqual(
+    crowded.blockers[0],
+    blocker("unresolved_import", "src/main.ts"),
+  );
+  // Behind the work's, the slicer's own keep the contract's order.
+  assert.equal(crowded.blockers[1]?.detail, "TS2307 #0");
+  assert.equal(crowded.truncated, true);
+  // Under the limit, the list is the contract's as it stands.
+  const few = boundarySummary(
+    { ...contract, blockers: blockers.slice(0, 3) },
+    manifest,
+  );
+  assert.deepEqual(few.blockers, blockers.slice(0, 3));
+  assert.deepEqual(WORK_BLOCKER_CODES, [
+    "unresolved_import",
+    "dynamic_dependency",
+  ]);
 });
 
 test("the boundary summary caps externals and keeps every service", () => {
