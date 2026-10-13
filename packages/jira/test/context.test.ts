@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import {
+  BOUNTY_LABEL,
   ApiTokenCredential,
   CONTEXT_FIELDS,
   JiraApiError,
@@ -126,6 +127,14 @@ test("an issue's context is its classification, size and links, never a person",
   });
   assert.equal(CONTEXT_FIELDS.includes("assignee"), false);
   assert.equal(CONTEXT_FIELDS.includes("description"), false);
+});
+
+test("the label the write-back adds is not read as the team's", () => {
+  const labelled = {
+    ...issue,
+    fields: { ...issue.fields, labels: ["billing", BOUNTY_LABEL] },
+  };
+  assert.deepEqual(toJiraContext(labelled).labels, ["billing"]);
 });
 
 test("a sparse issue's context leaves what it lacks empty", () => {

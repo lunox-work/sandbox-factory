@@ -15,6 +15,7 @@ import type {
 } from "@sandbox-factory/shared";
 
 import { ISSUE_FIELDS } from "./mapping.js";
+import { BOUNTY_LABEL } from "./labels.js";
 
 /**
  * The fields a context read asks for, besides the site's story points
@@ -104,7 +105,8 @@ export function toJiraContext(
     status: fields.status?.name ?? null,
     statusCategory: fields.status?.statusCategory?.key?.toLowerCase() ?? null,
     priority: named(fields.priority),
-    labels: [...(fields.labels ?? [])],
+    // Not the label the write-back adds: it is the platform's, not the team's.
+    labels: (fields.labels ?? []).filter((label) => label !== BOUNTY_LABEL),
     components: names(fields.components),
     fixVersions: names(fields.fixVersions),
     parentKey: fields.parent?.key ?? null,

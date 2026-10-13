@@ -14,6 +14,7 @@
 export { JiraApiError, JiraClient } from "./client.js";
 export type { JiraClientOptions } from "./client.js";
 export type { JiraComment } from "./client.js";
+export { BOUNTY_LABEL } from "./labels.js";
 export { JiraWriteClient, JiraWriteResponseError } from "./write-client.js";
 export type { JiraWriteClientOptions } from "./write-client.js";
 export {

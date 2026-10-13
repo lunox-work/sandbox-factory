@@ -12,6 +12,7 @@ import {
 } from "@sandbox-factory/db";
 import {
   adfToText,
+  BOUNTY_LABEL,
   JiraApiError,
   JiraWriteResponseError,
   type JiraClient,
@@ -320,7 +321,7 @@ export class BountyDelivery {
     try {
       await client.addLabel(
         externalId,
-        "bounty",
+        BOUNTY_LABEL,
         AbortSignal.any([leaseSignal, requestController.signal]),
       );
       return await this.#options.writebacks.completeLabel(
