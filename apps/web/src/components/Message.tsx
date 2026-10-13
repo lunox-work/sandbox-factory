@@ -112,7 +112,7 @@ export function RetryableError({
  * spinner beside the word, and — on the members list — nothing at all, so an
  * organization looked briefly as though it had no members. A moving orb is
  * what distinguishes "still working" from "finished, and this is the answer".
- * Its plain, breathing one: the library's own ink and its calmest state,
+ * Its plain, breathing one: the theme's ink and its calmest state,
  * because a read is the app waiting, not making anything. The brand's ramp
  * is kept for that, in `ThinkingLine`.
  *
