@@ -832,6 +832,22 @@ test("the baseline verdict accepts only expected hidden-test outcomes over a gre
     ok: false,
     reasons: ["No hidden test judges a submission."],
   });
+  // A step that fails before the hidden tests run says so, and only so.
+  const stopped = baselineVerdict({
+    steps: [
+      {
+        name: "prepare",
+        argv: [],
+        exitCode: 1,
+        timedOut: false,
+        ok: false,
+        path: null,
+      },
+    ],
+    privateTests: [],
+    declared: ["fail"],
+  });
+  assert.deepEqual(stopped.reasons, ["prepare exited with 1."]);
 });
 
 test("path helpers map TypeScript paths to their emitted and declaration forms", () => {
