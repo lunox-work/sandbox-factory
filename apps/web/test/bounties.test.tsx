@@ -5557,6 +5557,8 @@ test("each link says whether its sync is in use, warns when its source is ahead,
   expect(within(jira).getByRole("status").textContent).toContain(
     "APP-1 has changed in Jira since v2 was synced.",
   );
+  // Its sync is the warning's action, as well as in the row's menu.
+  expect(within(jira).getByRole("button", { name: "Sync" })).toBeDefined();
   // The scope's tab warns of it too.
   const steps = screen.getByRole("tablist", { name: "Steps" });
   expect(

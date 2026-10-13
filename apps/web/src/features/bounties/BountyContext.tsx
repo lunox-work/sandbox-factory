@@ -295,7 +295,8 @@ function aheadText(
   if (status.state !== "ahead" || latest === null) return null;
   const name = status.linked?.ref ?? SOURCE_NAME[source];
   if (source === "jira") {
-    return `${name} has changed in Jira since ${short(latest.version)} was synced. Sync to bring the change into the scope.`;
+    // Syncing is the action beside it, so it is not said again here.
+    return `${name} has changed in Jira since ${short(latest.version)} was synced.`;
   }
   return `The workspace's built repositories have changed since ${short(latest.version)} read them. Pick a commit to read them again.`;
 }
@@ -347,8 +348,9 @@ export function ContextSyncMenu({
 
 /**
  * Under a link's row: whether its sync is in use and up to date, and what
- * its latest version holds. An ahead source says so, and what syncing does
- * about it. Syncing itself is in the row's menu (`ContextSyncMenu`).
+ * its latest version holds. An ahead source says so; an ahead issue has
+ * its sync beside the warning, as well as in the row's menu
+ * (`ContextSyncMenu`).
  */
 export function ContextSync({
   source,
@@ -420,16 +422,32 @@ export function ContextSync({
           )}
       </div>
       {warning !== null && (
-        <p
-          role="status"
-          className="flex items-start gap-2 text-xs text-amber-900 dark:text-amber-200"
-        >
-          <TriangleAlert
-            aria-hidden
-            className="mt-px size-3.5 shrink-0 text-amber-600 dark:text-amber-400"
-          />
-          {warning}
-        </p>
+        <div className="flex items-center justify-between gap-3">
+          <p
+            role="status"
+            className="flex min-w-0 items-start gap-2 text-xs text-amber-900 dark:text-amber-200"
+          >
+            <TriangleAlert
+              aria-hidden
+              className="mt-px size-3.5 shrink-0 text-amber-600 dark:text-amber-400"
+            />
+            {warning}
+          </p>
+          {/* The repositories' action is their picker, just below. */}
+          {source === "jira" && (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="h-6 shrink-0 px-2 text-xs"
+              disabled={busy}
+              onClick={() => void context.sync(source)}
+            >
+              <RefreshCw className={cn("size-3", busy && "animate-spin")} />
+              Sync
+            </Button>
+          )}
+        </div>
       )}
       {error !== null && (
         <p role="alert" className="text-destructive text-xs">

@@ -483,6 +483,50 @@ test("an issue changed since its sync is ahead, and an issue that cannot be read
   assert.equal(body.jira.state, "ahead");
   assert.equal(body.jira.liveRevision, "2026-10-07T09:00:00.000+0000");
 
+  // Moved only by a comment: its fields and text are what the bounty holds.
+  const commented = harness({
+    bounty: {
+      jira: jiraLink,
+      title: "From Jira",
+      description: "Jira's steps.",
+    },
+    contexts: [storedJira(2)],
+    liveUpdated: "2026-10-07T09:00:00.000+0000",
+  });
+  assert.equal(
+    (
+      (await (
+        await commented.request("GET", "bounties/bty_7/context")
+      ).json()) as BountyContextResponse
+    ).jira.state,
+    "current",
+  );
+  // Its fields moved, its text did not.
+  const pointed = harness({
+    bounty: {
+      jira: jiraLink,
+      title: "From Jira",
+      description: "Jira's steps.",
+    },
+    contexts: [
+      storedJira(2, {
+        contentHash: contextHash({
+          source: "jira",
+          content: jiraContext({ storyPoints: 3 }),
+        }),
+      }),
+    ],
+    liveUpdated: "2026-10-07T09:00:00.000+0000",
+  });
+  assert.equal(
+    (
+      (await (
+        await pointed.request("GET", "bounties/bty_7/context")
+      ).json()) as BountyContextResponse
+    ).jira.state,
+    "ahead",
+  );
+
   const current = harness({
     bounty: { jira: jiraLink },
     contexts: [storedJira(2)],
