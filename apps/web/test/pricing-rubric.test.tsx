@@ -143,13 +143,13 @@ test("a rubric-sized price shows its working, factor by factor, and its band", (
   );
   const block = screen.getByRole("region", { name: "Why this price" });
   expect(within(block).getByTestId("rubric-total").textContent).toBe(
-    "19 points →is M",
+    "16 points →is M",
   );
   expect(within(block).getByTestId("rubric-source").textContent).toBe(
     "The rubric set this size.",
   );
   expect(within(block).getByTestId("rubric-rationale").textContent).toBe(
-    "19 points: 8 from scenarios, 5 from test cases, 6 from code. 15 to 20 points is M. 2 more points would make it M+.",
+    "16 points: 8 from scenarios, 5 from test cases, 3 from code. 15 to 20 points is M. 5 more points would make it M+.",
   );
 
   // Each dimension sums its factors, each with what was counted.
@@ -208,15 +208,54 @@ test("the rules are folded away, and say what each factor scores and why", async
   );
 });
 
-test("while the code is measured, the model's size stands and the code says so", () => {
+test("while the code is measured, the rubric sizes it from the scenarios and the code says so", () => {
   render(
     <PricingRubricBlock
       proposal={proposal({
-        sizedBy: "model",
+        sizedBy: "rubric",
+        complexity: "S+",
         rubric: assessRubric({
           spec,
           code: { status: "pending" },
         }) as BountyProposalDto["rubric"],
+      })}
+      canUse
+      busy={false}
+      onUse={() => {}}
+    />,
+  );
+  // The spec's points are a size of their own already.
+  expect(screen.getByTestId("rubric-total").textContent).toBe(
+    "13 points →is S+",
+  );
+  expect(screen.getByTestId("rubric-source").textContent).toBe(
+    "The rubric set this size.",
+  );
+  const code = screen.getByTestId("rubric-code");
+  expect(within(code).getByRole("status").textContent).toBe(
+    "Being measured from the repository's code graph.",
+  );
+  expect(screen.queryByRole("button", { name: /rubric/ })).toBeNull();
+});
+
+/**
+ * An assessment as stored before the spec alone set a size: none until the
+ * code was measured.
+ */
+function unsizedRubric(status: "pending" | "unavailable" | "failed") {
+  return {
+    ...assessRubric({ spec, code: { status } }),
+    size: null,
+    nextSizeIn: null,
+  } as BountyProposalDto["rubric"];
+}
+
+test("stored with no size while the code was measured, the model's size stands and the code says so", () => {
+  render(
+    <PricingRubricBlock
+      proposal={proposal({
+        sizedBy: "model",
+        rubric: unsizedRubric("pending"),
       })}
       canUse
       busy={false}
@@ -235,15 +274,12 @@ test("while the code is measured, the model's size stands and the code says so",
   expect(screen.queryByRole("button", { name: /rubric/ })).toBeNull();
 });
 
-test("code with nothing to measure, or that failed, says why", () => {
+test("stored with no size, code with nothing to measure, or that failed, says why", () => {
   const { rerender } = render(
     <PricingRubricBlock
       proposal={proposal({
         sizedBy: "model",
-        rubric: assessRubric({
-          spec,
-          code: { status: "unavailable" },
-        }) as BountyProposalDto["rubric"],
+        rubric: unsizedRubric("unavailable"),
       })}
       canUse
       busy={false}
@@ -260,10 +296,7 @@ test("code with nothing to measure, or that failed, says why", () => {
     <PricingRubricBlock
       proposal={proposal({
         sizedBy: "model",
-        rubric: assessRubric({
-          spec,
-          code: { status: "failed" },
-        }) as BountyProposalDto["rubric"],
+        rubric: unsizedRubric("failed"),
       })}
       canUse
       busy={false}
@@ -339,7 +372,18 @@ test("over a reviewer's size the rubric's is offered back", async () => {
   expect(screen.getByTestId("rubric-source").textContent).toBe(
     "The model set this size; the rubric says M.",
   );
-  expect(screen.queryByRole("button")).toBeNull();
+  expect(screen.queryByRole("button")).toBeNull(); // Two whole sizes apart, the rubric waited for a reviewer, and says so.
+  rerender(
+    <PricingRubricBlock
+      proposal={proposal({ sizedBy: "model", complexity: "XS" })}
+      canUse={false}
+      busy={false}
+      onUse={onUse}
+    />,
+  );
+  expect(screen.getByTestId("rubric-source").textContent).toBe(
+    "The model set this size; the rubric says M, too far apart to take without a reviewer.",
+  );
 });
 
 /** The spec as a revision of it, read. */
@@ -595,10 +639,8 @@ test("an earlier revision on show is scored as it would be, beside the price in 
       }}
     />,
   );
-  // Four from its scenario and its test, six from the code.
-  expect(screen.getByTestId("rubric-total").textContent).toBe(
-    "10 points →is S",
-  );
+  // Four from its scenario and its test, three from the code.
+  expect(screen.getByTestId("rubric-total").textContent).toBe("7 points →is S");
   expect(screen.getByTestId("rubric-source").textContent).toBe(
     "As revision 1 would score. The price goes with revision 2.",
   );

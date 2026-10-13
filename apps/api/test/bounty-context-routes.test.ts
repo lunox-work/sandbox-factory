@@ -483,6 +483,50 @@ test("an issue changed since its sync is ahead, and an issue that cannot be read
   assert.equal(body.jira.state, "ahead");
   assert.equal(body.jira.liveRevision, "2026-10-07T09:00:00.000+0000");
 
+  // Moved only by a comment: its fields and text are what the bounty holds.
+  const commented = harness({
+    bounty: {
+      jira: jiraLink,
+      title: "From Jira",
+      description: "Jira's steps.",
+    },
+    contexts: [storedJira(2)],
+    liveUpdated: "2026-10-07T09:00:00.000+0000",
+  });
+  assert.equal(
+    (
+      (await (
+        await commented.request("GET", "bounties/bty_7/context")
+      ).json()) as BountyContextResponse
+    ).jira.state,
+    "current",
+  );
+  // Its fields moved, its text did not.
+  const pointed = harness({
+    bounty: {
+      jira: jiraLink,
+      title: "From Jira",
+      description: "Jira's steps.",
+    },
+    contexts: [
+      storedJira(2, {
+        contentHash: contextHash({
+          source: "jira",
+          content: jiraContext({ storyPoints: 3 }),
+        }),
+      }),
+    ],
+    liveUpdated: "2026-10-07T09:00:00.000+0000",
+  });
+  assert.equal(
+    (
+      (await (
+        await pointed.request("GET", "bounties/bty_7/context")
+      ).json()) as BountyContextResponse
+    ).jira.state,
+    "ahead",
+  );
+
   const current = harness({
     bounty: { jira: jiraLink },
     contexts: [storedJira(2)],
@@ -655,6 +699,26 @@ test("picking a commit reads the documents there, title's words first", async ()
   // Only the documents are read: never the code or the boilerplate.
   assert.deepEqual(state.blobs.sort(), ["acme/app:s1", "acme/app:s2"]);
   assert.equal(state.rows[0]?.refId, WORKSPACE_REPOSITORIES);
+});
+
+test("an approved scope's context is held: no sync, no commit picked, still read", async () => {
+  const state = harness({
+    bounty: {
+      jira: jiraLink,
+      approval: { version: 1, approvedBy: "user_1", approvedAt: stamp },
+    },
+  });
+  const sync = await state.request("POST", "bounties/bty_7/context/jira/sync");
+  assert.equal(sync.status, 409);
+  assert.equal(
+    ((await sync.json()) as { code: string }).code,
+    "scope_approved",
+  );
+  const pin = await state.pin();
+  assert.equal(pin.status, 409);
+  assert.equal(state.rows.length, 0);
+  assert.equal(state.refreshed.length, 0);
+  assert.equal((await state.context()).jira.state, "unsynced");
 });
 
 test("GitHub is pinned, not synced", async () => {

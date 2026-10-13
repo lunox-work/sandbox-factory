@@ -4,6 +4,7 @@ import type {
   ProposalLiveSpecDto,
 } from "@sandbox-factory/shared";
 import {
+  Check,
   ChevronDown,
   ChevronUp,
   ExternalLink,
@@ -170,7 +171,8 @@ export function ProposalPeek({
    */
   context?: ReactNode;
 }) {
-  const url = withinBounty ? null : (bounty?.url ?? proposal.liveUrl ?? null);
+  const issueUrl = bounty?.url ?? proposal.liveUrl ?? null;
+  const url = withinBounty ? null : issueUrl;
   const label = modelLabel(proposal.actualModel);
   const delivery = proposal.writebackOperations?.at(-1);
   const freshness = freshnessLabel(proposal.freshness);
@@ -454,15 +456,29 @@ export function ProposalPeek({
         : proposal.freshness === "missing"
           ? "The bounty no longer exists."
           : "Checking the bounty is unchanged since it was sized.";
+  // Nor while what it would approve is still arriving: the scenarios being
+  // changed, or the code measured for the price it may set. A re-analysis
+  // already holds every decision through `locked`.
+  const arriving =
+    respec.state.phase === "working"
+      ? "The scenarios are still changing. Approve once they land."
+      : measuring !== null
+        ? "The code is still being measured, and the price may change. Approve once it settles."
+        : null;
   // Whether this proposal can still be approved, and so removed.
   const decidable = canDecide && open && proposal.complexity !== "unsized";
   // The decision itself: Approve for a proposed bounty, the way back for an
   // approved one.
   const decision = !canDecide ? null : open ? (
     decidable && (
-      <DisabledReason reason={held ?? approveBlocked}>
+      <DisabledReason reason={held ?? arriving ?? approveBlocked}>
         <Button
-          disabled={locked || held !== null || approveBlocked !== null}
+          disabled={
+            locked ||
+            held !== null ||
+            arriving !== null ||
+            approveBlocked !== null
+          }
           aria-busy={acting === "approve"}
           onClick={() =>
             void act("approve", `/proposals/${proposal.id}/approve`, {
@@ -521,8 +537,10 @@ export function ProposalPeek({
   );
 
   // The way to have the model look again: sized again only while it is
-  // not approved, unapproved first.
-  const reanalyzeButton = canDecide && (open || reanalyzing) && (
+  // not approved, unapproved first, and not while the code is measured,
+  // since the price that measurement sets is still on its way.
+  const offersReanalyze = reanalyzing || (open && measuring === null);
+  const reanalyzeButton = canDecide && offersReanalyze && (
     <DisabledReason reason={reanalyzing ? null : held}>
       <button
         type="button"
@@ -564,7 +582,10 @@ export function ProposalPeek({
         </p>
       )}
       {reanalyzing ? (
-        <PreviewPrice run={making} />
+        <PreviewPrice
+          run={making}
+          weightPoints={proposal.rubric?.weightPoints}
+        />
       ) : (
         <div className="grid grid-cols-1 items-center gap-x-6 gap-y-2.5 sm:grid-cols-[1fr_auto]">
           <span
@@ -896,6 +917,8 @@ export function ProposalPeek({
           <RuledSection title="Jira">
             <DeliveryStatus
               operation={delivery}
+              issueKey={key ?? null}
+              issueUrl={issueUrl}
               busy={locked}
               mutate={mutate}
             />
@@ -907,6 +930,8 @@ export function ProposalPeek({
             </p>
             <DeliveryStatus
               operation={delivery}
+              issueKey={key ?? null}
+              issueUrl={issueUrl}
               busy={locked}
               mutate={mutate}
             />
@@ -1035,12 +1060,42 @@ function ReadPart({
   );
 }
 
+/**
+ * Why a Jira update did not land, said so whoever reads it knows what to
+ * fix. A code with no line here reads as Jira's own refusal.
+ */
+const DELIVERY_FAILURE: Record<string, string> = {
+  reconnect: "This Jira site needs reconnecting.",
+  permission: "The connected Jira account can't comment on this issue.",
+  issue_unavailable:
+    "The issue is gone, or the connected account can't see it.",
+  not_found: "The issue is gone, or the connected account can't see it.",
+  write_consent_required: "This Jira site was connected read-only.",
+  jira_rate_limited: "Jira was busy. Try again in a minute.",
+  worker_lost: "The update stopped partway through.",
+  proposal_changed: "The price changed before it was posted.",
+  proposal_stale: "The bounty changed before the price was posted.",
+  spec_unavailable: "The bounty could not be checked before posting.",
+};
+
+/**
+ * What was posted to the bounty's Jira issue on its last decision, as a
+ * sentence: the price as a comment and the `bounty` label for an
+ * approval, a comment for a withdrawal. Where it went wrong it says why,
+ * beside the way to put it right.
+ */
 function DeliveryStatus({
   operation,
+  issueKey,
+  issueUrl,
   busy,
   mutate,
 }: {
   operation: BountyWritebackDto;
+  /** The issue's key, to name where the update went. */
+  issueKey: string | null;
+  /** The issue's address, for the way to see the update there. */
+  issueUrl: string | null;
   busy: boolean;
   mutate: (
     path: string,
@@ -1048,15 +1103,93 @@ function DeliveryStatus({
     options?: { apply?: boolean },
   ) => Promise<boolean>;
 }) {
-  return (
-    <div className="flex flex-wrap items-center gap-2 text-sm">
-      <span>
-        Jira: <strong>{operation.status}</strong>
-        {operation.step === "label" && operation.status !== "done"
-          ? " (comment posted; label pending)"
-          : ""}
+  const { status, kind, payload } = operation;
+  const issue = issueKey ?? "the Jira issue";
+  const approval = kind === "approved";
+  const what = approval
+    ? `the ${money(payload.amountMinor, payload.currency)} price`
+    : "the withdrawal";
+  // Past the comment, only the label was left.
+  const commented = operation.step === "label";
+  const line =
+    status === "pending"
+      ? `Waiting to post ${what} to ${issue}.`
+      : status === "running"
+        ? `Posting ${what} to ${issue}…`
+        : status === "done"
+          ? approval
+            ? `Posted ${what} to ${issue} and labeled it bounty.`
+            : `Posted ${what} to ${issue}.`
+          : status === "uncertain"
+            ? `Sent ${what} to ${issue}, but Jira didn't confirm it landed.`
+            : status === "cancelled"
+              ? `Not posted to ${issue}: the update was cancelled.`
+              : commented
+                ? `Posted ${what} to ${issue}, but couldn't add the bounty label.`
+                : `Couldn't post ${what} to ${issue}.`;
+  const reason =
+    status === "failed"
+      ? (DELIVERY_FAILURE[operation.errorCode ?? ""] ??
+        "Jira refused the update.")
+      : status === "uncertain"
+        ? "Check Jira to see whether the comment is there before trying again."
+        : null;
+  /*
+    Jira's mark with where the update stands on its corner: a filled tick
+    once it landed, a turning ring while it is on its way, a red mark where
+    it failed, an amber one where Jira did not say.
+  */
+  const badge =
+    status === "pending" || status === "running" ? (
+      <span className="bg-background grid size-3 place-items-center rounded-full">
+        <Loader2
+          strokeWidth={3}
+          className={`text-muted-foreground size-2.5 ${
+            status === "running"
+              ? "animate-spin motion-reduce:animate-none"
+              : ""
+          }`}
+        />
       </span>
-      {operation.status === "failed" && (
+    ) : (
+      <span
+        className={`ring-background grid size-3 place-items-center rounded-full ring-2 ${
+          status === "done"
+            ? "bg-emerald-500"
+            : status === "cancelled"
+              ? "bg-muted-foreground"
+              : status === "uncertain"
+                ? "bg-amber-500"
+                : "bg-destructive"
+        }`}
+      >
+        {status === "done" ? (
+          <Check strokeWidth={4} className="size-2 text-white" />
+        ) : status === "cancelled" ? (
+          <Minus strokeWidth={4} className="size-2 text-white" />
+        ) : (
+          <span className="text-[8px] leading-none font-bold text-white">
+            !
+          </span>
+        )}
+      </span>
+    );
+  const icon = (
+    <span className="relative flex size-5 [&>svg]:size-5">
+      <JiraIcon />
+      <span className="absolute -right-1 -bottom-1 flex">{badge}</span>
+    </span>
+  );
+  // The comment itself where Jira named it, else the issue.
+  const seeUrl =
+    issueUrl === null
+      ? null
+      : operation.jiraCommentId === null
+        ? issueUrl
+        : `${issueUrl}?focusedCommentId=${encodeURIComponent(operation.jiraCommentId)}`;
+  const actions = (
+    <>
+      {status === "failed" && (
         <Button
           size="sm"
           variant="outline"
@@ -1066,7 +1199,7 @@ function DeliveryStatus({
           Retry
         </Button>
       )}
-      {operation.status === "uncertain" && (
+      {status === "uncertain" && (
         <Button
           size="sm"
           variant="outline"
@@ -1078,7 +1211,7 @@ function DeliveryStatus({
           Check Jira
         </Button>
       )}
-      {(operation.status === "pending" || operation.status === "failed") && (
+      {(status === "pending" || status === "failed") && (
         <Button
           size="sm"
           variant="ghost"
@@ -1088,6 +1221,42 @@ function DeliveryStatus({
           Cancel
         </Button>
       )}
+    </>
+  );
+  return (
+    <div
+      className="flex flex-wrap items-start justify-between gap-x-6 gap-y-3"
+      data-testid="jira-delivery"
+      data-status={status}
+    >
+      <div className="flex min-w-0 items-start gap-2.5">
+        <span className="shrink-0">{icon}</span>
+        <div className="flex min-w-0 flex-col gap-1">
+          <p className="text-sm font-medium">{line}</p>
+          {reason !== null && (
+            <p className="text-muted-foreground text-sm">{reason}</p>
+          )}
+          <p className="text-muted-foreground flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
+            <time dateTime={operation.updatedAt}>
+              {dateTime(operation.updatedAt)}
+            </time>
+            {seeUrl !== null && (status === "done" || commented) && (
+              <a
+                href={seeUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="hover:text-foreground inline-flex items-center gap-1 underline-offset-2 transition-colors hover:underline"
+              >
+                {operation.jiraCommentId === null
+                  ? `Open ${issueKey ?? "issue"}`
+                  : "View comment"}
+                <ExternalLink className="size-3" />
+              </a>
+            )}
+          </p>
+        </div>
+      </div>
+      <div className="flex shrink-0 items-center gap-2">{actions}</div>
     </div>
   );
 }

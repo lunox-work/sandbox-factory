@@ -72,7 +72,7 @@ import {
   REVISE_SPEC_PROMPT_VERSION,
 } from "../sizing/tools/revise-spec.js";
 import { sizeBountyTool } from "../sizing/tools/size-bounty.js";
-import { rubricCode, rubricPrice } from "./rubric.js";
+import { rubricCode, rubricPrice, rubricTakesOver } from "./rubric.js";
 import { selectBacklog, type BacklogPageReader } from "./selection.js";
 
 const HEARTBEAT_MS = 15_000;
@@ -1380,14 +1380,11 @@ export class BountyExecutor {
       drafted === undefined || sizing.complexity === "unsized"
         ? null
         : stepUp(sizing.complexity, drafted.draft, drafted.draft, stepSettings);
-    const amountMinor = priceFor(
-      step?.complexity ?? sizing.complexity,
-      run.rateCard,
-    );
     /*
-      The rubric scores the fresh draft now, so the reviewer sees what the
-      size will be built from; the code is measured after, and the rubric
-      takes the size over from the model only then (`./rubric.ts`).
+      The rubric scores the fresh draft now, and its scenarios and test
+      cases size it from the start, unless the model read the bounty too
+      differently to take without a reviewer. The code is measured after,
+      and its points can move the size either way (`./rubric.ts`).
     */
     const profiling =
       touched.length > 0 && this.#options.profilingEnabled?.() === true;
@@ -1399,6 +1396,17 @@ export class BountyExecutor {
             code: { status: profiling ? "pending" : "unavailable" },
             weightPoints: stepSettings.weightPoints,
           });
+    const priced =
+      rubric !== null &&
+      rubricTakesOver(rubric, {
+        sizedBy: "model",
+        complexity: sizing.complexity,
+      })
+        ? rubricPrice(rubric, run)
+        : null;
+    const amountMinor =
+      priced?.amountMinor ??
+      priceFor(step?.complexity ?? sizing.complexity, run.rateCard);
     const input = {
       runId: run.id,
       bountyId: bounty.id,
@@ -1413,6 +1421,7 @@ export class BountyExecutor {
       currency: amountMinor === null ? null : run.rateCard.currency,
       step,
       rubric,
+      ...(priced === null ? {} : { rubricSize: priced.complexity }),
       // What the spec's work touches; nothing when there is no spec.
       repositories: drafted === undefined ? [] : touched,
       contextVersions: {

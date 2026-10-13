@@ -542,7 +542,7 @@ export async function insertBounty(
  * workspace's to keep.
  */
 export function jiraContentChange(
-  current: BountyRow,
+  current: BountyContent & { readonly textEditedAt: Date | string | null },
   content: BountyContent,
 ): Partial<typeof bounty.$inferInsert> | null {
   if (current.textEditedAt !== null) {

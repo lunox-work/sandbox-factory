@@ -112,11 +112,13 @@ export interface Bounties {
     expectedRevision: number,
   ) => Promise<BountyWrite>;
   /**
-   * Makes the bounty's sandbox, cut from the repository its sizing said
-   * the work touches, when it names one. Resolves to null, or to why there
-   * is none.
+   * Makes the bounty's sandbox and begins its first version: sliced from
+   * the repository its sizing said the work touches, when it names one,
+   * else generated from the bounty. Resolves to null, or to why it did
+   * not; the bounty is read again either way, as a version refused after
+   * the sandbox was made leaves it made.
    */
-  createSandbox: (bountyId: string) => Promise<string | null>;
+  startSandbox: (bountyId: string) => Promise<string | null>;
   /**
    * Links a sandbox made without a repository to the one the bounty's
    * sizing has since said the work touches. Resolves to null, or to why it
@@ -467,13 +469,14 @@ export function useBounties(organizationId: string): Bounties {
     [jiraWrite, organizationId],
   );
 
-  const createSandbox = useCallback(
+  const startSandbox = useCallback(
     async (bountyId: string) => {
       try {
-        await clients.sandbox.createSandbox(organizationId, { bountyId });
+        await clients.sandbox.startSandbox(organizationId, { bountyId });
         await load();
         return null;
       } catch (error) {
+        void load();
         return error instanceof ApiError
           ? error.message
           : "Could not reach the server.";
@@ -590,7 +593,7 @@ export function useBounties(organizationId: string): Bounties {
     linkJira,
     unlinkJira,
     decide,
-    createSandbox,
+    startSandbox,
     linkSandboxSource,
     propose,
   };

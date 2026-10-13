@@ -186,6 +186,9 @@ export type StepObserver = (
   output: { readonly stdout: string; readonly stderr: string },
 ) => void;
 
+/** How much of a failed harness step's output the run log keeps. */
+const STEP_LOG_CHARS = 4_000;
+
 async function runBaseline(
   provider: EvaluationProvider,
   input: {
@@ -252,6 +255,14 @@ async function runBaseline(
         path,
       };
       steps.push(step);
+      // A harness step's failure is only a code without what it printed. A
+      // hidden test's output stays out of the log: it reads the test.
+      if (!step.ok && name !== "private-test") {
+        const output = `${result.stdout}\n${result.stderr}`.trim();
+        input.log(
+          `${name} failed:\n${output.length <= STEP_LOG_CHARS ? output : `…${output.slice(-STEP_LOG_CHARS)}`}`,
+        );
+      }
       input.onStep?.(step, { stdout: result.stdout, stderr: result.stderr });
       return { step, stdout: result.stdout };
     };
@@ -322,7 +333,11 @@ async function runBaseline(
       `Evaluation job ${job.id} ${execution.state}, teardown ${execution.teardown}.`,
     );
   }
-  const verdict = baselineVerdict({ steps, privateTests });
+  const verdict = baselineVerdict({
+    steps,
+    privateTests,
+    declared: input.acceptanceTests.map((test) => test.expectedBaseline),
+  });
   return {
     baseline: {
       executions: [execution],

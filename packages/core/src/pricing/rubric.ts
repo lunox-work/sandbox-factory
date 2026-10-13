@@ -19,13 +19,17 @@
  * (`sandbox/project.ts`'s `specTests`). Its outcome steps, `Then` and the
  * `And`/`But` that follow it, are what that test has to check.
  *
- * The code is what makes the rubric whole. Without a measured profile (no
- * repository, or one still being measured) the rubric has no size of its
- * own and the model's size stands; the scenarios and test cases are still
- * scored, so the reviewer sees what the size will be built from. A bounty
+ * The scenarios and test cases size the bounty as soon as the spec is
+ * drafted; the code adds its points once it is measured. Without a measured
+ * profile (no repository, one still being measured, or one that failed) the
+ * size is the spec's alone. The code's factors are mostly costs, but a
+ * mature repository earns discounts (tests where the change lands, CI, a
+ * pattern to follow), so a measurement can move the size either way, and
+ * the total is what is kept from going below zero, not each dimension: a
+ * well-kept codebase makes a small spec cheaper, as it should. A bounty
  * may touch several of the workspace's repositories: each is profiled, the
- * code is scored over all of them together, and every repository beyond the
- * first adds the integration across them.
+ * code is scored over all of them together, and every repository beyond
+ * the first adds the integration across them.
  *
  * **This file is the rubric, and it is meant to be edited.** The points and
  * bands are at the top, the rules a reader sees are written from them, and
@@ -34,27 +38,41 @@
  * stored assessment can be recomputed and compared.
  */
 
-import type { PricedComplexity } from "../sizing.js";
+import {
+  PRICED_BOUNTY_COMPLEXITIES,
+  type BountyComplexity,
+  type PricedComplexity,
+} from "../sizing.js";
 import type { StubCoverage } from "../slice/manifest.js";
 import type { ComplexityProfile } from "./profile.js";
 import type { Scenario, SpecDraft } from "./spec.js";
 import {
+  hasOwnTest,
   SCENARIO_WEIGHT_DEFINITIONS,
   WEIGHT_POINTS,
+  withDefaultWeights,
   type ScenarioWeight,
 } from "./weight.js";
 
 /**
  * Stored with every assessment. `rubric-v2` scores the code over every
  * repository the work touches, and adds the integration across them.
+ * `rubric-v3` scores only the work's slice blockers, and at most
+ * `RUBRIC_LIMITS.blockers` of them: the slicer's own build failures, one
+ * missing config raising a compile error per line, no longer size a bounty.
+ * `rubric-v4` lets a small bounty stay small: a covered scenario (`weight.ts`)
+ * scores no points, no test case and no checks, tests in the touched
+ * modules are a discount in proportion to the modules that have them, CI
+ * is one, seams are capped as blockers are, and the total rather than each
+ * dimension is held at zero.
  */
-export const RUBRIC_VERSION = "rubric-v2";
+export const RUBRIC_VERSION = "rubric-v4";
 
 /** What each factor adds. Scenario weights are the step's (`weight.ts`). */
 export const RUBRIC_POINTS = {
   /** Per open question: an answer the contributor has to guess. */
   openQuestion: 1,
-  /** Per test case: every scenario is one test. */
+  /** Per test case: every scenario with a test of its own is one. */
   testCase: 1,
   /** Per outcome a test checks beyond its first. */
   extraCheck: 1,
@@ -67,13 +85,21 @@ export const RUBRIC_POINTS = {
   extraRepository: 4,
   /** Per external service the sandbox mocks. */
   service: 2,
-  /** Per cut module the scope agent judged safe to mock. */
+  /** Per cut module the scope agent judged safe to mock, up to `RUBRIC_LIMITS.seams`. */
   seam: 1,
   /** Per touched module with no test file. */
   untestedModule: 2,
+  /**
+   * When every touched module has a test file: a discount, scaled down by
+   * the share of touched modules without one, so one untested module among
+   * many thins it rather than ending it.
+   */
+  tested: -2,
+  /** When every touched repository runs continuous integration: a discount. */
+  ci: -1,
   /** When a touched module holds schema migrations. */
   migrations: 4,
-  /** Per slice blocker. */
+  /** Per slice blocker in the work, up to `RUBRIC_LIMITS.blockers`. */
   blocker: 2,
   /** By how much of the cut-away code the slice's stubs keep. */
   stubs: { full: 0, partial: 1, "names-only": 2 } satisfies Record<
@@ -83,6 +109,44 @@ export const RUBRIC_POINTS = {
   /** When the repository has an analogous pattern to follow: a discount. */
   pattern: -2,
 } as const;
+
+/** How many of a factor's items are scored at most. */
+export const RUBRIC_LIMITS = {
+  /**
+   * Blockers: a slice is cut once, and the contributor works around what
+   * it could not cut, so past a couple more of them is no more work.
+   */
+  blockers: 2,
+  /**
+   * Seams: a web app's slice cuts a component per import, and the scope
+   * agent marks most of them mockable; past a few, one more contract to
+   * respect is no more work, and uncapped they alone made a one-line
+   * change L.
+   */
+  seams: 4,
+} as const;
+
+/**
+ * How far apart, in priced sizes, the rubric's size and the one in force
+ * may be before the rubric waits for a reviewer rather than taking over:
+ * two whole sizes (XS to M, S to L). A gap that wide means the model or
+ * the measurement has read the bounty wrong, and a reviewer says which.
+ */
+export const RUBRIC_REVIEW_DISTANCE = 4;
+
+/**
+ * Whether the rubric's size is too far from the one in force to take over
+ * without a reviewer. An unsized proposal has nothing to disagree with.
+ */
+export function rubricNeedsReview(
+  inForce: BountyComplexity,
+  size: PricedComplexity,
+): boolean {
+  if (inForce === "unsized") return false;
+  const position = (complexity: PricedComplexity) =>
+    PRICED_BOUNTY_COMPLEXITIES.indexOf(complexity);
+  return Math.abs(position(size) - position(inForce)) >= RUBRIC_REVIEW_DISTANCE;
+}
 
 /**
  * The slice's size, in KB of code to read, as points: under the first
@@ -186,15 +250,15 @@ export function rubricRules(
       id: "test-cases",
       dimension: "tests",
       label: "Test case",
-      scoring: `${P.testCase} each`,
-      why: "Every scenario becomes one acceptance test the work must pass.",
+      scoring: `${P.testCase} per scenario with a test of its own`,
+      why: "Every scenario above covered becomes one acceptance test the work must pass; a covered one is an assertion in a test another already needs.",
     },
     {
       id: "extra-checks",
       dimension: "tests",
       label: "Additional check",
       scoring: `${P.extraCheck} per outcome beyond a test's first`,
-      why: "Each Then, And or But after it is one more thing the test asserts.",
+      why: "Each Then, And or But after it is one more thing the test asserts. A covered scenario has no test, so its outcomes are not counted.",
     },
     {
       id: "context",
@@ -228,8 +292,8 @@ export function rubricRules(
       id: "seams",
       dimension: "code",
       label: "Mocked seams",
-      scoring: `${P.seam} each`,
-      why: "Code cut from the slice and stood in for: one more contract to respect blind.",
+      scoring: `${P.seam} each, at most ${RUBRIC_LIMITS.seams} counted`,
+      why: "Code cut from the slice and stood in for: one more contract to respect blind, until there are enough that one more is no harder.",
     },
     {
       id: "untested",
@@ -237,6 +301,20 @@ export function rubricRules(
       label: "Untested modules",
       scoring: `${P.untestedModule} per touched module with no tests`,
       why: "No guard rails where the change lands, so the harness has to be built too.",
+    },
+    {
+      id: "tested",
+      dimension: "code",
+      label: "Tests where the change lands",
+      scoring: `${signed(P.tested)} when every touched module has tests, in proportion when some do`,
+      why: "A harness already in place: the change is run against existing tests, and its own slot in beside them.",
+    },
+    {
+      id: "ci",
+      dimension: "code",
+      label: "Continuous integration",
+      scoring: `${signed(P.ci)} when every touched repository runs it`,
+      why: "The repository checks itself on every change, so a mistake is caught before a reviewer sees it.",
     },
     {
       id: "migrations",
@@ -256,8 +334,8 @@ export function rubricRules(
       id: "blockers",
       dimension: "code",
       label: "Slice blockers",
-      scoring: `${P.blocker} each`,
-      why: "Something the slice could not cut cleanly, which the contributor works around.",
+      scoring: `${P.blocker} each, at most ${RUBRIC_LIMITS.blockers} counted`,
+      why: "An import the slice could not follow, which the contributor works around. The slicer's own build failures are shown but not scored: they measure the tool, not the work.",
     },
     {
       id: "pattern",
@@ -272,7 +350,7 @@ export function rubricRules(
 /**
  * Whether the code has been measured, and if not, why:
  *
- * - `measured`: a profile is ready, and the rubric has a size;
+ * - `measured`: a profile is ready, and its points are in the size;
  * - `pending`: a profile has been asked for and is still being measured;
  * - `unavailable`: no repository, or profiling is not configured;
  * - `failed`: the profile failed, and a re-analysis asks again.
@@ -329,7 +407,11 @@ export interface RubricFactor {
 export interface RubricDimension {
   readonly id: RubricDimensionId;
   readonly label: string;
-  /** The factors summed, never below zero. Zero while unmeasured. */
+  /**
+   * The factors summed. Below zero when discounts outweigh costs, which
+   * only the code's can; the total is what never goes below zero. Zero
+   * while unmeasured.
+   */
   readonly points: number;
   /** False for the code while it has no profile. */
   readonly measured: boolean;
@@ -340,11 +422,13 @@ export interface RubricAssessment {
   readonly version: typeof RUBRIC_VERSION;
   /** Scenarios, test cases and code, in that order. */
   readonly dimensions: readonly RubricDimension[];
-  /** The measured dimensions' points. */
+  /** The measured dimensions' points, never below zero. */
   readonly points: number;
   readonly counts: {
     readonly scenarios: number;
+    /** The scenarios with a test of their own: all but the covered. */
     readonly testCases: number;
+    /** The outcomes those tests check; a covered scenario's are not counted. */
     readonly checks: number;
   };
   readonly code: {
@@ -352,7 +436,10 @@ export interface RubricAssessment {
     /** The spec revision the profile was measured for, when it was. */
     readonly specRevision: number | null;
   };
-  /** The band the points fall in; null until the code is measured. */
+  /**
+   * The band the points fall in, the code's among them once measured.
+   * Null only in assessments stored before the spec alone set a size.
+   */
   readonly size: PricedComplexity | null;
   /** Points still to add for the next band; null at XL or without a size. */
   readonly nextSizeIn: number | null;
@@ -406,7 +493,7 @@ function dimension(
   return {
     id,
     label,
-    points: measured ? Math.max(0, sum) : 0,
+    points: measured ? sum : 0,
     measured,
     factors,
   };
@@ -510,6 +597,7 @@ function combined(measured: readonly MeasuredRepository[]) {
     migrations: measured.some(
       ({ profile }) => profile.nonFunctional.migrations,
     ),
+    ci: measured.every(({ profile }) => profile.nonFunctional.ci),
     stubCoverage:
       STUB_ORDER[
         Math.max(
@@ -519,6 +607,13 @@ function combined(measured: readonly MeasuredRepository[]) {
         )
       ] ?? "full",
     blockers: sum(each(({ profile }) => profile.slice.blockers)),
+    // A profile from before the work's were counted apart scores them all,
+    // up to the limit, as it was measured.
+    workBlockers: sum(
+      each(
+        ({ profile }) => profile.slice.workBlockers ?? profile.slice.blockers,
+      ),
+    ),
     pattern:
       pattern?.profile.pattern == null
         ? null
@@ -528,9 +623,30 @@ function combined(measured: readonly MeasuredRepository[]) {
   };
 }
 
+function blockerEvidence(work: number, all: number): string {
+  const tool = Math.max(0, all - work);
+  const counted =
+    work > RUBRIC_LIMITS.blockers
+      ? `${plural(work, "blocker")}, ${RUBRIC_LIMITS.blockers} counted`
+      : work === 0
+        ? tool === 0
+          ? "None"
+          : "None in the work"
+        : plural(work, "blocker");
+  return tool === 0
+    ? counted
+    : `${counted}; ${tool} from the slicer's own build, not scored`;
+}
+
 function codeFactors(measured: readonly MeasuredRepository[]): RubricFactor[] {
   const P = RUBRIC_POINTS;
   const code = combined(measured);
+  const touched = code.touchedModules.length;
+  const testedModules = touched - code.untestedModules.length;
+  const tested = touched > 0 && testedModules === touched;
+  // Rounded to the nearest point, and never a negative zero.
+  const testedPoints =
+    touched === 0 ? 0 : -Math.round((-P.tested * testedModules) / touched) || 0;
   return [
     {
       id: "context",
@@ -562,8 +678,13 @@ function codeFactors(measured: readonly MeasuredRepository[]): RubricFactor[] {
     {
       id: "seams",
       label: "Mocked seams",
-      evidence: code.seams === 0 ? "None" : plural(code.seams, "seam"),
-      points: code.seams * P.seam,
+      evidence:
+        code.seams === 0
+          ? "None"
+          : code.seams > RUBRIC_LIMITS.seams
+            ? `${plural(code.seams, "seam")}, ${RUBRIC_LIMITS.seams} counted`
+            : plural(code.seams, "seam"),
+      points: Math.min(code.seams, RUBRIC_LIMITS.seams) * P.seam,
     },
     {
       id: "untested",
@@ -573,6 +694,26 @@ function codeFactors(measured: readonly MeasuredRepository[]): RubricFactor[] {
           ? "None"
           : `${code.untestedModules.length}${named(code.untestedModules)}`,
       points: code.untestedModules.length * P.untestedModule,
+    },
+    {
+      id: "tested",
+      label: "Tests where the change lands",
+      evidence: tested
+        ? `Every touched module (${touched})`
+        : touched === 0
+          ? "No touched module"
+          : `${testedModules} of ${plural(touched, "touched module")}`,
+      points: testedPoints,
+    },
+    {
+      id: "ci",
+      label: "Continuous integration",
+      evidence: code.ci
+        ? "Runs on every change"
+        : measured.length > 1
+          ? "Not in every repository"
+          : "None",
+      points: code.ci ? P.ci : 0,
     },
     {
       id: "migrations",
@@ -589,8 +730,8 @@ function codeFactors(measured: readonly MeasuredRepository[]): RubricFactor[] {
     {
       id: "blockers",
       label: "Slice blockers",
-      evidence: code.blockers === 0 ? "None" : plural(code.blockers, "blocker"),
-      points: code.blockers * P.blocker,
+      evidence: blockerEvidence(code.workBlockers, code.blockers),
+      points: Math.min(code.workBlockers, RUBRIC_LIMITS.blockers) * P.blocker,
     },
     {
       id: "pattern",
@@ -602,20 +743,26 @@ function codeFactors(measured: readonly MeasuredRepository[]): RubricFactor[] {
 }
 
 export function assessRubric(input: RubricInput): RubricAssessment {
-  const weightPoints = input.weightPoints ?? WEIGHT_POINTS;
+  const weightPoints = withDefaultWeights(input.weightPoints);
   const { scenarios } = input.spec;
-  const checks = scenarios.reduce((sum, item) => sum + checksOf(item), 0);
-  const extraChecks = scenarios.reduce(
+  // A covered scenario has no test of its own, and its outcomes are
+  // assertions in another's: it scores nothing in this dimension at all.
+  const tested = scenarios.filter(({ weight }) => hasOwnTest(weight));
+  const testCases = tested.length;
+  const checks = tested.reduce((sum, item) => sum + checksOf(item), 0);
+  const extraChecks = tested.reduce(
     (sum, item) => sum + Math.max(0, checksOf(item) - 1),
     0,
   );
+  const coveredChecks = scenarios
+    .filter(({ weight }) => !hasOwnTest(weight))
+    .reduce((sum, item) => sum + checksOf(item), 0);
 
   // Measured code is at least one repository's; none is no code to score.
   const code: RubricCode =
     input.code.status === "measured" && input.code.profiles.length === 0
       ? { status: "unavailable" }
       : input.code;
-  const measured = code.status === "measured";
   const dimensions = [
     dimension(
       "scenarios",
@@ -625,13 +772,19 @@ export function assessRubric(input: RubricInput): RubricAssessment {
       {
         id: "test-cases",
         label: "Test cases",
-        evidence: `${plural(scenarios.length, "scenario")}, one test each`,
-        points: scenarios.length * RUBRIC_POINTS.testCase,
+        evidence:
+          testCases === scenarios.length
+            ? `${plural(scenarios.length, "scenario")}, one test each`
+            : `${plural(testCases, "test")} for ${plural(scenarios.length, "scenario")}; ${scenarios.length - testCases} covered by the others'`,
+        points: testCases * RUBRIC_POINTS.testCase,
       },
       {
         id: "extra-checks",
         label: "Additional checks",
-        evidence: `${plural(checks, "outcome")} checked in all`,
+        evidence:
+          coveredChecks === 0
+            ? `${plural(checks, "outcome")} checked in all`
+            : `${plural(checks, "outcome")} checked in all; ${coveredChecks} more in the covered scenarios`,
         points: extraChecks * RUBRIC_POINTS.extraCheck,
       },
     ]),
@@ -639,19 +792,21 @@ export function assessRubric(input: RubricInput): RubricAssessment {
       ? dimension("code", codeFactors(code.profiles))
       : dimension("code", [], false),
   ];
-  const points = dimensions.reduce((sum, { points }) => sum + points, 0);
-  const size = measured ? rubricSize(points) : null;
+  // Discounts can outweigh the code's costs, never the whole bounty.
+  const points = Math.max(
+    0,
+    dimensions.reduce((sum, { points }) => sum + points, 0),
+  );
+  const size = rubricSize(points);
   const next =
-    size === null
-      ? undefined
-      : RUBRIC_BANDS[RUBRIC_BANDS.findIndex((band) => band.size === size) + 1];
+    RUBRIC_BANDS[RUBRIC_BANDS.findIndex((band) => band.size === size) + 1];
   return {
     version: RUBRIC_VERSION,
     dimensions,
     points,
     counts: {
       scenarios: scenarios.length,
-      testCases: scenarios.length,
+      testCases,
       checks,
     },
     code: {
@@ -664,7 +819,23 @@ export function assessRubric(input: RubricInput): RubricAssessment {
   };
 }
 
-/** Why an assessment has no size of its own, by its code's status. */
+/**
+ * What the code has yet to say of a size, by its status: nothing once
+ * measured; else the size is the spec's alone, and the code may raise it.
+ */
+const UNMEASURED: Record<RubricCodeStatus, string> = {
+  measured: "",
+  pending: " The code is still being measured, and may move it.",
+  unavailable:
+    " The work touches no repository whose code can be measured, so the spec alone sets it.",
+  failed:
+    " The code could not be measured, so the spec alone sets it. Re-analyze to try again.",
+};
+
+/**
+ * Why an assessment stored before the spec alone set a size has none, by
+ * its code's status.
+ */
 const UNSIZED: Record<RubricCodeStatus, string> = {
   measured: "",
   pending:
@@ -682,7 +853,11 @@ const UNSIZED: Record<RubricCodeStatus, string> = {
 export function describeRubric(assessment: RubricAssessment): string {
   const parts = assessment.dimensions
     .filter(({ measured }) => measured)
-    .map(({ label, points }) => `${points} from ${label.toLowerCase()}`);
+    .map(({ label, points }) =>
+      points < 0
+        ? `${-points} off for ${label.toLowerCase()}`
+        : `${points} from ${label.toLowerCase()}`,
+    );
   const total = `${plural(assessment.points, "point")}: ${parts.join(", ")}.`;
   if (assessment.size === null)
     return `${total} ${UNSIZED[assessment.code.status]}`;
@@ -693,5 +868,5 @@ export function describeRubric(assessment: RubricAssessment): string {
     assessment.nextSizeIn === null
       ? ""
       : ` ${plural(assessment.nextSizeIn, "more point")} would make it ${rubricSize(assessment.points + assessment.nextSizeIn)}.`;
-  return `${total} ${range} points is ${assessment.size}.${next}`;
+  return `${total} ${range} points is ${assessment.size}.${next}${UNMEASURED[assessment.code.status]}`;
 }

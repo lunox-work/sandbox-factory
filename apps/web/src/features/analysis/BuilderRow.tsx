@@ -204,8 +204,8 @@ export function BuilderRow({
 
 /**
  * A running builder, and how long it has run. DeepWiki's model writes for
- * minutes, so it also says how long that usually is; the rest are done in
- * seconds.
+ * most of a minute, so it also says how long that usually is; the rest are
+ * done in seconds.
  */
 /**
  * The orb follows what each builds: a graph wires itself, the wiki is
@@ -219,7 +219,7 @@ const RUNNING: Record<
   dependency_cruiser: { line: "Building", orb: "connecting" },
   deepwiki: {
     line: "Writing the wiki",
-    expected: "usually ~8 min",
+    expected: "usually ~1 min",
     orb: "composing",
   },
   abstractions: { line: "Building", orb: "shaping" },

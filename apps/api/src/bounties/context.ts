@@ -11,7 +11,8 @@
  * which may be older than its head, and each repository at its own.
  *
  * - `GET .../bounties/:id/context` says where each source stands against
- *   its latest version: Jira's issue read for its `updated`; for GitHub,
+ *   its latest version: Jira's issue read for its `updated`, and once that
+ *   has moved, for what a sync would keep; for GitHub,
  *   whether the repositories built now are the ones it read.
  * - `POST .../bounties/:id/context/jira/sync` reads the issue's context and
  *   its text, which the bounty takes as a run's read does.
@@ -21,9 +22,9 @@
  *   the commits picked, every other repository staying where it is held,
  *   under one set of caps.
  *
- * Any member may read, sync and pin, as any member may link a source. None
- * is held back by an approved scope, as Jira's text is not: the steps after
- * it show what they were made with instead.
+ * Any member may read, sync and pin, as any member may link a source. An
+ * approved scope holds its context as it holds its text: a sync or a pick is
+ * refused until it is unapproved. Reading where each source stands is not.
  */
 
 import type {
@@ -38,6 +39,7 @@ import type {
   StoredBounty,
   StoredBountyContext,
 } from "@sandbox-factory/db";
+import { jiraContentChange } from "@sandbox-factory/db";
 import { GithubNotFound } from "@sandbox-factory/github";
 import { JiraApiError, JiraAuthError } from "@sandbox-factory/jira";
 import {
@@ -56,6 +58,7 @@ import {
   contextDocumentsAcross,
   contextKeywords,
   keptDocumentsAligned,
+  scopeApproved,
   type GithubContext,
   type GithubRepositoryContext,
   type JiraContext,
@@ -71,7 +74,7 @@ import {
   repositoriesRevision,
   WORKSPACE_REPOSITORIES,
 } from "./held-context.js";
-import { detail, type BountyRouteOptions } from "./routes.js";
+import { detail, SCOPE_APPROVED, type BountyRouteOptions } from "./routes.js";
 
 /** Reads one repository's files by Git object id. */
 export interface DocumentReader {
@@ -163,8 +166,11 @@ function needsReconnect(error: unknown): boolean {
 
 /**
  * Where the bounty's Jira issue stands against its latest sync. The issue
- * is read for its `updated` when the bounty holds context from it, the one
- * call this costs, and `live` is used instead when the caller just read it.
+ * is read for its `updated` when the bounty holds context from it, and
+ * `live` is used instead when the caller just read it. A later `updated` is
+ * only a hint: a comment, a watcher or this workspace's own sizing comment
+ * moves it too. So the issue is then read as a sync would read it, and is
+ * ahead only when its fields or its text say something the bounty does not.
  */
 async function jiraStatus(
   options: BountyContextOptions,
@@ -207,10 +213,8 @@ async function jiraStatus(
         latest: synced,
       });
     }
-    try {
-      liveRevision = (await ready.client.issue(link.externalId)).updated;
-    } catch (error) {
-      return status("unavailable", {
+    const unreadable = (error: unknown) =>
+      status("unavailable", {
         reason: needsReconnect(error)
           ? "reconnect"
           : error instanceof JiraApiError && error.isNotFound
@@ -219,6 +223,29 @@ async function jiraStatus(
         linked,
         latest: synced,
       });
+    try {
+      liveRevision = (await ready.client.issue(link.externalId)).updated;
+    } catch (error) {
+      return unreadable(error);
+    }
+    if (liveRevision !== null && later(liveRevision, latest.jira.revision)) {
+      try {
+        const [context, spec] = await Promise.all([
+          ready.client.issueContext(link.externalId),
+          ready.client.issueSpec(link.externalId),
+        ]);
+        const said =
+          contextHash({ source: "jira", content: context }) !==
+            latest.jira.contentHash ||
+          jiraContentChange(bounty, specContent(spec)) !== null;
+        return status(said ? "ahead" : "current", {
+          linked,
+          liveRevision,
+          latest: synced,
+        });
+      } catch (error) {
+        return unreadable(error);
+      }
     }
   }
   return status(
@@ -227,6 +254,21 @@ async function jiraStatus(
       : "current",
     { linked, liveRevision, latest: synced },
   );
+}
+
+/** The text an issue's spec gives its bounty, as a run's read takes it. */
+function specContent(spec: {
+  readonly summary: string;
+  readonly descriptionText: string;
+  readonly components: readonly string[];
+  readonly inputTruncated: boolean;
+}) {
+  return {
+    title: spec.summary,
+    description: spec.descriptionText,
+    components: spec.components,
+    inputTruncated: spec.inputTruncated,
+  };
 }
 
 /**
@@ -404,12 +446,11 @@ async function syncJira(
       : refused(502, "jira_failed", "Jira could not be read.");
   }
   // The text a run's read would write; nothing when it already says it.
-  await options.bounties.refreshFromJira(organizationId, bounty.id, {
-    title: spec.summary,
-    description: spec.descriptionText,
-    components: spec.components,
-    inputTruncated: spec.inputTruncated,
-  });
+  await options.bounties.refreshFromJira(
+    organizationId,
+    bounty.id,
+    specContent(spec),
+  );
   const recorded = await options.contexts.record(
     organizationId,
     bounty.id,
@@ -640,6 +681,9 @@ export function mountBountyContextRoutes<Env extends BountyContextAppEnv>(
     const bountyId = c.req.param("id");
     const bounty = await options.bounties.get(organizationId, bountyId);
     if (bounty === null) return c.json({ error: "Not found" }, 404);
+    // A sync takes the issue's text and context, which an approved scope
+    // is held from.
+    if (scopeApproved(bounty)) return c.json(SCOPE_APPROVED, 409);
     const result = await syncJira(
       options,
       organizationId,
@@ -700,6 +744,7 @@ export function mountBountyContextRoutes<Env extends BountyContextAppEnv>(
     const bountyId = c.req.param("id");
     const bounty = await options.bounties.get(organizationId, bountyId);
     if (bounty === null) return c.json({ error: "Not found" }, 404);
+    if (scopeApproved(bounty)) return c.json(SCOPE_APPROVED, 409);
     const result = await syncGithub(
       options,
       organizationId,

@@ -132,7 +132,7 @@ function TabsList({
         // overflowed the list, and a list that scrolls sideways (overflow-x
         // makes y scroll too) drew a scrollbar for that one pixel.
         line &&
-          "text-muted-foreground relative flex h-10 w-full items-stretch gap-5 shadow-[inset_0_-1px_0_var(--border)]",
+          "text-muted-foreground relative flex h-10 w-full items-stretch gap-1 shadow-[inset_0_-1px_0_var(--border)]",
         !thumbed && "inline-flex w-fit items-center",
         className,
       )}
@@ -181,8 +181,11 @@ function TabsTrigger({
         "transition-[color,scale] duration-200 ease-out active:scale-[0.97] motion-reduce:transition-none",
         "focus-visible:ring-ring/40 focus-visible:ring-[3px] focus-visible:outline-none disabled:pointer-events-none disabled:opacity-50",
         "[&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
-        // On a rule, as wide as its label, which the bar underlines.
-        "group-data-[variant=line]/tabs:flex-none group-data-[variant=line]/tabs:rounded-sm group-data-[variant=line]/tabs:px-0.5",
+        // On a rule, a tab is a padded face of its own, lit on hover, and
+        // the bar spans all of it: drawn under the label alone, the bar read
+        // as an underline on a word rather than as the tab that is chosen.
+        // Its face stops short of the rule, so the bar is left to sit on it.
+        "group-data-[variant=line]/tabs:my-1 group-data-[variant=line]/tabs:h-auto group-data-[variant=line]/tabs:flex-none group-data-[variant=line]/tabs:px-2.5 group-data-[variant=line]/tabs:hover:bg-muted",
         className,
       )}
       {...props}

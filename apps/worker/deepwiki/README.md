@@ -21,6 +21,18 @@ a service to ask. See the `deepwiki` and `ollama` services in
 - `patches/litellm.py`: the image's LiteLLM client with a constructor that
   works against the adalflow the image ships; the compose file mounts it
   over the original. Remove it once upstream constructs cleanly.
+- `patches/wiki_refresh.py` and `patches/wiki_init.py`: the image indexes a
+  repository once and never refreshes its clone, so every later wiki
+  described the first commit it saw. Mounted as
+  `api/services/wiki/refresh.py` and over the package's `__init__.py`, they
+  fetch the default branch's head before each wiki task and, when it moved,
+  re-index, re-embedding only chunks whose file and text changed. The token
+  goes to git in a header from the environment and is no longer left in the
+  clone's remote URL. Remove them once upstream refreshes its clones.
+
+Pages are written eight at a time (`DEEPWIKI_WIKI_PAGE_CONCURRENCY` in the
+compose file) rather than one by one; the worker asks for a concise wiki
+(four to six pages), so a wiki takes about a minute rather than eight.
 
 The repository read token is sent to the service with each task, so this
 profile is for a trusted, local deployment only.

@@ -184,7 +184,7 @@ function respecRun(
     },
     rateCard,
     requestedModel: "model",
-    promptVersion: "revise-v2",
+    promptVersion: "revise-v3",
     planned: [],
     outcomes: [],
     progress: null,
@@ -581,8 +581,8 @@ test("a proposal the rubric sized is priced by the rubric's score of the changed
     amountMinor: number;
   };
   // 3 + 1 for the trimmed spec and its question, 2 for its tests, 1 + 3 + 4
-  // for the code: 14, S+. The step alone would have said S.
-  assert.equal(input.rubric.points, 14);
+  // - 2 - 1 for the code: 11, S+. The step alone would have said S.
+  assert.equal(input.rubric.points, 11);
   assert.equal(input.complexity, "S+");
   assert.equal(input.step.complexity, "S");
   assert.equal(input.amountMinor, 150);
@@ -679,7 +679,7 @@ test("an expansion adds the model's new scenarios and the size climbs by the ste
   assert.equal(input.spec["origin"], "expand");
   assert.equal(input.spec["instruction"], "More permission scenarios");
   assert.equal(input.spec["actualModel"], "claude-test");
-  assert.equal(input.spec["promptVersion"], "revise-v2");
+  assert.equal(input.spec["promptVersion"], "revise-v3");
   // 3 points sized, 11 now: two half steps from S.
   assert.equal(input.step.complexity, "M");
   assert.deepEqual(
@@ -1108,7 +1108,7 @@ test("a spec change starts a respec run on the proposal's own card", async () =>
       selection: state.created[0]?.["selection"],
       rateCard,
       requestedModel: "model",
-      promptVersion: "revise-v2",
+      promptVersion: "revise-v3",
     },
   ]);
   assert.deepEqual(state.starts, ["brn_respec"]);

@@ -148,6 +148,32 @@ export function resolveScope(input: ScopeInput): ScopeRecord {
   );
   const dependencies: ResolvedDependency[] = [];
   for (const item of manifest.requiredBuildInputs.packages) {
+    // The repository's own package is never fetched by its name: the
+    // registry does not have it, or has someone else's under that name.
+    if (item.workspace === true) {
+      if (choices[item.name] === "approved-package") {
+        dependencies.push({
+          name: item.name,
+          kind: "package",
+          version: item.version,
+          resolution: "unresolved",
+          detail: "A package of this repository, not one the registry has.",
+        });
+        blockers.push({
+          code: "dependency_unresolved",
+          detail: `${item.name} is a package of this repository and cannot be installed; mock it.`,
+        });
+      } else
+        dependencies.push({
+          name: item.name,
+          kind: "package",
+          version: item.version,
+          resolution: "runtime-mock",
+          detail:
+            "A package of this repository, replaced by a generated recording mock package.",
+        });
+      continue;
+    }
     const resolution: DependencyResolution =
       choices[item.name] ??
       (services.has(item.name) ? "runtime-mock" : "approved-package");

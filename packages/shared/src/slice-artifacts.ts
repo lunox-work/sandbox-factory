@@ -103,6 +103,7 @@ export const sliceManifestSchema = z.object({
         name: z.string(),
         version: z.string().nullable(),
         declaredIn: z.string().nullable(),
+        workspace: z.literal(true).optional(),
       }),
     ),
   }),

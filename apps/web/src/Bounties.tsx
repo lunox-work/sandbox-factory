@@ -55,6 +55,7 @@ import {
   Loader2,
   Maximize2,
   Plus,
+  Scissors,
   Sparkles,
 } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
@@ -139,6 +140,7 @@ import {
   useBountyContext,
 } from "./features/bounties/BountyContext";
 import { BountyProposal } from "./features/bounties/BountyProposal";
+import { usePrefetchProposal } from "./features/bounties/queries";
 import { BoardFilter } from "./features/bounties/BoardScope";
 import {
   CategoryFilter,
@@ -978,6 +980,7 @@ function OpenBounty({
                 organizationId={organization.id}
                 proposalId={proposalId}
                 bountyKey={bounty.jira?.key}
+                bountyUrl={bounty.jira?.url ?? undefined}
                 bountyTitle={bounty.title}
                 canDecide={manages}
                 scopeVersion={bounty.stages.price?.scopeVersion ?? null}
@@ -1327,10 +1330,14 @@ function usePropose(
 ) {
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // A proposal this page watched being made, which fades in where its
+  // parts were rather than appearing as one read on opening would.
+  const [landed, setLanded] = useState(false);
   // The run sizing it, as last read: what it has made so far shows.
   const [run, setRun] = useState<BountyRunDto | undefined>(undefined);
   const controller = useRef<AbortController | null>(null);
   useEffect(() => () => controller.current?.abort(), []);
+  const prefetch = usePrefetchProposal(organizationId);
   const start = async (following?: string) => {
     controller.current?.abort();
     const current = new AbortController();
@@ -1347,9 +1354,17 @@ function usePropose(
       },
     );
     if (current.signal.aborted) return;
+    /*
+      The parts shown as they landed stay until the proposal is read, so
+      they give way to it in one step rather than to a loading line first.
+    */
+    if (result.ok) await prefetch(result.proposalId);
+    if (current.signal.aborted) return;
     setPending(false);
-    if (result.ok) onOpenProposal(result.proposalId);
-    else setError(result.error);
+    if (result.ok) {
+      setLanded(true);
+      onOpenProposal(result.proposalId);
+    } else setError(result.error);
   };
   /*
     A sizing already in flight, as after a reload mid-run: followed as if
@@ -1377,7 +1392,7 @@ function usePropose(
     void start(inFlight);
     // `start` is remade each render; the run's id is what matters here.
   }, [inFlight, pending]);
-  return { pending, error, run, start: () => start() };
+  return { pending, error, run, landed, start: () => start() };
 }
 
 /** Said when a save lost to someone else's, and the field now shows theirs. */
@@ -1538,6 +1553,9 @@ function BountyDetail({
     unlinked && connectedTouched.length === 1 && touchedRepo !== undefined
       ? touchedRepo
       : null;
+  // A sandbox not made yet is made with its first version: sliced from the
+  // one repository its sizing touches, as the API cuts it, else generated.
+  const firstSliced = connectedTouched.length === 1;
   // Either part is kept with the bounty, so either one keeps it.
   const removable = proposal === null && sandbox === null;
 
@@ -1580,7 +1598,13 @@ function BountyDetail({
   */
   const proposalPart =
     proposal !== null ? (
-      proposal(priceContext)
+      propose.landed ? (
+        <div className="animate-in fade-in slide-in-from-bottom-1 duration-500 ease-out motion-reduce:animate-none">
+          {proposal(priceContext)}
+        </div>
+      ) : (
+        proposal(priceContext)
+      )
     ) : propose.pending ? (
       /*
         Being sized: each part of the proposal as the model returns it,
@@ -1784,7 +1808,7 @@ function BountyDetail({
     A page's sandbox: its version's card, then its slice and where
     submissions are held, in ruled sections; a panel lays its version out
     in a section of its own. With no sandbox, the card says so and offers
-    the way to make one.
+    its first version, which makes it.
   */
   const sandboxPart =
     sandbox !== null ? (
@@ -1865,28 +1889,40 @@ function BountyDetail({
         error={sandboxError}
         action={
           managesSandbox && (
-            <DisabledReason reason={sandboxPending ? null : sandboxHeld}>
+            <DisabledReason
+              reason={
+                sandboxPending
+                  ? null
+                  : (sandboxHeld ??
+                    (repos.loading ? "Reading its repositories…" : null))
+              }
+            >
               <Button
                 type="button"
-                disabled={sandboxPending || sandboxHeld !== null}
+                disabled={
+                  sandboxPending || sandboxHeld !== null || repos.loading
+                }
                 onClick={() => {
                   setSandboxPending(true);
                   setSandboxError(null);
-                  // Cut from the repository the bounty's sizing said its work
-                  // touches; with none, its versions are generated.
-                  void bounties.createSandbox(bounty.id).then((failure) => {
+                  // Made with its first version: nothing about the sandbox
+                  // itself is chosen. A version refused after it was made
+                  // leaves it made, so the bounty is read again either way.
+                  void bounties.startSandbox(bounty.id).then((failure) => {
                     setSandboxPending(false);
-                    if (failure === null) onReload();
-                    else setSandboxError(failure);
+                    setSandboxError(failure);
+                    onReload();
                   });
                 }}
               >
                 {sandboxPending ? (
                   <Loader2 className="animate-spin" />
+                ) : firstSliced ? (
+                  <Scissors />
                 ) : (
-                  <Box />
+                  <Sparkles />
                 )}
-                Create sandbox
+                {firstSliced ? "Slice" : "Generate"}
               </Button>
             </DisabledReason>
           )
@@ -1895,9 +1931,11 @@ function BountyDetail({
         <NoVersion title="No sandbox yet">
           {readOnly
             ? undefined
-            : canManage
-              ? "Create one to slice the task contributors work in."
-              : "An owner or admin can create one."}
+            : !canManage
+              ? "An owner or admin can make one."
+              : firstSliced && touchedRepo !== undefined
+                ? `Slice one from ${touchedRepo.fullName}: the scope agent's pick of the files the task needs is cut down to the task, then built and checked.`
+                : "Generate one from the bounty: an agent writes a starter for the task, then it is built and checked."}
         </NoVersion>
       </StepVersionCard>
     );
@@ -2028,7 +2066,7 @@ function BountyDetail({
             <TabsList
               variant="line"
               aria-label="Steps"
-              className="gap-3 overflow-x-auto sm:gap-4"
+              className="overflow-x-auto"
             >
               <StepTriggers
                 stages={bounty.stages}
@@ -2180,7 +2218,7 @@ function BountyDetail({
                 remedy={
                   unlinked
                     ? "Generate a new version to build from the latest price."
-                    : "A new version sliced from its repository would build from the latest price; slicing is not available from this page yet."
+                    : "Slice a new version to build from the latest price."
                 }
                 onOpen={selectPageTab}
               />
@@ -2192,7 +2230,7 @@ function BountyDetail({
                   remedy={
                     unlinked
                       ? "Generate a new version to build with the latest context."
-                      : "A new version would freeze the latest context; slicing is not available from this page yet."
+                      : "Slice a new version to build with the latest context."
                   }
                 />
               )}

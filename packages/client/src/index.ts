@@ -36,8 +36,11 @@ import {
   sandboxFileListSchema,
   sandboxListSchema,
   sandboxResponseSchema,
+  sandboxSliceResponseSchema,
   sandboxVersionListSchema,
   sandboxVersionResponseSchema,
+  sliceVersionResponseSchema,
+  startSandboxResponseSchema,
 } from "@sandbox-factory/shared";
 import type {
   BuildAllInput,
@@ -275,6 +278,19 @@ export class SandboxClient extends GithubAnalysisClient {
     ).sandbox;
   }
   /**
+   * Makes a bounty's sandbox and begins its first version in one step:
+   * sliced from the repository its sizing touches, else generated from the
+   * bounty. A refusal after the sandbox is made leaves it made.
+   */
+  async startSandbox(owner: string, input: CreateSandboxInput) {
+    return startSandboxResponseSchema.parse(
+      await this.request(`${this.#sandboxes(owner)}/start`, {
+        method: "POST",
+        body: JSON.stringify(input),
+      }),
+    );
+  }
+  /**
    * Links a sandbox made without a repository to the one its bounty's
    * sizing has since said the work touches.
    */
@@ -307,6 +323,31 @@ export class SandboxClient extends GithubAnalysisClient {
     return generateStarterResponseSchema.parse(
       await this.request(
         `${this.#sandboxes(owner)}/${encodeURIComponent(sandboxId)}/starter`,
+        { method: "POST" },
+      ),
+    );
+  }
+  /**
+   * Where a linked sandbox's next slice stands: the slice its bounty's
+   * sizing took of the approved spec, which a version is cut from.
+   */
+  async sandboxSlice(owner: string, sandboxId: string, signal?: AbortSignal) {
+    return sandboxSliceResponseSchema.parse(
+      await this.request(
+        `${this.#sandboxes(owner)}/${encodeURIComponent(sandboxId)}/slice`,
+        { signal },
+      ),
+    ).slice;
+  }
+  /**
+   * Slices a version for a linked sandbox: once its sizing's slice is
+   * ready, a draft is cut from it and built; until then, the slice is
+   * asked for and answered with where it stands.
+   */
+  async sliceSandboxVersion(owner: string, sandboxId: string) {
+    return sliceVersionResponseSchema.parse(
+      await this.request(
+        `${this.#sandboxes(owner)}/${encodeURIComponent(sandboxId)}/slice`,
         { method: "POST" },
       ),
     );

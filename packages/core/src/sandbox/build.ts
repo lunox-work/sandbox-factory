@@ -171,6 +171,12 @@ export interface BaselineReport {
 export function baselineVerdict(input: {
   readonly steps: readonly BaselineStep[];
   readonly privateTests: readonly PrivateTestOutcome[];
+  /**
+   * What each declared hidden test is expected to do, run or not: a step
+   * that fails first leaves `privateTests` empty without the version
+   * lacking hidden tests. The outcomes' expectations when absent.
+   */
+  readonly declared?: readonly ("pass" | "fail")[];
 }): { ok: boolean; reasons: string[] } {
   const reasons: string[] = [];
   for (const step of input.steps)
@@ -182,9 +188,11 @@ export function baselineVerdict(input: {
       );
   // A submission is judged by the hidden tests that fail before the fix,
   // so a sandbox with none could never accept one (`submissionVerdict`).
-  if (!input.privateTests.some((outcome) => outcome.expected === "fail"))
+  const declared =
+    input.declared ?? input.privateTests.map((outcome) => outcome.expected);
+  if (!declared.includes("fail"))
     reasons.push(
-      input.privateTests.length === 0
+      declared.length === 0
         ? "No hidden test judges a submission."
         : "No hidden test is expected to fail before the fix.",
     );

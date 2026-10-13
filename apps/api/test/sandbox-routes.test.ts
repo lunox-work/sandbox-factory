@@ -5,6 +5,7 @@ import { Hono } from "hono";
 import type {
   GithubRepoSummary,
   StoredAnalysisRun,
+  StoredBountyProfile,
   StoredArtifact,
   StoredSandbox,
   StoredSandboxVersion,
@@ -316,6 +317,25 @@ const source: StoredVersionSource = {
   updatedAt: stamp,
 };
 
+/** The sizing's profile of `bpr_1`'s spec revision 2 in `ghr_1`, sliced. */
+const readyProfile: StoredBountyProfile = {
+  id: "bpf_1",
+  organizationId: "org_1",
+  proposalId: "bpr_1",
+  specRevision: 2,
+  specHash: "s".repeat(64),
+  snapshotId: "rsn_1",
+  repository: "acme/ghr_1",
+  status: "ready",
+  errorCode: null,
+  runErrorCode: null,
+  scopeRunId: "arn_scope",
+  sliceRunId: "arn_slice",
+  profile: null,
+  createdAt: stamp,
+  updatedAt: stamp,
+};
+
 /** What a built version's run wrote, some of it not text or too big to show. */
 const builtFiles = [
   { path: "project/src/index.ts", body: "export const sum = 1;\n" },
@@ -405,6 +425,16 @@ function fixture(
      * bounty is read: the steps before are not what the rest test.
      */
     held: "scope" | "price";
+    /** The bounty is read, its scope approved, for a version's listing. */
+    bounty: boolean;
+    /** The sandbox has no versions yet. */
+    noVersions: boolean;
+    /**
+     * The sizing's profile of `bpr_1`'s spec revision 2 in `ghr_1`, with
+     * what differs from a ready one; null for none. Unsaid, the routes
+     * have no profiles at all.
+     */
+    profile: Partial<StoredBountyProfile> | null;
   }> = {},
 ) {
   const published: { versionId: string; actor: string; expiresAt: string }[] =
@@ -417,6 +447,8 @@ function fixture(
   const enqueued: unknown[] = [];
   const removed: string[] = [];
   const linked: { id: string; sourceRepoId: string }[] = [];
+  const requested: unknown[] = [];
+  const made: { bountyId: string; sourceRepoId: string | null }[] = [];
   let launches = 0;
   const stored = {
     version: { ...version, frozenAt: overrides.frozen === true ? stamp : null },
@@ -481,7 +513,7 @@ function fixture(
         owner: string,
         input: { bountyId: string; sourceRepoId: string | null },
       ) =>
-        input.bountyId === "bty_x"
+        made.push(input) && input.bountyId === "bty_x"
           ? { ok: false, reason: "bounty_not_found" }
           : input.bountyId === "bty_taken"
             ? { ok: false, reason: "bounty_has_sandbox" }
@@ -539,7 +571,8 @@ function fixture(
               ? { ok: false, reason: "no_source" }
               : { ok: false, reason: "not-found" };
       },
-      listVersions: async () => [version],
+      listVersions: async () =>
+        overrides.noVersions === true ? [] : [version],
       getVersion: async (owner: string, id: string) =>
         owner === "org_1" && id === "sbv_1" ? stored : null,
       updateDraft: async (_owner: string, id: string, patch: unknown) => {
@@ -669,9 +702,14 @@ function fixture(
     repos: { list: async () => workspaceRepos },
     bounties: {
       get: async (owner: string, id: string) =>
-        overrides.held === undefined || owner !== "org_1" || id !== "bty_1"
+        (overrides.held === undefined && overrides.bounty !== true) ||
+        owner !== "org_1" ||
+        id !== "bty_1"
           ? null
           : {
+              title: "Fix the\n  login",
+              description: "",
+              stack: ["TypeScript"],
               id,
               // Approved at version 1; held by the scope, it has moved on.
               version: overrides.held === "scope" ? 2 : 1,
@@ -743,6 +781,26 @@ function fixture(
             }
           : null,
     },
+    ...(overrides.profile === undefined
+      ? {}
+      : {
+          profiles: {
+            forRevision: async (
+              owner: string,
+              proposalId: string,
+              revision: number,
+            ) =>
+              overrides.profile === null ||
+              owner !== "org_1" ||
+              proposalId !== "bpr_1" ||
+              revision !== 2
+                ? []
+                : [{ ...readyProfile, ...overrides.profile }],
+          },
+          requestProfile: async (owner: string, input: unknown) => {
+            requested.push({ owner, input });
+          },
+        }),
     ensureWorker: async () => {
       launches++;
     },
@@ -788,6 +846,8 @@ function fixture(
     removed,
     published,
     linked,
+    requested,
+    made,
     launches: () => launches,
   };
 }
@@ -800,6 +860,7 @@ test("a sandbox is changed only on an approved scope and price; unpublishing is 
     const f = fixture("owner", { held });
     for (const [method, path, body] of [
       ["POST", "", { bountyId: "bty_1" }],
+      ["POST", "/start", { bountyId: "bty_1" }],
       ["PUT", "/sbx_1/source", undefined],
       ["POST", "/sbx_1/starter", undefined],
       ["POST", "/sbx_1/versions", { sliceRunId: "arn_slice" }],
@@ -819,6 +880,7 @@ test("a sandbox is changed only on an approved scope and price; unpublishing is 
         error,
       });
     }
+    assert.deepEqual(f.made, []);
     assert.deepEqual(f.created, []);
     assert.deepEqual(f.patches, []);
     assert.deepEqual(f.builds, []);
@@ -1798,6 +1860,13 @@ function starterFixture(
   };
   const options = {
     sandboxes: {
+      create: async (
+        owner: string,
+        input: { bountyId: string; sourceRepoId: string | null },
+      ) => ({
+        ok: true,
+        sandbox: { ...bare, organizationId: owner, ...input },
+      }),
       get: async (owner: string, id: string) =>
         owner === "org_1" && id === "sbx_1" && overrides.sandbox !== null
           ? { ...bare, ...overrides.sandbox }
@@ -2282,4 +2351,331 @@ test("a generated version freezes the context its bounty holds into its task", a
     plain.source.approvedTaskSha256,
     input.source.approvedTaskSha256,
   );
+});
+
+test("a linked sandbox's slice is its sizing's profile of the approved spec", async () => {
+  const read = async (
+    overrides: Parameters<typeof fixture>[1],
+    id = "sbx_1",
+    role = "owner",
+  ) => {
+    const response = await fixture(role, overrides).request(
+      "GET",
+      `/${id}/slice`,
+    );
+    return {
+      status: response.status,
+      slice: ((await response.json()) as { slice?: Record<string, unknown> })
+        .slice,
+    };
+  };
+  assert.deepEqual(await read({ profile: {} }), {
+    status: 200,
+    slice: {
+      status: "ready",
+      code: null,
+      reason: null,
+      specRevision: 2,
+      scopeRunId: "arn_scope",
+      sliceRunId: "arn_slice",
+    },
+  });
+  assert.equal(
+    (await read({ profile: { status: "scoping", sliceRunId: null } })).slice
+      ?.status,
+    "scoping",
+  );
+  // Matched by the repository's name once the snapshot has moved on.
+  assert.equal(
+    (await read({ profile: { snapshotId: "rsn_newer" } })).slice?.status,
+    "ready",
+  );
+  assert.equal(
+    (
+      await read({
+        profile: { snapshotId: "rsn_other", repository: "acme/other" },
+      })
+    ).slice?.status,
+    "none",
+  );
+  const failed = await read({
+    profile: { status: "failed", errorCode: "scope_failed" },
+  });
+  assert.equal(failed.slice?.status, "failed");
+  assert.equal(failed.slice?.code, "scope_failed");
+  assert.match(String(failed.slice?.reason), /scope agent/);
+  assert.equal((await read({ profile: null })).slice?.status, "none");
+  assert.deepEqual(
+    (await read({ profile: {} }, "sbx_bare")).slice?.code,
+    "no_source",
+  );
+  assert.deepEqual(
+    (await read({ profile: {}, held: "price" })).slice?.code,
+    "task_not_ready",
+  );
+  // Without the profiler, nothing is sliced from here.
+  assert.equal((await read({})).slice?.code, "unconfigured");
+  assert.equal((await read({ profile: {} }, "sbx_1", "member")).status, 403);
+  assert.equal((await read({ profile: {} }, "sbx_x")).status, 404);
+});
+
+test("slicing asks for the sizing's profile until its slice is ready", async () => {
+  const none = fixture("owner", { profile: null, bounty: true });
+  const asked = await none.request("POST", "/sbx_1/slice");
+  assert.equal(asked.status, 202);
+  assert.deepEqual(none.requested, [
+    {
+      owner: "org_1",
+      input: {
+        proposalId: "bpr_1",
+        specRevision: 2,
+        specHash: "s".repeat(64),
+        snapshotId: "rsn_1",
+      },
+    },
+  ]);
+  assert.deepEqual(await asked.json(), {
+    slice: {
+      status: "none",
+      code: null,
+      reason: null,
+      specRevision: 2,
+      scopeRunId: null,
+      sliceRunId: null,
+    },
+    version: null,
+    source: null,
+    run: null,
+  });
+
+  const scoping = fixture("owner", {
+    profile: { status: "scoping", sliceRunId: null },
+    bounty: true,
+  });
+  const waiting = await scoping.request("POST", "/sbx_1/slice");
+  assert.equal(waiting.status, 202);
+  assert.equal(
+    ((await waiting.json()) as { slice: { status: string } }).slice.status,
+    "scoping",
+  );
+  assert.deepEqual(scoping.requested, []);
+  assert.deepEqual(scoping.created, []);
+  assert.deepEqual(scoping.enqueued, []);
+
+  const failed = await fixture("owner", {
+    profile: { status: "failed", errorCode: "slice_failed" },
+    bounty: true,
+  }).request("POST", "/sbx_1/slice");
+  assert.equal(failed.status, 409);
+  assert.equal(
+    ((await failed.json()) as { code: string }).code,
+    "slice_failed",
+  );
+  const bare = await fixture("owner", { profile: {}, bounty: true }).request(
+    "POST",
+    "/sbx_bare/slice",
+  );
+  assert.equal(((await bare.json()) as { code: string }).code, "no_source");
+  const held = await fixture("owner", { profile: {}, held: "price" }).request(
+    "POST",
+    "/sbx_1/slice",
+  );
+  assert.equal(held.status, 409);
+  assert.equal(((await held.json()) as { code: string }).code, "step_held");
+  assert.equal(
+    (
+      await fixture("member", { profile: {}, bounty: true }).request(
+        "POST",
+        "/sbx_1/slice",
+      )
+    ).status,
+    403,
+  );
+});
+
+test("a ready slice is cut into a draft from the bounty and built", async () => {
+  const f = fixture("owner", { profile: {}, bounty: true, noVersions: true });
+  const response = await f.request("POST", "/sbx_1/slice");
+  assert.equal(response.status, 201);
+  const body = (await response.json()) as {
+    slice: { status: string };
+    version: { id: string };
+    source: { sliceRunId: string };
+    run: { id: string };
+  };
+  assert.equal(body.slice.status, "ready");
+  assert.equal(body.version.id, "sbv_1");
+  assert.equal(body.source.sliceRunId, "arn_slice");
+  assert.equal(body.run.id, "arn_build");
+  const input = f.created[0] as {
+    title: string;
+    specSummary: string;
+    complexity: string;
+    tags: string[];
+    source: {
+      sliceRunId: string;
+      approvedTask: ApprovedTaskSnapshot;
+      proposalVersion: number | null;
+    };
+  };
+  // One trimmed line, and the title again for a bounty with no description.
+  assert.equal(input.title, "Fix the login");
+  assert.equal(input.specSummary, "Fix the login");
+  assert.equal(input.complexity, "M");
+  assert.deepEqual(input.tags, ["TypeScript"]);
+  assert.equal(input.source.sliceRunId, "arn_slice");
+  assert.equal(input.source.approvedTask.spec?.specRevision, 2);
+  assert.equal(input.source.approvedTask.pricing?.status, "approved");
+  assert.deepEqual(
+    (f.enqueued[0] as { tool: string; params: { sliceRunId: string } }).tool,
+    "sandbox_build",
+  );
+  assert.deepEqual(f.builds[0], {
+    versionId: "sbv_1",
+    runId: "arn_build",
+    expected: "1".repeat(64),
+  });
+
+  // The newest draft cut from the same slice is built again, not cut twice.
+  const again = fixture("owner", { profile: {}, bounty: true });
+  assert.equal((await again.request("POST", "/sbx_1/slice")).status, 201);
+  assert.deepEqual(again.created, []);
+  assert.equal(again.enqueued.length, 1);
+
+  // One cut from another slice is not: a new draft is cut, which the
+  // store refuses here for a slice of another repository.
+  const other = fixture("owner", {
+    profile: { sliceRunId: "arn_other" },
+    bounty: true,
+  });
+  const mismatch = await other.request("POST", "/sbx_1/slice");
+  assert.equal(other.created.length, 1);
+  assert.equal(
+    ((await mismatch.json()) as { code: string }).code,
+    "slice_mismatch",
+  );
+});
+
+test("a slice whose scope has blockers is cut but not built", async () => {
+  const f = fixture("owner", {
+    profile: {},
+    bounty: true,
+    noVersions: true,
+    blocked: true,
+  });
+  const response = await f.request("POST", "/sbx_1/slice");
+  assert.equal(response.status, 201);
+  const body = (await response.json()) as {
+    source: { scope: { blockers: unknown[] } };
+    run: unknown;
+  };
+  assert.equal(body.run, null);
+  assert.equal(body.source.scope.blockers.length, 1);
+  assert.equal(f.created.length, 1);
+  assert.deepEqual(f.enqueued, []);
+});
+
+test("a sandbox is made with its first version sliced, when its sizing touches a repository", async () => {
+  const f = fixture("owner", { profile: {}, bounty: true, noVersions: true });
+  const response = await f.request("POST", "/start", { bountyId: "bty_1" });
+  assert.equal(response.status, 201);
+  const body = (await response.json()) as {
+    sandbox: { id: string; sourceRepoId: string | null };
+    slice: { status: string };
+    version: { id: string };
+    run: { id: string };
+  };
+  // Cut from the one its sizing touches, which nobody picks.
+  assert.deepEqual(f.made, [{ bountyId: "bty_1", sourceRepoId: "ghr_1" }]);
+  assert.deepEqual(
+    [body.sandbox.id, body.sandbox.sourceRepoId],
+    ["sbx_1", "ghr_1"],
+  );
+  assert.equal(body.slice.status, "ready");
+  assert.equal(body.version.id, "sbv_1");
+  assert.equal(body.run.id, "arn_build");
+  assert.equal(f.created.length, 1);
+
+  // A slice its sizing has not taken is asked for; the sandbox is made
+  // all the same, to follow it.
+  const none = fixture("owner", { profile: null, bounty: true });
+  const asked = await none.request("POST", "/start", { bountyId: "bty_1" });
+  assert.equal(asked.status, 201);
+  const pending = (await asked.json()) as {
+    sandbox: { id: string };
+    slice: { status: string };
+    version: unknown;
+    run: unknown;
+  };
+  assert.equal(pending.sandbox.id, "sbx_1");
+  assert.equal(pending.slice.status, "none");
+  assert.equal(pending.version, null);
+  assert.equal(pending.run, null);
+  assert.equal(none.requested.length, 1);
+
+  // A slice that failed is refused once the sandbox is made, which stays.
+  const failed = fixture("owner", {
+    profile: { status: "failed", errorCode: "slice_failed" },
+    bounty: true,
+  });
+  const refused = await failed.request("POST", "/start", {
+    bountyId: "bty_1",
+  });
+  assert.equal(refused.status, 409);
+  assert.equal(
+    ((await refused.json()) as { code: string }).code,
+    "slice_failed",
+  );
+  assert.equal(failed.made.length, 1);
+});
+
+test("starting a sandbox is an admin's, once per bounty, from its bounty alone", async () => {
+  const taken = await fixture().request("POST", "/start", {
+    bountyId: "bty_taken",
+  });
+  assert.equal(taken.status, 409);
+  assert.equal(
+    ((await taken.json()) as { code: string }).code,
+    "bounty_has_sandbox",
+  );
+  const gone = await fixture().request("POST", "/start", { bountyId: "bty_x" });
+  assert.equal(gone.status, 404);
+  for (const body of [{ bountyId: "bty_1", sourceRepoId: "ghr_1" }, {}])
+    assert.equal((await fixture().request("POST", "/start", body)).status, 400);
+  const member = fixture("member", { profile: {}, bounty: true });
+  assert.equal(
+    (await member.request("POST", "/start", { bountyId: "bty_1" })).status,
+    403,
+  );
+  assert.deepEqual(member.made, []);
+});
+
+test("a sandbox is made with its first version generated, when its sizing touches no repository", async () => {
+  const f = starterFixture();
+  const response = await f.request("POST", "/start", { bountyId: "bty_1" });
+  assert.equal(response.status, 201);
+  const body = (await response.json()) as {
+    sandbox: { id: string; sourceRepoId: string | null };
+    slice: unknown;
+    source: { origin: string };
+    run: { tool: string };
+  };
+  assert.deepEqual(
+    [body.sandbox.id, body.sandbox.sourceRepoId],
+    ["sbx_1", null],
+  );
+  assert.equal(body.slice, null);
+  assert.equal(body.source.origin, "starter");
+  assert.equal(body.run.tool, "sandbox_starter");
+  assert.equal(f.created.length, 1);
+  assert.equal(f.launches(), 1);
+
+  // A starter refused is said, with the sandbox made.
+  const limited = await starterFixture("owner", { limit: true }).request(
+    "POST",
+    "/start",
+    { bountyId: "bty_1" },
+  );
+  assert.equal(limited.status, 409);
+  assert.equal(((await limited.json()) as { code: string }).code, "run_limit");
 });

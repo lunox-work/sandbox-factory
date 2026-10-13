@@ -43,13 +43,21 @@ import type {
 import type { StoredAnalysisRun, StoredArtifact } from "@sandbox-factory/db";
 import { AnalysisError } from "../errors.js";
 import { snapshotOf } from "./adapter.js";
+import { workspacePackages } from "./compiler-config.js";
 import type {
   ArtifactFile,
   ToolAdapter,
   ToolInputs,
   ToolRunInput,
 } from "./adapter.js";
-import { SHIM_PATH, compileFixture, packageShim } from "./slice/fixture.js";
+import {
+  SHIM_PATH,
+  compileFixture,
+  packageShim,
+  packageUses,
+  UNTYPED_PACKAGE_CODES,
+  UNTYPED_PACKAGE_OPTIONS,
+} from "./slice/fixture.js";
 import { gitBlobId, gitFileMode, sha256 } from "./slice/hash.js";
 import {
   declarationPathFor,
@@ -361,13 +369,29 @@ export async function analyseSlice(input: {
     const fixture = new Map<string, string>(texts);
     for (const stub of stubs)
       fixture.set(declarationPathFor(stub.module), stub.text);
-    const shim = packageShim(shimmed);
+    // What the slice and its stubs read of each package, so the names it
+    // uses as types are declared as types.
+    const packageNames = new Set(shimmed);
+    const shim = packageShim(
+      shimmed,
+      packageUses(
+        fixture,
+        (specifier) =>
+          isBare(specifier) &&
+          (packageNames.has(packageNameOf(specifier)) ||
+            isNodeBuiltin(specifier)),
+      ),
+    );
     fixture.set(SHIM_PATH, shim);
     compilation = compileFixture({
       root: input.sourceDir,
       files: fixture,
-      compilerOptions: boundary.compilerOptions,
+      compilerOptions: {
+        ...boundary.compilerOptions,
+        ...UNTYPED_PACKAGE_OPTIONS,
+      },
       shimmedPackages: shimmed,
+      ignoredCodes: UNTYPED_PACKAGE_CODES,
     });
     for (const diagnostic of compilation.diagnostics.slice(0, 20))
       blockers.push({
@@ -400,11 +424,11 @@ export async function analyseSlice(input: {
     });
   }
   const versions = new Map<string, Record<string, string> | null>();
-  const packages: {
-    name: string;
-    version: string | null;
-    declaredIn: string | null;
-  }[] = [];
+  const packages: SliceManifest["requiredBuildInputs"]["packages"][number][] =
+    [];
+  // The repository's own packages are not on the registry (or are someone
+  // else's there): the graph leaves their imports bare, and they are mocked.
+  const workspaces = workspacePackages(input.sourceDir);
   for (const name of [
     ...new Set([...packageFiles.keys()].map(packageNameOf)),
   ].sort(compare)) {
@@ -418,6 +442,10 @@ export async function analyseSlice(input: {
       name,
       versions,
     );
+    if (workspaces.has(name)) {
+      packages.push({ name, ...pinned, workspace: true });
+      continue;
+    }
     packages.push({ name, ...pinned });
     if (pinned.version === null)
       blockers.push({

@@ -264,6 +264,30 @@ test("creates under a live lease and classifies fencing outcomes", async () => {
   );
 });
 
+test("a proposal the rubric sizes from the start is written as the rubric's", async () => {
+  const running = {
+    id: "brn_1",
+    boardId: "jrb_1",
+    bountyId: null,
+  } as BountyRunRow;
+  const rubric = createSequencedFakeDb([[running], [BOUNTY], [row()]]);
+  await createBountyProposalStore(rubric.db).createForLease("org_1", "lease", {
+    ...input,
+    rubricSize: "S+",
+  });
+  assert.equal(rubric.calls[2]?.values?.["complexity"], "S+");
+  assert.equal(rubric.calls[2]?.values?.["sizedBy"], "rubric");
+
+  // Without one, the step's or the model's size, as before.
+  const model = createSequencedFakeDb([[running], [BOUNTY], [row()]]);
+  await createBountyProposalStore(model.db).createForLease(
+    "org_1",
+    "lease",
+    input,
+  );
+  assert.equal(model.calls[2]?.values?.["sizedBy"], "model");
+});
+
 /** Two repositories a drafting said the work touches, each at a snapshot. */
 const REPOSITORIES: readonly ProposalRepository[] = [
   { repoId: "ghr_1", snapshotId: "rsn_1" },

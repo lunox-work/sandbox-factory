@@ -31,6 +31,7 @@ import {
   pointsOf,
   SCENARIO_WEIGHTS,
   WEIGHT_POINTS,
+  withDefaultWeights,
   type ScenarioWeight,
 } from "./weight.js";
 
@@ -219,7 +220,9 @@ function stepFrom(
  * `sized` is the revision the base was set against: the draft of the run
  * that sized the bounty. `current` is the revision the proposal points at
  * now. Null when either has a scenario without a weight: a spec drafted
- * before weights has no step until the proposal is re-priced.
+ * before weights has no step until the proposal is re-priced. A weight
+ * the settings predate (`covered`, on a step stored before it existed)
+ * counts for its default.
  */
 export function stepUp(
   base: WholeComplexity,
@@ -227,15 +230,16 @@ export function stepUp(
   current: SpecDraft,
   settings: StepSettings = DEFAULT_STEP_SETTINGS,
 ): StepResult | null {
-  const before = pointsOf(sized, settings.weightPoints);
-  const after = pointsOf(current, settings.weightPoints);
+  const weightPoints = withDefaultWeights(settings.weightPoints);
+  const before = pointsOf(sized, weightPoints);
+  const after = pointsOf(current, weightPoints);
   if (before === null || after === null) return null;
   return stepFrom(
     base,
     Math.max(0, after - before),
     scenariosOnlyIn(current, sized),
     scenariosOnlyIn(sized, current),
-    settings,
+    { ...settings, weightPoints },
   );
 }
 

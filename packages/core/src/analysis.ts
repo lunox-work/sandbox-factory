@@ -116,7 +116,7 @@ export const GRAPHIFY_TOOL_VERSION = "graphifyy@0.4.18+driver-1";
 export const DEPENDENCY_CRUISER_TOOL_VERSION =
   "dependency-cruiser@18.5.0+driver-3";
 /** Bumped when the DeepWiki-Open request or the artifacts written from its wiki change meaning. */
-export const DEEPWIKI_TOOL_VERSION = "deepwiki-open@driver-1";
+export const DEEPWIKI_TOOL_VERSION = "deepwiki-open@driver-2";
 /** Bumped when an extractor, a visibility rule or the index's shape changes meaning. */
 export const ABSTRACTIONS_TOOL_VERSION = "abstractions@2";
 /** Bumped when a recognizer, the replay rules or the model's shape change meaning. */
@@ -173,9 +173,9 @@ export function snapshotBuilt(
   );
 }
 /** Bumped when the slice walk, extractor or artifact shapes change meaning. */
-export const SLICE_TOOL_VERSION = "slice@1";
+export const SLICE_TOOL_VERSION = "slice@2";
 /** Bumped when the generated project, harness or baseline rules change meaning. */
-export const SANDBOX_BUILD_RUN_VERSION = "sandbox_build@2";
+export const SANDBOX_BUILD_RUN_VERSION = "sandbox_build@3";
 /** Bumped when the scope agent's tools, prompt or proposal shape change meaning. */
 export const SCOPE_TOOL_VERSION = "scope@3";
 /** Bumped when the fixtures agent's tools, prompt or set shape change meaning. */

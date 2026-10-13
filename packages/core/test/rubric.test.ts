@@ -10,8 +10,12 @@ import {
   PRICED_BOUNTY_COMPLEXITIES,
   RUBRIC_BANDS,
   RUBRIC_DIMENSIONS,
+  RUBRIC_LIMITS,
+  RUBRIC_POINTS,
+  RUBRIC_REVIEW_DISTANCE,
   RUBRIC_VERSION,
   rubricBand,
+  rubricNeedsReview,
   rubricRules,
   rubricSize,
   type ComplexityProfile,
@@ -105,10 +109,10 @@ const points = (
     .find(({ id }) => id === dimension)
     ?.factors.find(({ id }) => id === factor)?.points;
 
-test("the worked example scores 19 points, which is M", () => {
+test("the worked example scores 16 points, which is M", () => {
   const assessment = assessRubric({ spec, code: measured });
   assert.equal(assessment.version, RUBRIC_VERSION);
-  assert.equal(RUBRIC_VERSION, "rubric-v2");
+  assert.equal(RUBRIC_VERSION, "rubric-v4");
   assert.deepEqual(
     assessment.dimensions.map(({ id, points, measured }) => [
       id,
@@ -118,12 +122,12 @@ test("the worked example scores 19 points, which is M", () => {
     [
       ["scenarios", 8, true],
       ["tests", 5, true],
-      ["code", 6, true],
+      ["code", 3, true],
     ],
   );
-  assert.equal(assessment.points, 19);
+  assert.equal(assessment.points, 16);
   assert.equal(assessment.size, "M");
-  assert.equal(assessment.nextSizeIn, 2);
+  assert.equal(assessment.nextSizeIn, 5);
   assert.deepEqual(assessment.counts, {
     scenarios: 3,
     testCases: 3,
@@ -131,14 +135,107 @@ test("the worked example scores 19 points, which is M", () => {
   });
   assert.deepEqual(assessment.code, { status: "measured", specRevision: 1 });
   assert.deepEqual(assessment.weightPoints, {
+    covered: 0,
     light: 1,
     moderate: 2,
     heavy: 4,
   });
   assert.equal(
     describeRubric(assessment),
-    "19 points: 8 from scenarios, 5 from test cases, 6 from code. 15 to 20 points is M. 2 more points would make it M+.",
+    "16 points: 8 from scenarios, 5 from test cases, 3 from code. 15 to 20 points is M. 5 more points would make it M+.",
   );
+});
+
+test("a small bounty stays small: covered scenarios score nothing and are no test", () => {
+  // A link added to a banner, drafted to be exhaustive: the happy path
+  // and three scenarios the same code already satisfies.
+  const banner = {
+    scenarios: [
+      scenario("s1", "light", ["When", "Then"]),
+      scenario("s2", "covered", ["When", "Then"]),
+      scenario("s3", "covered", ["When", "Then"]),
+      scenario("s4", "covered", ["When", "Then", "And"]),
+    ],
+    openQuestions: [],
+  };
+  const drafted = assessRubric({ spec: banner, code: { status: "pending" } });
+  // The covered scenarios' outcomes are assertions in the one test, so
+  // s4's second is not a check past a test's first either.
+  assert.deepEqual(
+    drafted.dimensions.map(({ id, points }) => [id, points]),
+    [
+      ["scenarios", 1],
+      ["tests", 1],
+      ["code", 0],
+    ],
+  );
+  assert.deepEqual(drafted.counts, { scenarios: 4, testCases: 1, checks: 1 });
+  assert.deepEqual(
+    drafted.dimensions[1]?.factors.map(({ evidence, points }) => [
+      evidence,
+      points,
+    ]),
+    [
+      ["1 test for 4 scenarios; 3 covered by the others'", 1],
+      ["1 outcome checked in all; 4 more in the covered scenarios", 0],
+    ],
+  );
+  assert.equal(drafted.size, "XS");
+
+  // Measured in a tested web app with CI and a component to copy, and the
+  // slice's many seams capped: the code takes it down, not up.
+  const web = assessRubric({
+    spec: banner,
+    code: measuredIn({
+      ...profile,
+      slice: { ...profile.slice, bytes: 68 * 1024 },
+      touchedModules: ["apps/web"],
+      externals: { services: [], environment: 0, seams: 22 },
+    }),
+  });
+  const code = web.dimensions.find(({ id }) => id === "code");
+  assert.deepEqual(
+    code?.factors
+      .filter(({ points }) => points !== 0)
+      .map(({ id, evidence, points }) => [id, evidence, points]),
+    [
+      ["context", "9 files, 68 KB", 2],
+      ["seams", "22 seams, 4 counted", 4],
+      ["tested", "Every touched module (1)", -2],
+      ["ci", "Runs on every change", -1],
+      ["pattern", "src/mailer/offer.ts", -2],
+    ],
+  );
+  assert.equal(code?.points, 1);
+  // Still XS, two and a half sizes under the L that uncapped seams made of
+  // it. The bands are the next thing to read against real bounties.
+  assert.equal(web.points, 3);
+  assert.equal(web.size, "XS");
+});
+
+test("the code's discounts reach at most across the two smallest bands", () => {
+  // The best a repository can be: tiny slice, one tested module, CI, a
+  // pattern to copy, nothing mocked and nothing cut.
+  const best = assessRubric({
+    spec,
+    code: measuredIn({
+      ...profile,
+      slice: { ...profile.slice, bytes: 1_000 },
+      touchedModules: ["src/mailer"],
+      externals: { services: [], environment: 0, seams: 0 },
+    }),
+  });
+  const code = best.dimensions.find(({ id }) => id === "code");
+  const discounts =
+    RUBRIC_POINTS.tested + RUBRIC_POINTS.ci + RUBRIC_POINTS.pattern;
+  assert.equal(code?.points, discounts);
+  assert.equal(discounts, -5);
+  // The bands and the discounts are set apart, so pin how far one reaches
+  // into the other: the most a well-kept codebase can take off a spec is
+  // less than XS and XS+ together, so an S spec never prices free, and a
+  // move of either edge is read against this.
+  assert.ok(-discounts < rubricBand("S").from);
+  assert.equal(rubricSize(rubricBand("S").from + discounts), "XS");
 });
 
 test("every code factor names its evidence and scores by its rule", () => {
@@ -153,6 +250,8 @@ test("every code factor names its evidence and scores by its rule", () => {
       ["services", "1: email", 2],
       ["seams", "1 seam", 1],
       ["untested", "None", 0],
+      ["tested", "Every touched module (2)", -2],
+      ["ci", "Runs on every change", -1],
       ["migrations", "None", 0],
       ["stubs", "Full", 0],
       ["blockers", "None", 0],
@@ -190,6 +289,8 @@ test("every code factor names its evidence and scores by its rule", () => {
       ["services", "None", 0],
       ["seams", "None", 0],
       ["untested", "2: a, b", 4],
+      ["tested", "1 of 3 touched modules", -1],
+      ["ci", "None", 0],
       ["migrations", "In a touched module", 4],
       ["stubs", "Names only", 2],
       ["blockers", "2 blockers", 4],
@@ -244,14 +345,17 @@ test("code across two repositories is scored together, with the integration betw
       ["services", "2: email, sms", 4],
       ["seams", "3 seams", 3],
       ["untested", "1: acme/web:src/ui", 2],
+      // Two thirds of the discount, to the nearest point.
+      ["tested", "2 of 3 touched modules", -1],
+      ["ci", "Runs on every change", -1],
       ["migrations", "In a touched module", 4],
       ["stubs", "Partial", 1],
       ["blockers", "1 blocker", 2],
       ["pattern", "acme/app:src/mailer/offer.ts", -2],
     ],
   );
-  assert.equal(code?.points, 23);
-  assert.equal(assessment.points, 36);
+  assert.equal(code?.points, 21);
+  assert.equal(assessment.points, 34);
   assert.equal(assessment.code.specRevision, 3);
 
   // A pattern only the second has is still found, and names-only is thinner
@@ -317,23 +421,79 @@ test("the slice's size scores by the context bands", () => {
   assert.equal(sized(320 * 1024), 6);
 });
 
-test("a discount can empty the code dimension but not take it below zero", () => {
-  const small = assessRubric({
-    spec,
-    code: measuredIn({
-      ...profile,
-      slice: { ...profile.slice, bytes: 1_000 },
-      touchedModules: ["src/mailer"],
-      externals: { services: [], environment: 0, seams: 0 },
-    }),
-  });
+test("discounts take the code below zero and the total down with it, never below zero", () => {
+  const mature = {
+    ...profile,
+    slice: { ...profile.slice, bytes: 1_000 },
+    touchedModules: ["src/mailer"],
+    externals: { services: [], environment: 0, seams: 0 },
+  };
+  const small = assessRubric({ spec, code: measuredIn(mature) });
   const code = small.dimensions.find(({ id }) => id === "code");
   assert.equal(points(small, "code", "pattern"), -2);
-  assert.equal(code?.points, 0);
-  assert.equal(small.points, 13);
+  assert.equal(code?.points, -5);
+  assert.equal(small.points, 8);
+  assert.equal(small.size, "S");
+  assert.equal(
+    describeRubric(small),
+    "8 points: 8 from scenarios, 5 from test cases, 5 off for code. 7 to 10 points is S. 3 more points would make it S+.",
+  );
+
+  // Nothing to take off from: a spec of one covered scenario is zero.
+  const nothing = assessRubric({
+    spec: {
+      scenarios: [scenario("s1", "covered", ["Then"])],
+      openQuestions: [],
+    },
+    code: measuredIn(mature),
+  });
+  assert.equal(nothing.points, 0);
+  assert.equal(nothing.size, "XS");
+
+  // Neither discount without its evidence: no touched module is not every
+  // module tested, and CI must run in every repository.
+  const bare = assessRubric({
+    spec,
+    code: {
+      status: "measured",
+      profiles: [
+        { repository: "acme/app", profile: { ...mature, touchedModules: [] } },
+        {
+          repository: "acme/lib",
+          profile: {
+            ...mature,
+            nonFunctional: { ...mature.nonFunctional, ci: false },
+          },
+        },
+      ],
+      specRevision: 1,
+    },
+  });
+  const factors = new Map(
+    bare.dimensions
+      .find(({ id }) => id === "code")
+      ?.factors.map(({ id, evidence, points }) => [id, [evidence, points]]),
+  );
+  assert.deepEqual(factors.get("tested"), ["Every touched module (1)", -2]);
+  assert.deepEqual(factors.get("ci"), ["Not in every repository", 0]);
+  const none = assessRubric({
+    spec,
+    code: measuredIn({
+      ...mature,
+      touchedModules: [],
+      nonFunctional: { ...mature.nonFunctional, ci: false },
+    }),
+  });
+  const alone = new Map(
+    none.dimensions
+      .find(({ id }) => id === "code")
+      ?.factors.map(({ id, evidence, points }) => [id, [evidence, points]]),
+  );
+  assert.deepEqual(alone.get("tested"), ["No touched module", 0]);
+  assert.deepEqual(alone.get("ci"), ["None", 0]);
 });
 
-test("without measured code the rubric scores the spec but has no size", () => {
+test("without measured code the spec alone sizes it, for the code to raise", () => {
   for (const status of ["pending", "unavailable", "failed"] as const) {
     const assessment = assessRubric({ spec, code: { status } });
     const code = assessment.dimensions.find(({ id }) => id === "code");
@@ -345,22 +505,29 @@ test("without measured code the rubric scores the spec but has no size", () => {
       factors: [],
     });
     assert.equal(assessment.points, 13);
-    assert.equal(assessment.size, null);
-    assert.equal(assessment.nextSizeIn, null);
+    assert.equal(assessment.size, "S+");
+    assert.equal(assessment.nextSizeIn, 2);
     assert.deepEqual(assessment.code, { status, specRevision: null });
     assert.match(
       describeRubric(assessment),
-      /^13 points: 8 from scenarios, 5 from test cases\. /,
+      /^13 points: 8 from scenarios, 5 from test cases\. 11 to 14 points is S\+\. 2 more points would make it M\. /,
     );
-    assert.match(describeRubric(assessment), /the model's/);
+    // And said as stored before the spec alone set a size: none, and why.
+    assert.match(
+      describeRubric({ ...assessment, size: null, nextSizeIn: null }),
+      /the model's/,
+    );
   }
-  // Measured in no repository is no code to score, not a size from the
-  // spec alone.
+  assert.match(
+    describeRubric(assessRubric({ spec, code: { status: "pending" } })),
+    /may move it\.$/,
+  );
+  // Measured in no repository is no code to score: the spec's size.
   const none = assessRubric({
     spec,
     code: { status: "measured", profiles: [], specRevision: 1 },
   });
-  assert.equal(none.size, null);
+  assert.equal(none.size, "S+");
   assert.deepEqual(none.code, { status: "unavailable", specRevision: null });
 });
 
@@ -375,7 +542,7 @@ test("scenarios score by weight, unweighed ones as moderate, and open questions 
       openQuestions: ["Which timezone?", "Who is copied?"],
     },
     code: { status: "pending" },
-    weightPoints: { light: 3, moderate: 5, heavy: 0 },
+    weightPoints: { covered: 0, light: 3, moderate: 5, heavy: 0 },
   });
   const scenarios = assessment.dimensions.find(({ id }) => id === "scenarios");
   assert.deepEqual(
@@ -385,6 +552,7 @@ test("scenarios score by weight, unweighed ones as moderate, and open questions 
       points,
     ]),
     [
+      ["weight-covered", "0 × 0", 0],
       ["weight-light", "1 × 3", 3],
       ["weight-moderate", "0 × 5", 0],
       ["weight-heavy", "0 × 0", 0],
@@ -394,10 +562,23 @@ test("scenarios score by weight, unweighed ones as moderate, and open questions 
   );
   assert.equal(scenarios?.points, 15);
   assert.deepEqual(assessment.weightPoints, {
+    covered: 0,
     light: 3,
     moderate: 5,
     heavy: 0,
   });
+
+  // A table stored before the covered weight scores it at its default.
+  const older = assessRubric({
+    spec: {
+      scenarios: [scenario("s1", "covered", ["Then"])],
+      openQuestions: [],
+    },
+    code: { status: "pending" },
+    weightPoints: { light: 3, moderate: 5, heavy: 0 } as never,
+  });
+  assert.equal(older.weightPoints.covered, 0);
+  assert.equal(older.points, 0);
 
   const one = assessRubric({
     spec: { scenarios: [], openQuestions: ["Why?"] },
@@ -535,7 +716,7 @@ test("the rules name every factor an assessment can carry, written from the numb
     ["context", "repositories", "modules"],
   );
   assert.equal(
-    rubricRules({ light: 1, moderate: 2, heavy: 9 })[2]?.scoring,
+    rubricRules({ covered: 0, light: 1, moderate: 2, heavy: 9 })[3]?.scoring,
     "9 each",
   );
   assert.equal(byId.get("pattern")?.scoring, "-2 when one exists");
@@ -547,4 +728,53 @@ test("the rules name every factor an assessment can carry, written from the numb
     byId.get("context")?.scoring,
     "under 16 KB 0, under 48 KB 1, under 128 KB 2, under 320 KB 4, 320 KB or more 6",
   );
+});
+
+test("only the work's slice blockers score, and at most a couple of them", () => {
+  const blockers = (slice: Partial<ComplexityProfile["slice"]>) => {
+    const assessment = assessRubric({
+      spec,
+      code: measuredIn({ ...profile, slice: { ...profile.slice, ...slice } }),
+    });
+    const factor = assessment.dimensions
+      .find(({ id }) => id === "code")
+      ?.factors.find(({ id }) => id === "blockers");
+    return [factor?.evidence, factor?.points];
+  };
+  // A slice whose own build failed: one missing config and the compile
+  // errors it raised, none of them the contributor's to work around.
+  assert.deepEqual(blockers({ blockers: 13, workBlockers: 0, ready: false }), [
+    "None in the work; 13 from the slicer's own build, not scored",
+    0,
+  ]);
+  assert.deepEqual(blockers({ blockers: 3, workBlockers: 1 }), [
+    "1 blocker; 2 from the slicer's own build, not scored",
+    2,
+  ]);
+  assert.deepEqual(blockers({ blockers: 5, workBlockers: 5 }), [
+    `5 blockers, ${RUBRIC_LIMITS.blockers} counted`,
+    RUBRIC_LIMITS.blockers * 2,
+  ]);
+  // A profile measured before the work's were counted apart scores them
+  // all as it was measured, up to the same limit.
+  assert.deepEqual(blockers({ blockers: 13 }), [
+    `13 blockers, ${RUBRIC_LIMITS.blockers} counted`,
+    RUBRIC_LIMITS.blockers * 2,
+  ]);
+  assert.match(
+    rubricRules().find(({ id }) => id === "blockers")?.scoring ?? "",
+    /at most 2 counted/,
+  );
+});
+
+test("a rubric size two whole sizes from the one in force waits for a reviewer", () => {
+  assert.equal(RUBRIC_REVIEW_DISTANCE, 4);
+  assert.equal(rubricNeedsReview("XS", "L"), true);
+  assert.equal(rubricNeedsReview("XS", "M"), true);
+  assert.equal(rubricNeedsReview("L", "S"), true);
+  assert.equal(rubricNeedsReview("XS", "S+"), false);
+  assert.equal(rubricNeedsReview("M", "M+"), false);
+  assert.equal(rubricNeedsReview("XS+", "M+"), true);
+  // Nothing in force to disagree with.
+  assert.equal(rubricNeedsReview("unsized", "XL"), false);
 });

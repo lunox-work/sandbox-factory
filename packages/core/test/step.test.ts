@@ -65,19 +65,27 @@ function grown(...weights: ScenarioWeight[]): SpecDraft {
 }
 
 test("the weights are one registry, lightest first, with a rubric the prompt can read", () => {
-  assert.deepEqual(SCENARIO_WEIGHTS, ["light", "moderate", "heavy"]);
+  assert.deepEqual(SCENARIO_WEIGHTS, ["covered", "light", "moderate", "heavy"]);
   for (const { id, label, covers } of SCENARIO_WEIGHT_DEFINITIONS) {
     assert.match(id, /^[a-z]+$/);
     assert.notEqual(label, "");
     assert.notEqual(covers, "");
   }
-  assert.deepEqual(WEIGHT_POINTS, { light: 1, moderate: 2, heavy: 4 });
+  assert.deepEqual(WEIGHT_POINTS, {
+    covered: 0,
+    light: 1,
+    moderate: 2,
+    heavy: 4,
+  });
 });
 
 test("a spec's points are its weights summed, and null when one is missing", () => {
   assert.equal(pointsOf(sized), 3);
   assert.equal(pointsOf(spec()), 0);
-  assert.equal(pointsOf(sized, { light: 5, moderate: 0, heavy: 1 }), 5);
+  assert.equal(
+    pointsOf(sized, { covered: 0, light: 5, moderate: 0, heavy: 1 }),
+    5,
+  );
   // Drafted before weights: not countable, rather than counted as nothing.
   assert.equal(pointsOf(spec(scenario("s1", undefined))), null);
   assert.equal(
@@ -357,7 +365,10 @@ test("a board's step settings lie over the defaults, and nonsense is ignored", (
       pointsPerStep: 6,
       weightPoints: { heavy: 5, light: 0 },
     }),
-    { pointsPerStep: 6, weightPoints: { light: 0, moderate: 2, heavy: 5 } },
+    {
+      pointsPerStep: 6,
+      weightPoints: { covered: 0, light: 0, moderate: 2, heavy: 5 },
+    },
   );
   for (const pointsPerStep of [0, -1, 1.5, 1_001, Number.NaN, null]) {
     assert.equal(

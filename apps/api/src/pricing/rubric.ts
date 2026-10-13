@@ -1,13 +1,15 @@
 /**
- * The pricing rubric, applied: what sizes a proposal once its code is
- * measured (`sandbox-factory`'s `assessRubric`).
+ * The pricing rubric, applied: what sizes a proposal from its spec, and
+ * again once its code is measured (`sandbox-factory`'s `assessRubric`).
  *
  * A sizing scores the spec straight away, with the code pending, and the
- * model's size stands. The code is profiled in each repository the work
- * touches; when the profiler has settled every one, the rubric is scored
- * again with the code, and a proposal still proposed takes the
- * rubric's size, unless a reviewer has set one: then the assessment is only
- * recorded beside it, for the reviewer to take or leave. An approved
+ * proposal takes the size its scenarios and test cases come to. The code
+ * is profiled in each repository the work touches; when the profiler has
+ * settled every one, the rubric is scored again with the code, which can
+ * move the size either way, and a proposal still proposed takes it. Either time,
+ * not over a reviewer's size, nor when the rubric's is two whole sizes or
+ * more from the model's (`rubricNeedsReview`): then the assessment is only
+ * recorded beside it, for a reviewer to take or leave. An approved
  * proposal is not touched; its size is what was approved.
  */
 
@@ -21,6 +23,7 @@ import type {
 import {
   assessRubric,
   priceFor,
+  rubricNeedsReview,
   WEIGHT_POINTS,
   type RubricAssessment,
   type RubricCode,
@@ -78,6 +81,23 @@ export function weightPointsOf(
     proposal.step?.settings.weightPoints ??
     proposal.rubric?.weightPoints ??
     WEIGHT_POINTS
+  );
+}
+
+/**
+ * Whether the rubric takes the size over by itself: not from a reviewer,
+ * and not from a model it disagrees with so widely that one of them has
+ * read the bounty wrong. A size the rubric already set it keeps setting.
+ */
+export function rubricTakesOver(
+  rubric: RubricAssessment,
+  proposal: Pick<StoredBountyProposal, "sizedBy" | "complexity">,
+): boolean {
+  if (proposal.sizedBy === "reviewer") return false;
+  return (
+    proposal.sizedBy === "rubric" ||
+    rubric.size === null ||
+    !rubricNeedsReview(proposal.complexity, rubric.size)
   );
 }
 
@@ -175,11 +195,11 @@ export class RubricPricer {
       proposal.revision,
       {
         rubric,
-        // A reviewer's size stands; the rubric is recorded for them to take.
-        price:
-          proposal.sizedBy === "reviewer"
-            ? null
-            : rubricPrice(rubric, proposal),
+        // A reviewer's size stands, as does a model's the rubric is far
+        // from; the rubric is recorded for a reviewer to take.
+        price: rubricTakesOver(rubric, proposal)
+          ? rubricPrice(rubric, proposal)
+          : null,
       },
     );
     return written.ok || written.reason !== "changed"

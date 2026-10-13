@@ -623,6 +623,19 @@ named one, refused `no_touched_repository` otherwise: its versions are
 bound to the repository they were sliced from, so a different one is
 refused `source_linked`.
 
+**A sandbox is made with its first version.** Making one chooses nothing,
+so the bounty's Sandbox tab offers no step for it: `POST
+.../sandboxes/start` (owners and admins, body `{ bountyId }`) makes the
+sandbox as `POST .../sandboxes` does, then begins its first version in the
+same request, sliced as `.../:id/slice` slices it when it has a repository,
+generated as `.../:id/starter` generates it when it has none, and answers
+201 with the sandbox beside the slice route's fields (`slice` null for a
+generated one). A refusal after the sandbox is made, such as a failed
+slice or the run limit, leaves it made; the tab reads the bounty again
+either way and goes on from the sandbox's own routes. The tab names the
+action as the API will take it: Slice when exactly one connected
+repository is touched, else Generate.
+
 **Without a repository, a version is generated.** `POST
 .../sandboxes/:id/starter` snapshots the task from the bounty itself (its
 title and description, with its live proposal's spec and price) and queues
@@ -663,6 +676,27 @@ version 3), and its spec and price must be that bounty's proposal's
 keep what they were frozen with, because the snapshot is named by its hash:
 version 2 lists `ticketIds`, from when a sandbox linked any number of
 tickets, and version 1 lists `jiraIssueIds`.
+
+**With a repository, a version is sliced from its sizing.** The slice is
+the one the bounty's sizing already took: the complexity profile of its
+approved proposal's spec revision in the sandbox's repository
+(`bounty_profile`, matched by the snapshot the spec was drafted beside or
+the repository's name), which the profiler scopes and slices on the worker.
+`GET .../sandboxes/:id/slice` says where it stands (`SandboxSliceDto`):
+`none` until asked for, the profile's `queued`, `scoping` and `slicing`, then
+`ready`; `failed` with the profile's code, final for that spec revision until
+a re-price drafts a new one; `unavailable` with no repository
+(`no_source`), no approved price with a spec (`task_not_ready`), or no
+profiler (`unconfigured`). `POST .../sandboxes/:id/slice` asks the profiler
+for a profile while there is none and answers 202 with the slice; once it is
+ready, it cuts a draft as `POST .../versions` does, its listing taken from
+the bounty (title, description, the repository's and bounty's stack) and its
+task from the approved proposal, queues its build and answers 201 with the
+draft and the run. A draft whose scope has blockers is cut without a build
+(`run: null`), for them to be read. The newest unfrozen draft cut from the
+same slice run is built again rather than cut twice. The bounty's Sandbox tab
+follows the slice, with the scope agent's steps while it works, then the
+build, as it follows a generated version's run.
 
 **Publishing a version.** `POST .../sandboxes/versions/:vid/publish`
 (owners and admins) records who approved the version and when, freezes it,
@@ -777,9 +811,14 @@ rate-card snapshot; a `+` size uses the rounded midpoint between adjacent
 prices, in minor currency units. Unsized bounties have no price.
 
 Spec revisions add half steps for net scenario weight gained since the sized
-draft (`packages/core/src/pricing/step.ts`). Light, moderate, and heavy scenarios
-default to 1, 2, and 4 points, with four points per half step; board overrides
-are snapshotted with the run. Trimming can reduce the step, never below its
+draft (`packages/core/src/pricing/step.ts`). Covered, light, moderate, and
+heavy scenarios default to 0, 1, 2, and 4 points, with four points per half
+step; board overrides are snapshotted with the run. A covered scenario
+(`packages/core/src/pricing/weight.ts`) is behaviour the other scenarios' code
+already has, proven by one more assertion in a test they already need: it
+exists so a bounty the draft wrote four scenarios for, to be exhaustive, can
+still be XS. A step or assessment stored before the weight existed reads it
+as its default. Trimming can reduce the step, never below its
 base, and XL is the cap. A fresh draft starts at step zero.
 
 Manual resize sets a new base and restarts the step from zero at the current
@@ -789,26 +828,49 @@ Respec keeps the base, card, and step settings without another sizing call;
 reprice uses the current card and starts fresh.
 
 **The pricing rubric sizes a proposal once its code is measured**
-(`packages/core/src/pricing/rubric.ts`, `rubric-v2`). It scores three
+(`packages/core/src/pricing/rubric.ts`, `rubric-v4`). It scores three
 dimensions from countable evidence. Scenarios are scored by weight, with the
-step's points, plus open questions. Test cases are one per scenario, plus each
-outcome step after a test's first. Code comes from the complexity profiles:
-slice size, touched modules, services, seams, untested modules, migrations,
-stubs and blockers, minus a discount for an analogous pattern. The total falls
-in a band of the nine priced sizes, and the rate card prices it. Sizing stores
+step's points, plus open questions. Test cases are one per scenario with a
+test of its own (every weight above covered), plus each outcome step after a
+test's first; a covered scenario's outcomes are assertions in another's test
+and score nothing. A draft or answer whose scenarios are all covered is
+retried, and a trim that would leave only covered scenarios is refused,
+since covered is by the code another scenario needs. Code comes from
+the complexity profiles: slice size, touched modules, services, seams (at most
+four counted), untested modules, migrations, stubs and blockers, minus
+discounts for an analogous pattern, for tests in the touched modules (two
+points when every one has them, in proportion when some do) and for CI. The
+code's discounts can outweigh its costs, so a measurement moves the size
+either way; the total, not each dimension, is held at zero. The discounts sum
+to five points, less than XS and XS+ together, and a test pins that against
+the band edges. The total falls in a band of the nine priced sizes, and the
+rate card prices it. Sizing stores
 the assessment (`bounty_proposal.rubric`, migration 0051) with the code
 `pending` or `unavailable`, so the model's size stands. When the profiler
 settles a profile, `RubricPricer` (`apps/api/src/pricing/rubric.ts`)
 re-scores the current spec and sets `sized_by = 'rubric'` on a proposed
-proposal. A reviewer-sized proposal only has the assessment recorded, and an
-approved one is not touched. A respec of a rubric-sized proposal is priced at
+proposal. A reviewer-sized proposal only has the assessment recorded, as
+does a model-sized one whose rubric size is two whole sizes or more away
+(`rubricNeedsReview`): a gap that wide means the model or the measurement
+misread the bounty, and a reviewer takes the rubric's size or leaves it.
+An approved proposal is not touched. A respec of a rubric-sized proposal is priced at
 the rubric's score of the changed spec, and the step still records what
 changed. `POST .../proposals/:id/rubric` puts the rubric's size back over a
 reviewer's resize. The code is scored over every repository the work
 touches: one profile each, counts summed and modules named by repository.
 `rubric-v2` adds four points per repository beyond the first for the
 integration across them, and charges modules beyond each repository's
-first, so crossing into another repository is charged once. The rubric has
+first, so crossing into another repository is charged once. `rubric-v3`
+scores only the work's slice blockers (an unresolved or dynamic import, once
+per kind and file; the profile's `workBlockers`) and at most two of them.
+The slicer's own build failures, such as a compile error per line from one
+config it could not read, are shown in the evidence but not scored.
+`rubric-v4` adds the covered weight, the tests and CI discounts, the seams
+cap and the total-level floor, so a small change in a well-kept repository
+prices small. The
+boundary summary the profile reads lists the work's blockers ahead of the
+slicer's own, so its cap (`SUMMARY_LIMITS.blockers`) never drops a scored
+one behind a noisy build. The rubric has
 a size once every profile is ready, and one failed fails the code. The code
 is all of the repositories or none: when a touched repository's snapshot is
 gone by the time the proposal is written, none is profiled and the code is

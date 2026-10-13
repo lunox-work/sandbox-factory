@@ -22,6 +22,7 @@ import type {
   StoredAnalysisRun,
   StoredArtifact,
   StoredBounty,
+  StoredBountyProfile,
   StoredSandbox,
   StoredVersionWithSource,
 } from "@sandbox-factory/db";
@@ -30,6 +31,7 @@ import {
   createSandboxVersionSchema,
   fixtureSetSchema,
   workRepositories,
+  type SandboxSliceDto,
 } from "@sandbox-factory/shared";
 import { createHash } from "node:crypto";
 import type {
@@ -45,10 +47,12 @@ import type {
 } from "sandbox-factory";
 import {
   APPROVED_TASK_SCHEMA_VERSION,
+  approvedTaskReadiness,
   canonicalJson,
   fixtureProblems,
   isFixturesParams,
   normalizeStack,
+  PRICED_BOUNTY_COMPLEXITIES,
   resolveScope,
   starterStackProblem,
   starterTaskReadiness,
@@ -186,6 +190,28 @@ export function invalidFixtures(
         "invalid",
       );
 }
+
+/** Why a sizing's profile stopped, as a slice says it. */
+const PROFILE_FAILURES: Record<string, string> = {
+  source_unavailable:
+    "The snapshot it was sized beside, or its spec, is no longer there.",
+  scope_failed: "The scope agent could not pick what the slice holds.",
+  slice_failed: "The slice could not be cut from the repository.",
+  output_invalid: "Its scope or slice could not be read back.",
+};
+/** A slice that is not under way, with why. */
+const sliceOf = (
+  status: SandboxSliceDto["status"],
+  fields: Partial<SandboxSliceDto> = {},
+): SandboxSliceDto => ({
+  status,
+  code: null,
+  reason: null,
+  specRevision: null,
+  scopeRunId: null,
+  sliceRunId: null,
+  ...fields,
+});
 
 const starterInProgress = () =>
   failure(
@@ -669,5 +695,368 @@ export function versionService(options: SandboxRouteOptions) {
           : failure({ error: "Not found." }, "not-found");
     return { ok: true as const, result: created, run: queued.run };
   }
-  return { sliceInputs, fixturesFromRun, create, generate };
+
+  /**
+   * Queues a sliced draft's build, whose parameters carry every hash its
+   * output binds to. A generated version is built by its starter run, a
+   * frozen one is not rebuilt, and one whose task or scope is not ready is
+   * refused. Asked again for the build the draft already points at, it
+   * answers that run.
+   */
+  async function build(
+    owner: string,
+    actor: string,
+    stored: StoredVersionWithSource,
+    now: Date,
+  ) {
+    if (stored.version.frozenAt !== null)
+      return failure(
+        { error: "A frozen version is not rebuilt.", code: "frozen" },
+        "conflict",
+      );
+    const { sourceSnapshotId, sliceRunId, manifestSha256, contractSha256 } =
+      stored.source;
+    if (
+      sourceSnapshotId === null ||
+      sliceRunId === null ||
+      manifestSha256 === null ||
+      contractSha256 === null
+    )
+      return failure(
+        {
+          error:
+            "A generated version's build comes from its starter run; generate a new version instead.",
+          code: "generated_version",
+        },
+        "conflict",
+      );
+    const task = approvedTaskReadiness(stored.source.approvedTask);
+    if (!task.ready)
+      return failure(
+        {
+          error: "The approved task is not ready to build.",
+          code: "task_not_ready",
+          reasons: task.reasons,
+        },
+        "conflict",
+      );
+    if (stored.source.scope.blockers.length > 0)
+      return failure(
+        {
+          error: "The scope has blockers.",
+          code: "scope_blocked",
+          blockers: stored.source.scope.blockers,
+        },
+        "conflict",
+      );
+    const result = await options.runs.enqueue(owner, sourceSnapshotId, {
+      tool: "sandbox_build",
+      params: {
+        deadlineMinutes: 30,
+        sliceRunId,
+        sandboxVersionId: stored.version.id,
+        manifestSha256,
+        contractSha256,
+        transformConfigSha256: stored.source.transformConfigSha256,
+        approvedTaskSha256: stored.source.approvedTaskSha256,
+      },
+      requestedBy: actor,
+      maxActive: options.maxActive ?? 3,
+    });
+    if (!result.ok)
+      return result.reason === "run_limit"
+        ? failure(
+            {
+              error: "The active analysis limit has been reached.",
+              code: "run_limit",
+            },
+            "conflict",
+          )
+        : failure({ error: "Not found." }, "not-found");
+    if (result.obsoleteLogKey !== undefined)
+      await options.objects.remove(result.obsoleteLogKey).catch(() => {});
+    // Asked again for the build the draft already points at: the same run,
+    // queued, running or done. Recording it again would clear what it
+    // proved, which a run that has already succeeded never records twice.
+    if (!result.created && stored.source.buildRunId === result.run.id) {
+      await options.ensureWorker().catch(() => options.onLaunchError?.());
+      return { ok: true as const, run: result.run };
+    }
+    const recorded = await options.sandboxes.recordBuild(
+      owner,
+      stored.version.id,
+      result.run.id,
+      stored.source.transformConfigSha256,
+      now,
+    );
+    if (!recorded.ok)
+      return recorded.reason === "frozen"
+        ? failure(
+            {
+              error: "A frozen version cannot change; create a new version.",
+              code: "frozen",
+            },
+            "conflict",
+          )
+        : recorded.reason === "conflict"
+          ? failure(
+              {
+                error:
+                  "The version changed in the meantime. Reload it and try again.",
+                code: "version_changed",
+              },
+              "conflict",
+            )
+          : failure({ error: "Not found." }, "not-found");
+    await options.ensureWorker().catch(() => options.onLaunchError?.());
+    return { ok: true as const, run: result.run };
+  }
+
+  /**
+   * Where a linked sandbox's next slice stands. Its versions are cut from
+   * the slice the bounty's sizing took: the profile of the approved
+   * proposal's spec revision in the sandbox's repository, which the
+   * profiler scopes and slices on the worker. Also answers what asking for
+   * that profile takes, while there is none.
+   */
+  async function sliceState(owner: string, sandbox: StoredSandbox) {
+    const unavailable = (code: string, reason: string) => ({
+      slice: sliceOf("unavailable", { code, reason }),
+      profile: null,
+      request: null,
+    });
+    if (sandbox.sourceRepoId === null)
+      return unavailable(
+        "no_source",
+        "The sandbox has no repository to slice from.",
+      );
+    const proposalId = await options.proposals.liveForBounty(
+      owner,
+      sandbox.bountyId,
+    );
+    const proposal =
+      proposalId === null
+        ? null
+        : await options.proposals.get(owner, proposalId);
+    if (
+      proposal === null ||
+      proposal.status !== "approved" ||
+      proposal.specRevision === null
+    )
+      return unavailable(
+        "task_not_ready",
+        "A version is sliced for an approved price with a spec.",
+      );
+    if (options.profiles === undefined)
+      return unavailable(
+        "unconfigured",
+        "Slicing needs the worker that sizes bounties.",
+      );
+    const specRevision = proposal.specRevision;
+    const repo = (await options.repos.list(owner)).find(
+      ({ id }) => id === sandbox.sourceRepoId,
+    );
+    // The snapshot its spec was drafted beside, which its profile reads.
+    const touched = proposal.repositories.find(
+      ({ repoId }) => repoId === sandbox.sourceRepoId,
+    );
+    const profile =
+      (
+        await options.profiles.forRevision(owner, proposal.id, specRevision)
+      ).find(
+        (item) =>
+          (touched !== undefined && item.snapshotId === touched.snapshotId) ||
+          (repo !== undefined && item.repository === repo.fullName),
+      ) ?? null;
+    const runs = (item: StoredBountyProfile) => ({
+      specRevision,
+      scopeRunId: item.scopeRunId,
+      sliceRunId: item.sliceRunId,
+    });
+    if (profile === null) {
+      const spec = await options.specs.get(owner, proposal.id, specRevision);
+      return {
+        slice: sliceOf("none", { specRevision }),
+        profile: null,
+        request:
+          spec === null || touched === undefined
+            ? null
+            : {
+                proposalId: proposal.id,
+                specRevision,
+                specHash: spec.specHash,
+                snapshotId: touched.snapshotId,
+              },
+      };
+    }
+    if (profile.status === "failed")
+      return {
+        slice: sliceOf("failed", {
+          ...runs(profile),
+          code: profile.errorCode,
+          reason: `${
+            (profile.errorCode !== null &&
+              PROFILE_FAILURES[profile.errorCode]) ||
+            "Its sizing could not slice it."
+          } Price it again to slice a new spec.`,
+        }),
+        profile,
+        request: null,
+      };
+    return {
+      slice: sliceOf(profile.status, runs(profile)),
+      profile,
+      request: null,
+    };
+  }
+
+  /**
+   * Slices a version for a linked sandbox. Until its sizing's slice is
+   * ready, the profile is asked for, when there is none, and the answer is
+   * where it stands. Once it is, a draft is cut from it as `create` cuts
+   * one, its listing taken from the bounty and its task from the approved
+   * proposal, and built when its scope has no blockers. The newest draft
+   * cut from the same slice is built again rather than cut twice.
+   */
+  async function slice(
+    owner: string,
+    actor: string,
+    sandbox: StoredSandbox,
+    now: Date,
+  ) {
+    let state = await sliceState(owner, sandbox);
+    const pending = (current: SandboxSliceDto) => ({
+      ok: true as const,
+      slice: current,
+      result: null,
+      run: null,
+    });
+    if (state.slice.status === "unavailable")
+      return failure(
+        {
+          error: state.slice.reason ?? "The sandbox cannot be sliced yet.",
+          code: state.slice.code ?? "slice_unavailable",
+        },
+        "conflict",
+      );
+    if (state.slice.status === "failed")
+      return failure(
+        {
+          error: state.slice.reason ?? "Its sizing could not slice it.",
+          code: "slice_failed",
+        },
+        "conflict",
+      );
+    if (state.slice.status === "none") {
+      if (state.request === null || options.requestProfile === undefined)
+        return failure(
+          {
+            error: "Its sizing has no slice of this spec to cut from.",
+            code: "slice_unavailable",
+          },
+          "conflict",
+        );
+      await options.requestProfile(owner, state.request);
+      state = await sliceState(owner, sandbox);
+    }
+    const sliceRunId = state.profile?.sliceRunId ?? null;
+    if (state.slice.status !== "ready" || sliceRunId === null)
+      return pending(state.slice);
+
+    const newest = (await options.sandboxes.listVersions(owner, sandbox.id))[0];
+    const latest =
+      newest === undefined
+        ? null
+        : await options.sandboxes.getVersion(owner, newest.id);
+    let draft: StoredVersionWithSource;
+    if (
+      latest !== null &&
+      latest.version.frozenAt === null &&
+      latest.source.sliceRunId === sliceRunId
+    )
+      draft = latest;
+    else {
+      const bounty = await options.bounties.get(owner, sandbox.bountyId);
+      if (bounty === null) return failure({ error: "Not found." }, "not-found");
+      const proposalId = await options.proposals.liveForBounty(
+        owner,
+        bounty.id,
+      );
+      const proposal =
+        proposalId === null
+          ? null
+          : await options.proposals.get(owner, proposalId);
+      const complexity = PRICED_BOUNTY_COMPLEXITIES.find(
+        (size) => size === proposal?.complexity,
+      );
+      if (proposal === null || complexity === undefined)
+        return failure(
+          {
+            error: "A version is sliced for an approved price with a spec.",
+            code: "task_not_ready",
+          },
+          "conflict",
+        );
+      // The stack its repository was detected to use, and what it adds.
+      const repo = (await options.repos.list(owner)).find(
+        ({ id }) => id === sandbox.sourceRepoId,
+      );
+      const title = clip(
+        bounty.title.replace(/\s+/g, " ").trim(),
+        GENERATED_TITLE_MAX,
+      ).trim();
+      const input = createSandboxVersionSchema.safeParse({
+        sliceRunId,
+        title,
+        specSummary: clip(
+          bounty.description.trim() || title,
+          GENERATED_SUMMARY_MAX,
+        ),
+        complexity,
+        tags: normalizeStack([...(repo?.stack ?? []), ...bounty.stack])
+          .filter((name) => name.length <= GENERATED_TAG_MAX)
+          .slice(0, GENERATED_TAGS_MAX),
+        proposalId: proposal.id,
+        specRevision: state.slice.specRevision ?? undefined,
+      });
+      if (!input.success)
+        return failure(
+          {
+            error: "The bounty's title cannot name a version.",
+            code: "task_not_ready",
+          },
+          "conflict",
+        );
+      const created = await create(owner, actor, sandbox, input.data, now);
+      if (!created.ok) return created;
+      draft = created.result;
+    }
+    // A scope with blockers is cut, for its blockers to be read, but not
+    // built: the build would only refuse it.
+    if (draft.source.scope.blockers.length > 0)
+      return {
+        ok: true as const,
+        slice: state.slice,
+        result: draft,
+        run: null,
+      };
+    const built = await build(owner, actor, draft, now);
+    if (!built.ok) return built;
+    const after = await options.sandboxes.getVersion(owner, draft.version.id);
+    return {
+      ok: true as const,
+      slice: state.slice,
+      result: after ?? draft,
+      run: built.run,
+    };
+  }
+  return {
+    sliceInputs,
+    fixturesFromRun,
+    create,
+    generate,
+    build,
+    sliceState,
+    slice,
+  };
 }

@@ -14,9 +14,10 @@
  * (`RubricScenarios.tsx`). The spec's changes are made from the Scenarios
  * dimension, and an earlier revision on show is scored as it would be.
  *
- * Who set the size is said first, since the rubric only sets it once the
- * code is measured: until then the model's size stands, and after a
- * reviewer's resize the rubric's is offered back.
+ * Who set the size is said first: the rubric sets it from the scenarios
+ * as soon as they are drafted, and again once the code is measured, unless
+ * the model read the bounty too differently or a reviewer resized it, when
+ * the rubric's is offered back.
  */
 
 import type {
@@ -38,6 +39,7 @@ import {
   RUBRIC_BANDS,
   RUBRIC_DIMENSIONS,
   rubricBand,
+  rubricNeedsReview,
   rubricRules,
   rubricSize,
   type RubricAssessment,
@@ -116,8 +118,12 @@ function sourceLine(proposal: RubricProposal, rubric: RubricAssessmentDto) {
       : `${model}: the rubric needs the code to size.`;
   }
   const who = proposal.sizedBy === "reviewer" ? "A reviewer" : "The model";
-  return rubric.size === proposal.complexity
-    ? `${who} set this size, and the rubric agrees.`
+  if (rubric.size === proposal.complexity)
+    return `${who} set this size, and the rubric agrees.`;
+  // The rubric held back rather than take over: say why it did not.
+  return proposal.sizedBy === "model" &&
+    rubricNeedsReview(proposal.complexity, rubric.size)
+    ? `The model set this size; the rubric says ${rubric.size}, too far apart to take without a reviewer.`
     : `${who} set this size; the rubric says ${rubric.size}.`;
 }
 
@@ -395,8 +401,11 @@ function Breakdown({
     ({ measured, points }) => measured && points > 0,
   );
   if (parts.length === 0) return null;
+  // Of what the bar shows: a discount elsewhere lowers the total, not a
+  // part's share of the costs.
+  const shown = parts.reduce((sum, { points }) => sum + points, 0);
   const share = (points: number) =>
-    `${Math.round((points / Math.max(1, rubric.points)) * 100)}%`;
+    `${Math.round((points / Math.max(1, shown)) * 100)}%`;
   return (
     <div aria-hidden="true" className="flex flex-col gap-2">
       <div className="bg-muted flex h-1.5 gap-0.5 rounded-full">
@@ -1105,9 +1114,11 @@ function Rules({
           </div>
         ))}
         <p className="text-muted-foreground">
-          The total sets the size; the rate card sets its price. Until the code
-          is measured the rubric has no size, and the model's stands. A
-          reviewer's resize overrides both.
+          The total sets the size; the rate card sets its price. The scenarios
+          and test cases size it as soon as they are drafted, and the code, once
+          measured, moves it either way: costs for what the change reaches,
+          discounts for a repository that is tested and checked. A reviewer's
+          resize overrides both.
         </p>
       </div>
     </details>

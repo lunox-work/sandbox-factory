@@ -43,13 +43,15 @@ import {
   sandboxFileListSchema,
   sandboxListSchema,
   sandboxResponseSchema,
+  sandboxSliceResponseSchema,
   sandboxVersionListSchema,
   sandboxVersionResponseSchema,
+  sliceVersionResponseSchema,
+  startSandboxResponseSchema,
   updateSandboxVersionSchema,
 } from "@sandbox-factory/shared";
 import type { Context, Hono } from "hono";
 import {
-  approvedTaskReadiness,
   replayOf,
   resolveScope,
   stepHeldBy,
@@ -278,6 +280,63 @@ export function mountSandboxRoutes(
       201,
     );
   });
+  /**
+   * A bounty's sandbox made and its first version begun, in one step: the
+   * sandbox itself has nothing to choose, its repository being its
+   * sizing's. With one, a version is sliced as `/:id/slice` slices it;
+   * without, it is generated as `/:id/starter` generates it. A refusal
+   * after the sandbox is made leaves it made, for its own routes to go on
+   * from.
+   */
+  app.post(`${base}/start`, async (c) => {
+    if (!isAtLeastAdmin(c.get("member").role))
+      return c.json(
+        { error: "Only owners and admins can create a sandbox." },
+        403,
+      );
+    const body = createSandboxSchema.safeParse(
+      await c.req.json().catch(() => null),
+    );
+    if (!body.success)
+      return c.json({ error: "Invalid sandbox request." }, 400);
+    const owner = c.get("member").organizationId;
+    const refusal = await held(owner, body.data.bountyId);
+    if (refusal !== null) return c.json(refusal, 409);
+    const made = await options.sandboxes.create(owner, {
+      bountyId: body.data.bountyId,
+      sourceRepoId: await touchedSource(options, owner, body.data.bountyId),
+    });
+    if (!made.ok) return sandboxRefused(c, made.reason);
+    const { sandbox } = made;
+    const actor = c.get("user").id;
+    if (sandbox.sourceRepoId === null) {
+      const generated = await service.generate(owner, actor, sandbox, now());
+      if (!generated.ok) return failed(c, generated);
+      await options.ensureWorker().catch(() => options.onLaunchError?.());
+      return c.json(
+        startSandboxResponseSchema.parse({
+          sandbox: sandboxDto(sandbox),
+          slice: null,
+          version: generated.result.version,
+          source: sourceDto(generated.result.source),
+          run: generated.run,
+        }),
+        201,
+      );
+    }
+    const sliced = await service.slice(owner, actor, sandbox, now());
+    if (!sliced.ok) return failed(c, sliced);
+    return c.json(
+      startSandboxResponseSchema.parse({
+        sandbox: sandboxDto(sandbox),
+        slice: sliced.slice,
+        version: sliced.result?.version ?? null,
+        source: sliced.result === null ? null : sourceDto(sliced.result.source),
+        run: sliced.run,
+      }),
+      201,
+    );
+  });
   /*
     A sandbox made without a repository gets one here, once: the one its
     bounty's sizing has since said the work touches.
@@ -344,6 +403,51 @@ export function mountSandboxRoutes(
         run: generated.run,
       }),
       202,
+    );
+  });
+  /**
+   * Where a linked sandbox's next slice stands: its sizing's profile of
+   * the approved spec revision in its repository. Owners and admins only,
+   * as the runs behind it are private provenance.
+   */
+  app.get(`${base}/:id/slice`, async (c) => {
+    if (!isAtLeastAdmin(c.get("member").role))
+      return c.json(
+        { error: "Only owners and admins can read a sandbox's slice." },
+        403,
+      );
+    const owner = c.get("member").organizationId;
+    const sandbox = await options.sandboxes.get(owner, c.req.param("id"));
+    if (sandbox === null) return c.json({ error: "Not found." }, 404);
+    const state = await service.sliceState(owner, sandbox);
+    return c.json(sandboxSliceResponseSchema.parse({ slice: state.slice }));
+  });
+  /**
+   * A sliced version, for a linked sandbox: cut from its sizing's slice
+   * once that is ready, and built. Until then, the slice is asked for and
+   * answered with where it stands, 202, for the caller to follow.
+   */
+  app.post(`${base}/:id/slice`, async (c) => {
+    if (!isAtLeastAdmin(c.get("member").role))
+      return c.json(
+        { error: "Only owners and admins can slice a version." },
+        403,
+      );
+    const owner = c.get("member").organizationId;
+    const sandbox = await options.sandboxes.get(owner, c.req.param("id"));
+    if (sandbox === null) return c.json({ error: "Not found." }, 404);
+    const refusal = await held(owner, sandbox.bountyId);
+    if (refusal !== null) return c.json(refusal, 409);
+    const sliced = await service.slice(owner, c.get("user").id, sandbox, now());
+    if (!sliced.ok) return failed(c, sliced);
+    return c.json(
+      sliceVersionResponseSchema.parse({
+        slice: sliced.slice,
+        version: sliced.result?.version ?? null,
+        source: sliced.result === null ? null : sourceDto(sliced.result.source),
+        run: sliced.run,
+      }),
+      sliced.result === null ? 202 : 201,
     );
   });
   app.get(base, async (c) =>
@@ -650,82 +754,9 @@ export function mountSandboxRoutes(
     if (stored === null) return c.json({ error: "Not found." }, 404);
     const refusal = await versionHeld(owner, stored.version.sandboxId);
     if (refusal !== null) return c.json(refusal, 409);
-    if (stored.version.frozenAt !== null)
-      return c.json(
-        { error: "A frozen version is not rebuilt.", code: "frozen" },
-        409,
-      );
-    const { sourceSnapshotId, sliceRunId, manifestSha256, contractSha256 } =
-      stored.source;
-    if (
-      sourceSnapshotId === null ||
-      sliceRunId === null ||
-      manifestSha256 === null ||
-      contractSha256 === null
-    )
-      return generatedRefused(c, "build");
-    const task = approvedTaskReadiness(stored.source.approvedTask);
-    if (!task.ready)
-      return c.json(
-        {
-          error: "The approved task is not ready to build.",
-          code: "task_not_ready",
-          reasons: task.reasons,
-        },
-        409,
-      );
-    if (stored.source.scope.blockers.length > 0)
-      return c.json(
-        {
-          error: "The scope has blockers.",
-          code: "scope_blocked",
-          blockers: stored.source.scope.blockers,
-        },
-        409,
-      );
-    const result = await options.runs.enqueue(owner, sourceSnapshotId, {
-      tool: "sandbox_build",
-      params: {
-        deadlineMinutes: 30,
-        sliceRunId,
-        sandboxVersionId: stored.version.id,
-        manifestSha256,
-        contractSha256,
-        transformConfigSha256: stored.source.transformConfigSha256,
-        approvedTaskSha256: stored.source.approvedTaskSha256,
-      },
-      requestedBy: c.get("user").id,
-      maxActive: options.maxActive ?? 3,
-    });
-    if (!result.ok)
-      return result.reason === "run_limit"
-        ? c.json(
-            {
-              error: "The active analysis limit has been reached.",
-              code: "run_limit",
-            },
-            409,
-          )
-        : c.json({ error: "Not found." }, 404);
-    if (result.obsoleteLogKey !== undefined)
-      await options.objects.remove(result.obsoleteLogKey).catch(() => {});
-    // Asked again for the build the draft already points at: the same run,
-    // queued, running or done. Recording it again would clear what it
-    // proved, which a run that has already succeeded never records twice.
-    if (!result.created && stored.source.buildRunId === result.run.id) {
-      await options.ensureWorker().catch(() => options.onLaunchError?.());
-      return c.json(analysisRunResponseSchema.parse({ run: result.run }), 202);
-    }
-    const recorded = await options.sandboxes.recordBuild(
-      owner,
-      stored.version.id,
-      result.run.id,
-      stored.source.transformConfigSha256,
-      now(),
-    );
-    if (!recorded.ok) return refused(c, recorded.reason);
-    await options.ensureWorker().catch(() => options.onLaunchError?.());
-    return c.json(analysisRunResponseSchema.parse({ run: result.run }), 202);
+    const built = await service.build(owner, c.get("user").id, stored, now());
+    if (!built.ok) return failed(c, built);
+    return c.json(analysisRunResponseSchema.parse({ run: built.run }), 202);
   });
 
   /**

@@ -54,10 +54,10 @@ interface Option {
 function InheritedChip({ name, from }: { name: string; from: string }) {
   return (
     <li
-      className="bg-muted text-muted-foreground inline-flex h-6 items-center gap-1.5 rounded-md border px-1.5 text-xs font-medium"
+      className="text-muted-foreground inline-flex items-center gap-1.5 text-sm"
       title={`Detected in ${from}`}
     >
-      <StackIcon name={name} className="size-3.5" />
+      <StackIcon name={name} className="size-4" />
       {name}
       <span className="sr-only">, detected in {from}</span>
     </li>
@@ -101,16 +101,13 @@ export function StackChips({
   );
   if (inherited.length === 0 && added.length === 0) return null;
   return (
-    <ul className="flex flex-wrap gap-1.5" aria-label="Tech stack">
+    <ul className="flex flex-wrap gap-x-4 gap-y-2" aria-label="Tech stack">
       {inherited.map((name) => (
         <InheritedChip key={`repo:${name}`} name={name} from={inheritedFrom} />
       ))}
       {added.map((name) => (
-        <li
-          key={name}
-          className="inline-flex h-6 items-center gap-1.5 rounded-md border px-1.5 text-xs font-medium"
-        >
-          <StackIcon name={name} className="size-3.5" />
+        <li key={name} className="inline-flex items-center gap-1.5 text-sm">
+          <StackIcon name={name} className="size-4" />
           {name}
         </li>
       ))}

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import ts from "typescript-compiler";
@@ -10,7 +10,13 @@ import type { StoredAnalysisRun, StoredArtifact } from "@sandbox-factory/db";
 import type { SliceManifest, BoundaryContract } from "sandbox-factory";
 import { AnalysisError } from "../src/errors.js";
 import { createSliceAdapter, sliceArtifactKind } from "../src/tools/slice.js";
-import { compileFixture, packageShim } from "../src/tools/slice/fixture.js";
+import {
+  compileFixture,
+  packageShim,
+  packageUses,
+  UNTYPED_PACKAGE_CODES,
+  UNTYPED_PACKAGE_OPTIONS,
+} from "../src/tools/slice/fixture.js";
 import { gitBlobId, gitFileMode, sha256 } from "../src/tools/slice/hash.js";
 import {
   declarationPathFor,
@@ -482,6 +488,76 @@ test("unresolved and dynamic imports block readiness and the compile reports the
   }
 });
 
+test("an import of the repository's own workspace package is marked, not left unpinned", async () => {
+  const [out, source] = await Promise.all([
+    scratch("workspace"),
+    scratch("workspace-src"),
+  ]);
+  try {
+    const write = async (path: string, text: string) => {
+      await mkdir(dirname(join(source, path)), { recursive: true });
+      await writeFile(join(source, path), text);
+    };
+    await write(
+      "package.json",
+      JSON.stringify({ private: true, workspaces: ["apps/*", "packages/*"] }),
+    );
+    await write(
+      "packages/shared/package.json",
+      JSON.stringify({ name: "@acme/shared", version: "0.0.0" }),
+    );
+    await write(
+      "apps/web/package.json",
+      JSON.stringify({
+        name: "web",
+        dependencies: { "@acme/shared": "*", zod: "^4.0.0" },
+      }),
+    );
+    await write(
+      "apps/web/src/index.ts",
+      'import { greet } from "@acme/shared";\nimport { z } from "zod";\nexport const hello = greet(z.string().parse("x"));\n',
+    );
+    const { manifest, contract } = await runSlice(
+      out,
+      ["apps/web/src/index.ts"],
+      {
+        sourceDir: source,
+        graph: graphOf(
+          [
+            [
+              "apps/web/src/index.ts",
+              "dependency:apps/web/src/index.ts:external:@acme/shared",
+              "@acme/shared",
+            ],
+            [
+              "apps/web/src/index.ts",
+              "dependency:apps/web/src/index.ts:external:zod",
+              "zod",
+            ],
+          ],
+          { "0": ["apps/web/src/index.ts"] },
+        ),
+      },
+    );
+    assert.deepEqual(manifest.requiredBuildInputs.packages, [
+      {
+        name: "@acme/shared",
+        version: "*",
+        declaredIn: "apps/web/package.json",
+        workspace: true,
+      },
+      { name: "zod", version: "^4.0.0", declaredIn: "apps/web/package.json" },
+    ]);
+    assert.equal(
+      contract.blockers.some((b) => b.code === "missing_build_input"),
+      false,
+    );
+  } finally {
+    await rm(out, { recursive: true, force: true });
+    await rm(source, { recursive: true, force: true });
+  }
+});
+
 test("a language without an extractor still gets the manifest and names", async () => {
   const out = await scratch("python");
   try {
@@ -854,6 +930,106 @@ test("configuration that reaches outside the source or cannot be read is a build
     } finally {
       await rm(none, { recursive: true, force: true });
     }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("React code checks against shimmed packages: their names are types too, and JSX takes any element", async () => {
+  const root = await scratch("react");
+  try {
+    const files = new Map([
+      [
+        "src/button.tsx",
+        [
+          'import * as React from "react";',
+          'import { cva, type VariantProps } from "class-variance-authority";',
+          'import { Slot } from "radix-ui";',
+          'import Default from "pkg";',
+          'import { z } from "zod";',
+          'import * as mod from "mod";',
+          'const variants = cva("base");',
+          "type Inner = Default.Inner<string>;",
+          "export type Shape = z.infer<typeof variants>;",
+          "export function Button({",
+          "  asChild,",
+          "  ...props",
+          '}: React.ComponentProps<"button"> &',
+          "  VariantProps<typeof variants> & { asChild?: boolean; inner?: Inner }) {",
+          "  const [count] = React.useState<number>(0);",
+          "  // Reserved words read off a package are not declared, but still read.",
+          "  mod.default(mod.delete);",
+          '  const Comp = asChild ? Slot.Root : "button";',
+          "  return <Comp data-count={count} {...props} />;",
+          "}",
+        ].join("\n"),
+      ],
+      [
+        "src/notice.tsx",
+        [
+          'import { items } from "pkg";',
+          "// React's global namespace, as @types/react declares it.",
+          "export function Notice({ children }: { children: React.ReactNode }) {",
+          "  const mode: string = import.meta.env.MODE;",
+          "  return <p title={mode}>{items.map((item) => item)}{children}</p>;",
+          "}",
+        ].join("\n"),
+      ],
+    ]);
+    const packages = [
+      "class-variance-authority",
+      "mod",
+      "pkg",
+      "radix-ui",
+      "react",
+      "zod",
+    ];
+    const uses = packageUses(files, (specifier) =>
+      packages.includes(specifier),
+    );
+    const names = (specifier: string) => [
+      ...(uses.modules.get(specifier)?.members.keys() ?? []),
+    ];
+    assert.deepEqual(names("react"), ["ComponentProps", "useState"]);
+    assert.deepEqual(names("class-variance-authority"), [
+      "cva",
+      "VariantProps",
+    ]);
+    assert.deepEqual(names("pkg"), ["default", "items"]);
+    assert.deepEqual(
+      [
+        ...(uses.modules.get("pkg")?.members.get("default")?.members.keys() ??
+          []),
+      ],
+      ["Inner"],
+    );
+    assert.deepEqual(
+      [...(uses.globals.get("React")?.members.keys() ?? [])],
+      ["ReactNode"],
+    );
+
+    const compile = (shim: string) =>
+      compileFixture({
+        root,
+        files: new Map([...files, ["__slice__/packages.d.ts", shim]]),
+        compilerOptions: {
+          strict: true,
+          jsx: ts.JsxEmit.ReactJSX,
+          module: ts.ModuleKind.ESNext,
+          moduleResolution: ts.ModuleResolutionKind.Bundler,
+          ...UNTYPED_PACKAGE_OPTIONS,
+        },
+        shimmedPackages: packages,
+        ignoredCodes: UNTYPED_PACKAGE_CODES,
+      });
+    assert.deepEqual(compile(packageShim(packages, uses)).diagnostics, []);
+    // Untyped modules alone: every name used as a type, and JSX, fails.
+    const untyped = compile(packageShim(packages));
+    assert.equal(untyped.ok, false);
+    assert.ok(
+      untyped.diagnostics.some(({ code }) => code === "TS2709"),
+      JSON.stringify(untyped.diagnostics),
+    );
   } finally {
     await rm(root, { recursive: true, force: true });
   }

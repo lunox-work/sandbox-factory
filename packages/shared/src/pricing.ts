@@ -7,6 +7,7 @@ import {
   RUBRIC_CODE_STATUSES,
   RUBRIC_DIMENSION_IDS,
   SCENARIO_WEIGHTS,
+  WEIGHT_POINTS,
   STEP_SETTING_LIMITS,
   WHOLE_BOUNTY_COMPLEXITIES,
 } from "sandbox-factory";
@@ -261,7 +262,12 @@ const stepPointsSchema = z
   .min(STEP_SETTING_LIMITS.minWeightPoints)
   .max(STEP_SETTING_LIMITS.maxPoints);
 
-/** The settings a step was computed with: `pricing/step` in core. */
+/**
+ * The settings a step was computed with: `pricing/step` in core. A weight
+ * the stored table predates (`covered`, on a step or an assessment stored
+ * before it existed) reads as its default, so an older proposal still
+ * parses and still prices.
+ */
 export const stepSettingsSchema = z.object({
   pointsPerStep: z
     .number()
@@ -270,8 +276,14 @@ export const stepSettingsSchema = z.object({
     .max(STEP_SETTING_LIMITS.maxPoints),
   weightPoints: z.object(
     Object.fromEntries(
-      SCENARIO_WEIGHTS.map((weight) => [weight, stepPointsSchema]),
-    ) as Record<(typeof SCENARIO_WEIGHTS)[number], typeof stepPointsSchema>,
+      SCENARIO_WEIGHTS.map((weight) => [
+        weight,
+        stepPointsSchema.default(WEIGHT_POINTS[weight]),
+      ]),
+    ) as Record<
+      (typeof SCENARIO_WEIGHTS)[number],
+      z.ZodDefault<typeof stepPointsSchema>
+    >,
   ),
 });
 
@@ -315,14 +327,15 @@ export const rubricAssessmentSchema = z.object({
     z.object({
       id: z.enum(RUBRIC_DIMENSION_IDS),
       label: z.string(),
-      points: rubricPointsSchema,
+      // A discount is a negative factor, and the code's discounts can
+      // outweigh its costs; the total is what is never below zero.
+      points: z.number().int(),
       measured: z.boolean(),
       factors: z.array(
         z.object({
           id: z.string().min(1),
           label: z.string(),
           evidence: z.string(),
-          // A discount is a negative factor; its dimension is never below zero.
           points: z.number().int(),
         }),
       ),

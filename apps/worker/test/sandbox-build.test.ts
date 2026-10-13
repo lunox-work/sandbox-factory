@@ -728,12 +728,13 @@ test("alias collisions and scope blockers stop before any job runs; a failing ba
   const prepareFails = fakeProvider((argv) =>
     argv[1] === "install" ? { exitCode: 1 } : {},
   );
+  const prepared = (await runBuild(prepareFails.provider)).manifest.baseline;
   assert.deepEqual(
-    (await runBuild(prepareFails.provider)).manifest.baseline?.steps.map(
-      (s) => s.name,
-    ),
+    prepared?.steps.map((s) => s.name),
     ["prepare"],
   );
+  // The hidden tests did not run, but the version has them.
+  assert.deepEqual(prepared?.reasons, ["prepare exited with 1."]);
   const ciFails = fakeProvider((argv) =>
     argv[1] === "ci" ? { exitCode: 1 } : {},
   );

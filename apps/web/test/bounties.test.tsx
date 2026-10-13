@@ -1032,7 +1032,7 @@ test("a bounty opens through its own workspace, as the role held there allows", 
   );
   expect(
     within(screen.getByTestId("bounty-detail")).getByRole("button", {
-      name: "Create sandbox",
+      name: "Generate",
     }),
   ).toBeDefined();
   expect(
@@ -1841,6 +1841,60 @@ test("an admin proposes a bounty from inside it, follows its sizing, and lands o
       "Scheduling an interview sends the candidate one email.",
     ),
   ).toBeNull();
+});
+
+test("a proposal that lands keeps its parts on screen until it is read, not a loading line", async () => {
+  const state = server([
+    ["POST", "/bounties/bty_7/propose", () => json({ run: run() }, 202)],
+    [
+      "GET",
+      "/runs/brn_1",
+      () =>
+        json({
+          run: run(
+            [
+              {
+                externalIssueId: "bty_7",
+                issueKey: null,
+                bountyId: "bty_7",
+                proposalId: "bpr_9",
+                status: "proposed",
+              },
+            ],
+            "succeeded",
+          ),
+        }),
+    ],
+    scopedBounty,
+  ]);
+  // The proposal's read is held until released, as a slow one would be.
+  let asked = false;
+  let release = () => {};
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  vi.stubGlobal("fetch", (input: string, init?: RequestInit) => {
+    if (!String(input).endsWith("/proposals/bpr_9"))
+      return state.fetchMock(input, init);
+    asked = true;
+    return held.then(() => state.fetchMock(input, init));
+  });
+  window.history.replaceState(null, "", "/bounties/acme/bty_7?tab=price");
+  render(<Shell {...inAcme("admin")} />);
+  const detail = await screen.findByTestId("bounty-detail");
+  const part = within(detail).getByRole("region", { name: "Price" });
+  await userEvent.click(within(part).getByRole("button", { name: "Price it" }));
+  expect(await within(part).findByTestId("proposal-preview")).toBeDefined();
+
+  // Landed, and being read: what was shown of it stays.
+  await waitFor(() => expect(asked).toBe(true), { timeout: 3_000 });
+  expect(within(part).getByTestId("proposal-preview")).toBeDefined();
+  expect(within(detail).queryByText(/Loading the price/)).toBeNull();
+
+  release();
+  expect(await within(detail).findByTestId("proposal-detail")).toBeDefined();
+  expect(within(detail).queryByTestId("proposal-preview")).toBeNull();
+  expect(within(detail).queryByText(/Loading the price/)).toBeNull();
 });
 
 test("a bounty that already has a proposal opens it without sizing", async () => {
@@ -2933,12 +2987,12 @@ test("the panel names the repositories its sizing touches", async () => {
   ).toBeDefined();
 });
 
-test("a sandbox is made from the bounty alone, and seen after", async () => {
+test("a sandbox is made with its first slice from the bounty alone, and seen after", async () => {
   let made = false;
   const state = server([
     [
       "POST",
-      "/sandboxes",
+      "/sandboxes/start",
       () => {
         made = true;
         return json(
@@ -2955,6 +3009,17 @@ test("a sandbox is made from the bounty alone, and seen after", async () => {
               createdAt: stamp,
               updatedAt: stamp,
             },
+            slice: {
+              status: "queued",
+              code: null,
+              reason: null,
+              specRevision: 2,
+              scopeRunId: null,
+              sliceRunId: null,
+            },
+            version: null,
+            source: null,
+            run: null,
           },
           201,
         );
@@ -2982,15 +3047,22 @@ test("a sandbox is made from the bounty alone, and seen after", async () => {
 
   const panel = await screen.findByTestId("bounty-detail");
   const sandboxPart = within(panel).getByRole("region", { name: "Sandbox" });
-  await userEvent.click(
-    within(sandboxPart).getByRole("button", { name: "Create sandbox" }),
-  );
+  // No sandbox to make first: slicing its first version makes it.
+  expect(
+    within(sandboxPart).queryByRole("button", { name: "Create sandbox" }),
+  ).toBeNull();
+  const slice = await within(sandboxPart).findByRole("button", {
+    name: "Slice",
+  });
+  await waitFor(() => expect(slice.hasAttribute("disabled")).toBe(false));
+  await userEvent.click(slice);
   // Nobody picks its repository: the server cuts it from the one the
   // bounty's sizing said the work touches.
   await waitFor(() =>
     expect(
       state.calls.find(
-        ({ method, url }) => method === "POST" && url.includes("/sandboxes"),
+        ({ method, url }) =>
+          method === "POST" && url.includes("/sandboxes/start"),
       )?.body,
     ).toEqual({ bountyId: "bty_7" }),
   );
@@ -3007,7 +3079,7 @@ test("a sandbox that could not be made says why, and the bounty stays as it was"
   const state = server([
     [
       "POST",
-      "/sandboxes",
+      "/sandboxes/start",
       () =>
         json(
           {
@@ -3029,9 +3101,12 @@ test("a sandbox that could not be made says why, and the bounty stays as it was"
 
   const panel = await screen.findByTestId("bounty-detail");
   const sandboxPart = within(panel).getByRole("region", { name: "Sandbox" });
-  await userEvent.click(
-    within(sandboxPart).getByRole("button", { name: "Create sandbox" }),
-  );
+  // Its sizing touches no repository, so its first version is generated.
+  const generate = await within(sandboxPart).findByRole("button", {
+    name: "Generate",
+  });
+  await waitFor(() => expect(generate.hasAttribute("disabled")).toBe(false));
+  await userEvent.click(generate);
   expect((await within(sandboxPart).findByRole("alert")).textContent).toContain(
     "This bounty already has a sandbox.",
   );
@@ -3568,10 +3643,13 @@ function generatingServer(input: {
   source?: () => Record<string, unknown>;
   /** Where each step stands; the scope alone by default. */
   stages?: Record<string, unknown> | (() => Record<string, unknown>);
+  /** More routes, matched before these. */
+  routes?: [string, string, (body: unknown) => Promise<Response>][];
 }) {
   const stages = () =>
     typeof input.stages === "function" ? input.stages() : input.stages;
   return server([
+    ...(input.routes ?? []),
     [
       "GET",
       "/bounties/bty_7",
@@ -3891,6 +3969,271 @@ test("a sandbox is its slice and its submissions", async () => {
   ).toBe("/sandboxes/acme/sbv_1");
 });
 
+/** A version sliced from the repository, its source and its build. */
+const slicedSource = {
+  ...generatedSource,
+  origin: "slice",
+  sourceSnapshotId: "rsn_1",
+  sourceCommitSha: "c".repeat(40),
+  sliceRunId: "arn_slice",
+  manifestSha256: "m".repeat(64),
+  contractSha256: "k".repeat(64),
+  starterRunId: null,
+  buildRunId: "arn_build",
+};
+function buildRun(overrides: Record<string, unknown> = {}) {
+  return {
+    ...starterRun(),
+    id: "arn_build",
+    snapshotId: "rsn_1",
+    repoId: "ghr_1",
+    tool: "sandbox_build",
+    toolVersion: "sandbox_build@1",
+    params: {
+      deadlineMinutes: 30,
+      sliceRunId: "arn_slice",
+      sandboxVersionId: "sbv_1",
+      manifestSha256: "a".repeat(64),
+      contractSha256: "b".repeat(64),
+      transformConfigSha256: "c".repeat(64),
+      approvedTaskSha256: "d".repeat(64),
+    },
+    ...overrides,
+  };
+}
+/** A linked sandbox's next slice, as its sizing has it. */
+function sliceOf(overrides: Record<string, unknown> = {}) {
+  return {
+    status: "ready",
+    code: null,
+    reason: null,
+    specRevision: 2,
+    scopeRunId: "arn_scope",
+    sliceRunId: "arn_slice",
+    ...overrides,
+  };
+}
+/** A sandbox sliced from `ghr_1`, whose slice answers as given. */
+function slicingServer(input: {
+  versions: () => unknown[];
+  slice: () => Record<string, unknown>;
+  sliceVersion?: () => Promise<Response>;
+  routes?: [string, string, (body: unknown) => Promise<Response>][];
+}) {
+  return generatingServer({
+    versions: input.versions,
+    sandbox: () => ({ sourceRepoId: "ghr_1" }),
+    source: () => slicedSource,
+    routes: [
+      ...(input.routes ?? []),
+      [
+        "POST",
+        "/sandboxes/sbx_1/slice",
+        () =>
+          input.sliceVersion?.() ??
+          json(
+            { slice: input.slice(), version: null, source: null, run: null },
+            202,
+          ),
+      ],
+      ["GET", "/sandboxes/sbx_1/slice", () => json({ slice: input.slice() })],
+    ],
+  });
+}
+
+test("an admin slices a version from its sizing's slice, and follows its build", async () => {
+  let sliced = false;
+  const state = slicingServer({
+    versions: () => (sliced ? [generatedVersion] : []),
+    slice: () => sliceOf(),
+    sliceVersion: () => {
+      sliced = true;
+      return json(
+        {
+          slice: sliceOf(),
+          version: generatedVersion,
+          source: slicedSource,
+          run: buildRun({ status: "queued" }),
+        },
+        201,
+      );
+    },
+    routes: [
+      ["GET", "/github/runs/arn_build", () => json({ run: buildRun() })],
+    ],
+  });
+  vi.stubGlobal("fetch", state.fetchMock);
+  const part = await sandboxPart();
+  expect(
+    await within(part).findByText(/Its sizing's slice is ready/),
+  ).toBeDefined();
+  // Nothing is generated for a sandbox with a repository.
+  expect(within(part).queryByRole("button", { name: /Generate/ })).toBeNull();
+  await userEvent.click(
+    await within(part).findByRole("button", { name: "Slice" }),
+  );
+  await waitFor(() =>
+    expect(
+      state.calls.some(
+        ({ method, url }) =>
+          method === "POST" &&
+          url.endsWith("/orgs/org_1/sandboxes/sbx_1/slice"),
+      ),
+    ).toBe(true),
+  );
+  expect(await within(part).findByText("Building")).toBeDefined();
+  expect(
+    within(part).getByText("Building the slice and checking its baseline"),
+  ).toBeDefined();
+  // The draft its slice was just cut into is not cut again.
+  expect(
+    (
+      within(part).getByRole("button", {
+        name: "Slice again",
+      }) as HTMLButtonElement
+    ).disabled,
+  ).toBe(true);
+});
+
+test("a slice its sizing is still cutting holds Slice, and shows the scope agent at work", async () => {
+  vi.stubGlobal(
+    "fetch",
+    slicingServer({
+      versions: () => [],
+      slice: () => sliceOf({ status: "scoping", sliceRunId: null }),
+      routes: [
+        [
+          "GET",
+          "/github/runs/arn_scope",
+          () =>
+            json({
+              run: {
+                ...starterRun(),
+                id: "arn_scope",
+                snapshotId: "rsn_1",
+                repoId: "ghr_1",
+                tool: "scope",
+                toolVersion: "scope@2",
+                params: {
+                  deadlineMinutes: 60,
+                  agent: "scope",
+                  graphRunId: "arn_graph",
+                  proposalId: "bpr_7",
+                  specRevision: 2,
+                  specHash: "h",
+                },
+                progress: {
+                  count: 1,
+                  steps: [{ at: stamp, text: "Read src/invitations.ts" }],
+                },
+              },
+            }),
+        ],
+      ],
+    }).fetchMock,
+  );
+  const part = await sandboxPart();
+  expect(
+    await within(part).findByText(
+      "The scope agent is picking the files the task needs",
+    ),
+  ).toBeDefined();
+  expect(
+    await within(part).findByText("Read src/invitations.ts"),
+  ).toBeDefined();
+  expect(
+    (within(part).getByRole("button", { name: "Slice" }) as HTMLButtonElement)
+      .disabled,
+  ).toBe(true);
+});
+
+test("with no slice yet, Slice asks its sizing for one and follows it", async () => {
+  let asked = false;
+  const state = slicingServer({
+    versions: () => [],
+    slice: () =>
+      asked
+        ? sliceOf({ status: "queued", scopeRunId: null, sliceRunId: null })
+        : sliceOf({ status: "none", scopeRunId: null, sliceRunId: null }),
+    sliceVersion: () => {
+      asked = true;
+      return json(
+        {
+          slice: sliceOf({
+            status: "queued",
+            scopeRunId: null,
+            sliceRunId: null,
+          }),
+          version: null,
+          source: null,
+          run: null,
+        },
+        202,
+      );
+    },
+  });
+  vi.stubGlobal("fetch", state.fetchMock);
+  const part = await sandboxPart();
+  expect(
+    await within(part).findByText(/Slice one: the scope agent picks/),
+  ).toBeDefined();
+  await userEvent.click(
+    await within(part).findByRole("button", { name: "Slice" }),
+  );
+  expect(
+    await within(part).findByText("Waiting for room to start the slice"),
+  ).toBeDefined();
+  expect(state.calls.filter(({ method }) => method === "POST")).toHaveLength(1);
+});
+
+test("a slice that failed says why, and a refused slice says why too", async () => {
+  vi.stubGlobal(
+    "fetch",
+    slicingServer({
+      versions: () => [],
+      slice: () =>
+        sliceOf({
+          status: "failed",
+          code: "scope_failed",
+          reason:
+            "The scope agent could not pick what the slice holds. Price it again to slice a new spec.",
+        }),
+    }).fetchMock,
+  );
+  const part = await sandboxPart();
+  expect(
+    await within(part).findByText(/The scope agent could not pick/),
+  ).toBeDefined();
+  expect(
+    (within(part).getByRole("button", { name: "Slice" }) as HTMLButtonElement)
+      .disabled,
+  ).toBe(true);
+  cleanup();
+
+  vi.stubGlobal(
+    "fetch",
+    slicingServer({
+      versions: () => [],
+      slice: () => sliceOf(),
+      sliceVersion: () =>
+        json(
+          {
+            error: "The active analysis limit has been reached.",
+            code: "run_limit",
+          },
+          409,
+        ),
+    }).fetchMock,
+  );
+  const again = await sandboxPart();
+  await userEvent.click(
+    await within(again).findByRole("button", { name: "Slice" }),
+  );
+  expect((await within(again).findByRole("alert")).textContent).toContain(
+    "The active analysis limit has been reached.",
+  );
+});
+
 test("a refused generation says why", async () => {
   vi.stubGlobal(
     "fetch",
@@ -4149,6 +4492,186 @@ test("a proposal waiting on its code is read again once the code is measured, an
   );
   expect(reads.length).toBeGreaterThanOrEqual(2);
 });
+
+test("a proposal whose code is being measured offers no re-analysis or approval until it is", async () => {
+  const spec = {
+    feature: "Invitations",
+    background: [],
+    scenarios: [
+      {
+        id: "s1",
+        kind: "happy",
+        title: "One invitation",
+        steps: [{ keyword: "Then", text: "one email" }],
+        origin: "draft",
+        weight: "heavy",
+      },
+    ],
+    openQuestions: [],
+    assumptions: [],
+  } as const;
+  const waiting = proposal({
+    specRevision: 1,
+    rubric: assessRubric({ spec, code: { status: "pending" } }),
+  });
+  const { fetchMock } = server([
+    [
+      "GET",
+      "/bounties/bty_7",
+      // Its scope approved, so only the measuring holds the price.
+      () => json({ bounty: detail({ ...SCOPED, proposal: liveProposal() }) }),
+    ],
+    [
+      "GET",
+      "/profile",
+      () =>
+        json({
+          profiles: [
+            {
+              id: "bpf_1",
+              proposalId: "bpr_9",
+              specRevision: 1,
+              repository: "acme/app",
+              status: "scoping",
+              errorCode: null,
+              runErrorCode: null,
+              snapshotId: "rsn_1",
+              scopeRunId: "arn_1",
+              sliceRunId: null,
+              profile: null,
+              createdAt: stamp,
+              updatedAt: stamp,
+            },
+          ],
+        }),
+    ],
+    ["GET", "/spec", () => json({ spec: null })],
+    [
+      "GET",
+      "/proposals/bpr_9",
+      () =>
+        json({
+          proposal: waiting,
+          freshness: { freshness: "current", checkedAt: stamp },
+          liveSpec: null,
+          writebackOperations: [],
+        }),
+    ],
+  ]);
+  vi.stubGlobal("fetch", fetchMock);
+  window.history.replaceState(null, "", "/bounties/acme/bty_7?tab=price");
+  render(<Shell {...inAcme("admin")} />);
+  const page = await screen.findByTestId("bounty-detail");
+  const price = await within(page).findByTestId("proposal-price");
+  expect(
+    await within(price).findByText("Measuring the code; the price may change"),
+  ).toBeDefined();
+  // The price the measurement sets is on its way: asking again now would
+  // race it.
+  expect(
+    within(price).queryByRole("button", { name: "Re-analyze" }),
+  ).toBeNull();
+  // Nor is it approved while the price it would approve may still move.
+  const approve = within(page).getByRole("button", { name: "Approve" });
+  expect((approve as HTMLButtonElement).disabled).toBe(true);
+});
+
+/** The last Jira update on `bpr_9`'s approval, as its read names it. */
+function writeback(overrides: Record<string, unknown> = {}) {
+  return {
+    id: "bwb_1",
+    organizationId: "org_1",
+    proposalId: "bpr_9",
+    proposalRevision: 1,
+    kind: "approved",
+    status: "done",
+    step: "label",
+    payload: {
+      complexity: "M",
+      amountMinor: 200,
+      currency: "USD",
+      proposalUrl: "https://app.test/bounties/acme/bty_7?tab=price",
+    },
+    jiraCommentId: "10042",
+    errorCode: null,
+    commentAttemptedAt: stamp,
+    createdAt: stamp,
+    updatedAt: stamp,
+    ...overrides,
+  };
+}
+
+test.each([
+  {
+    operation: writeback(),
+    line: `Posted the ${money(200, "USD")} price to APP-1 and labeled it bounty.`,
+    reason: null,
+    link: "View comment",
+    button: null,
+  },
+  {
+    operation: writeback({ status: "failed", errorCode: "reconnect" }),
+    line: `Posted the ${money(200, "USD")} price to APP-1, but couldn't add the bounty label.`,
+    reason: "This Jira site needs reconnecting.",
+    link: "View comment",
+    button: "Retry",
+  },
+  {
+    operation: writeback({
+      status: "uncertain",
+      step: "comment",
+      jiraCommentId: null,
+    }),
+    line: `Sent the ${money(200, "USD")} price to APP-1, but Jira didn't confirm it landed.`,
+    reason:
+      "Check Jira to see whether the comment is there before trying again.",
+    link: null,
+    button: "Check Jira",
+  },
+])(
+  "a price's Jira update says what reached the issue: $operation.status",
+  async ({ operation, line, reason, link, button }) => {
+    vi.stubGlobal(
+      "fetch",
+      server([
+        [
+          "GET",
+          "/bounties/bty_7",
+          () =>
+            json({
+              bounty: detail({ jira: jiraLink, proposal: liveProposal() }),
+            }),
+        ],
+        [
+          "GET",
+          "/proposals/bpr_9",
+          () =>
+            json({
+              proposal: proposal({ status: "approved" }),
+              freshness: { freshness: "current", checkedAt: stamp },
+              liveSpec: null,
+              writebackOperations: [operation],
+            }),
+        ],
+      ]).fetchMock,
+    );
+    window.history.replaceState(null, "", "/bounties/acme/bty_7?tab=price");
+    render(<Shell {...inAcme("admin")} />);
+    const delivery = await screen.findByTestId("jira-delivery");
+    expect(within(delivery).getByText(line)).toBeDefined();
+    if (reason !== null)
+      expect(within(delivery).getByText(reason)).toBeDefined();
+    if (link === null) expect(within(delivery).queryByRole("link")).toBeNull();
+    else
+      expect(
+        within(delivery).getByRole("link", { name: link }).getAttribute("href"),
+      ).toBe(`${jiraLink.url}?focusedCommentId=10042`);
+    if (button !== null)
+      expect(
+        within(delivery).getByRole("button", { name: button }),
+      ).toBeDefined();
+  },
+);
 
 test("a bounty's page keeps it at a glance, its context and workspace beside every tab", async () => {
   vi.stubGlobal("fetch", server([approved]).fetchMock);
@@ -4908,7 +5431,7 @@ test("a sandbox waits on an approved price: its notice says why, and nothing is 
     "Locked. Approve the price before changing the sandbox.",
   );
   const part = within(page).getByRole("region", { name: "Sandbox" });
-  const create = within(part).getByRole("button", { name: "Create sandbox" });
+  const create = within(part).getByRole("button", { name: "Generate" });
   expect(create.hasAttribute("disabled")).toBe(true);
   expect(await reasonOn(create)).toBe(
     "Approve the price before changing the sandbox.",
@@ -5149,12 +5672,15 @@ test("a Jira update under way is read until it settles, with no refresh", async 
   window.history.replaceState(null, "", "/bounties/acme/bty_7?tab=price");
   render(<Shell {...inAcme("admin")} />);
   const proposalDetail = await screen.findByTestId("proposal-detail");
-  expect(await within(proposalDetail).findByText("pending")).toBeDefined();
-  expect(
-    await within(proposalDetail).findByText("done", undefined, {
-      timeout: 5_000,
-    }),
-  ).toBeDefined();
+  const delivery = await within(proposalDetail).findByTestId("jira-delivery");
+  expect(delivery.dataset.status).toBe("pending");
+  await waitFor(
+    () =>
+      expect(
+        within(proposalDetail).getByTestId("jira-delivery").dataset.status,
+      ).toBe("done"),
+    { timeout: 5_000 },
+  );
   // Settled, it is not read again.
   const settled = reads;
   await new Promise((resolve) => setTimeout(resolve, 3_500));
@@ -5320,6 +5846,8 @@ test("each link says whether its sync is in use, warns when its source is ahead,
   expect(within(jira).getByRole("status").textContent).toContain(
     "APP-1 has changed in Jira since v2 was synced.",
   );
+  // Its sync is the warning's action, as well as in the row's menu.
+  expect(within(jira).getByRole("button", { name: "Sync" })).toBeDefined();
   // The scope's tab warns of it too.
   const steps = screen.getByRole("tablist", { name: "Steps" });
   expect(
@@ -5369,6 +5897,78 @@ test("each link says whether its sync is in use, warns when its source is ahead,
   ).toBe(false);
 });
 
+test("an approved scope says its sources are ahead, and offers no sync or pick", async () => {
+  const approved = detail({
+    ...SCOPED,
+    jira: jiraLink,
+    stages: {
+      scope: { version: 1, context: { jira: 2, github: 1 } },
+      price: null,
+      sandbox: null,
+    },
+  });
+  const state = server([
+    ["GET", "/jira/connections", () => json({ connections: [jiraConnection] })],
+    builtCommits("abcdef1234567"),
+    [
+      "GET",
+      "/bounties/bty_7/context",
+      () =>
+        json({
+          jira: {
+            state: "ahead",
+            reason: null,
+            linked: { ref: "APP-1", url: jiraLink.url },
+            liveRevision: "2026-10-07T00:00:00.000+0000",
+            latest: jiraContextVersion(2),
+          },
+          github: {
+            state: "ahead",
+            reason: null,
+            linked: { ref: "acme/app", url: "https://github.com/acme/app" },
+            liveRevision: "acme/app@1111111aaaaaa",
+            latest: githubContextVersion(1),
+          },
+        }),
+    ],
+    ["GET", "/bounties/bty_7", () => json({ bounty: approved })],
+  ]);
+  vi.stubGlobal("fetch", state.fetchMock);
+  window.history.replaceState(null, "", "/bounties/acme/bty_7");
+  render(<Shell {...inAcme("member")} />);
+  const page = await screen.findByTestId("bounty-detail");
+
+  // Still said, with what to do instead of a sync.
+  const jira = await within(page).findByTestId("jira-context");
+  expect(within(jira).getByRole("status").textContent).toBe(
+    "APP-1 has changed in Jira since v2 was synced. Unapprove the scope to read it again.",
+  );
+  expect(within(jira).queryByRole("button", { name: "Sync" })).toBeNull();
+  const github = within(page).getByTestId("github-context");
+  expect(within(github).getByRole("status").textContent).toContain(
+    "Unapprove the scope to read them again.",
+  );
+  // The commit is shown, not changed.
+  const picker = await within(github).findByRole("button", {
+    name: "Commit acme/app is read at",
+  });
+  expect(picker.hasAttribute("disabled")).toBe(true);
+  // Nor is it synced from the row's menu.
+  await userEvent.click(
+    within(page).getByRole("button", { name: "Jira options" }),
+  );
+  expect(
+    (
+      await screen.findByRole("menuitem", { name: "Sync context" })
+    ).getAttribute("data-disabled"),
+  ).not.toBeNull();
+  expect(
+    state.calls.some(
+      ({ method, url }) => method !== "GET" && url.includes("/context/"),
+    ),
+  ).toBe(false);
+});
+
 /** The built commits route, before the context route it would match. */
 function builtCommits(held: string | null) {
   return [
@@ -5406,6 +6006,110 @@ function builtCommits(held: string | null) {
       }),
   ] as [string, string, (body: unknown) => Promise<Response>];
 }
+
+test("a repository's menu opens its page in a new tab, and the files built at the commit the scope reads", async () => {
+  const run = {
+    id: "arn_wiki",
+    snapshotId: "rsn_old",
+    repoId: "ghr_1",
+    tool: "deepwiki",
+    toolVersion: "test",
+    params: { deadlineMinutes: 30, builder: "deepwiki" },
+    status: "succeeded",
+    attempt: 0,
+    maxAttempts: 2,
+    errorCode: null,
+    errorDetail: null,
+    progress: null,
+    startedAt: null,
+    finishedAt: null,
+    deadlineAt: null,
+    createdAt: stamp,
+  };
+  const state = server([
+    builtCommits("abcdef1234567"),
+    [
+      "GET",
+      "/repositories/ghr_1/snapshots",
+      () =>
+        json({
+          snapshots: [
+            {
+              id: "rsn_old",
+              repoId: "ghr_1",
+              commitSha: "abcdef1234567",
+              ref: "refs/heads/main",
+              treeSha: "t".repeat(40),
+              treeTruncated: false,
+              fileCount: 3,
+              totalBytes: 300,
+              languages: {},
+              createdAt: stamp,
+            },
+          ],
+        }),
+    ],
+    ["GET", "/repositories/ghr_1/runs", () => json({ runs: [run] })],
+    [
+      "GET",
+      "/runs/arn_wiki/artifacts",
+      () =>
+        json({
+          artifacts: [
+            {
+              id: "art_intro",
+              runId: "arn_wiki",
+              kind: "manifest",
+              path: "pages/intro.md",
+              contentType: "text/markdown",
+              sizeBytes: 12,
+              sha256: "a".repeat(64),
+              meta: null,
+              createdAt: stamp,
+            },
+          ],
+        }),
+    ],
+    ["GET", "/bounties/bty_7", () => json({ bounty: detail() })],
+  ]);
+  vi.stubGlobal("fetch", state.fetchMock);
+  window.history.replaceState(null, "", "/bounties/acme/bty_7");
+  render(<Shell {...inAcme("member")} />);
+  const page = await screen.findByTestId("bounty-detail");
+  const github = within(page).getByTestId("github-context");
+  const [app, web] = await within(github).findAllByTestId("repository-commit");
+
+  // One never built has its page, but nothing to read.
+  await userEvent.click(
+    within(web!).getByRole("button", { name: "acme/web options" }),
+  );
+  expect(
+    (
+      await screen.findByRole("menuitem", { name: "View context" })
+    ).getAttribute("aria-disabled"),
+  ).toBe("true");
+  await userEvent.keyboard("{Escape}");
+
+  await userEvent.click(
+    within(app!).getByRole("button", { name: "acme/app options" }),
+  );
+  const tab = await screen.findByRole("menuitem", { name: "Open in new tab" });
+  expect(tab.getAttribute("href")).toBe("/o/acme/repositories/ghr_1");
+  expect(tab.getAttribute("target")).toBe("_blank");
+  await userEvent.click(screen.getByRole("menuitem", { name: "View context" }));
+
+  // At the older build the scope reads, not the newest.
+  const dialog = await screen.findByRole("dialog");
+  expect(
+    await within(dialog).findByText("acme/app @ abcdef1", { exact: false }),
+  ).toBeDefined();
+  expect(
+    await within(dialog).findByRole("button", { name: "intro.md" }),
+  ).toBeDefined();
+  expect(
+    state.calls.some(({ url }) => url.includes("runs?snapshotId=rsn_old")),
+  ).toBe(true);
+});
 
 test("a refused sync or pick says why, and an unlinked source cannot be synced", async () => {
   const state = server([
@@ -5791,7 +6495,7 @@ const previewSpec = {
   assumptions: [],
 };
 
-test("a bounty being sized shows its scenarios, then its size and price, as each lands", async () => {
+test("a bounty being sized prices it from its scenarios as they land, then says the model's size", async () => {
   let polls = 0;
   const state = server([
     ["POST", "/bounties/bty_7/propose", () => json({ run: run() }, 202)],
@@ -5841,9 +6545,15 @@ test("a bounty being sized shows its scenarios, then its size and price, as each
   expect(within(preview).getByRole("status").textContent).toContain(
     "Sizing the bounty…",
   );
-  expect(within(preview).queryByTestId("preview-amount")).toBeNull();
+  // And with them the size they score, priced on the run's card, before
+  // the model has said.
+  expect(within(preview).getByTestId("preview-amount").textContent).toContain(
+    "1.00",
+  );
+  expect(within(preview).getByText("XS+")).toBeDefined();
 
-  // Then the size, its price on the run's card, and why.
+  // Then the model's size, its price, and why: an L is too far from the
+  // scenarios' XS+ to take without a reviewer, so the model's stands.
   expect(
     await within(preview).findByText(
       "Three services change together.",
@@ -5860,7 +6570,7 @@ test("a bounty being sized shows its scenarios, then its size and price, as each
   );
 });
 
-test("a size the model could not give previews as unsized, as the proposal will land", async () => {
+test("a size neither the scenarios nor the model could give previews as unsized, as the proposal will land", async () => {
   const state = server([
     ["POST", "/bounties/bty_7/propose", () => json({ run: run() }, 202)],
     [
@@ -5870,7 +6580,8 @@ test("a size the model could not give previews as unsized, as the proposal will 
         json({
           run: {
             ...run([], "running"),
-            progress: { spec: previewSpec, sizing: null },
+            // The draft failed as well, so nothing scores a size.
+            progress: { spec: null, sizing: null },
           },
         }),
     ],

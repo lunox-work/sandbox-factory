@@ -58,10 +58,11 @@ import { cn } from "@/lib/utils";
 import { clients } from "./data/query";
 import { BLOCK_ACTION, Block, FLUSH_LIST } from "./features/analysis/Blocks";
 import { BuilderRow, needsBuild } from "./features/analysis/BuilderRow";
+import { ContextViewer } from "./features/analysis/ContextViewer";
 import {
-  ContextViewer,
-  type ContextBuild,
-} from "./features/analysis/ContextViewer";
+  openSigned,
+  useContextBuilds,
+} from "./features/analysis/RepositoryContext";
 import { RunHistory } from "./features/analysis/RunHistory";
 import { RunLogs } from "./features/analysis/RunLogs";
 import { summaryOf } from "./features/analysis/artifacts";
@@ -70,7 +71,6 @@ import { sizeLabel } from "./features/sandbox/file-tree";
 import {
   useAnalysisResources,
   useRepoBranches,
-  useRunArtifacts,
 } from "./features/analysis/queries";
 import { REMOVE_REPOSITORY_WARNING } from "./Github";
 import { isPlainLeftClick, pathForScreen } from "./routes";
@@ -373,24 +373,11 @@ function RepositoryView({
       (run) => run.snapshotId === contextId && run.tool === builder,
     );
   /** Each builder's succeeded run in the context: what "View all" opens. */
-  const built = CONTEXT_BUILDERS.flatMap((builder) => {
-    const run = contextRuns.find(
-      (each) =>
-        each.snapshotId === contextId &&
-        each.tool === builder &&
-        each.status === "succeeded",
-    );
-    return run === undefined ? [] : [{ builder, run }];
-  });
-  const builtArtifacts = useRunArtifacts(
+  const { builds, retry: retryBuilds } = useContextBuilds(
     organizationId,
-    built.map(({ run }) => run.id),
+    contextId,
+    contextRuns,
   );
-  const builds: ContextBuild[] = built.map((build) => ({
-    ...build,
-    artifacts: builtArtifacts.artifacts.get(build.run.id),
-    failed: builtArtifacts.failed.has(build.run.id),
-  }));
 
   /*
     What "Build all" would start on the context's own snapshot. The
@@ -434,22 +421,12 @@ function RepositoryView({
   async function openArtifact(
     target: { artifactId: string } | { runId: string },
   ) {
-    const tab = window.open("about:blank", "_blank");
-    if (tab !== null) tab.opener = null;
-    try {
-      const url =
-        "artifactId" in target
-          ? await client.artifactUrl(organizationId, target.artifactId)
-          : await client.logUrl(organizationId, target.runId);
-      if (tab === null) {
-        setOpenError("Allow pop-ups to open this file, then try again.");
-        return;
-      }
-      tab.location.href = url;
-    } catch (cause) {
-      tab?.close();
-      setOpenError(errorMessage(cause, "Could not open that file. Try again."));
-    }
+    const failure = await openSigned(() =>
+      "artifactId" in target
+        ? client.artifactUrl(organizationId, target.artifactId)
+        : client.logUrl(organizationId, target.runId),
+    );
+    if (failure !== null) setOpenError(failure);
   }
   const open = (artifactId: string) => {
     void openArtifact({ artifactId });
@@ -883,7 +860,7 @@ function RepositoryView({
         owner={organizationId}
         commit={contextCommit}
         builds={builds}
-        onRetry={builtArtifacts.retry}
+        onRetry={retryBuilds}
         open={viewing}
         onOpenChange={setViewing}
         onOpenRaw={open}

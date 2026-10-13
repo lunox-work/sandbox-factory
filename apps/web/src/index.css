@@ -3305,6 +3305,302 @@
   }
 }
 
+/*
+ * Approving a version, and taking the approval back, as one motion on every
+ * step's tab. Until it is approved a still line of the brand's ramp runs
+ * along the card's top; approving draws the ramp out of that line round
+ * both sides of the card, its leading ends soft, until they meet at its
+ * foot, where it stays as the card's outline, turning as the current setup
+ * step's does. As it closes, a soft light flashes once outside it. The tile
+ * and the tab's chip dip and fill with the ramp as it goes, and a glint
+ * crosses them once it has. Unapproving is quicker and quieter: the outline
+ * draws back up into the line and the fill fades. The flash, the dip and the
+ * glint play only on a decision, as `data-motion` marks it, never on
+ * arrival. A gradient cannot be transitioned, so each is a layer whose
+ * opacity, mask or position is. Still for those who ask for less motion.
+ */
+@property --ring-sweep {
+  syntax: "<angle>";
+  inherits: false;
+  initial-value: 0deg;
+}
+
+.version-card {
+  transition:
+    border-color 300ms ease-out,
+    box-shadow 400ms ease-out;
+}
+
+/* Its plain border gives way once the outline has come round to it. */
+.version-card[data-approved] {
+  transition:
+    border-color 500ms cubic-bezier(0.22, 1, 0.36, 1) 450ms,
+    box-shadow 900ms cubic-bezier(0.22, 1, 0.36, 1) 400ms;
+}
+
+.version-card[data-motion="in"] {
+  animation: version-flash 1100ms cubic-bezier(0.22, 1, 0.36, 1) 950ms;
+}
+
+/* A light round the card's shape, outside its outline, up and gone. */
+@keyframes version-flash {
+  0% {
+    filter: drop-shadow(0 0 0 rgb(56 150 255 / 0));
+  }
+  22% {
+    filter: drop-shadow(0 0 7px rgb(56 150 255 / 0.4));
+  }
+  100% {
+    filter: drop-shadow(0 0 14px rgb(56 150 255 / 0));
+  }
+}
+
+/* The still line along the top, under the outline drawn out of it. */
+.version-card::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto;
+  height: 2px;
+  background: var(--brand-gradient);
+  transition: opacity 200ms ease-out;
+}
+
+.version-card[data-approved]::before {
+  opacity: 0;
+  transition: opacity 500ms ease-out 400ms;
+}
+
+/*
+ * The outline's reach: an arc either side of the top's middle, `--ring-sweep`
+ * wide, its ends feathered over `--ring-feather`. Approved, it reaches a
+ * feather past the foot, so the two ends overlap there and close.
+ */
+.version-ring {
+  --ring-feather: 30deg;
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  border-radius: inherit;
+  pointer-events: none;
+  mask:
+    conic-gradient(
+      #000 calc(var(--ring-sweep) - var(--ring-feather)),
+      #0000 var(--ring-sweep)
+    ),
+    conic-gradient(
+      #0000 calc(360deg - var(--ring-sweep)),
+      #000 calc(360deg - var(--ring-sweep) + var(--ring-feather))
+    );
+  transition: --ring-sweep 600ms cubic-bezier(0.65, 0, 0.35, 1);
+}
+
+.version-card[data-approved] > .version-ring {
+  --ring-sweep: calc(180deg + var(--ring-feather));
+  transition: --ring-sweep 1100ms cubic-bezier(0.6, 0, 0.25, 1);
+}
+
+/*
+ * The outline itself: the padding box masked to its edge, so the corners
+ * stay round under the card's overflow.
+ */
+.version-ring::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  padding: 2px;
+  border-radius: inherit;
+  background: conic-gradient(
+    from var(--setup-shine),
+    #47c6f5 0%,
+    #1684fc 20%,
+    #0864ed 40%,
+    #3976ff 60%,
+    #9985ff 80%,
+    #47c6f5 100%
+  );
+  mask:
+    linear-gradient(#000 0 0) content-box exclude,
+    linear-gradient(#000 0 0);
+  animation: setup-shine 4s linear infinite;
+}
+
+/* A version's tile, or a step tab's chip, filled once it stands approved. */
+.approval-fill {
+  transition:
+    color 250ms ease-out,
+    background-color 250ms ease-out,
+    box-shadow 250ms ease-out;
+}
+
+.approval-fill[data-approved] {
+  transition:
+    color 500ms cubic-bezier(0.22, 1, 0.36, 1) 200ms,
+    background-color 500ms cubic-bezier(0.22, 1, 0.36, 1) 200ms,
+    box-shadow 700ms cubic-bezier(0.22, 1, 0.36, 1) 300ms;
+}
+
+.approval-fill[data-motion="in"] {
+  animation: approval-dip 650ms cubic-bezier(0.33, 1, 0.68, 1) 100ms;
+}
+
+.approval-fill[data-motion="out"] {
+  animation: approval-settle 400ms ease-out;
+}
+
+/* Pressed in, then a little past whole, as the fill arrives. */
+@keyframes approval-dip {
+  30% {
+    transform: scale(0.94);
+  }
+  65% {
+    transform: scale(1.04);
+  }
+}
+
+@keyframes approval-settle {
+  40% {
+    transform: scale(0.96);
+  }
+}
+
+.approval-fill::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: inherit;
+  background: var(--brand-gradient);
+  opacity: 0;
+  transition: opacity 250ms ease-out;
+}
+
+.approval-fill[data-approved]::before {
+  opacity: 1;
+  transition: opacity 600ms cubic-bezier(0.22, 1, 0.36, 1) 200ms;
+}
+
+/* The glint: a band of light parked off the left edge, carried off the right. */
+.approval-fill::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  background: linear-gradient(
+      110deg,
+      transparent 40%,
+      rgb(255 255 255 / 0.5) 50%,
+      transparent 60%
+    )
+    100% 0 / 300% 100% no-repeat;
+}
+
+.approval-fill[data-motion="in"]::after {
+  animation: approval-glint 900ms cubic-bezier(0.4, 0, 0.2, 1) 600ms both;
+}
+
+@keyframes approval-glint {
+  from {
+    background-position: 100% 0;
+  }
+  to {
+    background-position: 0 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .version-card,
+  .version-card::before,
+  .version-ring,
+  .approval-fill,
+  .approval-fill::before {
+    transition: none !important;
+  }
+
+  .version-card,
+  .version-ring::before,
+  .approval-fill,
+  .approval-fill::after {
+    animation: none !important;
+  }
+}
+
+/*
+ * A step tab's warning or lock, kept in place while it is not shown so it
+ * comes and goes rather than blinks. Arriving, its room opens and it grows
+ * in a little past its size; the warning then shakes once and the lock's
+ * shackle drops shut. Going, the lock's shackle lifts open first, then the
+ * sign shrinks away and its room closes behind it. Still for those who ask
+ * for less motion.
+ */
+.tab-sign {
+  display: inline-flex;
+  flex-shrink: 0;
+  justify-content: center;
+  width: 0.875rem;
+  transition:
+    width 300ms cubic-bezier(0.22, 1, 0.36, 1),
+    margin 300ms cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 200ms ease-out 80ms,
+    transform 450ms cubic-bezier(0.34, 1.56, 0.64, 1) 80ms;
+}
+
+/* Gone: no room, and the parent's gap taken back. */
+.tab-sign:not([data-shown]) {
+  width: 0;
+  margin-left: -0.5rem;
+  opacity: 0;
+  transform: scale(0.4);
+  transition:
+    width 300ms cubic-bezier(0.65, 0, 0.35, 1) 220ms,
+    margin 300ms cubic-bezier(0.65, 0, 0.35, 1) 220ms,
+    opacity 180ms ease-in 160ms,
+    transform 220ms ease-in 160ms;
+}
+
+.tab-sign[data-kind="lock"] path {
+  transition: transform 260ms cubic-bezier(0.34, 1.56, 0.64, 1) 380ms;
+}
+
+.tab-sign[data-kind="lock"]:not([data-shown]) path {
+  transform: translateY(-4px);
+  transition: transform 160ms ease-out;
+}
+
+.tab-sign[data-kind="warning"] svg {
+  transform-origin: 50% 80%;
+}
+
+.tab-sign[data-kind="warning"][data-motion="in"] svg {
+  animation: tab-sign-shake 520ms ease-in-out 380ms;
+}
+
+@keyframes tab-sign-shake {
+  20% {
+    transform: rotate(-12deg);
+  }
+  45% {
+    transform: rotate(9deg);
+  }
+  70% {
+    transform: rotate(-5deg);
+  }
+  90% {
+    transform: rotate(2deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tab-sign,
+  .tab-sign path {
+    transition: none !important;
+  }
+
+  .tab-sign svg {
+    animation: none !important;
+  }
+}
+
 .setup-chevron-mark {
   display: grid;
   place-items: center;

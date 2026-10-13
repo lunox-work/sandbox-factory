@@ -16,11 +16,13 @@
 import type {
   AnalysisRunStore,
   ArtifactStore,
+  BountyProfileStore,
   BountyProposalStore,
   BountySpecStore,
   BountyStore,
   GithubRepoStore,
   LatestBountyContext,
+  NewBountyProfile,
   ObjectStore,
   SandboxStore,
   StoredBounty,
@@ -48,6 +50,16 @@ export interface SandboxRouteOptions {
     organizationId: string,
     bounty: StoredBounty,
   ) => Promise<LatestBountyContext>;
+  /**
+   * The sizing's profiles of a spec revision, whose slice a linked
+   * sandbox's version is cut from. Absent, nothing is sliced from here.
+   */
+  readonly profiles?: Pick<BountyProfileStore, "forRevision">;
+  /** Asks the profiler for a revision's profile it does not have yet. */
+  readonly requestProfile?: (
+    organizationId: string,
+    input: NewBountyProfile,
+  ) => Promise<void>;
   readonly ensureWorker: () => Promise<void>;
   readonly maxActive?: number;
   readonly onLaunchError?: () => void;

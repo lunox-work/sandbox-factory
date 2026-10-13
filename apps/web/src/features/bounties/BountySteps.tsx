@@ -16,7 +16,7 @@ import type {
   ContextSourceDto,
 } from "@sandbox-factory/shared";
 import { ChevronDown, ChevronRight, Lock, TriangleAlert } from "lucide-react";
-import { Fragment, type ReactNode } from "react";
+import { Fragment, useState, type ReactNode } from "react";
 import {
   stageDrift,
   stepHeldBy,
@@ -152,29 +152,14 @@ export function StepTriggers({
         </span>
         {label}
         {version !== null && (
-          <span
-            data-approved={signed && behind === null ? true : undefined}
-            className={cn(
-              "rounded-[4px] px-1.5 py-px font-mono text-2xs leading-4 font-medium",
-              behind !== null
-                ? "bg-amber-500/15 text-amber-800 dark:text-amber-300"
-                : signed
-                  ? "bg-(image:--brand-gradient) text-white shadow-sm shadow-blue-500/20"
-                  : "bg-muted text-muted-foreground",
-            )}
-          >
-            {version}
-          </span>
-        )}
-        {behind !== null && (
-          <TriangleAlert
-            aria-hidden
-            className="size-3.5 text-amber-600 dark:text-amber-400"
+          <VersionChip
+            version={version}
+            behind={behind !== null}
+            approved={signed}
           />
         )}
-        {locked !== null && (
-          <Lock aria-hidden className="text-muted-foreground size-3.5" />
-        )}
+        <TabSign kind="warning" shown={behind !== null} />
+        <TabSign kind="lock" shown={locked !== null} />
       </span>
     );
     return (
@@ -207,20 +192,108 @@ export function StepTriggers({
           {/*
             The tooltip hangs on what the tab holds, never on the tab: its
             trigger writes its own `data-state`, which would hide the tab's
-            `active` from the underline and the tab's own styles.
+            `active` from the underline and the tab's own styles. It is
+            there with or without a tip, so what the tab holds is not
+            remade, and its signs and chip can move, as a tip comes or goes.
           */}
-          {tip === null ? (
-            content
-          ) : (
-            <Tooltip>
-              <TooltipTrigger asChild>{content}</TooltipTrigger>
-              <TooltipContent>{tip}</TooltipContent>
-            </Tooltip>
-          )}
+          <Tooltip>
+            <TooltipTrigger asChild>{content}</TooltipTrigger>
+            {tip !== null && <TooltipContent>{tip}</TooltipContent>}
+          </Tooltip>
         </TabsTrigger>
       </Fragment>
     );
   });
+}
+
+/**
+ * Which way something last turned while it was shown: "in" when it came
+ * on, such as a version approved, "out" when it went off; none until it
+ * turns, so what was already on at arrival is not played again.
+ */
+function useTurnMotion(on: boolean): "in" | "out" | undefined {
+  const [seen, setSeen] = useState(on);
+  const [motion, setMotion] = useState<"in" | "out">();
+  if (seen !== on) {
+    setSeen(on);
+    setMotion(on ? "in" : "out");
+  }
+  return motion;
+}
+
+/**
+ * A step tab's warning or lock. It is kept in place while not shown, so it
+ * comes and goes rather than blinks: the warning grows in with a shake,
+ * the lock with its shackle dropping shut, and the lock opens before it
+ * goes.
+ */
+/**
+ * The lock and the warning drawn solid, as Lucide's outlines filled: the
+ * lock's body, and the triangle with its mark cut out of it in the page's
+ * colour.
+ */
+const LOCK_FILLED = "[&_rect]:fill-current";
+const WARNING_FILLED =
+  "[&_path:first-child]:fill-current [&_path:not(:first-child)]:stroke-background";
+
+function TabSign({
+  kind,
+  shown,
+}: {
+  kind: "warning" | "lock";
+  shown: boolean;
+}) {
+  const motion = useTurnMotion(shown);
+  const Icon = kind === "lock" ? Lock : TriangleAlert;
+  return (
+    <span
+      aria-hidden
+      className="tab-sign"
+      data-kind={kind}
+      data-shown={shown ? true : undefined}
+      data-motion={motion}
+    >
+      <Icon
+        className={cn(
+          "size-3.5 text-amber-600 dark:text-amber-400",
+          kind === "lock" ? LOCK_FILLED : WARNING_FILLED,
+        )}
+      />
+    </span>
+  );
+}
+
+/**
+ * A step tab's version, filled with the brand's ramp as the version's tile
+ * is once it stands approved, and amber while it is behind.
+ */
+function VersionChip({
+  version,
+  behind,
+  approved,
+}: {
+  version: string;
+  behind: boolean;
+  approved: boolean;
+}) {
+  const filled = approved && !behind;
+  const motion = useTurnMotion(filled);
+  return (
+    <span
+      data-approved={filled ? true : undefined}
+      data-motion={motion}
+      className={cn(
+        "approval-fill relative isolate inline-block overflow-hidden rounded-[4px] px-1.5 py-px font-mono text-2xs leading-4 font-medium",
+        behind
+          ? "bg-amber-500/15 text-amber-800 dark:text-amber-300"
+          : filled
+            ? "bg-muted text-white shadow-sm shadow-blue-500/20"
+            : "bg-muted text-muted-foreground",
+      )}
+    >
+      {version}
+    </span>
+  );
 }
 
 /**
@@ -244,14 +317,18 @@ export function StepHeld({
     <div
       role="status"
       data-testid={`${step}-held`}
-      className="bg-muted/50 flex flex-wrap items-center gap-x-3 gap-y-2 rounded-lg border px-3 py-2.5 text-sm"
+      className="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2.5 text-sm text-amber-900 dark:text-amber-200"
     >
-      <Lock aria-hidden className="text-muted-foreground size-4 shrink-0" />
+      <Lock
+        aria-hidden
+        className={cn(
+          "size-4 shrink-0 text-amber-600 dark:text-amber-400",
+          LOCK_FILLED,
+        )}
+      />
       <p className="min-w-0 flex-1">
         <span className="font-medium">Locked.</span>{" "}
-        <span className="text-muted-foreground">
-          {stepHeldReason(step, heldBy)}
-        </span>
+        {stepHeldReason(step, heldBy)}
       </p>
       <button
         type="button"
@@ -305,7 +382,10 @@ export function StepLineage({
     >
       <TriangleAlert
         aria-hidden
-        className="mt-0.5 size-4 shrink-0 text-amber-600 dark:text-amber-400"
+        className={cn(
+          "mt-0.5 size-4 shrink-0 text-amber-600 dark:text-amber-400",
+          WARNING_FILLED,
+        )}
       />
       <p>
         <span className="font-medium">{name} has moved ahead.</span> {built}{" "}
@@ -324,9 +404,13 @@ export function StepLineage({
  * A step's version, the one card on its tab: the version's number on a
  * tile, what is known of it, and the decision on it, level with each other;
  * under them, the context it holds or was made with. The rest of the tab
- * reads on the page itself, in ruled sections. The tile wears the brand
- * once the version stands approved, grey until then. A step with no version
- * yet has a dash on its tile and the way to make one for its decision.
+ * reads on the page itself, in ruled sections. The brand's line runs
+ * along its top until the version stands approved; then it outlines the
+ * whole card, turning round it, and the tile wears it too. Approving draws
+ * that outline out of the line, fills the tile and lights the card once
+ * the outline closes; unapproving draws it back in, on every step's tab
+ * alike. A step with no version yet has a dash
+ * on its tile and the way to make one for its decision.
  */
 export function StepVersionCard({
   step,
@@ -349,21 +433,32 @@ export function StepVersionCard({
   /** What is known of the version, beside its tile. */
   children: ReactNode;
 }) {
+  const motion = useTurnMotion(approved);
   return (
     <section
       aria-label="Version"
       data-testid={`${step}-version-card`}
-      className="bg-card relative overflow-hidden rounded-lg border shadow-xs before:absolute before:inset-x-0 before:top-0 before:h-0.5 before:bg-(image:--brand-gradient)"
+      data-approved={approved ? true : undefined}
+      data-motion={motion}
+      className={cn(
+        "version-card bg-card relative overflow-hidden rounded-lg border bg-clip-padding",
+        approved
+          ? "border-transparent shadow-md shadow-blue-500/15"
+          : "shadow-xs",
+      )}
     >
+      <span aria-hidden className="version-ring" />
       <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-3 p-4">
         <div className="flex min-w-0 items-center gap-3">
           <span
             aria-hidden="true"
+            data-approved={approved ? true : undefined}
+            data-motion={motion}
             className={cn(
-              "flex size-9 shrink-0 items-center justify-center rounded-lg font-mono text-xs font-semibold",
+              "approval-fill bg-muted relative isolate flex size-9 shrink-0 items-center justify-center overflow-hidden rounded-lg font-mono text-xs font-semibold",
               approved
-                ? "bg-(image:--brand-gradient) text-white shadow-sm shadow-blue-500/20"
-                : "bg-muted text-muted-foreground",
+                ? "text-white shadow-sm shadow-blue-500/20"
+                : "text-muted-foreground",
             )}
           >
             {tile}
