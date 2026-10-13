@@ -43,6 +43,9 @@ import {
   packageNameOf,
   runtimePath,
   transformConfigOf,
+  vocabularyBlockers,
+  vocabularyLeaks,
+  workspaceVocabulary,
 } from "sandbox-factory";
 import type {
   AcceptanceTest,
@@ -188,6 +191,40 @@ export function privateTestOutcome(
 
 /** Where a build writes the table its public files were renamed by. */
 export const PSEUDONYMS_PATH = `private/${PSEUDONYMS_FILE}`;
+
+/**
+ * The names the repository's root `package.json` gives its owner: the
+ * scope of its package name, or the whole name unscoped, and its author.
+ * None when it has no readable manifest.
+ */
+export async function packageVocabulary(sourceDir: string): Promise<string[]> {
+  let manifest: unknown;
+  try {
+    manifest = JSON.parse(
+      await readFile(join(sourceDir, "package.json"), "utf8"),
+    );
+  } catch {
+    return [];
+  }
+  if (typeof manifest !== "object" || manifest === null) return [];
+  const { name, author } = manifest as { name?: unknown; author?: unknown };
+  const names: string[] = [];
+  if (typeof name === "string")
+    names.push(
+      name.startsWith("@") ? (name.slice(1).split("/")[0] ?? "") : name,
+    );
+  // `Name <email> (url)`, or `{ name }`.
+  const authorName =
+    typeof author === "string"
+      ? author.replace(/[<(].*$/, "").trim()
+      : typeof author === "object" &&
+          author !== null &&
+          typeof (author as { name?: unknown }).name === "string"
+        ? (author as { name: string }).name
+        : "";
+  if (authorName.length > 0) names.push(authorName);
+  return names.filter((entry) => entry.length > 0);
+}
 
 export function buildArtifactKind(path: string): ArtifactFile["kind"] {
   if (path === "build-manifest.json") return "build_manifest";
@@ -832,6 +869,22 @@ export function createSandboxBuildAdapter(
           blockers.push(...project.blockers);
           input.log(
             `Generated ${project.files.length} files with ${project.importRewrites.length} import rewrites and ${project.blockers.length} blocker(s).`,
+          );
+          // The workspace's own names, which the pseudonyms must have
+          // renamed out of everything contributors read.
+          const vocabulary = workspaceVocabulary([
+            ...(params.vocabulary ?? []),
+            ...(await packageVocabulary(input.sourceDir)),
+          ]);
+          const leaks = vocabularyLeaks(
+            files.filter((file) => file.public),
+            vocabulary,
+          );
+          blockers.push(...vocabularyBlockers(leaks));
+          input.log(
+            leaks.length === 0
+              ? `No public file names the workspace (${vocabulary.length} name(s) checked).`
+              : `Public files still name the workspace: ${leaks.map((leak) => leak.term).join(", ")}.`,
           );
         }
       }

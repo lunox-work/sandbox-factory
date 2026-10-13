@@ -43,6 +43,13 @@ export interface SandboxRouteOptions {
    */
   readonly repos: Pick<GithubRepoStore, "list">;
   /**
+   * What the organization is called and its handle, which a build checks
+   * no public file names. Absent, only the repository's names are.
+   */
+  readonly organizationNames?: (
+    organizationId: string,
+  ) => Promise<readonly string[]>;
+  /**
    * The context a bounty holds from its sources (`heldContext`), frozen
    * into each version's task. Absent, a version is taken with none.
    */

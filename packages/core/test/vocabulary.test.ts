@@ -1,0 +1,116 @@
+import assert from "node:assert/strict";
+import { test } from "node:test";
+import {
+  termWords,
+  vocabularyBlockers,
+  vocabularyLeaks,
+  workspaceVocabulary,
+} from "../src/index.js";
+
+test("a name's words split at separators and case changes", () => {
+  assert.deepEqual(termWords("sandbox-factory"), ["sandbox", "factory"]);
+  assert.deepEqual(termWords("acmeOrders"), ["acme", "orders"]);
+  assert.deepEqual(termWords("XMLParser"), ["xml", "parser"]);
+  assert.deepEqual(termWords("web3Labs"), ["web3", "labs"]);
+  assert.deepEqual(termWords("  Lunox Work "), ["lunox", "work"]);
+  assert.deepEqual(termWords("--"), []);
+});
+
+test("the vocabulary drops short, generic and repeated names", () => {
+  assert.deepEqual(
+    workspaceVocabulary([
+      "lunox-work",
+      "Lunox Work",
+      "sandbox-factory",
+      "api",
+      "monorepo",
+      "web-app",
+      "core-platform",
+      "abc",
+      "",
+      "Feversoul",
+    ]),
+    ["lunox-work", "sandbox-factory", "feversoul"],
+  );
+});
+
+test("a name is found whatever joins its words", () => {
+  const leaks = vocabularyLeaks(
+    [
+      { path: "src/a.ts", text: "const sandboxFactory = 1;" },
+      { path: "src/b.ts", text: "SANDBOX_FACTORY and sandbox factory" },
+      { path: "src/sandbox-factory/c.ts", text: "" },
+      { path: "src/d.ts", text: "nothing here" },
+    ],
+    ["sandbox-factory"],
+  );
+  assert.deepEqual(leaks, [
+    {
+      term: "sandbox-factory",
+      occurrences: 4,
+      files: ["src/a.ts", "src/b.ts", "src/sandbox-factory/c.ts"],
+    },
+  ]);
+});
+
+test("a match starts and ends on a word boundary", () => {
+  const count = (text: string) =>
+    vocabularyLeaks([{ path: "x.ts", text }], ["acme"])[0]?.occurrences ?? 0;
+  assert.equal(count("acme"), 1);
+  assert.equal(count("acmeOrders"), 1);
+  assert.equal(count("MyAcme"), 1);
+  assert.equal(count("ACME_KEY"), 1);
+  assert.equal(count("acme2"), 1);
+  assert.equal(count("acmes"), 0);
+  assert.equal(count("pacme"), 0);
+  assert.equal(count("ACMEs"), 0);
+  assert.equal(count("Acmes"), 0);
+});
+
+test("non-Latin letters are words too", () => {
+  assert.deepEqual(workspaceVocabulary(["Ångström Labs"]), ["ångström-labs"]);
+  const leaks = vocabularyLeaks(
+    [{ path: "x.ts", text: "// ÅngströmLabs" }],
+    ["ångström-labs"],
+  );
+  assert.equal(leaks[0]?.occurrences, 1);
+});
+
+test("no leak, no blocker", () => {
+  assert.deepEqual(
+    vocabularyLeaks([{ path: "a.ts", text: "orders" }], ["acme"]),
+    [],
+  );
+  assert.deepEqual(vocabularyBlockers([]), []);
+});
+
+test("a leak blocks, naming its first files", () => {
+  assert.deepEqual(
+    vocabularyBlockers([
+      { term: "acme", occurrences: 1, files: ["a.ts"] },
+      {
+        term: "lunox-work",
+        occurrences: 9,
+        files: ["a.ts", "b.ts", "c.ts", "d.ts", "e.ts", "f.ts", "g.ts"],
+      },
+    ]),
+    [
+      {
+        code: "vocabulary_leaked",
+        file: "a.ts",
+        detail:
+          '"acme" names the workspace and appears 1 time in 1 public file: a.ts. Give it a pseudonym.',
+      },
+      {
+        code: "vocabulary_leaked",
+        file: "a.ts",
+        detail:
+          '"lunox-work" names the workspace and appears 9 times in 7 public files: a.ts, b.ts, c.ts, d.ts, e.ts, and 2 more. Give it a pseudonym.',
+      },
+    ],
+  );
+  assert.equal(
+    vocabularyBlockers([{ term: "acme", occurrences: 1, files: [] }])[0]?.file,
+    null,
+  );
+});

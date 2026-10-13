@@ -709,6 +709,8 @@ function fixture(
       },
     },
     repos: { list: async () => workspaceRepos },
+    organizationNames: async (owner: string) =>
+      owner === "org_1" ? ["Acme Corp", "acme"] : [],
     bounties: {
       get: async (owner: string, id: string) =>
         (overrides.held === undefined && overrides.bounty !== true) ||
@@ -1571,6 +1573,8 @@ test("a build queues a run carrying every hash and records it on the draft", asy
       contractSha256: sha(contractText),
       transformConfigSha256: "1".repeat(64),
       approvedTaskSha256: "2".repeat(64),
+      // The organization's names, then its repository's, once each.
+      vocabulary: ["acme-corp", "acme", "ghr-1"],
     },
     requestedBy: "user_1",
     maxActive: 3,

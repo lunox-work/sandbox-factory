@@ -33,6 +33,7 @@ import {
   buildArtifactKind,
   createSandboxBuildAdapter,
   nearestCompilerOptions,
+  packageVocabulary,
   privateTestOutcome,
 } from "../src/tools/sandbox-build.js";
 import { stubModules } from "../src/tools/slice-run.js";
@@ -242,7 +243,7 @@ async function runBuild(
     version: StoredVersionWithSource | null;
     sliceStatus: StoredAnalysisRun["status"];
     corrupt: boolean;
-    params: Partial<Record<string, string>>;
+    params: Partial<Record<string, unknown>>;
     sourceDir: string;
     outDir: string;
     snapshotId: string;
@@ -825,6 +826,70 @@ test("alias collisions and scope blockers stop before any job runs; a failing ba
   assert.deepEqual(noTests.manifest.baseline?.reasons, [
     "No hidden test judges a submission.",
   ]);
+});
+
+test("a public file naming the workspace blocks the build before any job runs", async () => {
+  const fake = fakeProvider();
+  const leaked = await runBuild(fake.provider, {
+    params: { vocabulary: ["Widget", "Nowhere Inc"] },
+  });
+  assert.equal(leaked.manifest.ready, false);
+  assert.equal(leaked.manifest.baseline, null);
+  assert.deepEqual(
+    leaked.manifest.blockers.map((blocker) => blocker.code),
+    ["vocabulary_leaked"],
+  );
+  assert.match(
+    leaked.manifest.blockers[0]?.detail ?? "",
+    /^"widget" names the workspace and appears \d+ times? in \d+ public files?: /,
+  );
+  assert.equal(fake.calls.length, 0);
+  assert.ok(
+    leaked.messages.includes("Public files still name the workspace: widget."),
+  );
+  // A build queued before the check carries no names, and the fixture's
+  // own package name is nowhere public.
+  const clean = await runBuild(fakeProvider().provider);
+  assert.equal(
+    clean.manifest.blockers.some((b) => b.code === "vocabulary_leaked"),
+    false,
+  );
+  assert.ok(
+    clean.messages.includes(
+      "No public file names the workspace (1 name(s) checked).",
+    ),
+  );
+});
+
+test("a repository's package.json names its scope or package, and its author", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "package-vocabulary-"));
+  const names = async (manifest: unknown) => {
+    await writeFile(
+      join(dir, "package.json"),
+      typeof manifest === "string" ? manifest : JSON.stringify(manifest),
+    );
+    return packageVocabulary(dir);
+  };
+  try {
+    assert.deepEqual(await packageVocabulary(dir), []);
+    assert.deepEqual(
+      await names({
+        name: "@acme/monorepo",
+        author: "Jo Doe <jo@acme.dev> (https://acme.dev)",
+      }),
+      ["acme", "Jo Doe"],
+    );
+    assert.deepEqual(
+      await names({ name: "storefront", author: { name: "Acme Corp" } }),
+      ["storefront", "Acme Corp"],
+    );
+    assert.deepEqual(await names({ name: "@", author: { email: "x" } }), []);
+    assert.deepEqual(await names({ author: 7 }), []);
+    assert.deepEqual(await names("null"), []);
+    assert.deepEqual(await names("{ not json"), []);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });
 
 test("after commit, a ready build records its harness and toolchain on the draft; a diagnostic one does not", async () => {

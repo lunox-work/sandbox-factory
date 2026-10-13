@@ -461,6 +461,10 @@ const sandbox =
         specs: bountySpecs,
         bounties,
         repos: githubRepos,
+        organizationNames: async (organizationId: string) => {
+          const found = await organizations.get(organizationId);
+          return found === undefined ? [] : [found.name, found.slug];
+        },
         contextFor,
         profiles: bountyProfiles,
         // Declared below, on the same footing; called only on a request.
