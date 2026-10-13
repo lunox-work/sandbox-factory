@@ -1,5 +1,5 @@
 /**
- * What the scope, fixtures, starter and hidden-tests agents are told. The
+ * What the scope, fixtures, starter, hidden-tests and pseudonyms agents are told. The
  * prompts belong to their tool versions: a change in meaning here bumps
  * `scope@`, `fixtures@`, `sandbox_starter@` or `sandbox_build@`.
  *
@@ -119,6 +119,42 @@ A "fail" test must fail by its assertions, not by breaking. Hidden tests are com
 The toolchain is fixed: Node 22, TypeScript 5.9, ES modules. Tests use \`node:test\` and \`node:assert/strict\`. Import the project's code with relative paths from the test's folder and \`.js\` extensions; from \`tests/private/\` a file at \`src/feature.ts\` is \`../../src/feature.js\`. Cut modules are recording mocks; import \`{ mockImplementation, recordedCalls, resetMocks }\` from \`../../sandbox/mock.js\` to give a mocked call behaviour or to check what the code asked of it. Packages compile as \`any\`. Nothing may reach the network, a database or any outside service.
 
 Read the project with the repository tools: they show the developer's project as it is built, with its public tests, walkthrough and mocks. Use \`run_hidden_tests\` to build the project with your tests and run its baseline in a fresh job; it shows each step, what each test did against what you said it would, and the output of those that surprised you. Runs are limited. Finish by calling \`submit_hidden_tests\` once with a short summary of what the tests check. It runs the baseline again and is accepted when it passes: the project builds and runs, the public tests pass and each hidden test does what you said it would.`;
+
+export const PSEUDONYMS_SYSTEM_PROMPT = `${SANDBOX_CONTEXT}
+
+The sandbox for the bounty below is cut from the workspace's repository, and it is about to leave the workspace: an outside developer will read every file of it. It must not say whose code it is. Your job is to write its pseudonyms: a table of renames applied to every file of the slice, its paths, the spec and the fixtures before the project is generated, and undone in reverse to map a contribution back.
+
+Read the slice with the repository tools: they show its source as the workspace wrote it. Find each name that says whose code this is: the company, the product and its features' brand names, customers, partners, internal systems and teams, and the types, functions, modules, files and strings named after them. Give each a neutral public name that keeps its meaning (\`AcmeInvoiceMailer\` becomes \`InvoiceMailer\`, \`acmeOrders\` becomes \`orders\`, a comment's "Acme" becomes "the shop"). Leave the domain's ordinary words (Order, Invoice, User), the language's and packages' own names (React, pg, express) and anything the bounty's work needs to read as it does. Rename what identifies; do not rename everything.
+
+Rules are applied in order. Use kind "identifier" for a TypeScript name, matched only as a whole identifier; "text" for a word or phrase in strings, comments and inside longer names, matched anywhere and case-sensitive; and "path" for a file or folder name in paths and import specifiers. A text rule on a brand word renames it inside every identifier that contains it, so one rule often covers many names. Within one kind, two names may not differ only by case: cover \`Acme\` with a text rule and \`acmeOrders\` with an identifier rule. A public name must not already occur in a file the rule touches, no public name may be another rule's private name, and every rule must rename something.
+
+The workspace's own names are listed below, and the build refuses a project whose public files still carry any of them, however they are joined (\`acme-shop\`, \`acmeShop\`, \`ACME_SHOP\`). Cover them all, and the other names you find. Use \`check_pseudonyms\` to check a table exactly as the build will apply it; it lists each problem, or what each rule renamed. Finish by calling \`submit_pseudonyms\` once with the table and a short summary of what it renames. It is checked again and accepted when it holds.`;
+
+/** The bounty a slice's pseudonyms are written for, and what they must cover. */
+export function pseudonymsSection(input: {
+  readonly title: string;
+  readonly summary: string;
+  readonly spec: SpecDraft | null;
+  readonly vocabulary: readonly string[];
+  /** What the check says of the slice with no pseudonyms. */
+  readonly unrenamed: readonly string[];
+  readonly overview: string;
+}): string {
+  return [
+    `The bounty's title: ${input.title}`,
+    `The bounty's summary:\n\n${input.summary}`,
+    input.spec === null
+      ? "The bounty has no Gherkin spec."
+      : `The bounty's approved Gherkin spec, which is renamed with the slice:\n\n${renderGherkin(input.spec)}`,
+    input.vocabulary.length === 0
+      ? "The workspace's own names: none are known; find them in the slice."
+      : `The workspace's own names, which no public file may carry: ${input.vocabulary.join(", ")}`,
+    input.unrenamed.length === 0
+      ? "With no pseudonyms, the check finds none of those names in a public file; the slice may still name the workspace in other ways."
+      : `With no pseudonyms, the check says:\n${input.unrenamed.map((problem) => `- ${problem}`).join("\n")}`,
+    `The slice:\n\n${input.overview}`,
+  ].join("\n\n");
+}
 
 /** The bounty hidden tests are written for, and the project they run in. */
 export function hiddenTestsSection(input: {

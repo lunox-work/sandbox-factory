@@ -163,18 +163,21 @@ export interface SandboxVersionPatch {
 export interface BuildOutput {
   readonly harnessSha256: string;
   readonly toolchainDigest: string;
-  /** The hidden tests the build wrote for a draft that had none. */
-  readonly tests?: BuildTests;
+  /** What the build wrote into a draft's transform that it lacked. */
+  readonly transform?: BuildTransform;
 }
 /**
- * Hidden tests a sliced build wrote and proved on its baseline, and the
- * transform the draft has with them. They settle only on the draft the
- * build was queued for: still without hidden tests, its transform still
- * the one the build was queued with.
+ * Hidden tests and pseudonyms a sliced build wrote for a draft that had
+ * none, and the transform the draft has with them. They settle only on the
+ * draft the build was queued for: still without what the build wrote, its
+ * transform still the one the build was queued with.
  */
-export interface BuildTests {
-  readonly acceptanceTests: readonly AcceptanceTest[];
-  /** The transform the build was queued with, before the tests. */
+export interface BuildTransform {
+  /** Hidden tests the build proved on its baseline. */
+  readonly acceptanceTests?: readonly AcceptanceTest[];
+  /** The name table the build renamed the project by. */
+  readonly aliasRules?: readonly AliasRule[];
+  /** The transform the build was queued with, before what it wrote. */
   readonly fromTransformConfigSha256: string;
   readonly transformConfigSha256: string;
 }
@@ -1001,12 +1004,15 @@ export function createSandboxStore(db: Database): SandboxStore {
           current.source.buildRunId !== buildRunId
         )
           return false;
-        const tests = output.tests;
+        const transform = output.transform;
         if (
-          tests !== undefined &&
-          (current.source.acceptanceTests.length > 0 ||
-            current.source.transformConfigSha256 !==
-              tests.fromTransformConfigSha256)
+          transform !== undefined &&
+          (current.source.transformConfigSha256 !==
+            transform.fromTransformConfigSha256 ||
+            (transform.acceptanceTests !== undefined &&
+              current.source.acceptanceTests.length > 0) ||
+            (transform.aliasRules !== undefined &&
+              current.source.aliasRules.length > 0))
         )
           return false;
         await tx
@@ -1014,11 +1020,16 @@ export function createSandboxStore(db: Database): SandboxStore {
           .set({
             harnessSha256: output.harnessSha256,
             toolchainDigest: output.toolchainDigest,
-            ...(tests === undefined
+            ...(transform === undefined
               ? {}
               : {
-                  acceptanceTests: [...tests.acceptanceTests],
-                  transformConfigSha256: tests.transformConfigSha256,
+                  ...(transform.acceptanceTests === undefined
+                    ? {}
+                    : { acceptanceTests: [...transform.acceptanceTests] }),
+                  ...(transform.aliasRules === undefined
+                    ? {}
+                    : { aliasRules: [...transform.aliasRules] }),
+                  transformConfigSha256: transform.transformConfigSha256,
                 }),
             updatedAt: now,
           })

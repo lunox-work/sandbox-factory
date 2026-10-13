@@ -29,7 +29,7 @@ import type {
 import { AnalysisError } from "../src/errors.js";
 import { HIDDEN_TEST_RUNS_MAX } from "../src/tools/hidden-tests.js";
 import {
-  HIDDEN_TESTS_PATH,
+  BUILD_TRANSFORM_PATH,
   buildArtifactKind,
   createSandboxBuildAdapter,
   nearestCompilerOptions,
@@ -349,6 +349,10 @@ const limits = { maxTurns: 20, maxTokens: 1_000_000 };
 /** How many evaluation jobs a provider's calls ran: one prepare each. */
 const jobsOf = (calls: readonly string[][]) =>
   calls.filter((argv) => argv.includes("--package-lock-only")).length;
+/** A table the slice already has, so no pseudonyms agent runs. */
+const named: AliasRule[] = [
+  { before: "retries", after: "attempts", kind: "identifier", paths: [] },
+];
 const hiddenTest = {
   path: "tests/private/acceptance.test.ts",
   text: 'import { test } from "node:test";\nimport assert from "node:assert/strict";\ntest("describes", () => { assert.equal(1, 2); });\n',
@@ -1111,6 +1115,153 @@ test("a hidden test that never ran is an error, not the failure it was expected 
   );
 });
 
+test("a draft with no pseudonyms has an agent write them, checked as the build applies them, and they settle with the build", async () => {
+  const fake = fakeProvider((argv) =>
+    argv.includes("--test") && !argv.includes("test") ? TAP_FAILED : {},
+  );
+  const rules: AliasRule[] = [
+    { before: "Widget", after: "Gadget", kind: "identifier", paths: [] },
+    { before: "widget", after: "gadget", kind: "text", paths: [] },
+  ];
+  const model = scripted([
+    // Two names of one kind that differ only by case do not hold.
+    turn([
+      call("check_pseudonyms", {
+        aliases: [
+          { before: "Widget", after: "Gadget", kind: "text" },
+          { before: "widget", after: "gadget", kind: "text" },
+        ],
+      }),
+    ]),
+    // The title still names the workspace.
+    turn([
+      call("check_pseudonyms", {
+        aliases: [{ before: "Widget", after: "Gadget", kind: "identifier" }],
+      }),
+    ]),
+    // A rule that renames nothing is not kept.
+    turn([
+      call("check_pseudonyms", {
+        aliases: [
+          ...rules,
+          { before: "absentName", after: "otherName", kind: "identifier" },
+        ],
+      }),
+    ]),
+    turn([call("check_pseudonyms", { aliases: [] })]),
+    turn([
+      call("submit_pseudonyms", {
+        aliases: [rules[0]],
+        summary: "Renames the product.",
+      }),
+    ]),
+    turn([
+      call("submit_pseudonyms", {
+        aliases: rules,
+        summary: "Renames the product.",
+      }),
+    ]),
+  ]);
+  const version = await versionFor();
+  const built = await runBuild(fake.provider, {
+    version,
+    params: { vocabulary: ["Widget"] },
+    agent: { model, limits },
+  });
+  assert.deepEqual(built.manifest.blockers, []);
+  assert.equal(built.manifest.ready, true);
+  // The agent was told what the workspace is called, and where it leaks.
+  assert.match(model.prompts[0] ?? "", /no public file may carry: widget/);
+  assert.match(model.prompts[0] ?? "", /With no pseudonyms, the check says/);
+  const told = model.results.map((result) => result[0]);
+  assert.equal(told[0]?.is_error, true);
+  assert.match(told[0]?.content ?? "", /casing_variant/);
+  assert.match(told[1]?.content ?? "", /"widget" names the workspace/);
+  assert.match(told[2]?.content ?? "", /Rule 3 \(absentName\) renames nothing/);
+  assert.match(told[3]?.content ?? "", /Invalid input/);
+  assert.match(told[4]?.content ?? "", /does not hold/);
+  assert.equal(told[4]?.is_error, true);
+  // The project is renamed by the table, which the private side keeps.
+  assert.deepEqual(
+    JSON.parse(await built.read("private/pseudonym.lunox")).rules,
+    rules,
+  );
+  assert.match(await built.read("project/README.md"), /Fix the gadget/);
+  const transformConfigSha256 = sha256(
+    canonicalJson(
+      transformConfigOf({
+        aliasRules: rules,
+        dependencyChoices: {},
+        acceptanceTests: version.source.acceptanceTests,
+        fixtures: null,
+        starterSha256: null,
+      }),
+    ),
+  );
+  assert.equal(built.manifest.transformConfigSha256, transformConfigSha256);
+  const recorded: unknown[] = [];
+  await built.adapter.committed?.({
+    runId: "arn_build",
+    files: built.files,
+    inputs: {
+      getRun: async () => null,
+      listArtifacts: async () => [],
+      readArtifact: async () => undefined,
+      getVersion: async () => null,
+      getTask: async () => null,
+      recordBuildOutput: async (versionId, runId, output) => {
+        recorded.push({ versionId, runId, output });
+        return true;
+      },
+      recordStarterOutput: async () => false,
+    },
+  });
+  assert.deepEqual(recorded, [
+    {
+      versionId: "sbv_1",
+      runId: "arn_build",
+      output: {
+        harnessSha256: built.manifest.harnessSha256,
+        toolchainDigest: built.manifest.toolchainDigest,
+        transform: {
+          aliasRules: rules,
+          fromTransformConfigSha256: version.source.transformConfigSha256,
+          transformConfigSha256,
+        },
+      },
+    },
+  ]);
+});
+
+test("a draft whose agent keeps no table, or that has no model, is built without one and blocks on the names it leaks", async () => {
+  const fake = fakeProvider();
+  const gaveUp = await runBuild(fake.provider, {
+    params: { vocabulary: ["Widget"] },
+    agent: { model: scripted([]), limits },
+  });
+  assert.deepEqual(
+    gaveUp.manifest.blockers.map((blocker) => blocker.code),
+    ["vocabulary_leaked"],
+  );
+  assert.equal(fake.calls.length, 0);
+  assert.equal(
+    gaveUp.files.some((file) => file.path === BUILD_TRANSFORM_PATH),
+    false,
+  );
+  assert.ok(
+    gaveUp.messages.some((line) => /with no table kept/.test(line)),
+    gaveUp.messages.join("\n"),
+  );
+  const unconfigured = await runBuild(fakeProvider().provider, {
+    agent: { model: null, limits },
+  });
+  assert.ok(
+    unconfigured.messages.includes(
+      "No agent model is configured; no pseudonyms are written.",
+    ),
+  );
+});
+
 test("a draft with no hidden tests has an agent write them, and the build is the baseline they passed", async () => {
   const fake = fakeProvider((argv) =>
     argv.includes("--test") && !argv.includes("test") ? TAP_FAILED : {},
@@ -1131,7 +1282,7 @@ test("a draft with no hidden tests has an agent write them, and the build is the
       }),
     ]),
   ]);
-  const version = await versionFor({ acceptance: false });
+  const version = await versionFor({ acceptance: false, aliasRules: named });
   const built = await runBuild(fake.provider, {
     version,
     agent: { model, limits },
@@ -1161,7 +1312,7 @@ test("a draft with no hidden tests has an agent write them, and the build is the
   const transformConfigSha256 = sha256(
     canonicalJson(
       transformConfigOf({
-        aliasRules: [],
+        aliasRules: named,
         dependencyChoices: {},
         acceptanceTests: [hiddenTest],
         fixtures: null,
@@ -1172,8 +1323,8 @@ test("a draft with no hidden tests has an agent write them, and the build is the
   assert.equal(built.manifest.transformConfigSha256, transformConfigSha256);
   const paths = built.files.map((file) => file.path);
   assert.ok(paths.includes("private/acceptance.test.ts"));
-  assert.ok(paths.includes(HIDDEN_TESTS_PATH));
-  assert.equal(buildArtifactKind(HIDDEN_TESTS_PATH), "other");
+  assert.ok(paths.includes(BUILD_TRANSFORM_PATH));
+  assert.equal(buildArtifactKind(BUILD_TRANSFORM_PATH), "other");
   // They settle on the draft with the build's evidence when it commits.
   const recorded: unknown[] = [];
   await built.adapter.committed?.({
@@ -1199,7 +1350,7 @@ test("a draft with no hidden tests has an agent write them, and the build is the
       output: {
         harnessSha256: built.manifest.harnessSha256,
         toolchainDigest: built.manifest.toolchainDigest,
-        tests: {
+        transform: {
           acceptanceTests: [hiddenTest],
           fromTransformConfigSha256: version.source.transformConfigSha256,
           transformConfigSha256,
@@ -1223,7 +1374,7 @@ test("hidden tests that never pass their baseline are not kept, and the build st
     Array.from({ length: HIDDEN_TEST_RUNS_MAX + 1 }, submit),
   );
   const built = await runBuild(fake.provider, {
-    version: await versionFor({ acceptance: false }),
+    version: await versionFor({ acceptance: false, aliasRules: named }),
     agent: { model, limits },
   });
   assert.equal(built.manifest.ready, false);
@@ -1232,7 +1383,7 @@ test("hidden tests that never pass their baseline are not kept, and the build st
     "No hidden test judges a submission.",
   ]);
   assert.equal(
-    built.files.some((file) => file.path === HIDDEN_TESTS_PATH),
+    built.files.some((file) => file.path === BUILD_TRANSFORM_PATH),
     false,
   );
   assert.ok(
@@ -1248,7 +1399,10 @@ test("hidden tests are written only for a draft with none whose baseline fails f
     fakeProvider((argv) =>
       argv.includes("--test") && !argv.includes("test") ? TAP_FAILED : {},
     ).provider,
-    { agent: { model: untouched, limits } },
+    {
+      version: await versionFor({ aliasRules: named }),
+      agent: { model: untouched, limits },
+    },
   );
   assert.equal(withTests.manifest.ready, true);
   assert.deepEqual(untouched.prompts, []);
@@ -1258,7 +1412,7 @@ test("hidden tests are written only for a draft with none whose baseline fails f
     fakeProvider((argv) => (argv.includes("build") ? { exitCode: 2 } : {}))
       .provider,
     {
-      version: await versionFor({ acceptance: false }),
+      version: await versionFor({ acceptance: false, aliasRules: named }),
       agent: { model: broken, limits },
     },
   );
@@ -1266,7 +1420,7 @@ test("hidden tests are written only for a draft with none whose baseline fails f
   assert.deepEqual(broken.prompts, []);
   // Without a model, the build says why it wrote none.
   const unconfigured = await runBuild(fakeProvider().provider, {
-    version: await versionFor({ acceptance: false }),
+    version: await versionFor({ acceptance: false, aliasRules: named }),
     agent: { model: null, limits },
   });
   assert.equal(unconfigured.manifest.ready, false);

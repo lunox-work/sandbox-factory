@@ -704,7 +704,21 @@ the approved spec, and each candidate set is built in and run through a fresh
 baseline, as a starter's is. A set is kept only once its baseline passes; it
 then settles on the draft with the build's evidence when the run commits, with
 the transform it hashes to (`recordBuildOutput`), and later builds run it as
-written. The bounty's Sandbox tab follows the slice, with the scope agent's
+written. A sliced draft starts with no pseudonyms either, though it is the
+workspace's own code, so a build of one with none has an agent write its name
+table first (`apps/worker/src/tools/pseudonyms.ts`): it reads the slice as the
+workspace wrote it, and each table is checked exactly as the build applies it,
+the inverse proof, the contract, spec, fixtures and listing still reading, the
+project generating and no public file naming the workspace. A table is kept
+only once that check is clean, and settles with the hidden tests. Whatever the
+table, every build scans the public files' paths and text for the names the
+workspace goes by (`packages/core/src/sandbox/vocabulary.ts`): the
+organization's name and handle and the repository's owner and name, which the
+API passes in the build's `vocabulary` parameter, and the repository's package
+scope and author. Each still there blocks the build, `vocabulary_leaked`,
+before its baseline runs. The version's title, summary and tags reach the
+README and the descriptor, so the table renames them there too. The bounty's
+Sandbox tab follows the slice, with the scope agent's
 steps while it works, then the build, as it follows a generated version's run.
 
 **Publishing a version.** `POST .../sandboxes/versions/:vid/publish`
