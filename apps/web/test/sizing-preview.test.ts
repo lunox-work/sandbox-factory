@@ -54,6 +54,11 @@ test("the model's size stands only until the scenarios land, or where it is too 
 test("the board's weights score the scenarios", () => {
   // Heavy weighed far more pushes the one scenario up a band.
   expect(
-    previewSize(running({ spec }), { light: 1, moderate: 2, heavy: 14 }),
+    previewSize(running({ spec }), {
+      covered: 0,
+      light: 1,
+      moderate: 2,
+      heavy: 14,
+    }),
   ).toBe("M");
 });

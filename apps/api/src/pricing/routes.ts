@@ -1439,6 +1439,8 @@ const RESPEC_REFUSALS: Readonly<Record<RespecRefusal, string>> = {
     "That scenario is no longer in the spec. Reload the scenarios and try again.",
   spec_emptied:
     "A spec needs a scenario or an open question. Keep at least one.",
+  only_covered:
+    "Every scenario left would be covered, and a covered scenario is covered by the code of another. Keep one that adds code of its own.",
 };
 
 function proposalMutationResponse<Env extends PricingAppEnv>(

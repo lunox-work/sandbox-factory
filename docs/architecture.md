@@ -777,9 +777,14 @@ rate-card snapshot; a `+` size uses the rounded midpoint between adjacent
 prices, in minor currency units. Unsized bounties have no price.
 
 Spec revisions add half steps for net scenario weight gained since the sized
-draft (`packages/core/src/pricing/step.ts`). Light, moderate, and heavy scenarios
-default to 1, 2, and 4 points, with four points per half step; board overrides
-are snapshotted with the run. Trimming can reduce the step, never below its
+draft (`packages/core/src/pricing/step.ts`). Covered, light, moderate, and
+heavy scenarios default to 0, 1, 2, and 4 points, with four points per half
+step; board overrides are snapshotted with the run. A covered scenario
+(`packages/core/src/pricing/weight.ts`) is behaviour the other scenarios' code
+already has, proven by one more assertion in a test they already need: it
+exists so a bounty the draft wrote four scenarios for, to be exhaustive, can
+still be XS. A step or assessment stored before the weight existed reads it
+as its default. Trimming can reduce the step, never below its
 base, and XL is the cap. A fresh draft starts at step zero.
 
 Manual resize sets a new base and restarts the step from zero at the current
@@ -789,13 +794,23 @@ Respec keeps the base, card, and step settings without another sizing call;
 reprice uses the current card and starts fresh.
 
 **The pricing rubric sizes a proposal once its code is measured**
-(`packages/core/src/pricing/rubric.ts`, `rubric-v3`). It scores three
+(`packages/core/src/pricing/rubric.ts`, `rubric-v4`). It scores three
 dimensions from countable evidence. Scenarios are scored by weight, with the
-step's points, plus open questions. Test cases are one per scenario, plus each
-outcome step after a test's first. Code comes from the complexity profiles:
-slice size, touched modules, services, seams, untested modules, migrations,
-stubs and blockers, minus a discount for an analogous pattern. The total falls
-in a band of the nine priced sizes, and the rate card prices it. Sizing stores
+step's points, plus open questions. Test cases are one per scenario with a
+test of its own (every weight above covered), plus each outcome step after a
+test's first; a covered scenario's outcomes are assertions in another's test
+and score nothing. A draft or answer whose scenarios are all covered is
+retried, and a trim that would leave only covered scenarios is refused,
+since covered is by the code another scenario needs. Code comes from
+the complexity profiles: slice size, touched modules, services, seams (at most
+four counted), untested modules, migrations, stubs and blockers, minus
+discounts for an analogous pattern, for tests in the touched modules (two
+points when every one has them, in proportion when some do) and for CI. The
+code's discounts can outweigh its costs, so a measurement moves the size
+either way; the total, not each dimension, is held at zero. The discounts sum
+to five points, less than XS and XS+ together, and a test pins that against
+the band edges. The total falls in a band of the nine priced sizes, and the
+rate card prices it. Sizing stores
 the assessment (`bounty_proposal.rubric`, migration 0051) with the code
 `pending` or `unavailable`, so the model's size stands. When the profiler
 settles a profile, `RubricPricer` (`apps/api/src/pricing/rubric.ts`)
@@ -815,7 +830,10 @@ first, so crossing into another repository is charged once. `rubric-v3`
 scores only the work's slice blockers (an unresolved or dynamic import, once
 per kind and file; the profile's `workBlockers`) and at most two of them.
 The slicer's own build failures, such as a compile error per line from one
-config it could not read, are shown in the evidence but not scored. The
+config it could not read, are shown in the evidence but not scored.
+`rubric-v4` adds the covered weight, the tests and CI discounts, the seams
+cap and the total-level floor, so a small change in a well-kept repository
+prices small. The
 boundary summary the profile reads lists the work's blockers ahead of the
 slicer's own, so its cap (`SUMMARY_LIMITS.blockers`) never drops a scored
 one behind a noisy build. The rubric has

@@ -401,8 +401,11 @@ function Breakdown({
     ({ measured, points }) => measured && points > 0,
   );
   if (parts.length === 0) return null;
+  // Of what the bar shows: a discount elsewhere lowers the total, not a
+  // part's share of the costs.
+  const shown = parts.reduce((sum, { points }) => sum + points, 0);
   const share = (points: number) =>
-    `${Math.round((points / Math.max(1, rubric.points)) * 100)}%`;
+    `${Math.round((points / Math.max(1, shown)) * 100)}%`;
   return (
     <div aria-hidden="true" className="flex flex-col gap-2">
       <div className="bg-muted flex h-1.5 gap-0.5 rounded-full">
@@ -1113,7 +1116,9 @@ function Rules({
         <p className="text-muted-foreground">
           The total sets the size; the rate card sets its price. The scenarios
           and test cases size it as soon as they are drafted, and the code, once
-          measured, can only raise it. A reviewer's resize overrides both.
+          measured, moves it either way: costs for what the change reaches,
+          discounts for a repository that is tested and checked. A reviewer's
+          resize overrides both.
         </p>
       </div>
     </details>

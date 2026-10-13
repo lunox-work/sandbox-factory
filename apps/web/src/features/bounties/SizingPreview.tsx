@@ -7,8 +7,8 @@
  * the scenarios as soon as they land, or the model's while they have not,
  * or where the two are too far apart to take without a reviewer. The price
  * follows from it on the run's own rate card, which is the one the
- * proposal will be priced on. The code's measurement, which can only raise
- * the size, comes once the proposal is written, as it always has.
+ * proposal will be priced on. The code's measurement, which can move the
+ * size either way, comes once the proposal is written, as it always has.
  */
 
 import type {

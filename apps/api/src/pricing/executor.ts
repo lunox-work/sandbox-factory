@@ -1384,7 +1384,7 @@ export class BountyExecutor {
       The rubric scores the fresh draft now, and its scenarios and test
       cases size it from the start, unless the model read the bounty too
       differently to take without a reviewer. The code is measured after,
-      and its points can only raise the size (`./rubric.ts`).
+      and its points can move the size either way (`./rubric.ts`).
     */
     const profiling =
       touched.length > 0 && this.#options.profilingEnabled?.() === true;

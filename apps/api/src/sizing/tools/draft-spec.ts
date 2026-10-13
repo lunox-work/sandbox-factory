@@ -1,4 +1,5 @@
 import {
+  hasOwnTest,
   SCENARIO_KIND_DEFINITIONS,
   SCENARIO_KINDS,
   SCENARIO_WEIGHT_DEFINITIONS,
@@ -56,8 +57,9 @@ export interface DraftedSpec {
  * documents; the proposal's context versions say which. `draft-v6` is shown
  * an outline of each of the workspace's repositories, under a label, and
  * says which the work changes; the proposal's `repositories` are those.
+ * `draft-v7` has the covered weight, for a scenario that adds no code.
  */
-export const DRAFT_SPEC_PROMPT_VERSION = "draft-v6";
+export const DRAFT_SPEC_PROMPT_VERSION = "draft-v7";
 
 /*
   The parts of the prompt a draft and a revision share, so the two tell
@@ -85,7 +87,7 @@ export const STEPS_RULE =
   "Each scenario has a short title and two to six steps. Start with Given, When or Then; continue a step of the same sort with And or But. A step is one clause that reads on from its keyword and states something that can be checked, so it starts without a capital and ends without a full stop.";
 
 export const WEIGHT_RULE =
-  'Give every scenario a weight, judged from the behaviour it describes as you cannot see the code, and a weightReason: one short phrase naming what makes it that weight, such as "a new retry job" or "one more check on the same form".';
+  'Give every scenario a weight, judged from the behaviour it describes as you cannot see the code, and a weightReason: one short phrase naming what makes it that weight, such as "a new retry job" or "one more check on the same form". A scenario is covered only when the work for the other scenarios leaves nothing to write for it and a test they already need proves it with one more assertion; a scenario that needs any change of its own, however small, is at least light.';
 
 export const OWN_WORDS_RULE =
   'Write in your own words. Do not quote the ticket. Do not carry over a person\'s name, a customer\'s name, a URL, a hostname, an email address, a credential or a token that appears in it: name the role or the thing instead, such as "a recruiter" or "the payments provider".';
@@ -188,13 +190,29 @@ export const assumptionsOutputSchema = notes(
  * still be a spec, which `specDraftSchema` decides.
  */
 export const specOutputSchema = (maxScenarios: number) =>
-  z.object({
-    feature: text(SPEC_LIMITS.featureChars),
-    background: notes(SPEC_LIMITS.stepChars, SPEC_LIMITS.background),
-    scenarios: scenariosOutputSchema(maxScenarios),
-    openQuestions: openQuestionsOutputSchema,
-    assumptions: assumptionsOutputSchema,
-  });
+  z
+    .object({
+      feature: text(SPEC_LIMITS.featureChars),
+      background: notes(SPEC_LIMITS.stepChars, SPEC_LIMITS.background),
+      scenarios: scenariosOutputSchema(maxScenarios),
+      openQuestions: openQuestionsOutputSchema,
+      assumptions: assumptionsOutputSchema,
+    })
+    .superRefine((spec, ctx) => {
+      // Covered is relative: by the other scenarios' code. A whole spec of
+      // covered scenarios is covered by nothing, and would price at zero.
+      if (
+        spec.scenarios.length > 0 &&
+        !spec.scenarios.some(({ weight }) => hasOwnTest(weight))
+      ) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["scenarios"],
+          message:
+            "every scenario is covered, but a covered scenario is covered by the code another scenario needs; at least one must be light, moderate or heavy.",
+        });
+      }
+    });
 
 type OutputScenario = z.infer<ReturnType<typeof scenariosOutputSchema>>[number];
 

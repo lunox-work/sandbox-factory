@@ -1745,9 +1745,9 @@ function rubricOf(status: "measured" | "pending") {
 
 test("a reviewer can put the rubric's size back in force over their own", async () => {
   const rubric = rubricOf("measured");
-  // 6 for scenarios, 3 for tests, 1 + 3 + 1 - 2 = 3 for code: 12, S+.
-  assert.equal(rubric.points, 12);
-  assert.equal(rubric.size, "S+");
+  // 6 for scenarios, 3 for tests, 1 + 3 + 1 - 2 - 2 - 1 = 0 for code: 9, S.
+  assert.equal(rubric.points, 9);
+  assert.equal(rubric.size, "S");
   const state = reviewHarness(undefined, {
     complexity: "L",
     amountMinor: 300,
@@ -1762,9 +1762,9 @@ test("a reviewer can put the rubric's size back in force over their own", async 
   assert.equal(response.status, 200);
   const body = (await response.json()) as { proposal: StoredBountyProposal };
   assert.equal(body.proposal.sizedBy, "rubric");
-  assert.equal(body.proposal.complexity, "S+");
-  // Between S and M on the proposal's own card.
-  assert.equal(body.proposal.amountMinor, 150);
+  assert.equal(body.proposal.complexity, "S");
+  // S on the proposal's own card.
+  assert.equal(body.proposal.amountMinor, 100);
   assert.equal(body.proposal.resizedBy, null);
 
   // Checked against the revision the reviewer saw.

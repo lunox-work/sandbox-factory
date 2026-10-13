@@ -32,7 +32,12 @@ function Wired({
   proposalId: string;
   specRevision: number | null | undefined;
   canAnalyze: boolean;
-  weightPoints?: { light: number; moderate: number; heavy: number };
+  weightPoints?: {
+    covered: number;
+    light: number;
+    moderate: number;
+    heavy: number;
+  };
   sizeReason?: SizeReason;
   sinceSized?: SinceSized;
 }) {
@@ -592,7 +597,7 @@ test("each scenario wears its weight and points, each group and the spec their t
 
 test("the points are counted the way the proposal's step counts them", async () => {
   server(() => Response.json({ spec: weighedSpec() }));
-  block({ weightPoints: { light: 0, moderate: 1, heavy: 10 } });
+  block({ weightPoints: { covered: 0, light: 0, moderate: 1, heavy: 10 } });
   const panel = await screen.findByTestId("proposal-spec");
   expect(
     await within(panel).findByText("5 scenarios · 22 points · revision 1"),

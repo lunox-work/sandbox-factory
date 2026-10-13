@@ -25,7 +25,7 @@ import {
   type ScenarioKind,
   type SpecDraft,
 } from "./spec.js";
-import { pointsOf, type ScenarioWeight } from "./weight.js";
+import { hasOwnTest, pointsOf, type ScenarioWeight } from "./weight.js";
 
 export const RESPEC_MODES = ["expand", "answer", "trim"] as const;
 export type RespecMode = (typeof RESPEC_MODES)[number];
@@ -73,7 +73,13 @@ export type RespecRefusal =
   /** A removal names a scenario the revision does not have. */
   | "unknown_scenario"
   /** The removal would leave a spec with no scenario and no question. */
-  | "spec_emptied";
+  | "spec_emptied"
+  /**
+   * The removal would leave only covered scenarios, which are covered by
+   * the code of the scenarios being removed: the spec would price at
+   * nothing, and a draft or answer of it is refused (`hasOwnTest`).
+   */
+  | "only_covered";
 
 /** A note, compared as a reader would: without case or spacing. */
 function noteKey(note: string): string {
@@ -108,8 +114,11 @@ export function checkRespec(
         return "unknown_scenario";
       }
       const left = trimSpec(current, request.removeScenarioIds);
-      return left.scenarios.length === 0 && left.openQuestions.length === 0
-        ? "spec_emptied"
+      if (left.scenarios.length === 0 && left.openQuestions.length === 0)
+        return "spec_emptied";
+      return left.scenarios.length > 0 &&
+        !left.scenarios.some(({ weight }) => hasOwnTest(weight))
+        ? "only_covered"
         : null;
     }
   }

@@ -1006,7 +1006,7 @@ test("a run drafts the spec first and stores it with the proposal", async () => 
     draft,
     origin: "draft",
     actualModel: "drafting-model",
-    promptVersion: "draft-v6",
+    promptVersion: "draft-v7",
   });
 });
 
@@ -1406,7 +1406,7 @@ test("a sized bounty is written with a step of zero, priced at its own size", as
     nextStepIn: 4,
     settings: {
       pointsPerStep: 4,
-      weightPoints: { light: 1, moderate: 2, heavy: 4 },
+      weightPoints: { covered: 0, light: 1, moderate: 2, heavy: 4 },
     },
     stepVersion: "step-v1",
   });
@@ -1496,7 +1496,7 @@ test("the step is counted with the board's own pricing settings", async () => {
   assert.equal(step.nextStepIn, 6);
   assert.deepEqual(step.settings, {
     pointsPerStep: 6,
-    weightPoints: { light: 1, moderate: 2, heavy: 9 },
+    weightPoints: { covered: 0, light: 1, moderate: 2, heavy: 9 },
   });
 
   // Settings it cannot read are the defaults, not a failed run.

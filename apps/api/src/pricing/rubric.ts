@@ -6,7 +6,7 @@
  * proposal takes the size its scenarios and test cases come to. The code
  * is profiled in each repository the work touches; when the profiler has
  * settled every one, the rubric is scored again with the code, which can
- * only raise the size, and a proposal still proposed takes it. Either time,
+ * move the size either way, and a proposal still proposed takes it. Either time,
  * not over a reviewer's size, nor when the rubric's is two whole sizes or
  * more from the model's (`rubricNeedsReview`): then the assessment is only
  * recorded beside it, for a reviewer to take or leave. An approved

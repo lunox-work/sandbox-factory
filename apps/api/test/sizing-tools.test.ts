@@ -236,7 +236,7 @@ test("a size result that is wrong says which field", () => {
 test("the draft tool's prompt names every kind and its own limits", () => {
   assert.equal(draftSpecTool.name, "draft_spec");
   assert.equal(draftSpecTool.promptVersion, DRAFT_SPEC_PROMPT_VERSION);
-  assert.equal(draftSpecTool.promptVersion, "draft-v6");
+  assert.equal(draftSpecTool.promptVersion, "draft-v7");
   // A bounty has no issue type or labels to show.
   assert.match(
     draftSpecTool.system,
@@ -358,7 +358,7 @@ test("the draft schema caps a draft, and renders for a strict provider", () => {
   assert.doesNotMatch(strict, /minLength|maxLength|minItems|maxItems/);
   assert.match(strict, /At most 12 items\./);
   assert.match(strict, /"enum":\["happy","boundary","unhappy"/);
-  assert.match(strict, /"enum":\["light","moderate","heavy"\]/);
+  assert.match(strict, /"enum":\["covered","light","moderate","heavy"\]/);
 });
 
 test("a scenario keeps the model's weight and its reason, cleaned and cut", () => {
@@ -395,7 +395,7 @@ test("a scenario without a weight is retried, naming the field", () => {
         output({ scenarios: [scenario({ weight: undefined })] }),
       ),
     ),
-    "scenarios.0.weight must be one of: light, moderate, heavy.",
+    "scenarios.0.weight must be one of: covered, light, moderate, heavy.",
   );
   assert.equal(
     problemOf(
@@ -403,8 +403,25 @@ test("a scenario without a weight is retried, naming the field", () => {
         output({ scenarios: [scenario({ weight: "huge" })] }),
       ),
     ),
-    "scenarios.0.weight must be one of: light, moderate, heavy.",
+    "scenarios.0.weight must be one of: covered, light, moderate, heavy.",
   );
+});
+
+test("a spec of only covered scenarios is retried: covered is by another's code", () => {
+  const covered = scenario({ weight: "covered", weightReason: "same code" });
+  assert.equal(
+    problemOf(draftSpecTool.parse(output({ scenarios: [covered, covered] }))),
+    "scenarios: every scenario is covered, but a covered scenario is covered by the code another scenario needs; at least one must be light, moderate or heavy.",
+  );
+  // One scenario with code of its own is enough, and none at all is an
+  // answer in itself.
+  assert.equal(
+    draftSpecTool.parse(
+      output({ scenarios: [covered, scenario({ weight: "light" })] }),
+    ).ok,
+    true,
+  );
+  assert.equal(draftSpecTool.parse(output({ scenarios: [] })).ok, true);
 });
 
 test("a draft is stored with ids and origins the model did not choose", () => {

@@ -233,8 +233,9 @@ test("a measured profile sizes a model-sized proposal by the rubric", async () =
     },
   });
   assert.deepEqual(write?.input.rubric, expected);
-  // 2 + 4 scenario points, 2 + 1 for tests, 1 + 3 + 2 + 2 for code = 17: M.
-  assert.equal(expected.points, 17);
+  // 2 + 4 scenario points, 2 + 1 for tests, 1 + 3 + 2 + 2 - 1 - 1 for code
+  // (one of two modules tested is half the discount) = 15: M.
+  assert.equal(expected.points, 15);
   assert.deepEqual(write?.input.price, {
     complexity: "M",
     amountMinor: DEFAULT_RATE_CARD.mMinor,
@@ -435,7 +436,7 @@ test("the code the rubric reads follows its profiles' statuses", () => {
 });
 
 test("weights come from the step, then the last assessment, then the defaults", () => {
-  const weights = { light: 3, moderate: 3, heavy: 3 };
+  const weights = { covered: 0, light: 3, moderate: 3, heavy: 3 };
   assert.deepEqual(
     weightPointsOf({
       step: { ...step, settings: { ...step.settings, weightPoints: weights } },
@@ -450,6 +451,7 @@ test("weights come from the step, then the last assessment, then the defaults", 
   });
   assert.deepEqual(weightPointsOf({ step: null, rubric }), weights);
   assert.deepEqual(weightPointsOf({ step: null, rubric: null }), {
+    covered: 0,
     light: 1,
     moderate: 2,
     heavy: 4,

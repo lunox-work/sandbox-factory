@@ -26,6 +26,7 @@ import {
 import { useEffect, useLayoutEffect, useState, type ReactNode } from "react";
 import {
   checksOf,
+  hasOwnTest,
   RUBRIC_POINTS,
   SCENARIO_KIND_DEFINITIONS,
   SCENARIO_WEIGHT_DEFINITIONS,
@@ -179,9 +180,12 @@ export function entriesFor(
     return entries.filter(
       (entry) => entry.scored && unweighed(entry, weightPoints),
     );
-  if (factorId === "test-cases") return [...entries];
+  if (factorId === "test-cases")
+    return entries.filter((entry) => hasOwnTest(entry.weight));
   if (factorId === "extra-checks")
-    return entries.filter((entry) => extraChecks(entry) > 0);
+    return entries.filter(
+      (entry) => hasOwnTest(entry.weight) && extraChecks(entry) > 0,
+    );
   return null;
 }
 
@@ -194,7 +198,9 @@ export function contributionOf(
     entry.weight === undefined
       ? undefined
       : pointsFor(entry.weight, weightPoints);
-  const extra = extraChecks(entry);
+  // A covered scenario's outcomes are assertions in another's test: none
+  // of them is a check past a test's first.
+  const extra = hasOwnTest(entry.weight) ? extraChecks(entry) : 0;
   return [
     weight === undefined || entry.weight === undefined
       ? {
@@ -205,7 +211,9 @@ export function contributionOf(
           label: `${WEIGHT[entry.weight]?.label ?? entry.weight} scenario`,
           points: weight,
         },
-    { label: "Its acceptance test", points: RUBRIC_POINTS.testCase },
+    hasOwnTest(entry.weight)
+      ? { label: "Its acceptance test", points: RUBRIC_POINTS.testCase }
+      : { label: "Checked in another scenario's test", points: 0 },
     ...(extra > 0
       ? [
           {
@@ -500,7 +508,7 @@ export function FactorPreview({
       </p>
       <p className="text-muted-foreground mb-2">
         {factorId === "unweighed"
-          ? "Each counts as moderate: a scenario is never free."
+          ? "Each counts as moderate, the middle weight."
           : weight === undefined
             ? null
             : `${weight.covers.charAt(0).toUpperCase()}${weight.covers.slice(1)}.`}

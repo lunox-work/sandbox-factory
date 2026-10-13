@@ -143,13 +143,13 @@ test("a rubric-sized price shows its working, factor by factor, and its band", (
   );
   const block = screen.getByRole("region", { name: "Why this price" });
   expect(within(block).getByTestId("rubric-total").textContent).toBe(
-    "19 points →is M",
+    "16 points →is M",
   );
   expect(within(block).getByTestId("rubric-source").textContent).toBe(
     "The rubric set this size.",
   );
   expect(within(block).getByTestId("rubric-rationale").textContent).toBe(
-    "19 points: 8 from scenarios, 5 from test cases, 6 from code. 15 to 20 points is M. 2 more points would make it M+.",
+    "16 points: 8 from scenarios, 5 from test cases, 3 from code. 15 to 20 points is M. 5 more points would make it M+.",
   );
 
   // Each dimension sums its factors, each with what was counted.
@@ -639,10 +639,8 @@ test("an earlier revision on show is scored as it would be, beside the price in 
       }}
     />,
   );
-  // Four from its scenario and its test, six from the code.
-  expect(screen.getByTestId("rubric-total").textContent).toBe(
-    "10 points →is S",
-  );
+  // Four from its scenario and its test, three from the code.
+  expect(screen.getByTestId("rubric-total").textContent).toBe("7 points →is S");
   expect(screen.getByTestId("rubric-source").textContent).toBe(
     "As revision 1 would score. The price goes with revision 2.",
   );

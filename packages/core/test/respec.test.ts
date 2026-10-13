@@ -295,6 +295,24 @@ test("a request is checked against the revision it changes", () => {
     ),
     "spec_emptied",
   );
+  // Covered is by the other scenarios' code: the last of those cannot go
+  // while a covered one stays, though all of them can.
+  const withCovered = spec([...current.scenarios, scenario("s3", "covered")]);
+  assert.equal(
+    checkRespec({ mode: "trim", removeScenarioIds: ["s1", "s2"] }, withCovered),
+    "only_covered",
+  );
+  assert.equal(
+    checkRespec({ mode: "trim", removeScenarioIds: ["s1"] }, withCovered),
+    null,
+  );
+  assert.equal(
+    checkRespec(
+      { mode: "trim", removeScenarioIds: ["s1", "s2", "s3"] },
+      withCovered,
+    ),
+    null,
+  );
 });
 
 test("a change's points can go either way, and need weights on both sides", () => {
@@ -310,7 +328,12 @@ test("a change's points can go either way, and need weights on both sides", () =
     null,
   );
   assert.equal(
-    pointsDelta(current, grown, { light: 0, moderate: 0, heavy: 10 }),
+    pointsDelta(current, grown, {
+      covered: 0,
+      light: 0,
+      moderate: 0,
+      heavy: 10,
+    }),
     10,
   );
 });
