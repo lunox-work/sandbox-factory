@@ -623,6 +623,19 @@ named one, refused `no_touched_repository` otherwise: its versions are
 bound to the repository they were sliced from, so a different one is
 refused `source_linked`.
 
+**A sandbox is made with its first version.** Making one chooses nothing,
+so the bounty's Sandbox tab offers no step for it: `POST
+.../sandboxes/start` (owners and admins, body `{ bountyId }`) makes the
+sandbox as `POST .../sandboxes` does, then begins its first version in the
+same request, sliced as `.../:id/slice` slices it when it has a repository,
+generated as `.../:id/starter` generates it when it has none, and answers
+201 with the sandbox beside the slice route's fields (`slice` null for a
+generated one). A refusal after the sandbox is made, such as a failed
+slice or the run limit, leaves it made; the tab reads the bounty again
+either way and goes on from the sandbox's own routes. The tab names the
+action as the API will take it: Slice when exactly one connected
+repository is touched, else Generate.
+
 **Without a repository, a version is generated.** `POST
 .../sandboxes/:id/starter` snapshots the task from the bounty itself (its
 title and description, with its live proposal's spec and price) and queues
@@ -663,6 +676,27 @@ version 3), and its spec and price must be that bounty's proposal's
 keep what they were frozen with, because the snapshot is named by its hash:
 version 2 lists `ticketIds`, from when a sandbox linked any number of
 tickets, and version 1 lists `jiraIssueIds`.
+
+**With a repository, a version is sliced from its sizing.** The slice is
+the one the bounty's sizing already took: the complexity profile of its
+approved proposal's spec revision in the sandbox's repository
+(`bounty_profile`, matched by the snapshot the spec was drafted beside or
+the repository's name), which the profiler scopes and slices on the worker.
+`GET .../sandboxes/:id/slice` says where it stands (`SandboxSliceDto`):
+`none` until asked for, the profile's `queued`, `scoping` and `slicing`, then
+`ready`; `failed` with the profile's code, final for that spec revision until
+a re-price drafts a new one; `unavailable` with no repository
+(`no_source`), no approved price with a spec (`task_not_ready`), or no
+profiler (`unconfigured`). `POST .../sandboxes/:id/slice` asks the profiler
+for a profile while there is none and answers 202 with the slice; once it is
+ready, it cuts a draft as `POST .../versions` does, its listing taken from
+the bounty (title, description, the repository's and bounty's stack) and its
+task from the approved proposal, queues its build and answers 201 with the
+draft and the run. A draft whose scope has blockers is cut without a build
+(`run: null`), for them to be read. The newest unfrozen draft cut from the
+same slice run is built again rather than cut twice. The bounty's Sandbox tab
+follows the slice, with the scope agent's steps while it works, then the
+build, as it follows a generated version's run.
 
 **Publishing a version.** `POST .../sandboxes/versions/:vid/publish`
 (owners and admins) records who approved the version and when, freezes it,

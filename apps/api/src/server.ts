@@ -29,6 +29,7 @@ import {
   createRateCardStore,
   createSandboxStore,
   createTokenCipher,
+  type NewBountyProfile,
 } from "@sandbox-factory/db";
 
 import { InstallationTokens } from "@sandbox-factory/github";
@@ -461,6 +462,10 @@ const sandbox =
         bounties,
         repos: githubRepos,
         contextFor,
+        profiles: bountyProfiles,
+        // Declared below, on the same footing; called only on a request.
+        requestProfile: (owner: string, input: NewBountyProfile) =>
+          bountyProfiler?.request(owner, input) ?? Promise.resolve(),
         ensureWorker: () => workerLauncher.ensureWorker(),
         maxActive: env.MAX_ACTIVE_RUNS_PER_ORG,
         onLaunchError: () => console.error("analysis_worker_launch_failed"),

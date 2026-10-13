@@ -1032,7 +1032,7 @@ test("a bounty opens through its own workspace, as the role held there allows", 
   );
   expect(
     within(screen.getByTestId("bounty-detail")).getByRole("button", {
-      name: "Create sandbox",
+      name: "Generate",
     }),
   ).toBeDefined();
   expect(
@@ -2987,12 +2987,12 @@ test("the panel names the repositories its sizing touches", async () => {
   ).toBeDefined();
 });
 
-test("a sandbox is made from the bounty alone, and seen after", async () => {
+test("a sandbox is made with its first slice from the bounty alone, and seen after", async () => {
   let made = false;
   const state = server([
     [
       "POST",
-      "/sandboxes",
+      "/sandboxes/start",
       () => {
         made = true;
         return json(
@@ -3009,6 +3009,17 @@ test("a sandbox is made from the bounty alone, and seen after", async () => {
               createdAt: stamp,
               updatedAt: stamp,
             },
+            slice: {
+              status: "queued",
+              code: null,
+              reason: null,
+              specRevision: 2,
+              scopeRunId: null,
+              sliceRunId: null,
+            },
+            version: null,
+            source: null,
+            run: null,
           },
           201,
         );
@@ -3036,15 +3047,22 @@ test("a sandbox is made from the bounty alone, and seen after", async () => {
 
   const panel = await screen.findByTestId("bounty-detail");
   const sandboxPart = within(panel).getByRole("region", { name: "Sandbox" });
-  await userEvent.click(
-    within(sandboxPart).getByRole("button", { name: "Create sandbox" }),
-  );
+  // No sandbox to make first: slicing its first version makes it.
+  expect(
+    within(sandboxPart).queryByRole("button", { name: "Create sandbox" }),
+  ).toBeNull();
+  const slice = await within(sandboxPart).findByRole("button", {
+    name: "Slice",
+  });
+  await waitFor(() => expect(slice.hasAttribute("disabled")).toBe(false));
+  await userEvent.click(slice);
   // Nobody picks its repository: the server cuts it from the one the
   // bounty's sizing said the work touches.
   await waitFor(() =>
     expect(
       state.calls.find(
-        ({ method, url }) => method === "POST" && url.includes("/sandboxes"),
+        ({ method, url }) =>
+          method === "POST" && url.includes("/sandboxes/start"),
       )?.body,
     ).toEqual({ bountyId: "bty_7" }),
   );
@@ -3061,7 +3079,7 @@ test("a sandbox that could not be made says why, and the bounty stays as it was"
   const state = server([
     [
       "POST",
-      "/sandboxes",
+      "/sandboxes/start",
       () =>
         json(
           {
@@ -3083,9 +3101,12 @@ test("a sandbox that could not be made says why, and the bounty stays as it was"
 
   const panel = await screen.findByTestId("bounty-detail");
   const sandboxPart = within(panel).getByRole("region", { name: "Sandbox" });
-  await userEvent.click(
-    within(sandboxPart).getByRole("button", { name: "Create sandbox" }),
-  );
+  // Its sizing touches no repository, so its first version is generated.
+  const generate = await within(sandboxPart).findByRole("button", {
+    name: "Generate",
+  });
+  await waitFor(() => expect(generate.hasAttribute("disabled")).toBe(false));
+  await userEvent.click(generate);
   expect((await within(sandboxPart).findByRole("alert")).textContent).toContain(
     "This bounty already has a sandbox.",
   );
@@ -3622,10 +3643,13 @@ function generatingServer(input: {
   source?: () => Record<string, unknown>;
   /** Where each step stands; the scope alone by default. */
   stages?: Record<string, unknown> | (() => Record<string, unknown>);
+  /** More routes, matched before these. */
+  routes?: [string, string, (body: unknown) => Promise<Response>][];
 }) {
   const stages = () =>
     typeof input.stages === "function" ? input.stages() : input.stages;
   return server([
+    ...(input.routes ?? []),
     [
       "GET",
       "/bounties/bty_7",
@@ -3943,6 +3967,271 @@ test("a sandbox is its slice and its submissions", async () => {
       .getByRole("link", { name: "Open Sandbox" })
       .getAttribute("href"),
   ).toBe("/sandboxes/acme/sbv_1");
+});
+
+/** A version sliced from the repository, its source and its build. */
+const slicedSource = {
+  ...generatedSource,
+  origin: "slice",
+  sourceSnapshotId: "rsn_1",
+  sourceCommitSha: "c".repeat(40),
+  sliceRunId: "arn_slice",
+  manifestSha256: "m".repeat(64),
+  contractSha256: "k".repeat(64),
+  starterRunId: null,
+  buildRunId: "arn_build",
+};
+function buildRun(overrides: Record<string, unknown> = {}) {
+  return {
+    ...starterRun(),
+    id: "arn_build",
+    snapshotId: "rsn_1",
+    repoId: "ghr_1",
+    tool: "sandbox_build",
+    toolVersion: "sandbox_build@1",
+    params: {
+      deadlineMinutes: 30,
+      sliceRunId: "arn_slice",
+      sandboxVersionId: "sbv_1",
+      manifestSha256: "a".repeat(64),
+      contractSha256: "b".repeat(64),
+      transformConfigSha256: "c".repeat(64),
+      approvedTaskSha256: "d".repeat(64),
+    },
+    ...overrides,
+  };
+}
+/** A linked sandbox's next slice, as its sizing has it. */
+function sliceOf(overrides: Record<string, unknown> = {}) {
+  return {
+    status: "ready",
+    code: null,
+    reason: null,
+    specRevision: 2,
+    scopeRunId: "arn_scope",
+    sliceRunId: "arn_slice",
+    ...overrides,
+  };
+}
+/** A sandbox sliced from `ghr_1`, whose slice answers as given. */
+function slicingServer(input: {
+  versions: () => unknown[];
+  slice: () => Record<string, unknown>;
+  sliceVersion?: () => Promise<Response>;
+  routes?: [string, string, (body: unknown) => Promise<Response>][];
+}) {
+  return generatingServer({
+    versions: input.versions,
+    sandbox: () => ({ sourceRepoId: "ghr_1" }),
+    source: () => slicedSource,
+    routes: [
+      ...(input.routes ?? []),
+      [
+        "POST",
+        "/sandboxes/sbx_1/slice",
+        () =>
+          input.sliceVersion?.() ??
+          json(
+            { slice: input.slice(), version: null, source: null, run: null },
+            202,
+          ),
+      ],
+      ["GET", "/sandboxes/sbx_1/slice", () => json({ slice: input.slice() })],
+    ],
+  });
+}
+
+test("an admin slices a version from its sizing's slice, and follows its build", async () => {
+  let sliced = false;
+  const state = slicingServer({
+    versions: () => (sliced ? [generatedVersion] : []),
+    slice: () => sliceOf(),
+    sliceVersion: () => {
+      sliced = true;
+      return json(
+        {
+          slice: sliceOf(),
+          version: generatedVersion,
+          source: slicedSource,
+          run: buildRun({ status: "queued" }),
+        },
+        201,
+      );
+    },
+    routes: [
+      ["GET", "/github/runs/arn_build", () => json({ run: buildRun() })],
+    ],
+  });
+  vi.stubGlobal("fetch", state.fetchMock);
+  const part = await sandboxPart();
+  expect(
+    await within(part).findByText(/Its sizing's slice is ready/),
+  ).toBeDefined();
+  // Nothing is generated for a sandbox with a repository.
+  expect(within(part).queryByRole("button", { name: /Generate/ })).toBeNull();
+  await userEvent.click(
+    await within(part).findByRole("button", { name: "Slice" }),
+  );
+  await waitFor(() =>
+    expect(
+      state.calls.some(
+        ({ method, url }) =>
+          method === "POST" &&
+          url.endsWith("/orgs/org_1/sandboxes/sbx_1/slice"),
+      ),
+    ).toBe(true),
+  );
+  expect(await within(part).findByText("Building")).toBeDefined();
+  expect(
+    within(part).getByText("Building the slice and checking its baseline"),
+  ).toBeDefined();
+  // The draft its slice was just cut into is not cut again.
+  expect(
+    (
+      within(part).getByRole("button", {
+        name: "Slice again",
+      }) as HTMLButtonElement
+    ).disabled,
+  ).toBe(true);
+});
+
+test("a slice its sizing is still cutting holds Slice, and shows the scope agent at work", async () => {
+  vi.stubGlobal(
+    "fetch",
+    slicingServer({
+      versions: () => [],
+      slice: () => sliceOf({ status: "scoping", sliceRunId: null }),
+      routes: [
+        [
+          "GET",
+          "/github/runs/arn_scope",
+          () =>
+            json({
+              run: {
+                ...starterRun(),
+                id: "arn_scope",
+                snapshotId: "rsn_1",
+                repoId: "ghr_1",
+                tool: "scope",
+                toolVersion: "scope@2",
+                params: {
+                  deadlineMinutes: 60,
+                  agent: "scope",
+                  graphRunId: "arn_graph",
+                  proposalId: "bpr_7",
+                  specRevision: 2,
+                  specHash: "h",
+                },
+                progress: {
+                  count: 1,
+                  steps: [{ at: stamp, text: "Read src/invitations.ts" }],
+                },
+              },
+            }),
+        ],
+      ],
+    }).fetchMock,
+  );
+  const part = await sandboxPart();
+  expect(
+    await within(part).findByText(
+      "The scope agent is picking the files the task needs",
+    ),
+  ).toBeDefined();
+  expect(
+    await within(part).findByText("Read src/invitations.ts"),
+  ).toBeDefined();
+  expect(
+    (within(part).getByRole("button", { name: "Slice" }) as HTMLButtonElement)
+      .disabled,
+  ).toBe(true);
+});
+
+test("with no slice yet, Slice asks its sizing for one and follows it", async () => {
+  let asked = false;
+  const state = slicingServer({
+    versions: () => [],
+    slice: () =>
+      asked
+        ? sliceOf({ status: "queued", scopeRunId: null, sliceRunId: null })
+        : sliceOf({ status: "none", scopeRunId: null, sliceRunId: null }),
+    sliceVersion: () => {
+      asked = true;
+      return json(
+        {
+          slice: sliceOf({
+            status: "queued",
+            scopeRunId: null,
+            sliceRunId: null,
+          }),
+          version: null,
+          source: null,
+          run: null,
+        },
+        202,
+      );
+    },
+  });
+  vi.stubGlobal("fetch", state.fetchMock);
+  const part = await sandboxPart();
+  expect(
+    await within(part).findByText(/Slice one: the scope agent picks/),
+  ).toBeDefined();
+  await userEvent.click(
+    await within(part).findByRole("button", { name: "Slice" }),
+  );
+  expect(
+    await within(part).findByText("Waiting for room to start the slice"),
+  ).toBeDefined();
+  expect(state.calls.filter(({ method }) => method === "POST")).toHaveLength(1);
+});
+
+test("a slice that failed says why, and a refused slice says why too", async () => {
+  vi.stubGlobal(
+    "fetch",
+    slicingServer({
+      versions: () => [],
+      slice: () =>
+        sliceOf({
+          status: "failed",
+          code: "scope_failed",
+          reason:
+            "The scope agent could not pick what the slice holds. Price it again to slice a new spec.",
+        }),
+    }).fetchMock,
+  );
+  const part = await sandboxPart();
+  expect(
+    await within(part).findByText(/The scope agent could not pick/),
+  ).toBeDefined();
+  expect(
+    (within(part).getByRole("button", { name: "Slice" }) as HTMLButtonElement)
+      .disabled,
+  ).toBe(true);
+  cleanup();
+
+  vi.stubGlobal(
+    "fetch",
+    slicingServer({
+      versions: () => [],
+      slice: () => sliceOf(),
+      sliceVersion: () =>
+        json(
+          {
+            error: "The active analysis limit has been reached.",
+            code: "run_limit",
+          },
+          409,
+        ),
+    }).fetchMock,
+  );
+  const again = await sandboxPart();
+  await userEvent.click(
+    await within(again).findByRole("button", { name: "Slice" }),
+  );
+  expect((await within(again).findByRole("alert")).textContent).toContain(
+    "The active analysis limit has been reached.",
+  );
 });
 
 test("a refused generation says why", async () => {
@@ -5142,7 +5431,7 @@ test("a sandbox waits on an approved price: its notice says why, and nothing is 
     "Locked. Approve the price before changing the sandbox.",
   );
   const part = within(page).getByRole("region", { name: "Sandbox" });
-  const create = within(part).getByRole("button", { name: "Create sandbox" });
+  const create = within(part).getByRole("button", { name: "Generate" });
   expect(create.hasAttribute("disabled")).toBe(true);
   expect(await reasonOn(create)).toBe(
     "Approve the price before changing the sandbox.",

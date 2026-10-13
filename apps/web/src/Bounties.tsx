@@ -55,6 +55,7 @@ import {
   Loader2,
   Maximize2,
   Plus,
+  Scissors,
   Sparkles,
 } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
@@ -1552,6 +1553,9 @@ function BountyDetail({
     unlinked && connectedTouched.length === 1 && touchedRepo !== undefined
       ? touchedRepo
       : null;
+  // A sandbox not made yet is made with its first version: sliced from the
+  // one repository its sizing touches, as the API cuts it, else generated.
+  const firstSliced = connectedTouched.length === 1;
   // Either part is kept with the bounty, so either one keeps it.
   const removable = proposal === null && sandbox === null;
 
@@ -1804,7 +1808,7 @@ function BountyDetail({
     A page's sandbox: its version's card, then its slice and where
     submissions are held, in ruled sections; a panel lays its version out
     in a section of its own. With no sandbox, the card says so and offers
-    the way to make one.
+    its first version, which makes it.
   */
   const sandboxPart =
     sandbox !== null ? (
@@ -1885,28 +1889,40 @@ function BountyDetail({
         error={sandboxError}
         action={
           managesSandbox && (
-            <DisabledReason reason={sandboxPending ? null : sandboxHeld}>
+            <DisabledReason
+              reason={
+                sandboxPending
+                  ? null
+                  : (sandboxHeld ??
+                    (repos.loading ? "Reading its repositories…" : null))
+              }
+            >
               <Button
                 type="button"
-                disabled={sandboxPending || sandboxHeld !== null}
+                disabled={
+                  sandboxPending || sandboxHeld !== null || repos.loading
+                }
                 onClick={() => {
                   setSandboxPending(true);
                   setSandboxError(null);
-                  // Cut from the repository the bounty's sizing said its work
-                  // touches; with none, its versions are generated.
-                  void bounties.createSandbox(bounty.id).then((failure) => {
+                  // Made with its first version: nothing about the sandbox
+                  // itself is chosen. A version refused after it was made
+                  // leaves it made, so the bounty is read again either way.
+                  void bounties.startSandbox(bounty.id).then((failure) => {
                     setSandboxPending(false);
-                    if (failure === null) onReload();
-                    else setSandboxError(failure);
+                    setSandboxError(failure);
+                    onReload();
                   });
                 }}
               >
                 {sandboxPending ? (
                   <Loader2 className="animate-spin" />
+                ) : firstSliced ? (
+                  <Scissors />
                 ) : (
-                  <Box />
+                  <Sparkles />
                 )}
-                Create sandbox
+                {firstSliced ? "Slice" : "Generate"}
               </Button>
             </DisabledReason>
           )
@@ -1915,9 +1931,11 @@ function BountyDetail({
         <NoVersion title="No sandbox yet">
           {readOnly
             ? undefined
-            : canManage
-              ? "Create one to slice the task contributors work in."
-              : "An owner or admin can create one."}
+            : !canManage
+              ? "An owner or admin can make one."
+              : firstSliced && touchedRepo !== undefined
+                ? `Slice one from ${touchedRepo.fullName}: the scope agent's pick of the files the task needs is cut down to the task, then built and checked.`
+                : "Generate one from the bounty: an agent writes a starter for the task, then it is built and checked."}
         </NoVersion>
       </StepVersionCard>
     );
@@ -2200,7 +2218,7 @@ function BountyDetail({
                 remedy={
                   unlinked
                     ? "Generate a new version to build from the latest price."
-                    : "A new version sliced from its repository would build from the latest price; slicing is not available from this page yet."
+                    : "Slice a new version to build from the latest price."
                 }
                 onOpen={selectPageTab}
               />
@@ -2212,7 +2230,7 @@ function BountyDetail({
                   remedy={
                     unlinked
                       ? "Generate a new version to build with the latest context."
-                      : "A new version would freeze the latest context; slicing is not available from this page yet."
+                      : "Slice a new version to build with the latest context."
                   }
                 />
               )}

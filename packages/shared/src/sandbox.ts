@@ -300,6 +300,69 @@ export const generateStarterResponseSchema = z.object({
   run: analysisRunDtoSchema,
 });
 /**
+ * Where a linked sandbox's next slice stands. A version is cut from the
+ * slice the bounty's sizing took of its approved spec revision in the
+ * sandbox's repository: `none` until it was asked for, then the sizing
+ * profile's own steps, `ready` once its slice run has succeeded.
+ * `unavailable` is a sandbox that cannot be sliced yet, with why.
+ */
+export const SANDBOX_SLICE_STATUSES = [
+  "unavailable",
+  "none",
+  "queued",
+  "scoping",
+  "slicing",
+  "ready",
+  "failed",
+] as const;
+export const sandboxSliceDtoSchema = z.object({
+  status: z.enum(SANDBOX_SLICE_STATUSES),
+  /** Why it is unavailable or failed; null otherwise. */
+  code: z.string().nullable(),
+  reason: z.string().nullable(),
+  /** The spec revision it is cut for, once there is an approved one. */
+  specRevision: z.number().int().positive().nullable(),
+  /** The scope agent's run, which picks what the slice holds. */
+  scopeRunId: z.string().nullable(),
+  sliceRunId: z.string().nullable(),
+});
+export type SandboxSliceDto = z.infer<typeof sandboxSliceDtoSchema>;
+/** `GET .../sandboxes/:id/slice`. */
+export const sandboxSliceResponseSchema = z.object({
+  slice: sandboxSliceDtoSchema,
+});
+/**
+ * `POST .../sandboxes/:id/slice`: where the slice stands, and once it was
+ * ready, the draft version cut from it and the build it queued. A draft
+ * whose scope has blockers is cut without a build, which `run` says.
+ */
+export const sliceVersionResponseSchema = z.object({
+  slice: sandboxSliceDtoSchema,
+  version: sandboxVersionDtoSchema.nullable(),
+  source: sandboxVersionSourceDtoSchema.nullable(),
+  run: analysisRunDtoSchema.nullable(),
+});
+export type SliceVersionResponseDto = z.infer<
+  typeof sliceVersionResponseSchema
+>;
+/**
+ * `POST .../sandboxes/start`: a bounty's sandbox made and its first version
+ * begun in one step. With a repository, the slice and, once it was ready,
+ * the draft cut from it and its build, as `.../:id/slice` answers; without
+ * one, `slice` is null and the version is generated, as `.../:id/starter`
+ * answers.
+ */
+export const startSandboxResponseSchema = z.object({
+  sandbox: sandboxDtoSchema,
+  slice: sandboxSliceDtoSchema.nullable(),
+  version: sandboxVersionDtoSchema.nullable(),
+  source: sandboxVersionSourceDtoSchema.nullable(),
+  run: analysisRunDtoSchema.nullable(),
+});
+export type StartSandboxResponseDto = z.infer<
+  typeof startSandboxResponseSchema
+>;
+/**
  * `POST .../sandboxes/versions/:id/publish` body: when the publication
  * lapses. Every publication is made until a date, which must be ahead.
  */
