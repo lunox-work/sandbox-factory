@@ -23,7 +23,11 @@ import {
   screenForPath,
 } from "../src/routes";
 import { Bounties, BountyPage, NewBountyPage } from "../src/Bounties";
-import { assessRubric, COMPLEXITY_PROFILE_VERSION } from "sandbox-factory";
+import {
+  assessRubric,
+  COMPLEXITY_PROFILE_VERSION,
+  SANDBOX_BUILD_RUN_VERSION,
+} from "sandbox-factory";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -4093,6 +4097,78 @@ test("an admin slices a version from its sizing's slice, and follows its build",
       }) as HTMLButtonElement
     ).disabled,
   ).toBe(true);
+});
+
+test("a built draft holds Slice again, and says a new price cuts a new slice", async () => {
+  vi.stubGlobal(
+    "fetch",
+    slicingServer({
+      versions: () => [generatedVersion],
+      slice: () => sliceOf(),
+      routes: [
+        [
+          "GET",
+          "/github/runs/arn_build",
+          () =>
+            json({
+              run: buildRun({
+                status: "succeeded",
+                finishedAt: stamp,
+                toolVersion: SANDBOX_BUILD_RUN_VERSION,
+              }),
+            }),
+        ],
+      ],
+    }).fetchMock,
+  );
+  const part = await sandboxPart();
+  const again = await within(part).findByRole("button", {
+    name: "Slice again",
+  });
+  expect((again as HTMLButtonElement).disabled).toBe(true);
+  // The reason is on hover, from the span the disabled button sits in.
+  await userEvent.hover(again.parentElement!);
+  expect(
+    (
+      await screen.findAllByText(
+        "The latest version is already cut from this slice. Price it again to cut a new one.",
+      )
+    ).length,
+  ).toBeGreaterThan(0);
+});
+
+test("a draft an older builder built is sliced again, to be built by this one", async () => {
+  vi.stubGlobal(
+    "fetch",
+    slicingServer({
+      versions: () => [generatedVersion],
+      slice: () => sliceOf(),
+      routes: [
+        [
+          "GET",
+          "/github/runs/arn_build",
+          () =>
+            json({
+              run: buildRun({
+                status: "succeeded",
+                finishedAt: stamp,
+                toolVersion: "sandbox_build@1",
+              }),
+            }),
+        ],
+      ],
+    }).fetchMock,
+  );
+  const part = await sandboxPart();
+  await waitFor(async () =>
+    expect(
+      (
+        (await within(part).findByRole("button", {
+          name: "Slice again",
+        })) as HTMLButtonElement
+      ).disabled,
+    ).toBe(false),
+  );
 });
 
 test("a slice its sizing is still cutting holds Slice, and shows the scope agent at work", async () => {

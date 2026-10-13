@@ -13,6 +13,7 @@ import {
   descriptorPublic,
   enumMembers,
   freezeReadiness,
+  ambientDeclarations,
   generateProject,
   invertAliasRules,
   renameFile,
@@ -1046,6 +1047,8 @@ test("the generated project is standalone: rewritten imports, stubs beside mocks
   assert.equal(tsconfig.compilerOptions["target"], "ES2020");
   assert.equal(tsconfig.compilerOptions["outDir"], undefined);
   assert.equal(tsconfig.compilerOptions["module"], "NodeNext");
+  // Its packages are untyped, as in the slice's check.
+  assert.equal(tsconfig.compilerOptions["noImplicitAny"], false);
   assert.match(
     byPath.get("sandbox/ambient.d.ts")?.text ?? "",
     /declare module "zod";/,
@@ -1582,5 +1585,23 @@ test("a publication stands until its expiry, and lapses at it", () => {
       now,
     ),
     false,
+  );
+});
+
+test("a package declared as a module of what is read of it takes the place of its untyped shorthand", () => {
+  const module =
+    'declare module "@acme/shared" {\n  export type Task = any;\n}\n';
+  const text = ambientDeclarations(["@acme/shared", "zod"], {
+    specifiers: ["@acme/shared"],
+    text: module,
+  });
+  assert.doesNotMatch(text, /declare module "@acme\/shared";/);
+  assert.match(text, /declare module "@acme\/shared\/\*";/);
+  assert.match(text, /declare module "zod";/);
+  assert.ok(text.endsWith(module));
+  // Without modules, every package is the shorthand.
+  assert.match(
+    ambientDeclarations(["@acme/shared"]),
+    /declare module "@acme\/shared";/,
   );
 });

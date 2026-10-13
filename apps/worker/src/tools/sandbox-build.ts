@@ -12,6 +12,11 @@
  * the pure generator in `packages/core`, and the baseline runs the public
  * commands plus every hidden test in a job the provider creates and
  * destroys. Logs stay fixed lines; the job's output is not stored.
+ *
+ * A draft with no hidden tests cannot judge a submission, so when its
+ * baseline fails for that alone, an agent writes them (`hidden-tests.ts`)
+ * and the build is the one their accepted baseline ran. They settle on the
+ * draft when the run commits, with the transform they hash to.
  */
 
 import { mkdir, readFile, writeFile } from "node:fs/promises";
@@ -35,6 +40,7 @@ import {
   canonicalJson,
   generateProject,
   isSandboxBuildParams,
+  packageNameOf,
   runtimePath,
   transformConfigOf,
 } from "sandbox-factory";
@@ -61,12 +67,16 @@ import {
   sandboxFixtureSchema,
   specDraftSchema,
 } from "@sandbox-factory/shared";
+import type { AgentSettings } from "../agent/loop.js";
 import { AnalysisError } from "../errors.js";
 import { snapshotOf } from "./adapter.js";
 import type { ArtifactFile, ToolAdapter, ToolRunInput } from "./adapter.js";
+import { writeHiddenTests } from "./hidden-tests.js";
+import type { GeneratedCandidate } from "./hidden-tests.js";
 import { loadSliceRun, readIncludedSource } from "./slice-run.js";
 import { sha256 } from "./slice/hash.js";
-import { NODE_BUILTINS } from "./slice/typescript.js";
+import { packageModules, packageUses } from "./slice/fixture.js";
+import { NODE_BUILTINS, isNodeBuiltin } from "./slice/typescript.js";
 
 export interface SandboxBuildOptions {
   /**
@@ -74,8 +84,16 @@ export interface SandboxBuildOptions {
    * builds then fail with `evaluation_failed` before generating anything.
    */
   readonly provider: EvaluationProvider | null;
+  /** Writes hidden tests for a draft that has none; without a model, none are. */
+  readonly agent?: AgentSettings;
   readonly now?: () => Date;
 }
+
+/**
+ * Where a build that wrote hidden tests keeps them, with the transform the
+ * draft had before them and the one it has after, for `committed`.
+ */
+export const HIDDEN_TESTS_PATH = "hidden-tests.json";
 
 /**
  * The spec and the contract's symbols travel through aliasing as
@@ -517,6 +535,63 @@ export async function baselineOf(
   return { baseline: result.baseline, evaluator: result.evaluator };
 }
 
+/** How much of a surprising step's output an agent is shown. */
+export const STEP_OUTPUT_CHARS = 4_000;
+
+/** The tail of a step's output: where a failure usually says what it is. */
+function tail(text: string): string {
+  return text.length <= STEP_OUTPUT_CHARS
+    ? text
+    : `…${text.slice(-STEP_OUTPUT_CHARS)}`;
+}
+
+/**
+ * `baselineOf` for an agent's candidate, with what the agent is told: each
+ * step, what each hidden test did against what it was expected to do, and
+ * the output of each step that surprised, a hidden test by its expectation
+ * and any other step by failing.
+ */
+export async function reportedBaselineOf(
+  provider: EvaluationProvider,
+  input: Omit<Parameters<typeof baselineOf>[1], "onStep">,
+): Promise<{
+  baseline: BaselineReport;
+  evaluator: EvaluationEnvironment;
+  report: string;
+}> {
+  const expected = new Map(
+    input.acceptanceTests.map((test) => [test.path, test.expectedBaseline]),
+  );
+  const surprises: string[] = [];
+  const { baseline, evaluator } = await baselineOf(provider, {
+    ...input,
+    onStep: (step, output) => {
+      const surprising =
+        step.name === "private-test"
+          ? privateTestOutcome(step, output.stdout) !==
+            expected.get(step.path ?? "")
+          : !step.ok;
+      if (!surprising) return;
+      surprises.push(
+        `--- ${step.path ?? step.name} (exit ${step.exitCode ?? "none"}${step.timedOut ? ", timed out" : ""})\n${tail(`${output.stdout}\n${output.stderr}`.trim())}`,
+      );
+    },
+  });
+  const report = [
+    baseline.ok ? "The baseline passes." : "The baseline does not pass.",
+    ...baseline.steps
+      .filter((step) => step.name !== "private-test")
+      .map((step) => `${step.name}: ${step.ok ? "ok" : "failed"}`),
+    ...baseline.privateTests.map(
+      (outcome) =>
+        `${outcome.path}: expected to ${outcome.expected}, ${outcome.observed === "error" ? "could not run" : `${outcome.observed}ed`}`,
+    ),
+    ...baseline.reasons.map((reason) => `Reason: ${reason}`),
+    ...surprises,
+  ].join("\n");
+  return { baseline, evaluator, report };
+}
+
 export function createSandboxBuildAdapter(
   options: SandboxBuildOptions,
 ): ToolAdapter {
@@ -613,6 +688,14 @@ export function createSandboxBuildAdapter(
       );
       const blockers: ProjectBlocker[] = [];
       let files: GeneratedFile[] = [];
+      // The project with a given set of hidden tests, once aliasing held.
+      let generate:
+        | ((tests: readonly AcceptanceTest[]) => GeneratedCandidate & {
+            importRewrites: SandboxBuildManifest["importRewrites"];
+          })
+        | null = null;
+      // The spec as the project reads it, renamed with it.
+      let publicSpec: SpecDraft | null = null;
       let importRewrites: SandboxBuildManifest["importRewrites"] = [];
       let renames: SandboxBuildManifest["renames"] = [];
       if (!aliased.ok) {
@@ -693,29 +776,58 @@ export function createSandboxBuildAdapter(
         if (broken.length > 0) {
           input.log("Alias application broke the contract, spec or fixtures.");
         } else {
-          const project = generateProject({
-            version: {
-              sandboxId: version.sandboxId,
-              versionId: version.id,
-              version: version.version,
-              title: version.title,
-              specSummary: version.specSummary,
-              complexity: version.complexity,
-              tags: version.tags,
-            },
-            manifest,
-            contract: aliasedContract,
-            sources,
-            stubs,
-            spec: aliasedSpec,
-            dependencies: source.scope.dependencies,
-            acceptanceTests: source.acceptanceTests,
-            fixtures: aliasedFixtures,
-            scenario: aliasedScenario,
-            knownSpecifiers: NODE_BUILTINS,
-            ...(compilerOptions === undefined ? {} : { compilerOptions }),
-          });
-          files = [...project.files];
+          // What the sources and stubs read of each package, declared as
+          // the slice's check declared it, so the project builds what the
+          // check passed.
+          const packageNames = new Set(
+            source.scope.dependencies
+              .filter((dependency) => dependency.kind === "package")
+              .map((dependency) => dependency.name),
+          );
+          const uses = packageUses(
+            new Map(
+              [...sources, ...stubs].map((file) => [file.path, file.text]),
+            ),
+            (specifier) =>
+              !specifier.startsWith(".") &&
+              !specifier.startsWith("/") &&
+              (packageNames.has(packageNameOf(specifier)) ||
+                isNodeBuiltin(specifier)),
+          );
+          const generated = (tests: readonly AcceptanceTest[]) => {
+            const project = generateProject({
+              version: {
+                sandboxId: version.sandboxId,
+                versionId: version.id,
+                version: version.version,
+                title: version.title,
+                specSummary: version.specSummary,
+                complexity: version.complexity,
+                tags: version.tags,
+              },
+              manifest,
+              contract: aliasedContract,
+              sources,
+              stubs,
+              spec: aliasedSpec,
+              dependencies: source.scope.dependencies,
+              acceptanceTests: tests,
+              fixtures: aliasedFixtures,
+              scenario: aliasedScenario,
+              knownSpecifiers: NODE_BUILTINS,
+              packageModules: packageModules(uses),
+              ...(compilerOptions === undefined ? {} : { compilerOptions }),
+            });
+            return {
+              files: [...project.files],
+              blockers: [...project.blockers],
+              importRewrites: project.importRewrites,
+            };
+          };
+          generate = generated;
+          publicSpec = aliasedSpec;
+          const project = generated(source.acceptanceTests);
+          files = project.files;
           importRewrites = project.importRewrites;
           blockers.push(...project.blockers);
           input.log(
@@ -738,6 +850,68 @@ export function createSandboxBuildAdapter(
         baseline = result.baseline;
         evaluator = result.evaluator;
       }
+      // Hidden tests, for a draft with none whose baseline fails for that
+      // alone: every step ran, and no test judged it.
+      let hidden: Awaited<ReturnType<typeof writeHiddenTests>> = null;
+      const model = options.agent?.model ?? null;
+      if (
+        generate !== null &&
+        source.acceptanceTests.length === 0 &&
+        baseline !== null &&
+        !baseline.ok &&
+        baseline.steps.every((step) => step.ok)
+      ) {
+        if (model === null || options.agent === undefined)
+          input.log(
+            "No agent model is configured; no hidden tests are written.",
+          );
+        else {
+          hidden = await writeHiddenTests({
+            model,
+            limits: options.agent.limits,
+            task: {
+              title: version.title,
+              summary: version.specSummary,
+              spec: publicSpec,
+            },
+            generate,
+            baseline: (candidateFiles, candidateBlockers, tests) =>
+              reportedBaselineOf(provider, {
+                label: version.id,
+                files: candidateFiles,
+                acceptanceTests: tests,
+                blockers: candidateBlockers,
+                signal: input.signal,
+                log: input.log,
+                now,
+              }),
+            signal: input.signal,
+            log: input.log,
+            step: input.step,
+          });
+          if (hidden !== null) {
+            files = hidden.files;
+            blockers.splice(0, blockers.length, ...hidden.blockers);
+            baseline = hidden.baseline;
+            evaluator = hidden.evaluator;
+          }
+        }
+      }
+      // What the draft's transform becomes once the tests settle on it.
+      const transformConfigSha256 =
+        hidden === null
+          ? source.transformConfigSha256
+          : sha256(
+              canonicalJson(
+                transformConfigOf({
+                  aliasRules: source.aliasRules,
+                  dependencyChoices: source.dependencyChoices,
+                  acceptanceTests: hidden.tests,
+                  fixtures: source.fixtures,
+                  starterSha256: source.starterSha256,
+                }),
+              ),
+            );
       const { manifest: buildManifest, written } = await writeBuildOutputs({
         outDir: input.outDir,
         toolVersion: SANDBOX_BUILD_RUN_VERSION,
@@ -749,7 +923,7 @@ export function createSandboxBuildAdapter(
           sliceRunId: source.sliceRunId,
           manifestSha256: source.manifestSha256,
           contractSha256: source.contractSha256,
-          transformConfigSha256: source.transformConfigSha256,
+          transformConfigSha256,
           approvedTaskSha256: source.approvedTaskSha256,
         },
         files,
@@ -760,6 +934,28 @@ export function createSandboxBuildAdapter(
         evaluator,
         blockers,
       });
+      if (hidden !== null) {
+        const absolutePath = join(input.outDir, HIDDEN_TESTS_PATH);
+        await writeFile(
+          absolutePath,
+          canonicalJson({
+            fromTransformConfigSha256: source.transformConfigSha256,
+            transformConfigSha256,
+            acceptanceTests: hidden.tests,
+            summary: hidden.summary,
+            usage: hidden.usage,
+          }),
+          "utf8",
+        );
+        written.push({
+          path: HIDDEN_TESTS_PATH,
+          absolutePath,
+          kind: buildArtifactKind(HIDDEN_TESTS_PATH),
+          contentType: "application/json",
+          meta: { hiddenTests: hidden.tests.length },
+        });
+        written.sort((a, b) => compare(a.path, b.path));
+      }
       input.log(
         buildManifest.ready
           ? "Sandbox build ready for the publication gates."
@@ -767,7 +963,10 @@ export function createSandboxBuildAdapter(
       );
       return written;
     },
-    /** A ready build's harness and toolchain become the draft's freeze evidence. */
+    /**
+     * A ready build's harness and toolchain become the draft's freeze
+     * evidence, with the hidden tests it wrote, if it wrote any.
+     */
     async committed({ runId, files, inputs }) {
       const file = files.find((item) => item.path === "build-manifest.json");
       if (file === undefined) return;
@@ -775,9 +974,27 @@ export function createSandboxBuildAdapter(
         await readFile(file.absolutePath, "utf8"),
       ) as SandboxBuildManifest;
       if (!manifest.ready) return;
+      const testsFile = files.find((item) => item.path === HIDDEN_TESTS_PATH);
+      const tests =
+        testsFile === undefined
+          ? undefined
+          : (JSON.parse(await readFile(testsFile.absolutePath, "utf8")) as {
+              fromTransformConfigSha256: string;
+              transformConfigSha256: string;
+              acceptanceTests: AcceptanceTest[];
+            });
       await inputs.recordBuildOutput(manifest.sandboxVersionId, runId, {
         harnessSha256: manifest.harnessSha256,
         toolchainDigest: manifest.toolchainDigest,
+        ...(tests === undefined
+          ? {}
+          : {
+              tests: {
+                acceptanceTests: tests.acceptanceTests,
+                fromTransformConfigSha256: tests.fromTransformConfigSha256,
+                transformConfigSha256: tests.transformConfigSha256,
+              },
+            }),
       });
     },
   };

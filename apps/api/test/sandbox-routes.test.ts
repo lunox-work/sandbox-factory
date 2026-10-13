@@ -1554,7 +1554,8 @@ test("a build queues a run carrying every hash and records it on the draft", asy
     snapshotId: "rsn_1",
     tool: "sandbox_build",
     params: {
-      deadlineMinutes: 30,
+      // Long enough for an agent to write hidden tests.
+      deadlineMinutes: 60,
       sliceRunId: "arn_slice",
       sandboxVersionId: "sbv_1",
       manifestSha256: sha(manifestText),

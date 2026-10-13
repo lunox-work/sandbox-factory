@@ -95,6 +95,8 @@ export interface ProjectInput {
   readonly knownSpecifiers: readonly string[];
   /** A safe subset of the source's compiler options, if the worker read them. */
   readonly compilerOptions?: Readonly<Record<string, unknown>>;
+  /** What the sources read of each package, declared as the slice's check declared it. */
+  readonly packageModules?: PackageModules;
   readonly toolchain?: Toolchain;
   /** Default behaviour for mocked calls, aliased with the version. */
   readonly fixtures?: readonly SandboxFixture[];
@@ -481,7 +483,22 @@ export function fixture(
 export function createMock(origin: string, name?: string): any;
 `;
 
-export function ambientDeclarations(packages: readonly string[]): string {
+/**
+ * Module declarations for the specifiers a slice reads names of, each
+ * exporting those names as values and types, as the worker writes them for
+ * the slice's own check. They take the place of the specifier's untyped
+ * shorthand, which only works as a value: `import type { X }` from it fails.
+ */
+export interface PackageModules {
+  readonly specifiers: readonly string[];
+  readonly text: string;
+}
+
+export function ambientDeclarations(
+  packages: readonly string[],
+  modules: PackageModules = { specifiers: [], text: "" },
+): string {
+  const declared = new Set(modules.specifiers);
   const lines = [
     "// The same declarations the slice was type-checked against: Node's",
     "// modules and globals untyped, and every package untyped. The project",
@@ -505,10 +522,19 @@ export function ambientDeclarations(packages: readonly string[]): string {
     "declare function queueMicrotask(callback: () => void): void;",
     "declare function structuredClone<T>(value: T): T;",
   ];
-  for (const name of [...new Set(packages)].sort(compare))
-    lines.push(`declare module "${name}";`, `declare module "${name}/*";`);
-  return `${lines.join("\n")}\n`;
+  for (const name of [...new Set(packages)].sort(compare)) {
+    if (!declared.has(name)) lines.push(`declare module "${name}";`);
+    lines.push(`declare module "${name}/*";`);
+  }
+  return `${lines.join("\n")}\n${modules.text}`;
 }
+
+/**
+ * What the slice's check relaxes for its untyped packages, which the
+ * project must relax too to build what the check passed: a callback passed
+ * to an untyped function has no parameter types to take.
+ */
+const UNTYPED_PACKAGE_OPTIONS = { noImplicitAny: false } as const;
 
 const SAFE_COMPILER_KEYS: readonly string[] = [
   "strict",
@@ -1019,14 +1045,17 @@ export function generateProject(input: ProjectInput): GeneratedProject {
   });
   add({
     path: AMBIENT_PATH,
-    text: ambientDeclarations([
-      ...approvedPackages.map((p) => p.name),
-      ...mockedPackages,
-      // Node's modules by their bare names too (`fs`, `fs/promises`).
-      ...input.knownSpecifiers
-        .filter((specifier) => !specifier.startsWith("node:"))
-        .map(packageNameOf),
-    ]),
+    text: ambientDeclarations(
+      [
+        ...approvedPackages.map((p) => p.name),
+        ...mockedPackages,
+        // Node's modules by their bare names too (`fs`, `fs/promises`).
+        ...input.knownSpecifiers
+          .filter((specifier) => !specifier.startsWith("node:"))
+          .map(packageNameOf),
+      ],
+      input.packageModules,
+    ),
     class: "harness",
     public: true,
   });
@@ -1118,7 +1147,10 @@ export function generateProject(input: ProjectInput): GeneratedProject {
   });
   add({
     path: "tsconfig.json",
-    text: tsconfigFor(input.compilerOptions),
+    text: tsconfigFor({
+      ...input.compilerOptions,
+      ...UNTYPED_PACKAGE_OPTIONS,
+    }),
     class: "config",
     public: true,
   });

@@ -752,7 +752,8 @@ export function versionService(options: SandboxRouteOptions) {
     const result = await options.runs.enqueue(owner, sourceSnapshotId, {
       tool: "sandbox_build",
       params: {
-        deadlineMinutes: 30,
+        // A draft with no hidden tests has an agent write them.
+        deadlineMinutes: AGENT_DEADLINE_MINUTES,
         sliceRunId,
         sandboxVersionId: stored.version.id,
         manifestSha256,

@@ -1,7 +1,7 @@
 /**
- * What the scope, fixtures and starter agents are told. The prompts belong
- * to their tool versions: a change in meaning here bumps `scope@`,
- * `fixtures@` or `sandbox_starter@`.
+ * What the scope, fixtures, starter and hidden-tests agents are told. The
+ * prompts belong to their tool versions: a change in meaning here bumps
+ * `scope@`, `fixtures@`, `sandbox_starter@` or `sandbox_build@`.
  *
  * Repository text reaches the model only through tool results; the prompts
  * carry the ticket's spec, the repository's shape and, for fixtures, the
@@ -105,5 +105,34 @@ export function starterBountySection(input: {
     ...(context === ""
       ? []
       : [`The context synced into the bounty:\n\n${context}`]),
+  ].join("\n\n");
+}
+
+export const HIDDEN_TESTS_SYSTEM_PROMPT = `${SANDBOX_CONTEXT}
+
+The sandbox for the bounty below is built, and its baseline runs: it installs, builds, runs its walkthrough and passes its public tests. What it lacks are hidden tests: the acceptance tests a developer's submission is judged by, which the developer never sees. Your job is to write them.
+
+Write each hidden test under \`tests/private/\` as a \`*.test.ts\` file, and mark it with the outcome it has on the sandbox as it is now. "fail" is a test that only a finished bounty passes: it checks the behaviour the bounty asks for. "pass" is one that guards behaviour the code already has and a finished bounty must keep. At least one must be "fail". A submission is accepted when every hidden test passes, so test what the bounty's spec says through the code's own interface, such that any correct implementation passes and an incomplete one does not. Do not test names, messages or structure the spec leaves open.
+
+A "fail" test must fail by its assertions, not by breaking. Hidden tests are compiled with the project by \`npm run build\`, so they must type-check against the code as it is now: a test that imports a function or calls a parameter the bounty has yet to add breaks the build, and the whole baseline with it. When the bounty adds something new, reach it at run time inside the test, for example \`const mod: Record<string, unknown> = await import("../../src/feature.js")\`, assert that it exists, and call it through a type you declare in the test. A test that throws while its file loads, or imports something that is not there, is an error, never the failure it is expected to show.
+
+The toolchain is fixed: Node 22, TypeScript 5.9, ES modules. Tests use \`node:test\` and \`node:assert/strict\`. Import the project's code with relative paths from the test's folder and \`.js\` extensions; from \`tests/private/\` a file at \`src/feature.ts\` is \`../../src/feature.js\`. Cut modules are recording mocks; import \`{ mockImplementation, recordedCalls, resetMocks }\` from \`../../sandbox/mock.js\` to give a mocked call behaviour or to check what the code asked of it. Packages compile as \`any\`. Nothing may reach the network, a database or any outside service.
+
+Read the project with the repository tools: they show the developer's project as it is built, with its public tests, walkthrough and mocks. Use \`run_hidden_tests\` to build the project with your tests and run its baseline in a fresh job; it shows each step, what each test did against what you said it would, and the output of those that surprised you. Runs are limited. Finish by calling \`submit_hidden_tests\` once with a short summary of what the tests check. It runs the baseline again and is accepted when it passes: the project builds and runs, the public tests pass and each hidden test does what you said it would.`;
+
+/** The bounty hidden tests are written for, and the project they run in. */
+export function hiddenTestsSection(input: {
+  readonly title: string;
+  readonly summary: string;
+  readonly spec: SpecDraft | null;
+  readonly overview: string;
+}): string {
+  return [
+    `The bounty's title: ${input.title}`,
+    `The bounty's summary:\n\n${input.summary}`,
+    input.spec === null
+      ? "The bounty has no Gherkin spec; test what its title and summary ask for."
+      : `The bounty's approved Gherkin spec, which the hidden tests should cover:\n\n${renderGherkin(input.spec)}`,
+    `The project:\n\n${input.overview}`,
   ].join("\n\n");
 }

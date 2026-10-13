@@ -163,6 +163,20 @@ export interface SandboxVersionPatch {
 export interface BuildOutput {
   readonly harnessSha256: string;
   readonly toolchainDigest: string;
+  /** The hidden tests the build wrote for a draft that had none. */
+  readonly tests?: BuildTests;
+}
+/**
+ * Hidden tests a sliced build wrote and proved on its baseline, and the
+ * transform the draft has with them. They settle only on the draft the
+ * build was queued for: still without hidden tests, its transform still
+ * the one the build was queued with.
+ */
+export interface BuildTests {
+  readonly acceptanceTests: readonly AcceptanceTest[];
+  /** The transform the build was queued with, before the tests. */
+  readonly fromTransformConfigSha256: string;
+  readonly transformConfigSha256: string;
 }
 /**
  * What a committed starter run settles on its version: the starter it
@@ -309,8 +323,10 @@ export interface SandboxStore {
     now?: Date,
   ): Promise<UpdateVersionResult>;
   /**
-   * Records what a succeeded build proved. Applies only while the draft
-   * still points at that build and is not frozen; `false` otherwise.
+   * Records what a succeeded build proved, with the hidden tests it wrote.
+   * Applies only while the draft still points at that build and is not
+   * frozen, and, with tests, while the draft is as `BuildTests` says;
+   * `false` otherwise, and nothing is recorded.
    */
   recordBuildOutput(
     organizationId: string,
@@ -985,11 +1001,25 @@ export function createSandboxStore(db: Database): SandboxStore {
           current.source.buildRunId !== buildRunId
         )
           return false;
+        const tests = output.tests;
+        if (
+          tests !== undefined &&
+          (current.source.acceptanceTests.length > 0 ||
+            current.source.transformConfigSha256 !==
+              tests.fromTransformConfigSha256)
+        )
+          return false;
         await tx
           .update(sandboxVersionSource)
           .set({
             harnessSha256: output.harnessSha256,
             toolchainDigest: output.toolchainDigest,
+            ...(tests === undefined
+              ? {}
+              : {
+                  acceptanceTests: [...tests.acceptanceTests],
+                  transformConfigSha256: tests.transformConfigSha256,
+                }),
             updatedAt: now,
           })
           .where(eq(sandboxVersionSource.sandboxVersionId, versionId));

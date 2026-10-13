@@ -895,6 +895,69 @@ test("a build's output is kept only while the draft still points at that build",
   }
 });
 
+test("a build's hidden tests settle with its output only on the draft it was queued for", async () => {
+  const current = {
+    version: versionRow(),
+    source: sourceRow({ buildRunId: "arn_build" }),
+    commitSha: "a".repeat(40),
+  };
+  const acceptanceTests = [
+    {
+      path: "tests/private/acceptance.test.ts",
+      text: "test",
+      expectedBaseline: "fail" as const,
+    },
+  ];
+  const output = {
+    harnessSha256: "h".repeat(64),
+    toolchainDigest: "d".repeat(64),
+    tests: {
+      acceptanceTests,
+      fromTransformConfigSha256: "t".repeat(64),
+      transformConfigSha256: "n".repeat(64),
+    },
+  };
+  const fake = createSequencedFakeDb([[current], []]);
+  assert.equal(
+    await createSandboxStore(fake.db).recordBuildOutput(
+      "owner",
+      "sbv_1",
+      "arn_build",
+      output,
+      now,
+    ),
+    true,
+  );
+  assert.deepEqual(fake.calls[1]?.values, {
+    harnessSha256: output.harnessSha256,
+    toolchainDigest: output.toolchainDigest,
+    acceptanceTests,
+    transformConfigSha256: "n".repeat(64),
+    updatedAt: now,
+  });
+  // A draft that has tests of its own, or whose transform moved since the
+  // build was queued, keeps what it has, and the build records nothing.
+  for (const source of [
+    sourceRow({ buildRunId: "arn_build", acceptanceTests }),
+    sourceRow({
+      buildRunId: "arn_build",
+      transformConfigSha256: "x".repeat(64),
+    }),
+  ]) {
+    const refused = createSequencedFakeDb([[{ ...current, source }]]);
+    assert.equal(
+      await createSandboxStore(refused.db).recordBuildOutput(
+        "owner",
+        "sbv_1",
+        "arn_build",
+        output,
+      ),
+      false,
+    );
+    assert.equal(refused.calls.length, 1);
+  }
+});
+
 test("replay context says whether the original source and slice are still there", async () => {
   const store = createSandboxStore(
     createSequencedFakeDb([

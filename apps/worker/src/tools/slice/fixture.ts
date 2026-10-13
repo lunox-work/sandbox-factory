@@ -326,11 +326,29 @@ export function packageShim(
     if (!uses.has(name)) lines.push(`declare module "${name}";`);
     lines.push(`declare module "${name}/*";`);
   }
-  for (const specifier of [...uses.keys()].sort())
+  return `${lines.join("\n")}\n${packageModules({ modules: uses, globals }).text}`;
+}
+
+/**
+ * The part of `packageShim` that declares what the slice reads: a module
+ * for each specifier in `uses` and a namespace for each global. A sliced
+ * project declares its packages with these too, so it builds against what
+ * the slice was checked against.
+ */
+export function packageModules({ modules: uses, globals }: PackageUses): {
+  specifiers: string[];
+  text: string;
+} {
+  const specifiers = [...uses.keys()].sort();
+  const lines: string[] = [];
+  for (const specifier of specifiers)
     lines.push(...declareModule(specifier, uses.get(specifier) ?? use()));
   for (const name of [...globals.keys()].filter(isName).sort())
     lines.push(...declareGlobal(name, globals.get(name) ?? use()));
-  return `${lines.join("\n")}\n`;
+  return {
+    specifiers,
+    text: lines.length === 0 ? "" : `${lines.join("\n")}\n`,
+  };
 }
 
 export function compileFixture(input: FixtureInput): CompilationResult {

@@ -21,8 +21,15 @@ import type {
   SandboxBuildManifest,
   VersionFixtures,
 } from "sandbox-factory";
+import type {
+  AgentModel,
+  AgentSettings,
+  AgentTurn,
+} from "../src/agent/loop.js";
 import { AnalysisError } from "../src/errors.js";
+import { HIDDEN_TEST_RUNS_MAX } from "../src/tools/hidden-tests.js";
 import {
+  HIDDEN_TESTS_PATH,
   buildArtifactKind,
   createSandboxBuildAdapter,
   nearestCompilerOptions,
@@ -239,6 +246,7 @@ async function runBuild(
     sourceDir: string;
     outDir: string;
     snapshotId: string;
+    agent: AgentSettings;
   }> = {},
 ) {
   const { artifacts, objects } = await slice();
@@ -283,16 +291,68 @@ async function runBuild(
     signal: new AbortController().signal,
     log: (line) => messages.push(line),
   };
-  const files = await createSandboxBuildAdapter({
+  const adapter = createSandboxBuildAdapter({
     provider,
+    ...(options.agent === undefined ? {} : { agent: options.agent }),
     now: () => new Date(stamp),
-  }).run(input);
+  });
+  const files = await adapter.run(input);
   const read = async (path: string) => readFile(join(outDir, path), "utf8");
   const manifest = JSON.parse(
     await read("build-manifest.json"),
   ) as SandboxBuildManifest;
-  return { files, manifest, read, messages, outDir };
+  return { files, manifest, read, messages, outDir, adapter, version };
 }
+
+let toolCalls = 0;
+const call = (name: string, input: unknown) => ({
+  type: "tool_use",
+  id: `${name}-${(toolCalls += 1)}`,
+  name,
+  input,
+});
+const turn = (content: unknown[], stopReason = "tool_use"): AgentTurn => ({
+  content: content as AgentTurn["content"],
+  stopReason,
+  usage: {
+    inputTokens: 10,
+    outputTokens: 5,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+  },
+});
+/** A model that takes the given turns, and what each turn was told. */
+function scripted(turns: AgentTurn[]): AgentModel & {
+  results: { content: string; is_error?: boolean }[][];
+  prompts: string[];
+} {
+  const results: { content: string; is_error?: boolean }[][] = [];
+  const prompts: string[] = [];
+  return {
+    model: "test-model",
+    results,
+    prompts,
+    async turn(request) {
+      const last = request.messages.at(-1);
+      if (request.messages.length === 1)
+        prompts.push(JSON.stringify(last?.content ?? ""));
+      else if (Array.isArray(last?.content))
+        results.push(
+          last.content as unknown as { content: string; is_error?: boolean }[],
+        );
+      return turns.shift() ?? turn([], "refusal");
+    },
+  };
+}
+const limits = { maxTurns: 20, maxTokens: 1_000_000 };
+/** How many evaluation jobs a provider's calls ran: one prepare each. */
+const jobsOf = (calls: readonly string[][]) =>
+  calls.filter((argv) => argv.includes("--package-lock-only")).length;
+const hiddenTest = {
+  path: "tests/private/acceptance.test.ts",
+  text: 'import { test } from "node:test";\nimport assert from "node:assert/strict";\ntest("describes", () => { assert.equal(1, 2); });\n',
+  expectedBaseline: "fail" as const,
+};
 
 test("a build produces a standalone project, hidden tests apart, a verified baseline and a bound manifest", async () => {
   const fake = fakeProvider((argv) =>
@@ -358,6 +418,17 @@ test("a build produces a standalone project, hidden tests apart, a verified base
     ?.meta as { ready: boolean; privateTests: number };
   assert.equal(meta.ready, true);
   assert.equal(meta.privateTests, 1);
+  // Packages are declared as the slice's check declared them: a package
+  // the sources read is a module exporting what they read, as a value and
+  // a type, not an untyped shorthand, and the build allows implicit `any`.
+  const ambient = await read("project/sandbox/ambient.d.ts");
+  assert.match(ambient, /declare module "pg" \{\n {2}const __default: any;/);
+  assert.doesNotMatch(ambient, /declare module "pg";/);
+  assert.match(ambient, /declare module "pg\/\*";/);
+  const tsconfig = JSON.parse(await read("project/tsconfig.json")) as {
+    compilerOptions: Record<string, unknown>;
+  };
+  assert.equal(tsconfig.compilerOptions["noImplicitAny"], false);
   // Aliased consistently across source, stub, runtime and spec.
   const app = await read("project/src/app.ts");
   assert.match(app, /makeService/);
@@ -972,5 +1043,171 @@ test("a hidden test that never ran is an error, not the failure it was expected 
   assert.equal(
     privateTestOutcome({ exitCode: null, timedOut: true }, failed),
     "error",
+  );
+});
+
+test("a draft with no hidden tests has an agent write them, and the build is the baseline they passed", async () => {
+  const fake = fakeProvider((argv) =>
+    argv.includes("--test") && !argv.includes("test") ? TAP_FAILED : {},
+  );
+  const model = scripted([
+    turn([
+      call("read_file", {
+        path: "src/app.ts",
+        startLine: null,
+        endLine: null,
+      }),
+    ]),
+    turn([call("run_hidden_tests", { tests: [hiddenTest] })]),
+    turn([
+      call("submit_hidden_tests", {
+        tests: [hiddenTest],
+        summary: "Checks the described thing.",
+      }),
+    ]),
+  ]);
+  const version = await versionFor({ acceptance: false });
+  const built = await runBuild(fake.provider, {
+    version,
+    agent: { model, limits },
+  });
+  assert.equal(
+    built.manifest.ready,
+    true,
+    JSON.stringify(built.manifest.baseline?.reasons),
+  );
+  assert.deepEqual(built.manifest.blockers, []);
+  assert.deepEqual(built.manifest.baseline?.privateTests, [
+    {
+      path: hiddenTest.path,
+      expected: "fail",
+      observed: "fail",
+      ok: true,
+    },
+  ]);
+  // The first baseline, the run and the submission's: a job each.
+  assert.equal(jobsOf(fake.calls), 3);
+  // The agent read the developer's project and was told the spec.
+  assert.match(model.prompts[0] ?? "", /createService describes a thing/);
+  assert.equal(model.results[0]?.[0]?.is_error, undefined);
+  assert.match(model.results[0]?.[0]?.content ?? "", /createService/);
+  assert.match(model.results[1]?.[0]?.content ?? "", /^The baseline passes\./);
+  // The manifest binds the transform the draft has with the tests.
+  const transformConfigSha256 = sha256(
+    canonicalJson(
+      transformConfigOf({
+        aliasRules: [],
+        dependencyChoices: {},
+        acceptanceTests: [hiddenTest],
+        fixtures: null,
+        starterSha256: null,
+      }),
+    ),
+  );
+  assert.equal(built.manifest.transformConfigSha256, transformConfigSha256);
+  const paths = built.files.map((file) => file.path);
+  assert.ok(paths.includes("private/acceptance.test.ts"));
+  assert.ok(paths.includes(HIDDEN_TESTS_PATH));
+  assert.equal(buildArtifactKind(HIDDEN_TESTS_PATH), "other");
+  // They settle on the draft with the build's evidence when it commits.
+  const recorded: unknown[] = [];
+  await built.adapter.committed?.({
+    runId: "arn_build",
+    files: built.files,
+    inputs: {
+      getRun: async () => null,
+      listArtifacts: async () => [],
+      readArtifact: async () => undefined,
+      getVersion: async () => null,
+      getTask: async () => null,
+      recordBuildOutput: async (versionId, runId, output) => {
+        recorded.push({ versionId, runId, output });
+        return true;
+      },
+      recordStarterOutput: async () => false,
+    },
+  });
+  assert.deepEqual(recorded, [
+    {
+      versionId: "sbv_1",
+      runId: "arn_build",
+      output: {
+        harnessSha256: built.manifest.harnessSha256,
+        toolchainDigest: built.manifest.toolchainDigest,
+        tests: {
+          acceptanceTests: [hiddenTest],
+          fromTransformConfigSha256: version.source.transformConfigSha256,
+          transformConfigSha256,
+        },
+      },
+    },
+  ]);
+});
+
+test("hidden tests that never pass their baseline are not kept, and the build stays diagnostic", async () => {
+  // The hidden test passes on the baseline, though it is said to fail.
+  const fake = fakeProvider();
+  const submit = () =>
+    turn([
+      call("submit_hidden_tests", {
+        tests: [hiddenTest],
+        summary: "Checks the described thing.",
+      }),
+    ]);
+  const model = scripted(
+    Array.from({ length: HIDDEN_TEST_RUNS_MAX + 1 }, submit),
+  );
+  const built = await runBuild(fake.provider, {
+    version: await versionFor({ acceptance: false }),
+    agent: { model, limits },
+  });
+  assert.equal(built.manifest.ready, false);
+  assert.equal(jobsOf(fake.calls), 1 + HIDDEN_TEST_RUNS_MAX);
+  assert.deepEqual(built.manifest.baseline?.reasons, [
+    "No hidden test judges a submission.",
+  ]);
+  assert.equal(
+    built.files.some((file) => file.path === HIDDEN_TESTS_PATH),
+    false,
+  );
+  assert.ok(
+    built.messages.some((line) => /with no tests kept/.test(line)),
+    built.messages.join("\n"),
+  );
+});
+
+test("hidden tests are written only for a draft with none whose baseline fails for that alone", async () => {
+  // A draft with hidden tests is built as it is.
+  const untouched = scripted([]);
+  const withTests = await runBuild(
+    fakeProvider((argv) =>
+      argv.includes("--test") && !argv.includes("test") ? TAP_FAILED : {},
+    ).provider,
+    { agent: { model: untouched, limits } },
+  );
+  assert.equal(withTests.manifest.ready, true);
+  assert.deepEqual(untouched.prompts, []);
+  // A project that does not build is not the tests' to fix.
+  const broken = scripted([]);
+  const failing = await runBuild(
+    fakeProvider((argv) => (argv.includes("build") ? { exitCode: 2 } : {}))
+      .provider,
+    {
+      version: await versionFor({ acceptance: false }),
+      agent: { model: broken, limits },
+    },
+  );
+  assert.equal(failing.manifest.ready, false);
+  assert.deepEqual(broken.prompts, []);
+  // Without a model, the build says why it wrote none.
+  const unconfigured = await runBuild(fakeProvider().provider, {
+    version: await versionFor({ acceptance: false }),
+    agent: { model: null, limits },
+  });
+  assert.equal(unconfigured.manifest.ready, false);
+  assert.ok(
+    unconfigured.messages.includes(
+      "No agent model is configured; no hidden tests are written.",
+    ),
   );
 });
