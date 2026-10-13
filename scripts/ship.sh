@@ -1,17 +1,23 @@
 #!/usr/bin/env bash
-# ship.sh — verify, push, open a PR, return to main. GitHub handles the rest.
+# ship.sh — verify, push, open a PR, wait for GitHub to merge it, then refresh
+# main and delete the merged branch.
 #
-# AGENTS: exit 0 is not done. An agent that runs this owns the PR until it
-# merges into main: watch its checks (`gh pr checks <n> --watch`), and fix
-# whatever blocks it — a failing check, a review comment, a conflict, a branch
-# behind main — by committing to the PR's branch and pushing, until
+# AGENTS: by default exit 0 means MERGED into main. Exit 3 means something
+# blocks the merge — a failing required check, a conflict, a closed PR. You own
+# the PR until it merges: check out its branch, fix and commit, and re-run with
+# `--branch <name>`, which pushes, reuses the PR and waits again. With --draft or
+# --no-wait, exit 0 only means the PR is open; watch it yourself until
 # `gh pr view <n> --json state` says MERGED. Only then report it shipped.
 # Never bypass a check: no --no-verify, no admin merge.
 
 set -euo pipefail
 
 BRANCH="" TITLE="" BODY="" TYPE="" ISSUE=""
-ASSUME_YES=0 DRAFT=0
+ASSUME_YES=0 DRAFT=0 WAIT=1
+
+# How long to wait for the merge, and how often to ask GitHub.
+WAIT_TIMEOUT="${SHIP_WAIT_TIMEOUT:-5400}"
+POLL_INTERVAL="${SHIP_POLL_INTERVAL:-30}"
 
 # Optional Co-Authored-By trailer; empty (the default) adds none.
 COAUTHOR="${SHIP_COAUTHOR:-}"
@@ -25,12 +31,14 @@ usage() {
   cat <<'EOF'
 Usage: ./scripts/ship.sh --title "fix: ..." --yes
 
-Verifies, pushes, opens a PR and returns to main. GitHub handles CI and
-auto-merge. Exit 0 means the PR is open, not merged or deployed.
+Verifies, pushes, opens a PR, then waits while GitHub runs CI and
+auto-merges it. Once merged, it returns to an up-to-date main and deletes
+the branch locally and on origin. Exit 0 means merged into main (not yet
+deployed); with --draft or --no-wait, exit 0 means the PR is open.
 
-An agent running this monitors the PR afterwards and resolves whatever
-blocks it (failing checks, review comments, conflicts) until it is merged
-into main; see the note at the top of this script.
+On a blocker (failing required check, conflict, closed PR) it stops with
+exit 3, on main with the PR open. Fix on the branch and re-run with
+--branch <name>; see the note at the top of this script.
 
 Flags:
   --branch <name>     Branch to create. Default: derived from the title.
@@ -45,13 +53,20 @@ Flags:
                       goes in both the commit and the PR body, because the
                       squash commit on main is built from the PR, not from
                       the branch commit.
-  --draft             Open as a draft; no auto-merge until ready.
-  --no-wait           Accepted for compatibility; returning immediately is default.
+  --draft             Open as a draft; no auto-merge until ready. Implies
+                      --no-wait.
+  --no-wait           Return to main once the PR is open; do not wait for
+                      the merge or delete the branch.
   --yes, -y           Skip the confirmation prompt.
   -h, --help          This message.
 
+Environment:
+  SHIP_WAIT_TIMEOUT   Seconds to wait for the merge. Default: 5400.
+  SHIP_POLL_INTERVAL  Seconds between checks on the PR. Default: 30.
+
 Exit codes:
-  0 PR opened   1 usage/precondition error   2 verify failed locally
+  0 merged (PR opened, with --draft/--no-wait)   1 usage/precondition error
+  2 verify failed locally   3 merge blocked or PR closed   4 timed out waiting
 EOF
 }
 
@@ -64,8 +79,8 @@ while [[ $# -gt 0 ]]; do
     --issue)   ISSUE="${2:-}"; shift 2 ;;
     --coauthor) COAUTHOR="${2:-}"; shift 2 ;;
     --resolve|--foreground|--_child) die "$1 has been removed; GitHub owns review and merge" ;;
-    --draft)   DRAFT=1; shift ;;
-    --no-wait) shift ;;
+    --draft)   DRAFT=1; WAIT=0; shift ;;
+    --no-wait) WAIT=0; shift ;;
     -y|--yes)  ASSUME_YES=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) die "unknown flag: $1 (try --help)" ;;
@@ -98,6 +113,9 @@ fi
 if [[ -n "$ISSUE" && ! "$ISSUE" =~ ^[0-9]+$ ]]; then
   die "--issue must be a number (got: $ISSUE)"
 fi
+
+[[ "$WAIT_TIMEOUT" =~ ^[0-9]+$ ]]  || die "SHIP_WAIT_TIMEOUT must be whole seconds (got: $WAIT_TIMEOUT)"
+[[ "$POLL_INTERVAL" =~ ^[0-9]+$ ]] || die "SHIP_POLL_INTERVAL must be whole seconds (got: $POLL_INTERVAL)"
 
 # --- work out the branch ------------------------------------------------------
 
@@ -350,25 +368,128 @@ fi
 PR_NUM="${PR_URL##*/}"
 ok "PR #$PR_NUM — $PR_URL"
 
-# Parse the whole function before checkout changes this script on disk.
-finish_shipping() {
-  if git checkout main >/dev/null 2>&1; then
-    if git pull --ff-only --quiet; then
-      ok "back on main — synced now, not after the future PR merge"
+# Parse every function before checkout changes this script on disk.
+
+# $1 is the line to print once main is current.
+return_to_main() {
+  if ! git checkout main >/dev/null 2>&1; then
+    warn "could not switch back to main — still on $BRANCH"
+    return 1
+  fi
+  if git pull --ff-only --quiet >/dev/null 2>&1; then
+    ok "$1"
+  else
+    warn "back on main, but could not fast-forward; update it before starting new work"
+  fi
+}
+
+# Poll until GitHub merges the PR. BEHIND and pending checks are GitHub's to
+# resolve, so keep waiting; only what needs a new commit stops the wait.
+# Sets MERGED_HEAD to the head commit GitHub merged.
+MERGED_HEAD=""
+wait_for_merge() {
+  local deadline=$((SECONDS + WAIT_TIMEOUT)) view state merge oid failing last=""
+  info "Waiting for PR #$PR_NUM to merge (up to $((WAIT_TIMEOUT / 60)) min)"
+  while :; do
+    if view="$(gh pr view "$PR_NUM" --json state,mergeStateStatus,headRefOid \
+        --jq '[.state, .mergeStateStatus, .headRefOid] | join(" ")' 2>/dev/null)"; then
+      read -r state merge oid <<<"$view"
+      case "$state" in
+        MERGED) MERGED_HEAD="$oid"; ok "PR #$PR_NUM merged into main"; return 0 ;;
+        CLOSED) warn "PR #$PR_NUM was closed without merging"; return 3 ;;
+      esac
+      [[ "$merge" == "DIRTY" ]] && { warn "PR #$PR_NUM conflicts with main"; return 3; }
+      # Only a required check blocks auto-merge; the others are advisory.
+      failing="$(gh pr checks "$PR_NUM" --required --json name,bucket \
+        --jq '[.[] | select(.bucket == "fail") | .name] | join(", ")' 2>/dev/null || true)"
+      if [[ -n "$failing" ]]; then
+        warn "required check failed on PR #$PR_NUM: $failing"
+        return 3
+      fi
+      if [[ "$merge" != "$last" ]]; then
+        info "PR #$PR_NUM: $(printf '%s' "$merge" | tr '[:upper:]' '[:lower:]')"
+        last="$merge"
+      fi
+    fi
+    if (( SECONDS >= deadline )); then
+      warn "PR #$PR_NUM still open after $((WAIT_TIMEOUT / 60)) min"
+      return 4
+    fi
+    sleep "$POLL_INTERVAL"
+  done
+}
+
+# Delete a branch only when every commit on it reached the merged head, so
+# nothing committed after the push is lost. Squash-merge means `git branch -d`
+# never sees the branch as merged, hence -D behind that check. A branch that
+# autofix pushed to is behind the merged head locally, which is still safe.
+delete_merged_branch() {
+  local tip remote_tip
+  if [[ "$(git rev-parse --abbrev-ref HEAD)" == "$BRANCH" ]]; then
+    warn "still on $BRANCH; kept it"
+    return
+  fi
+  # GitHub may have deleted the branch already; the PR ref keeps the head.
+  git fetch --quiet origin "refs/pull/$PR_NUM/head" >/dev/null 2>&1 || true
+
+  tip="$(git rev-parse --verify --quiet "refs/heads/$BRANCH" || true)"
+  if [[ -n "$tip" ]]; then
+    if git merge-base --is-ancestor "$tip" "$MERGED_HEAD" 2>/dev/null; then
+      git branch -D "$BRANCH" >/dev/null && ok "deleted local $BRANCH"
     else
-      warn "back on main, but could not fast-forward; update it before starting new work"
+      warn "local $BRANCH has commits the merged PR does not; kept it"
+    fi
+  fi
+
+  remote_tip="$(git ls-remote --heads origin "refs/heads/$BRANCH" 2>/dev/null | cut -f1)"
+  if [[ -z "$remote_tip" ]]; then
+    ok "origin/$BRANCH already deleted"
+  elif [[ "$remote_tip" == "$MERGED_HEAD" ]]; then
+    if git push --quiet origin --delete "$BRANCH" >/dev/null 2>&1; then
+      ok "deleted origin/$BRANCH"
+    else
+      warn "could not delete origin/$BRANCH"
     fi
   else
-    warn "could not switch back to main — still on $BRANCH; PR remains open"
+    warn "origin/$BRANCH moved past the merged head; kept it"
   fi
-  if [[ "$DRAFT" -eq 1 ]]; then
-    info "Draft PR: mark ready to start review: gh pr ready $PR_NUM"
-  else
-    info "GitHub owns CI and auto-merge."
-    info "A blocker leaves the PR open; inspect: gh pr view $PR_NUM"
-    info "Agents: monitor PR #$PR_NUM and resolve what blocks it until it merges into main."
+  git fetch --quiet --prune origin >/dev/null 2>&1 || true
+}
+
+finish_shipping() {
+  local rc=0
+  if [[ "$WAIT" -eq 0 ]]; then
+    return_to_main "back on main — synced now, not after the future PR merge" || true
+    if [[ "$DRAFT" -eq 1 ]]; then
+      info "Draft PR: mark ready to start review: gh pr ready $PR_NUM"
+    else
+      info "GitHub owns CI and auto-merge."
+      info "A blocker leaves the PR open; inspect: gh pr view $PR_NUM"
+      info "Agents: monitor PR #$PR_NUM and resolve what blocks it until it merges into main."
+    fi
+    info "$PR_URL"
+    exit 0
   fi
+
+  # Wait from main: the branch is pushed, and a fix starts from a checkout.
+  return_to_main "back on main while GitHub runs CI" || true
+  wait_for_merge || rc=$?
+  case "$rc" in
+    0)
+      return_to_main "main is at the merge" || true
+      delete_merged_branch
+      info "Shipped: PR #$PR_NUM is on main"
+      ;;
+    3)
+      info "Fix it on the branch, then re-ship:"
+      info "  git checkout $BRANCH   # commit the fix"
+      info "  ./scripts/ship.sh --branch $BRANCH --title \"$TITLE\" --yes"
+      ;;
+    *)
+      info "Still open; re-run from $BRANCH to keep waiting, or: gh pr view $PR_NUM"
+      ;;
+  esac
   info "$PR_URL"
-  exit 0
+  exit "$rc"
 }
 finish_shipping

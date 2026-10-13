@@ -18,11 +18,21 @@ test("ship has no local watcher, review overrides or force merge", () => {
     { encoding: "utf8" },
   );
   assert.equal(help.status, 0);
-  assert.match(help.stdout, /Exit 0 means the PR is open/);
+  assert.match(help.stdout, /Exit 0 means merged into main/);
 });
 
-for (const flags of [[], ["--draft"], ["--no-wait"]]) {
-  test(`ship ${flags.join(" ") || "default"} opens PR and returns to main without background work`, (t) => {
+const BRANCH = "fix/shipping-regression";
+
+// `view` is the PR state the gh stub reports; `failing` a failed required check.
+for (const { flags, view, failing, status, merged } of [
+  { flags: [], view: "MERGED CLEAN", status: 0, merged: true },
+  { flags: [], view: "OPEN BLOCKED", failing: "ci", status: 3 },
+  { flags: [], view: "OPEN DIRTY", status: 3 },
+  { flags: ["--draft"], status: 0 },
+  { flags: ["--no-wait"], status: 0 },
+]) {
+  const name = [...flags, view ?? ""].join(" ").trim();
+  test(`ship ${name} returns to main without background work`, (t) => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ship-test-"));
     t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
     const bin = path.join(dir, "bin");
@@ -34,15 +44,18 @@ for (const flags of [[], ["--draft"], ["--no-wait"]]) {
       ...process.env,
       PATH: `${bin}:${process.env.PATH}`,
       GH_TEST_LOG: path.join(dir, "gh.log"),
+      GH_TEST_VIEW: view ?? "",
+      GH_TEST_FAILING: failing ?? "",
+      SHIP_POLL_INTERVAL: "0",
       GIT_CONFIG_NOSYSTEM: "1",
       GIT_CONFIG_GLOBAL: "/dev/null",
       SHIP_COAUTHOR: "",
     };
-    function run(command, args, cwd = repo) {
+    function run(command, args, cwd = repo, expected = 0) {
       const r = spawnSync(command, args, { cwd, env, encoding: "utf8" });
       assert.equal(
         r.status,
-        0,
+        expected,
         `${command} ${args.join(" ")}\n${r.stdout}\n${r.stderr}`,
       );
       return r.stdout.trim();
@@ -54,6 +67,8 @@ printf '%s\\n' "$*" >> "$GH_TEST_LOG"
 case "$1 $2" in
   "auth status"|"pr list") exit 0 ;;
   "pr create") echo '${STUB_PR_URL}' ;;
+  "pr view") printf '%s %s\\n' "$GH_TEST_VIEW" "$(git rev-parse refs/remotes/origin/${BRANCH})" ;;
+  "pr checks") printf '%s\\n' "$GH_TEST_FAILING" ;;
   *) exit 99 ;;
 esac
 `,
@@ -74,13 +89,18 @@ esac
     run("git", ["remote", "add", "origin", remote]);
     run("git", ["push", "-u", "origin", "main"]);
     fs.writeFileSync(path.join(repo, "file.txt"), "changed\n");
-    const output = run("bash", [
-      "scripts/ship.sh",
-      "--title",
-      "fix: shipping regression",
-      "--yes",
-      ...flags,
-    ]);
+    const output = run(
+      "bash",
+      [
+        "scripts/ship.sh",
+        "--title",
+        "fix: shipping regression",
+        "--yes",
+        ...flags,
+      ],
+      repo,
+      status,
+    );
     // ship.sh reports the URL as the final field of a decorated line
     // ("==> <url>"), so compare whole tokens rather than testing for a
     // substring: an arbitrary host could embed this URL as its own prefix.
@@ -101,5 +121,17 @@ esac
     assert.match(calls, /pr create/);
     assert.doesNotMatch(calls, /pr merge|pr comment|graphql/);
     if (flags.includes("--draft")) assert.match(calls, /--draft/);
+    if (view) assert.match(calls, /pr view 1/);
+    else assert.doesNotMatch(calls, /pr view/);
+    // A merged branch is deleted locally and on origin; any other stays.
+    const ref = `refs/heads/${BRANCH}`;
+    const local = spawnSync("git", ["show-ref", "--verify", ref], {
+      cwd: repo,
+    });
+    const remoteRef = spawnSync("git", ["show-ref", "--verify", ref], {
+      cwd: remote,
+    });
+    assert.equal(local.status === 0, !merged, `local ${BRANCH}`);
+    assert.equal(remoteRef.status === 0, !merged, `origin ${BRANCH}`);
   });
 }

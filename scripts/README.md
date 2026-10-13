@@ -2,7 +2,7 @@
 
 | Script                   | Does                                                               |
 | ------------------------ | ------------------------------------------------------------------ |
-| `ship.sh`                | Verifies, opens a PR and returns to main; GitHub owns review/merge |
+| `ship.sh`                | Verifies, opens a PR, waits for the merge, then cleans up          |
 | `rotate-token.sh`        | Rotates `AUTO_MERGE_TOKEN`, or the production app secrets          |
 | `graphify.sh`            | Builds and queries the local maintenance code graph                |
 | `install-agent-tools.sh` | Installs the pinned Archify and Diagram Design skills and Graphify |
@@ -20,12 +20,21 @@
 
 Moves changes onto a branch, commits, rebases a newly created branch onto
 `origin/main`, runs `npm run verify`, pushes and opens (or reuses) a PR. It then
-returns the checkout to `main`, including for drafts. Exit 0 means **PR open**,
-not merged or deployed. No detached process runs on your laptop.
+returns the checkout to `main` and waits in the foreground while GitHub runs CI
+and auto-merges. Once the PR is merged it fast-forwards `main` to the merge and
+deletes the branch locally and on origin. Exit 0 means **merged into main**,
+not deployed. No detached process runs on your laptop.
 
-GitHub owns the rest: CI on every push, and auto-merge once the required
-checks pass. CodeRabbit reviews, but its findings are advisory. See
+GitHub owns CI on every push and auto-merge once the required checks pass; the
+script only watches. CodeRabbit reviews, but its findings are advisory. See
 [branch protection](../docs/ci.md#branch-protection).
+
+The wait stops with exit 3 on what needs a new commit: a failed required check,
+a conflict with `main`, or a closed PR. A branch behind `main` and pending checks
+are GitHub's to resolve, so it keeps waiting. To fix, check out the branch,
+commit, and re-run with `--branch <name>`: it pushes, reuses the PR and waits
+again. After `SHIP_WAIT_TIMEOUT` seconds (default 5400) it gives up with exit 4,
+leaving the PR open; `SHIP_POLL_INTERVAL` (default 30) sets how often it asks.
 
 | Flag               | Purpose                                                        |
 | ------------------ | -------------------------------------------------------------- |
@@ -35,17 +44,19 @@ checks pass. CodeRabbit reviews, but its findings are advisory. See
 | `--type <type>`    | bug, feature, breaking, docs or internal; inferred by default  |
 | `--issue <number>` | Adds Closes #number                                            |
 | `--coauthor <who>` | Name and email in both commit and PR; also `SHIP_COAUTHOR`     |
-| `--draft`          | Hold for inspection; no automatic merging until ready          |
-| `--no-wait`        | Compatibility alias for the default behavior                   |
+| `--draft`          | Hold for inspection; no automatic merging; implies `--no-wait` |
+| `--no-wait`        | Return once the PR is open; no wait or branch cleanup          |
 | `--yes` / `-y`     | Skip the commit confirmation prompt                            |
 
 `--resolve`, `--foreground` and internal watcher flags are removed and rejected.
 No script resolves review threads or issues approval overrides.
-Exit codes: 0 opened, 1 precondition/usage failure, 2 local verification failure.
+Exit codes: 0 merged (opened, with `--draft` or `--no-wait`), 1 precondition/usage
+failure, 2 local verification failure, 3 merge blocked or PR closed, 4 timed out.
 
-Local main is refreshed **when the script returns**, not when the future merge
-happens. Run `git pull --ff-only` before your next change. GitHub deletes merged
-remote branches; local feature branches remain as recoverable references.
+A branch is deleted only when every commit on it reached the head GitHub merged,
+so nothing committed after the push is lost; otherwise it is kept with a
+warning. With `--no-wait`, local main is refreshed when the script returns, not
+when the future merge happens; run `git pull --ff-only` before your next change.
 If checkout or fast-forward fails, the script warns and preserves your work.
 
 Policy changes (workflows, scripts, dependency/test configuration, infra) merge
