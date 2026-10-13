@@ -1413,8 +1413,8 @@ test("a sized bounty is written with a step of zero, priced at its own size", as
   assert.equal(written.amountMinor, 200);
 });
 
-test("a sized bounty records the rubric's score of its draft, which sizes nothing yet", async () => {
-  // No repository: nothing will measure the code, so the model's size is it.
+test("a sized bounty records the rubric's score of its draft, which sizes it from the start", async () => {
+  // No repository: nothing will measure the code, so the spec's size is it.
   const state = harness({
     pricing: { step: { weightPoints: { moderate: 5 } } },
   });
@@ -1422,14 +1422,30 @@ test("a sized bounty records the rubric's score of its draft, which sizes nothin
   const written = state.proposalInputs[0] as {
     amountMinor: number;
     rubric: RubricAssessment | null;
+    rubricSize?: string;
   };
   assert.ok(written.rubric !== null);
   assert.equal(written.rubric.code.status, "unavailable");
-  assert.equal(written.rubric.size, null);
-  // Scored with the board's weights, as the step is.
+  // Scored with the board's weights, as the step is: 6 points, XS+, near
+  // enough the model's M to take, and priced on the run's card.
   assert.equal(written.rubric.weightPoints.moderate, 5);
   assert.equal(written.rubric.counts.scenarios, 1);
-  assert.equal(written.amountMinor, 200);
+  assert.equal(written.rubric.size, "XS+");
+  assert.equal(written.rubricSize, "XS+");
+  assert.equal(written.amountMinor, 100);
+
+  // Two whole sizes from the model's, the model's M stands for a reviewer,
+  // and the rubric's is only recorded beside it.
+  const far = harness({});
+  await far.executor.execute("org_1", "brn_1");
+  const kept = far.proposalInputs[0] as {
+    amountMinor: number;
+    rubric: RubricAssessment;
+    rubricSize?: string;
+  };
+  assert.equal(kept.rubric.size, "XS");
+  assert.equal(kept.rubricSize, undefined);
+  assert.equal(kept.amountMinor, 200);
 
   // Touching a repository, with profiling on, the code is on its way.
   const profiled = harness({

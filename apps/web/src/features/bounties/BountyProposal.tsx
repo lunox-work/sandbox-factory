@@ -20,6 +20,7 @@ export function BountyProposal({
   organizationId,
   proposalId,
   bountyKey,
+  bountyUrl,
   bountyTitle,
   canDecide,
   scopeVersion = null,
@@ -31,6 +32,8 @@ export function BountyProposal({
   organizationId: string;
   proposalId: string;
   bountyKey: string | undefined;
+  /** The bounty's Jira issue, where its price is posted. */
+  bountyUrl?: string | undefined;
   bountyTitle: string | undefined;
   canDecide: boolean;
   /** The scope version it was sized from, when one says what it did. */
@@ -83,6 +86,7 @@ export function BountyProposal({
     writebackOperations: read.writebackOperations,
     activeRun: read.activeRun,
     ...(bountyKey === undefined ? {} : { liveKey: bountyKey }),
+    ...(bountyUrl === undefined ? {} : { liveUrl: bountyUrl }),
     ...(bountyTitle === undefined ? {} : { liveTitle: bountyTitle }),
   };
   return (

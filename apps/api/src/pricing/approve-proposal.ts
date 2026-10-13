@@ -133,7 +133,9 @@ export async function approveProposal(
     }
     const slug = await options.organizationSlug(organizationId);
     if (slug === undefined) return outcome({ error: "Not found" }, "not-found");
-    const proposalUrl = `${options.appUrl}/o/${encodeURIComponent(slug)}/jira/${encodeURIComponent(registered.connectionId)}/${encodeURIComponent(registered.board.id)}?tab=proposals&proposal=${encodeURIComponent(proposal.id)}`;
+    // The bounty's own page, open on its price, for whoever follows the
+    // comment back from Jira.
+    const proposalUrl = `${options.appUrl}/bounties/${encodeURIComponent(slug)}/${encodeURIComponent(proposal.bountyId)}?tab=price`;
     const decision = await options.writebacks.approveWithIntent(
       organizationId,
       proposal.id,

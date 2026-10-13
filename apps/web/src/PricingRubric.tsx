@@ -14,9 +14,10 @@
  * (`RubricScenarios.tsx`). The spec's changes are made from the Scenarios
  * dimension, and an earlier revision on show is scored as it would be.
  *
- * Who set the size is said first, since the rubric only sets it once the
- * code is measured: until then the model's size stands, and after a
- * reviewer's resize the rubric's is offered back.
+ * Who set the size is said first: the rubric sets it from the scenarios
+ * as soon as they are drafted, and again once the code is measured, unless
+ * the model read the bounty too differently or a reviewer resized it, when
+ * the rubric's is offered back.
  */
 
 import type {
@@ -1110,9 +1111,9 @@ function Rules({
           </div>
         ))}
         <p className="text-muted-foreground">
-          The total sets the size; the rate card sets its price. Until the code
-          is measured the rubric has no size, and the model's stands. A
-          reviewer's resize overrides both.
+          The total sets the size; the rate card sets its price. The scenarios
+          and test cases size it as soon as they are drafted, and the code, once
+          measured, can only raise it. A reviewer's resize overrides both.
         </p>
       </div>
     </details>

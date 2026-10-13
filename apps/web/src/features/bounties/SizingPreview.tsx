@@ -3,15 +3,25 @@
  * read from the run's progress, so the page shows the scenarios and the
  * size as they land rather than a placeholder until both have.
  *
- * The price follows from the size on the run's own rate card, which is the
- * one the proposal will be priced on. What needs the proposal written, the
- * rubric's score and the code's measurement, comes once it is, as it
- * always has.
+ * The size is the one the proposal will take: the rubric's, scored from
+ * the scenarios as soon as they land, or the model's while they have not,
+ * or where the two are too far apart to take without a reviewer. The price
+ * follows from it on the run's own rate card, which is the one the
+ * proposal will be priced on. The code's measurement, which can only raise
+ * the size, comes once the proposal is written, as it always has.
  */
 
-import type { BountyRunDto } from "@sandbox-factory/shared";
+import type {
+  BountyRunDto,
+  RubricAssessmentDto,
+} from "@sandbox-factory/shared";
 import { ListChecks, Sparkles } from "lucide-react";
-import { priceFor } from "sandbox-factory";
+import {
+  assessRubric,
+  priceFor,
+  rubricNeedsReview,
+  type BountyComplexity,
+} from "sandbox-factory";
 
 import {
   ModelCard,
@@ -52,15 +62,42 @@ export function previewLine(run: Following): string {
 }
 
 /**
- * The amount and the size, in the place the proposal's own will take: the
- * size's card and its price once the model has sized it, and until then a
- * shape of each. Under them, what the run is doing now.
+ * The size the proposal will take from what the run has made so far, as
+ * the server sizes it: the rubric's from the scenarios once they land,
+ * unless the model's is two whole sizes or more from it; else the model's.
+ * Null while neither has landed.
  */
-export function PreviewPrice({ run }: { run: Following }) {
-  const { sizing } = progressOf(run);
+export function previewSize(
+  run: Following,
+  weightPoints?: RubricAssessmentDto["weightPoints"],
+): BountyComplexity | null {
+  const { spec, sizing } = progressOf(run);
   // A size the model could not give lands as unsized, as the proposal will.
-  const complexity =
-    sizing === undefined ? null : (sizing?.complexity ?? "unsized");
+  const model = sizing === undefined ? null : (sizing?.complexity ?? "unsized");
+  if (spec === undefined || spec === null) return model;
+  const { size } = assessRubric({
+    spec,
+    code: { status: "pending" },
+    ...(weightPoints === undefined ? {} : { weightPoints }),
+  });
+  if (size === null) return model;
+  return model !== null && rubricNeedsReview(model, size) ? model : size;
+}
+
+/**
+ * The amount and the size, in the place the proposal's own will take: the
+ * size's card and its price once the scenarios or the model have sized it,
+ * and until then a shape of each. Under them, what the run is doing now.
+ * `weightPoints` are the ones the board scores scenarios with, when known.
+ */
+export function PreviewPrice({
+  run,
+  weightPoints,
+}: {
+  run: Following;
+  weightPoints?: RubricAssessmentDto["weightPoints"];
+}) {
+  const complexity = previewSize(run, weightPoints);
   return (
     <div
       className="grid grid-cols-1 items-center gap-x-6 gap-y-2.5 sm:grid-cols-[1fr_auto]"
@@ -75,8 +112,13 @@ export function PreviewPrice({ run }: { run: Following }) {
           />
         </>
       ) : (
+        /*
+          Keyed by the size, so a size the scenarios change lands again
+          rather than its number swapping in place.
+        */
         <>
           <span
+            key={`amount-${complexity}`}
             className={`${LAND} text-3xl leading-none font-semibold tracking-tight ${
               complexity === "unsized"
                 ? "text-muted-foreground"
@@ -92,6 +134,7 @@ export function PreviewPrice({ run }: { run: Following }) {
             )}
           </span>
           <div
+            key={`size-${complexity}`}
             className={`${LAND} sm:col-start-2 sm:row-start-1 sm:justify-self-end`}
           >
             <SizeCard size={complexity} current />

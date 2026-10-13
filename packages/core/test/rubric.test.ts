@@ -336,7 +336,7 @@ test("a discount can empty the code dimension but not take it below zero", () =>
   assert.equal(small.points, 13);
 });
 
-test("without measured code the rubric scores the spec but has no size", () => {
+test("without measured code the spec alone sizes it, for the code to raise", () => {
   for (const status of ["pending", "unavailable", "failed"] as const) {
     const assessment = assessRubric({ spec, code: { status } });
     const code = assessment.dimensions.find(({ id }) => id === "code");
@@ -348,22 +348,29 @@ test("without measured code the rubric scores the spec but has no size", () => {
       factors: [],
     });
     assert.equal(assessment.points, 13);
-    assert.equal(assessment.size, null);
-    assert.equal(assessment.nextSizeIn, null);
+    assert.equal(assessment.size, "S+");
+    assert.equal(assessment.nextSizeIn, 2);
     assert.deepEqual(assessment.code, { status, specRevision: null });
     assert.match(
       describeRubric(assessment),
-      /^13 points: 8 from scenarios, 5 from test cases\. /,
+      /^13 points: 8 from scenarios, 5 from test cases\. 11 to 14 points is S\+\. 2 more points would make it M\. /,
     );
-    assert.match(describeRubric(assessment), /the model's/);
+    // And said as stored before the spec alone set a size: none, and why.
+    assert.match(
+      describeRubric({ ...assessment, size: null, nextSizeIn: null }),
+      /the model's/,
+    );
   }
-  // Measured in no repository is no code to score, not a size from the
-  // spec alone.
+  assert.match(
+    describeRubric(assessRubric({ spec, code: { status: "pending" } })),
+    /may raise it\.$/,
+  );
+  // Measured in no repository is no code to score: the spec's size.
   const none = assessRubric({
     spec,
     code: { status: "measured", profiles: [], specRevision: 1 },
   });
-  assert.equal(none.size, null);
+  assert.equal(none.size, "S+");
   assert.deepEqual(none.code, { status: "unavailable", specRevision: null });
 });
 

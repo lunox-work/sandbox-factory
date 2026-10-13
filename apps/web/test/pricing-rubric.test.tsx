@@ -208,15 +208,54 @@ test("the rules are folded away, and say what each factor scores and why", async
   );
 });
 
-test("while the code is measured, the model's size stands and the code says so", () => {
+test("while the code is measured, the rubric sizes it from the scenarios and the code says so", () => {
   render(
     <PricingRubricBlock
       proposal={proposal({
-        sizedBy: "model",
+        sizedBy: "rubric",
+        complexity: "S+",
         rubric: assessRubric({
           spec,
           code: { status: "pending" },
         }) as BountyProposalDto["rubric"],
+      })}
+      canUse
+      busy={false}
+      onUse={() => {}}
+    />,
+  );
+  // The spec's points are a size of their own already.
+  expect(screen.getByTestId("rubric-total").textContent).toBe(
+    "13 points →is S+",
+  );
+  expect(screen.getByTestId("rubric-source").textContent).toBe(
+    "The rubric set this size.",
+  );
+  const code = screen.getByTestId("rubric-code");
+  expect(within(code).getByRole("status").textContent).toBe(
+    "Being measured from the repository's code graph.",
+  );
+  expect(screen.queryByRole("button", { name: /rubric/ })).toBeNull();
+});
+
+/**
+ * An assessment as stored before the spec alone set a size: none until the
+ * code was measured.
+ */
+function unsizedRubric(status: "pending" | "unavailable" | "failed") {
+  return {
+    ...assessRubric({ spec, code: { status } }),
+    size: null,
+    nextSizeIn: null,
+  } as BountyProposalDto["rubric"];
+}
+
+test("stored with no size while the code was measured, the model's size stands and the code says so", () => {
+  render(
+    <PricingRubricBlock
+      proposal={proposal({
+        sizedBy: "model",
+        rubric: unsizedRubric("pending"),
       })}
       canUse
       busy={false}
@@ -235,15 +274,12 @@ test("while the code is measured, the model's size stands and the code says so",
   expect(screen.queryByRole("button", { name: /rubric/ })).toBeNull();
 });
 
-test("code with nothing to measure, or that failed, says why", () => {
+test("stored with no size, code with nothing to measure, or that failed, says why", () => {
   const { rerender } = render(
     <PricingRubricBlock
       proposal={proposal({
         sizedBy: "model",
-        rubric: assessRubric({
-          spec,
-          code: { status: "unavailable" },
-        }) as BountyProposalDto["rubric"],
+        rubric: unsizedRubric("unavailable"),
       })}
       canUse
       busy={false}
@@ -260,10 +296,7 @@ test("code with nothing to measure, or that failed, says why", () => {
     <PricingRubricBlock
       proposal={proposal({
         sizedBy: "model",
-        rubric: assessRubric({
-          spec,
-          code: { status: "failed" },
-        }) as BountyProposalDto["rubric"],
+        rubric: unsizedRubric("failed"),
       })}
       canUse
       busy={false}

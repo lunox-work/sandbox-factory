@@ -4204,7 +4204,7 @@ test("a proposal waiting on its code is read again once the code is measured, an
   expect(reads.length).toBeGreaterThanOrEqual(2);
 });
 
-test("a proposal whose code is being measured offers no re-analysis until it is", async () => {
+test("a proposal whose code is being measured offers no re-analysis or approval until it is", async () => {
   const spec = {
     feature: "Invitations",
     background: [],
@@ -4229,7 +4229,8 @@ test("a proposal whose code is being measured offers no re-analysis until it is"
     [
       "GET",
       "/bounties/bty_7",
-      () => json({ bounty: detail({ proposal: liveProposal() }) }),
+      // Its scope approved, so only the measuring holds the price.
+      () => json({ bounty: detail({ ...SCOPED, proposal: liveProposal() }) }),
     ],
     [
       "GET",
@@ -4281,7 +4282,107 @@ test("a proposal whose code is being measured offers no re-analysis until it is"
   expect(
     within(price).queryByRole("button", { name: "Re-analyze" }),
   ).toBeNull();
+  // Nor is it approved while the price it would approve may still move.
+  const approve = within(page).getByRole("button", { name: "Approve" });
+  expect((approve as HTMLButtonElement).disabled).toBe(true);
 });
+
+/** The last Jira update on `bpr_9`'s approval, as its read names it. */
+function writeback(overrides: Record<string, unknown> = {}) {
+  return {
+    id: "bwb_1",
+    organizationId: "org_1",
+    proposalId: "bpr_9",
+    proposalRevision: 1,
+    kind: "approved",
+    status: "done",
+    step: "label",
+    payload: {
+      complexity: "M",
+      amountMinor: 200,
+      currency: "USD",
+      proposalUrl: "https://app.test/bounties/acme/bty_7?tab=price",
+    },
+    jiraCommentId: "10042",
+    errorCode: null,
+    commentAttemptedAt: stamp,
+    createdAt: stamp,
+    updatedAt: stamp,
+    ...overrides,
+  };
+}
+
+test.each([
+  {
+    operation: writeback(),
+    line: `Posted the ${money(200, "USD")} price to APP-1 and labeled it bounty.`,
+    reason: null,
+    link: "View comment",
+    button: null,
+  },
+  {
+    operation: writeback({ status: "failed", errorCode: "reconnect" }),
+    line: `Posted the ${money(200, "USD")} price to APP-1, but couldn't add the bounty label.`,
+    reason: "This Jira site needs reconnecting.",
+    link: "View comment",
+    button: "Retry",
+  },
+  {
+    operation: writeback({
+      status: "uncertain",
+      step: "comment",
+      jiraCommentId: null,
+    }),
+    line: `Sent the ${money(200, "USD")} price to APP-1, but Jira didn't confirm it landed.`,
+    reason:
+      "Check Jira to see whether the comment is there before trying again.",
+    link: null,
+    button: "Check Jira",
+  },
+])(
+  "a price's Jira update says what reached the issue: $operation.status",
+  async ({ operation, line, reason, link, button }) => {
+    vi.stubGlobal(
+      "fetch",
+      server([
+        [
+          "GET",
+          "/bounties/bty_7",
+          () =>
+            json({
+              bounty: detail({ jira: jiraLink, proposal: liveProposal() }),
+            }),
+        ],
+        [
+          "GET",
+          "/proposals/bpr_9",
+          () =>
+            json({
+              proposal: proposal({ status: "approved" }),
+              freshness: { freshness: "current", checkedAt: stamp },
+              liveSpec: null,
+              writebackOperations: [operation],
+            }),
+        ],
+      ]).fetchMock,
+    );
+    window.history.replaceState(null, "", "/bounties/acme/bty_7?tab=price");
+    render(<Shell {...inAcme("admin")} />);
+    const delivery = await screen.findByTestId("jira-delivery");
+    expect(within(delivery).getByText(line)).toBeDefined();
+    if (reason !== null)
+      expect(within(delivery).getByText(reason)).toBeDefined();
+    if (link === null) expect(within(delivery).queryByRole("link")).toBeNull();
+    else
+      expect(
+        within(delivery).getByRole("link", { name: link }).getAttribute("href"),
+      ).toBe(`${jiraLink.url}?focusedCommentId=10042`);
+    if (button !== null)
+      expect(
+        within(delivery).getByRole("button", { name: button }),
+      ).toBeDefined();
+  },
+);
 
 test("a bounty's page keeps it at a glance, its context and workspace beside every tab", async () => {
   vi.stubGlobal("fetch", server([approved]).fetchMock);
@@ -5282,12 +5383,15 @@ test("a Jira update under way is read until it settles, with no refresh", async 
   window.history.replaceState(null, "", "/bounties/acme/bty_7?tab=price");
   render(<Shell {...inAcme("admin")} />);
   const proposalDetail = await screen.findByTestId("proposal-detail");
-  expect(await within(proposalDetail).findByText("pending")).toBeDefined();
-  expect(
-    await within(proposalDetail).findByText("done", undefined, {
-      timeout: 5_000,
-    }),
-  ).toBeDefined();
+  const delivery = await within(proposalDetail).findByTestId("jira-delivery");
+  expect(delivery.dataset.status).toBe("pending");
+  await waitFor(
+    () =>
+      expect(
+        within(proposalDetail).getByTestId("jira-delivery").dataset.status,
+      ).toBe("done"),
+    { timeout: 5_000 },
+  );
   // Settled, it is not read again.
   const settled = reads;
   await new Promise((resolve) => setTimeout(resolve, 3_500));
@@ -5924,7 +6028,7 @@ const previewSpec = {
   assumptions: [],
 };
 
-test("a bounty being sized shows its scenarios, then its size and price, as each lands", async () => {
+test("a bounty being sized prices it from its scenarios as they land, then says the model's size", async () => {
   let polls = 0;
   const state = server([
     ["POST", "/bounties/bty_7/propose", () => json({ run: run() }, 202)],
@@ -5974,9 +6078,15 @@ test("a bounty being sized shows its scenarios, then its size and price, as each
   expect(within(preview).getByRole("status").textContent).toContain(
     "Sizing the bounty…",
   );
-  expect(within(preview).queryByTestId("preview-amount")).toBeNull();
+  // And with them the size they score, priced on the run's card, before
+  // the model has said.
+  expect(within(preview).getByTestId("preview-amount").textContent).toContain(
+    "1.00",
+  );
+  expect(within(preview).getByText("XS+")).toBeDefined();
 
-  // Then the size, its price on the run's card, and why.
+  // Then the model's size, its price, and why: an L is too far from the
+  // scenarios' XS+ to take without a reviewer, so the model's stands.
   expect(
     await within(preview).findByText(
       "Three services change together.",
@@ -5993,7 +6103,7 @@ test("a bounty being sized shows its scenarios, then its size and price, as each
   );
 });
 
-test("a size the model could not give previews as unsized, as the proposal will land", async () => {
+test("a size neither the scenarios nor the model could give previews as unsized, as the proposal will land", async () => {
   const state = server([
     ["POST", "/bounties/bty_7/propose", () => json({ run: run() }, 202)],
     [
@@ -6003,7 +6113,8 @@ test("a size the model could not give previews as unsized, as the proposal will 
         json({
           run: {
             ...run([], "running"),
-            progress: { spec: previewSpec, sizing: null },
+            // The draft failed as well, so nothing scores a size.
+            progress: { spec: null, sizing: null },
           },
         }),
     ],

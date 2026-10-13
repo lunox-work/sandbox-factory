@@ -271,7 +271,7 @@ test("a rubric size two whole sizes from the model's waits for a reviewer", asyn
   assert.equal(kept.writes[0]?.input.price?.complexity, "M");
 });
 
-test("a failed profile is recorded as failed, and sizes nothing", async () => {
+test("a failed profile is recorded as failed, and the spec alone sizes it", async () => {
   const failed = profile({
     status: "failed",
     profile: null,
@@ -279,9 +279,14 @@ test("a failed profile is recorded as failed, and sizes nothing", async () => {
   });
   const h = harness(proposal(), { profiles: [failed] });
   await h.pricer.settled(OWNER, failed);
-  assert.equal(h.writes[0]?.input.price, null);
   assert.equal(h.writes[0]?.input.rubric.code.status, "failed");
-  assert.equal(h.writes[0]?.input.rubric.size, null);
+  // 9 points from the spec: S, near enough the model's M to take.
+  assert.equal(h.writes[0]?.input.rubric.size, "S");
+  assert.deepEqual(h.writes[0]?.input.price, {
+    complexity: "S",
+    amountMinor: DEFAULT_RATE_CARD.sMinor,
+    currency: "USD",
+  });
 });
 
 test("approved, re-priced, specless and missing proposals are left alone", async () => {
@@ -324,9 +329,10 @@ test("the code is scored over every repository the work touches, once each has s
 
   const waiting = harness(proposal(), { profiles: [app, web, older] });
   await waiting.pricer.settled(OWNER, app);
+  // Until the last settles, the spec alone sizes it.
   assert.equal(waiting.writes[0]?.input.rubric.code.status, "pending");
-  assert.equal(waiting.writes[0]?.input.rubric.size, null);
-  assert.equal(waiting.writes[0]?.input.price, null);
+  assert.equal(waiting.writes[0]?.input.rubric.size, "S");
+  assert.equal(waiting.writes[0]?.input.price?.complexity, "S");
 
   const settled = { ...web, status: "ready" as const, profile: measured };
   const both = harness(proposal(), { profiles: [app, settled, older] });
@@ -450,15 +456,16 @@ test("weights come from the step, then the last assessment, then the defaults", 
   });
 });
 
-test("an assessment prices on the proposal's card only once it has a size", () => {
+test("an assessment prices on the proposal's card once it has a size, the spec's alone or with the code", () => {
   const card = proposal();
-  assert.equal(
-    rubricPrice(
-      assessRubric({ spec: draft, code: { status: "pending" } }),
-      card,
-    ),
-    null,
-  );
+  const pending = assessRubric({ spec: draft, code: { status: "pending" } });
+  assert.deepEqual(rubricPrice(pending, card), {
+    complexity: "S",
+    amountMinor: DEFAULT_RATE_CARD.sMinor,
+    currency: "USD",
+  });
+  // One stored before the spec alone set a size has none to price.
+  assert.equal(rubricPrice({ ...pending, size: null }, card), null);
   assert.deepEqual(
     rubricPrice(
       assessRubric({

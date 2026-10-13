@@ -65,10 +65,17 @@ export interface CreateBountyProposalInput {
    */
   readonly step?: StepResult | null;
   /**
-   * The pricing rubric's assessment of the spec, when there is one. A new
-   * proposal's is never what sizes it: its code is not measured yet.
+   * The pricing rubric's assessment of the spec, when there is one: the
+   * spec's own points, the code's to come once it is measured.
    */
   readonly rubric?: RubricAssessment | null;
+  /**
+   * The rubric's size, when it sizes the proposal from the start: the
+   * proposal's `complexity` is then this, `sizedBy` is `rubric`, and
+   * `amountMinor` must be its price. Without one the step's or the model's
+   * size stands.
+   */
+  readonly rubricSize?: PricedComplexity;
   /**
    * The workspace's repositories the drafting model said the work touches,
    * each at the snapshot the spec was drafted beside. A snapshot gone, or
@@ -562,7 +569,9 @@ function insertValues(
     inputTruncated: input.inputTruncated,
     actualModel: input.actualModel,
     promptVersion: input.promptVersion,
-    complexity: input.step?.complexity ?? input.sizing.complexity,
+    complexity:
+      input.rubricSize ?? input.step?.complexity ?? input.sizing.complexity,
+    sizedBy: input.rubricSize === undefined ? "model" : "rubric",
     step: input.step ?? null,
     stepVersion: input.step?.stepVersion ?? null,
     rubric: input.rubric ?? null,
@@ -1231,7 +1240,7 @@ export function createBountyProposalStore(db: Database): BountyProposalStore {
             // And the context it was sized with.
             jiraContextVersion: values.jiraContextVersion,
             githubContextVersion: values.githubContextVersion,
-            sizedBy: "model",
+            sizedBy: values.sizedBy,
             resizedBy: null,
             resizedAt: null,
             amountMinor: values.amountMinor,

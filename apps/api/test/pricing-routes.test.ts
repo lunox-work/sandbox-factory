@@ -1779,8 +1779,9 @@ test("a reviewer can put the rubric's size back in force over their own", async 
   );
 });
 
-test("the rubric's size is refused until the code is measured", async () => {
-  for (const rubric of [null, rubricOf("pending")]) {
+test("the rubric's size is refused while it has none", async () => {
+  // No assessment, or one stored before the spec alone set a size.
+  for (const rubric of [null, { ...rubricOf("pending"), size: null }]) {
     const state = reviewHarness(undefined, { rubric });
     const response = await state.app.request(
       "/api/v1/orgs/org_1/proposals/bpr_1/rubric",

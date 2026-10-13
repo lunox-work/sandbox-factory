@@ -19,13 +19,14 @@
  * (`sandbox/project.ts`'s `specTests`). Its outcome steps, `Then` and the
  * `And`/`But` that follow it, are what that test has to check.
  *
- * The code is what makes the rubric whole. Without a measured profile (no
- * repository, or one still being measured) the rubric has no size of its
- * own and the model's size stands; the scenarios and test cases are still
- * scored, so the reviewer sees what the size will be built from. A bounty
- * may touch several of the workspace's repositories: each is profiled, the
- * code is scored over all of them together, and every repository beyond the
- * first adds the integration across them.
+ * The scenarios and test cases size the bounty as soon as the spec is
+ * drafted; the code adds its points once it is measured. Without a measured
+ * profile (no repository, one still being measured, or one that failed) the
+ * size is the spec's alone, and since the code only ever adds points, a
+ * measurement can only raise it. A bounty may touch several of the
+ * workspace's repositories: each is profiled, the code is scored over all
+ * of them together, and every repository beyond the first adds the
+ * integration across them.
  *
  * **This file is the rubric, and it is meant to be edited.** The points and
  * bands are at the top, the rules a reader sees are written from them, and
@@ -310,7 +311,7 @@ export function rubricRules(
 /**
  * Whether the code has been measured, and if not, why:
  *
- * - `measured`: a profile is ready, and the rubric has a size;
+ * - `measured`: a profile is ready, and its points are in the size;
  * - `pending`: a profile has been asked for and is still being measured;
  * - `unavailable`: no repository, or profiling is not configured;
  * - `failed`: the profile failed, and a re-analysis asks again.
@@ -390,7 +391,10 @@ export interface RubricAssessment {
     /** The spec revision the profile was measured for, when it was. */
     readonly specRevision: number | null;
   };
-  /** The band the points fall in; null until the code is measured. */
+  /**
+   * The band the points fall in, the code's among them once measured.
+   * Null only in assessments stored before the spec alone set a size.
+   */
   readonly size: PricedComplexity | null;
   /** Points still to add for the next band; null at XL or without a size. */
   readonly nextSizeIn: number | null;
@@ -675,7 +679,6 @@ export function assessRubric(input: RubricInput): RubricAssessment {
     input.code.status === "measured" && input.code.profiles.length === 0
       ? { status: "unavailable" }
       : input.code;
-  const measured = code.status === "measured";
   const dimensions = [
     dimension(
       "scenarios",
@@ -700,11 +703,9 @@ export function assessRubric(input: RubricInput): RubricAssessment {
       : dimension("code", [], false),
   ];
   const points = dimensions.reduce((sum, { points }) => sum + points, 0);
-  const size = measured ? rubricSize(points) : null;
+  const size = rubricSize(points);
   const next =
-    size === null
-      ? undefined
-      : RUBRIC_BANDS[RUBRIC_BANDS.findIndex((band) => band.size === size) + 1];
+    RUBRIC_BANDS[RUBRIC_BANDS.findIndex((band) => band.size === size) + 1];
   return {
     version: RUBRIC_VERSION,
     dimensions,
@@ -724,7 +725,23 @@ export function assessRubric(input: RubricInput): RubricAssessment {
   };
 }
 
-/** Why an assessment has no size of its own, by its code's status. */
+/**
+ * What the code has yet to say of a size, by its status: nothing once
+ * measured; else the size is the spec's alone, and the code may raise it.
+ */
+const UNMEASURED: Record<RubricCodeStatus, string> = {
+  measured: "",
+  pending: " The code is still being measured, and may raise it.",
+  unavailable:
+    " The work touches no repository whose code can be measured, so the spec alone sets it.",
+  failed:
+    " The code could not be measured, so the spec alone sets it. Re-analyze to try again.",
+};
+
+/**
+ * Why an assessment stored before the spec alone set a size has none, by
+ * its code's status.
+ */
 const UNSIZED: Record<RubricCodeStatus, string> = {
   measured: "",
   pending:
@@ -753,5 +770,5 @@ export function describeRubric(assessment: RubricAssessment): string {
     assessment.nextSizeIn === null
       ? ""
       : ` ${plural(assessment.nextSizeIn, "more point")} would make it ${rubricSize(assessment.points + assessment.nextSizeIn)}.`;
-  return `${total} ${range} points is ${assessment.size}.${next}`;
+  return `${total} ${range} points is ${assessment.size}.${next}${UNMEASURED[assessment.code.status]}`;
 }

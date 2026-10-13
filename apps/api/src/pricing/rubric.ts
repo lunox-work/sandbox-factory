@@ -1,15 +1,16 @@
 /**
- * The pricing rubric, applied: what sizes a proposal once its code is
- * measured (`sandbox-factory`'s `assessRubric`).
+ * The pricing rubric, applied: what sizes a proposal from its spec, and
+ * again once its code is measured (`sandbox-factory`'s `assessRubric`).
  *
  * A sizing scores the spec straight away, with the code pending, and the
- * model's size stands. The code is profiled in each repository the work
- * touches; when the profiler has settled every one, the rubric is scored
- * again with the code, and a proposal still proposed takes the
- * rubric's size, unless a reviewer has set one, or the rubric's is two
- * whole sizes or more from the model's (`rubricNeedsReview`): then the
- * assessment is only recorded beside it, for a reviewer to take or leave.
- * An approved proposal is not touched; its size is what was approved.
+ * proposal takes the size its scenarios and test cases come to. The code
+ * is profiled in each repository the work touches; when the profiler has
+ * settled every one, the rubric is scored again with the code, which can
+ * only raise the size, and a proposal still proposed takes it. Either time,
+ * not over a reviewer's size, nor when the rubric's is two whole sizes or
+ * more from the model's (`rubricNeedsReview`): then the assessment is only
+ * recorded beside it, for a reviewer to take or leave. An approved
+ * proposal is not touched; its size is what was approved.
  */
 
 import type {

@@ -979,6 +979,7 @@ function OpenBounty({
                 organizationId={organization.id}
                 proposalId={proposalId}
                 bountyKey={bounty.jira?.key}
+                bountyUrl={bounty.jira?.url ?? undefined}
                 bountyTitle={bounty.title}
                 canDecide={manages}
                 scopeVersion={bounty.stages.price?.scopeVersion ?? null}
@@ -2047,7 +2048,7 @@ function BountyDetail({
             <TabsList
               variant="line"
               aria-label="Steps"
-              className="gap-3 overflow-x-auto sm:gap-4"
+              className="overflow-x-auto"
             >
               <StepTriggers
                 stages={bounty.stages}
