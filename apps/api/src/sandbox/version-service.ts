@@ -61,6 +61,7 @@ import {
   transformConfigOf,
   unknownDependencyChoices,
   validateAliasRules,
+  workspaceVocabulary,
 } from "sandbox-factory";
 
 import type { z } from "zod";
@@ -252,6 +253,28 @@ export function versionService(options: SandboxRouteOptions) {
           ? null
           : { version: held.github.version, content: held.github.content },
     };
+  }
+
+  /**
+   * The names the workspace goes by, which no public file of a build may
+   * carry: the organization's name and handle, and the owner and name of
+   * the repository the sandbox is sliced from.
+   */
+  async function workspaceNames(
+    owner: string,
+    sandboxId: string,
+  ): Promise<string[]> {
+    const sandbox = await options.sandboxes.get(owner, sandboxId);
+    const repo =
+      sandbox === null || sandbox.sourceRepoId === null
+        ? undefined
+        : (await options.repos.list(owner)).find(
+            ({ id }) => id === sandbox.sourceRepoId,
+          );
+    return workspaceVocabulary([
+      ...((await options.organizationNames?.(owner)) ?? []),
+      ...(repo?.fullName.split("/") ?? []),
+    ]);
   }
 
   /** The slice run's manifest and contract, verified against their recorded hashes. */
@@ -751,6 +774,7 @@ export function versionService(options: SandboxRouteOptions) {
         },
         "conflict",
       );
+    const vocabulary = await workspaceNames(owner, stored.version.sandboxId);
     const result = await options.runs.enqueue(owner, sourceSnapshotId, {
       tool: "sandbox_build",
       params: {
@@ -762,6 +786,7 @@ export function versionService(options: SandboxRouteOptions) {
         contractSha256,
         transformConfigSha256: stored.source.transformConfigSha256,
         approvedTaskSha256: stored.source.approvedTaskSha256,
+        vocabulary,
       },
       requestedBy: actor,
       maxActive: options.maxActive ?? 3,

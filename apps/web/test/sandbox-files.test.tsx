@@ -148,9 +148,10 @@ const draft = {
 const sourceWith = (
   spec: typeof draft | null,
   aliasRules: readonly object[] = [],
+  origin = aliasRules.length === 0 ? "starter" : "slice",
 ) => ({
   sandboxVersionId: "sbv_1",
-  origin: aliasRules.length === 0 ? "starter" : "slice",
+  origin,
   sourceSnapshotId: null,
   sourceCommitSha: null,
   sliceRunId: null,
@@ -210,6 +211,8 @@ function server(
     spec?: typeof draft | null;
     /** The version's name table, with a source. */
     aliasRules?: readonly object[];
+    /** Sliced or generated; by default, generated when it has no table. */
+    origin?: "slice" | "starter";
   } = {},
 ) {
   const calls: string[] = [];
@@ -240,7 +243,11 @@ function server(
               ? { version }
               : {
                   version,
-                  source: sourceWith(input.spec, input.aliasRules),
+                  source: sourceWith(
+                    input.spec,
+                    input.aliasRules,
+                    input.origin,
+                  ),
                 },
           )
         : json({ error: "Not found." }, input.versionStatus);
@@ -1121,6 +1128,14 @@ test("pseudonym.lunox lists each private name beside its public one, in the priv
     await screen.findByText(
       /written before starters had pseudonyms; generate it again/,
     ),
+  ).toBeDefined();
+  cleanup();
+
+  // A sliced version with none is given some by its next build.
+  server({ spec: draft, origin: "slice" });
+  open("/sandboxes/acme/sbv_1?path=private%2Fpseudonym.lunox");
+  expect(
+    await screen.findByText(/Building this version has an agent write them/),
   ).toBeDefined();
   cleanup();
 

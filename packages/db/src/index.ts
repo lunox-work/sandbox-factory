@@ -215,7 +215,7 @@ export type { ArtifactStore, StoredArtifact } from "./artifacts.js";
 export { createSandboxStore, sandboxSlug } from "./sandboxes.js";
 export type {
   BuildOutput,
-  BuildTests,
+  BuildTransform,
   CreateSandboxResult,
   CreateVersionResult,
   LinkSourceResult,

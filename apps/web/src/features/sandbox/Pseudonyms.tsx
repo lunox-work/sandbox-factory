@@ -65,7 +65,7 @@ export function PseudonymDocument({
           >
             {generated
               ? "No names are aliased. This version's starter was written before starters had pseudonyms; generate it again to give it some."
-              : "No names are aliased. Contributors read every name as it is written here."}
+              : "No names are aliased yet. Building this version has an agent write them, and a build whose public files still name the workspace is blocked."}
           </p>
         ) : (
           <>

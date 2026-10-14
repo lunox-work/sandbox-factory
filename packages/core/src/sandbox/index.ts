@@ -16,3 +16,4 @@ export * from "./expression.js";
 export * from "./fixtures.js";
 export * from "./starter.js";
 export * from "./submission.js";
+export * from "./vocabulary.js";

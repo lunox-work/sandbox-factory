@@ -238,6 +238,8 @@ export const sandboxBuildParamsSchema = z.strictObject({
   contractSha256: sha256Schema,
   transformConfigSha256: sha256Schema,
   approvedTaskSha256: sha256Schema,
+  /** The names the workspace goes by, which no public file may carry. */
+  vocabulary: z.array(z.string().min(1)).optional(),
 });
 /** Stored starter parameters: the version it writes, and the stack it follows. */
 export const starterParamsSchema = z.strictObject({

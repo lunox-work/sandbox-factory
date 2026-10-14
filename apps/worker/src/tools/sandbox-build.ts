@@ -43,6 +43,9 @@ import {
   packageNameOf,
   runtimePath,
   transformConfigOf,
+  vocabularyBlockers,
+  vocabularyLeaks,
+  workspaceVocabulary,
 } from "sandbox-factory";
 import type {
   AcceptanceTest,
@@ -72,7 +75,8 @@ import { AnalysisError } from "../errors.js";
 import { snapshotOf } from "./adapter.js";
 import type { ArtifactFile, ToolAdapter, ToolRunInput } from "./adapter.js";
 import { writeHiddenTests } from "./hidden-tests.js";
-import type { GeneratedCandidate } from "./hidden-tests.js";
+import { writePseudonyms } from "./pseudonyms.js";
+import type { WrittenPseudonyms } from "./pseudonyms.js";
 import { loadSliceRun, readIncludedSource } from "./slice-run.js";
 import { sha256 } from "./slice/hash.js";
 import { packageModules, packageUses } from "./slice/fixture.js";
@@ -90,10 +94,11 @@ export interface SandboxBuildOptions {
 }
 
 /**
- * Where a build that wrote hidden tests keeps them, with the transform the
- * draft had before them and the one it has after, for `committed`.
+ * Where a build that wrote hidden tests or pseudonyms keeps them, with the
+ * transform the draft had before them and the one it has after, for
+ * `committed`.
  */
-export const HIDDEN_TESTS_PATH = "hidden-tests.json";
+export const BUILD_TRANSFORM_PATH = "build-transform.json";
 
 /**
  * The spec and the contract's symbols travel through aliasing as
@@ -110,6 +115,11 @@ const SPEC_PSEUDO_PATH = "__approved_spec__.json";
  */
 const FIXTURES_PSEUDO_PATH = "__fixtures__.json";
 const CONTRACT_PSEUDO_PATH = "__boundary_symbols__.json";
+/**
+ * The version's listing too: its title, summary and tags are the README's
+ * and the descriptor's, which contributors read.
+ */
+const LISTING_PSEUDO_PATH = "__listing__.json";
 type ModuleSymbols = BoundaryContract["outbound"][number]["symbols"];
 interface ContractSymbols {
   outbound: ModuleSymbols[];
@@ -188,6 +198,40 @@ export function privateTestOutcome(
 
 /** Where a build writes the table its public files were renamed by. */
 export const PSEUDONYMS_PATH = `private/${PSEUDONYMS_FILE}`;
+
+/**
+ * The names the repository's root `package.json` gives its owner: the
+ * scope of its package name, or the whole name unscoped, and its author.
+ * None when it has no readable manifest.
+ */
+export async function packageVocabulary(sourceDir: string): Promise<string[]> {
+  let manifest: unknown;
+  try {
+    manifest = JSON.parse(
+      await readFile(join(sourceDir, "package.json"), "utf8"),
+    );
+  } catch {
+    return [];
+  }
+  if (typeof manifest !== "object" || manifest === null) return [];
+  const { name, author } = manifest as { name?: unknown; author?: unknown };
+  const names: string[] = [];
+  if (typeof name === "string")
+    names.push(
+      name.startsWith("@") ? (name.slice(1).split("/")[0] ?? "") : name,
+    );
+  // `Name <email> (url)`, or `{ name }`.
+  const authorName =
+    typeof author === "string"
+      ? author.replace(/[<(].*$/, "").trim()
+      : typeof author === "object" &&
+          author !== null &&
+          typeof (author as { name?: unknown }).name === "string"
+        ? (author as { name: string }).name
+        : "";
+  if (authorName.length > 0) names.push(authorName);
+  return names.filter((entry) => entry.length > 0);
+}
 
 export function buildArtifactKind(path: string): ArtifactFile["kind"] {
   if (path === "build-manifest.json") return "build_manifest";
@@ -675,40 +719,55 @@ export function createSandboxBuildAdapter(
       const specLeaves =
         spec === null ? [] : jsonLeaves(SPEC_PSEUDO_PATH, spec);
       const fixtureLeaves = jsonLeaves(FIXTURES_PSEUDO_PATH, fixtures);
-      const aliased = applyAliases(
-        [
-          ...included,
-          ...stubTexts.map((stub) => ({ path: stub.module, text: stub.text })),
-          ...symbolLeaves,
-          ...specLeaves,
-          ...fixtureLeaves,
-          ...(scenario === null ? [] : [{ path: RUN_PATH, text: scenario }]),
-        ],
-        source.aliasRules,
+      const listing = {
+        title: version.title,
+        specSummary: version.specSummary,
+        tags: version.tags,
+      };
+      const listingLeaves = jsonLeaves(LISTING_PSEUDO_PATH, listing);
+      const stubFiles = stubTexts.map((stub) => ({
+        path: stub.module,
+        text: stub.text,
+      }));
+      // What the sources and stubs read of each package, declared as the
+      // slice's check declared it, so the project builds what the check
+      // passed.
+      const packageNames = new Set(
+        source.scope.dependencies
+          .filter((dependency) => dependency.kind === "package")
+          .map((dependency) => dependency.name),
       );
-      const blockers: ProjectBlocker[] = [];
-      let files: GeneratedFile[] = [];
-      // The project with a given set of hidden tests, once aliasing held.
-      let generate:
-        | ((tests: readonly AcceptanceTest[]) => GeneratedCandidate & {
-            importRewrites: SandboxBuildManifest["importRewrites"];
-          })
-        | null = null;
-      // The spec as the project reads it, renamed with it.
-      let publicSpec: SpecDraft | null = null;
-      let importRewrites: SandboxBuildManifest["importRewrites"] = [];
-      let renames: SandboxBuildManifest["renames"] = [];
-      if (!aliased.ok) {
-        for (const problem of aliased.problems)
-          blockers.push({
-            code: "alias_failed",
-            file: problem.file,
-            detail: `${problem.code}${problem.rule === null ? "" : ` (rule ${problem.rule})`}: ${problem.detail}`,
-          });
-        input.log(
-          `Alias application refused with ${aliased.problems.length} problem(s).`,
+      /*
+        The project a name table makes: what blocks it, and, once the table
+        held, how to generate it with a set of hidden tests. Pure, so the
+        pseudonyms agent's checks repeat it.
+      */
+      const prepare = (rules: readonly AliasRule[]) => {
+        const aliased = applyAliases(
+          [
+            ...included,
+            ...stubFiles,
+            ...symbolLeaves,
+            ...specLeaves,
+            ...fixtureLeaves,
+            ...listingLeaves,
+            ...(scenario === null ? [] : [{ path: RUN_PATH, text: scenario }]),
+          ],
+          rules,
         );
-      } else {
+        if (!aliased.ok)
+          return {
+            aliased,
+            blockers: aliased.problems.map((problem): ProjectBlocker => ({
+              code: "alias_failed",
+              file: problem.file,
+              detail: `${problem.code}${problem.rule === null ? "" : ` (rule ${problem.rule})`}: ${problem.detail}`,
+            })),
+            renames: [],
+            generate: null,
+            publicSpec: null,
+            publicListing: listing,
+          };
         const sources: ProjectSource[] = included.map((file, index) => ({
           originalPath: file.path,
           path: aliased.files[index]?.path ?? file.path,
@@ -743,6 +802,10 @@ export function createSandboxBuildAdapter(
           fixtures,
           textsOf(fixtureLeaves.length),
         );
+        const aliasedListing = withJsonLeaves(
+          listing,
+          textsOf(listingLeaves.length),
+        );
         const aliasedScenario =
           scenario === null ? null : (aliased.files[at]?.text ?? scenario);
         /*
@@ -760,78 +823,146 @@ export function createSandboxBuildAdapter(
             ? null
             : "fixtures",
         ].filter((name) => name !== null);
-        for (const name of broken)
-          blockers.push({
-            code: "alias_failed",
-            file: null,
-            detail: `The alias table renamed a value the ${name} needs, so it no longer reads as one.`,
+        const blockers = broken.map((name): ProjectBlocker => ({
+          code: "alias_failed",
+          file: null,
+          detail: `The alias table renamed a value the ${name} needs, so it no longer reads as one.`,
+        }));
+        if (broken.length > 0)
+          return {
+            aliased,
+            blockers,
+            renames: aliased.renames,
+            generate: null,
+            publicSpec: null,
+            publicListing: aliasedListing,
+          };
+        const uses = packageUses(
+          new Map([...sources, ...stubs].map((file) => [file.path, file.text])),
+          (specifier) =>
+            !specifier.startsWith(".") &&
+            !specifier.startsWith("/") &&
+            (packageNames.has(packageNameOf(specifier)) ||
+              isNodeBuiltin(specifier)),
+        );
+        const generate = (tests: readonly AcceptanceTest[]) => {
+          const project = generateProject({
+            version: {
+              sandboxId: version.sandboxId,
+              versionId: version.id,
+              version: version.version,
+              ...aliasedListing,
+              complexity: version.complexity,
+            },
+            manifest,
+            contract: aliasedContract,
+            sources,
+            stubs,
+            spec: aliasedSpec,
+            dependencies: source.scope.dependencies,
+            acceptanceTests: tests,
+            fixtures: aliasedFixtures,
+            scenario: aliasedScenario,
+            knownSpecifiers: NODE_BUILTINS,
+            packageModules: packageModules(uses),
+            ...(compilerOptions === undefined ? {} : { compilerOptions }),
           });
-        renames = aliased.renames;
+          return {
+            files: [...project.files],
+            blockers: [...project.blockers],
+            importRewrites: project.importRewrites,
+          };
+        };
+        return {
+          aliased,
+          blockers,
+          renames: aliased.renames,
+          generate,
+          publicSpec: aliasedSpec,
+          publicListing: aliasedListing,
+        };
+      };
+      // The workspace's own names, which the pseudonyms must rename out of
+      // everything contributors read.
+      const vocabulary = workspaceVocabulary([
+        ...(params.vocabulary ?? []),
+        ...(await packageVocabulary(input.sourceDir)),
+      ]);
+      const leaksOf = (generated: readonly GeneratedFile[]) =>
+        vocabularyLeaks(
+          generated.filter((file) => file.public),
+          vocabulary,
+        );
+      const model = options.agent?.model ?? null;
+      // Pseudonyms, for a draft with none.
+      let pseudonyms: WrittenPseudonyms | null = null;
+      if (source.aliasRules.length === 0) {
+        if (model === null || options.agent === undefined)
+          input.log("No agent model is configured; no pseudonyms are written.");
+        else
+          pseudonyms = await writePseudonyms({
+            model,
+            limits: options.agent.limits,
+            task: {
+              title: version.title,
+              summary: version.specSummary,
+              spec,
+            },
+            files: [...included, ...stubFiles],
+            vocabulary,
+            check: (rules) => {
+              const candidate = prepare(rules);
+              const project = candidate.generate?.(source.acceptanceTests);
+              return {
+                problems: [
+                  ...candidate.blockers,
+                  ...(project?.blockers ?? []),
+                  ...vocabularyBlockers(leaksOf(project?.files ?? [])),
+                ].map(
+                  (blocker) =>
+                    `${blocker.file ?? blocker.code}: ${blocker.detail}`,
+                ),
+                applied: candidate.aliased.applied,
+              };
+            },
+            signal: input.signal,
+            log: input.log,
+            step: input.step,
+          });
+      }
+      const aliasRules = pseudonyms?.rules ?? source.aliasRules;
+      const prepared = prepare(aliasRules);
+      const { generate, publicSpec, publicListing, renames } = prepared;
+      const blockers: ProjectBlocker[] = [...prepared.blockers];
+      let files: GeneratedFile[] = [];
+      let importRewrites: SandboxBuildManifest["importRewrites"] = [];
+      if (!prepared.aliased.ok) {
+        input.log(
+          `Alias application refused with ${prepared.aliased.problems.length} problem(s).`,
+        );
+      } else {
         for (const blocker of source.scope.blockers)
           blockers.push({
             code: "scope_blocked",
             file: null,
             detail: `${blocker.code}: ${blocker.detail}`,
           });
-        if (broken.length > 0) {
+        if (generate === null) {
           input.log("Alias application broke the contract, spec or fixtures.");
         } else {
-          // What the sources and stubs read of each package, declared as
-          // the slice's check declared it, so the project builds what the
-          // check passed.
-          const packageNames = new Set(
-            source.scope.dependencies
-              .filter((dependency) => dependency.kind === "package")
-              .map((dependency) => dependency.name),
-          );
-          const uses = packageUses(
-            new Map(
-              [...sources, ...stubs].map((file) => [file.path, file.text]),
-            ),
-            (specifier) =>
-              !specifier.startsWith(".") &&
-              !specifier.startsWith("/") &&
-              (packageNames.has(packageNameOf(specifier)) ||
-                isNodeBuiltin(specifier)),
-          );
-          const generated = (tests: readonly AcceptanceTest[]) => {
-            const project = generateProject({
-              version: {
-                sandboxId: version.sandboxId,
-                versionId: version.id,
-                version: version.version,
-                title: version.title,
-                specSummary: version.specSummary,
-                complexity: version.complexity,
-                tags: version.tags,
-              },
-              manifest,
-              contract: aliasedContract,
-              sources,
-              stubs,
-              spec: aliasedSpec,
-              dependencies: source.scope.dependencies,
-              acceptanceTests: tests,
-              fixtures: aliasedFixtures,
-              scenario: aliasedScenario,
-              knownSpecifiers: NODE_BUILTINS,
-              packageModules: packageModules(uses),
-              ...(compilerOptions === undefined ? {} : { compilerOptions }),
-            });
-            return {
-              files: [...project.files],
-              blockers: [...project.blockers],
-              importRewrites: project.importRewrites,
-            };
-          };
-          generate = generated;
-          publicSpec = aliasedSpec;
-          const project = generated(source.acceptanceTests);
+          const project = generate(source.acceptanceTests);
           files = project.files;
           importRewrites = project.importRewrites;
           blockers.push(...project.blockers);
           input.log(
             `Generated ${project.files.length} files with ${project.importRewrites.length} import rewrites and ${project.blockers.length} blocker(s).`,
+          );
+          const leaks = leaksOf(files);
+          blockers.push(...vocabularyBlockers(leaks));
+          input.log(
+            leaks.length === 0
+              ? `No public file names the workspace (${vocabulary.length} name(s) checked).`
+              : `Public files still name the workspace: ${leaks.map((leak) => leak.term).join(", ")}.`,
           );
         }
       }
@@ -853,7 +984,6 @@ export function createSandboxBuildAdapter(
       // Hidden tests, for a draft with none whose baseline fails for that
       // alone: every step ran, and no test judged it.
       let hidden: Awaited<ReturnType<typeof writeHiddenTests>> = null;
-      const model = options.agent?.model ?? null;
       if (
         generate !== null &&
         source.acceptanceTests.length === 0 &&
@@ -870,8 +1000,8 @@ export function createSandboxBuildAdapter(
             model,
             limits: options.agent.limits,
             task: {
-              title: version.title,
-              summary: version.specSummary,
+              title: publicListing.title,
+              summary: publicListing.specSummary,
               spec: publicSpec,
             },
             generate,
@@ -897,16 +1027,17 @@ export function createSandboxBuildAdapter(
           }
         }
       }
-      // What the draft's transform becomes once the tests settle on it.
+      // What the draft's transform becomes once what the build wrote
+      // settles on it.
       const transformConfigSha256 =
-        hidden === null
+        hidden === null && pseudonyms === null
           ? source.transformConfigSha256
           : sha256(
               canonicalJson(
                 transformConfigOf({
-                  aliasRules: source.aliasRules,
+                  aliasRules,
                   dependencyChoices: source.dependencyChoices,
-                  acceptanceTests: hidden.tests,
+                  acceptanceTests: hidden?.tests ?? source.acceptanceTests,
                   fixtures: source.fixtures,
                   starterSha256: source.starterSha256,
                 }),
@@ -916,7 +1047,7 @@ export function createSandboxBuildAdapter(
         outDir: input.outDir,
         toolVersion: SANDBOX_BUILD_RUN_VERSION,
         sandboxVersionId: version.id,
-        aliasRules: source.aliasRules,
+        aliasRules,
         bindings: {
           sourceSnapshotId: source.sourceSnapshotId,
           sourceCommitSha: snapshot.commitSha,
@@ -934,25 +1065,40 @@ export function createSandboxBuildAdapter(
         evaluator,
         blockers,
       });
-      if (hidden !== null) {
-        const absolutePath = join(input.outDir, HIDDEN_TESTS_PATH);
+      if (hidden !== null || pseudonyms !== null) {
+        const absolutePath = join(input.outDir, BUILD_TRANSFORM_PATH);
         await writeFile(
           absolutePath,
           canonicalJson({
             fromTransformConfigSha256: source.transformConfigSha256,
             transformConfigSha256,
-            acceptanceTests: hidden.tests,
-            summary: hidden.summary,
-            usage: hidden.usage,
+            ...(hidden === null
+              ? {}
+              : {
+                  acceptanceTests: hidden.tests,
+                  hiddenTests: { summary: hidden.summary, usage: hidden.usage },
+                }),
+            ...(pseudonyms === null
+              ? {}
+              : {
+                  aliasRules: pseudonyms.rules,
+                  pseudonyms: {
+                    summary: pseudonyms.summary,
+                    usage: pseudonyms.usage,
+                  },
+                }),
           }),
           "utf8",
         );
         written.push({
-          path: HIDDEN_TESTS_PATH,
+          path: BUILD_TRANSFORM_PATH,
           absolutePath,
-          kind: buildArtifactKind(HIDDEN_TESTS_PATH),
+          kind: buildArtifactKind(BUILD_TRANSFORM_PATH),
           contentType: "application/json",
-          meta: { hiddenTests: hidden.tests.length },
+          meta: {
+            hiddenTests: hidden?.tests.length ?? 0,
+            pseudonyms: pseudonyms?.rules.length ?? 0,
+          },
         });
         written.sort((a, b) => compare(a.path, b.path));
       }
@@ -965,7 +1111,7 @@ export function createSandboxBuildAdapter(
     },
     /**
      * A ready build's harness and toolchain become the draft's freeze
-     * evidence, with the hidden tests it wrote, if it wrote any.
+     * evidence, with the hidden tests and pseudonyms it wrote, if any.
      */
     async committed({ runId, files, inputs }) {
       const file = files.find((item) => item.path === "build-manifest.json");
@@ -974,25 +1120,33 @@ export function createSandboxBuildAdapter(
         await readFile(file.absolutePath, "utf8"),
       ) as SandboxBuildManifest;
       if (!manifest.ready) return;
-      const testsFile = files.find((item) => item.path === HIDDEN_TESTS_PATH);
-      const tests =
-        testsFile === undefined
+      const transformFile = files.find(
+        (item) => item.path === BUILD_TRANSFORM_PATH,
+      );
+      const transform =
+        transformFile === undefined
           ? undefined
-          : (JSON.parse(await readFile(testsFile.absolutePath, "utf8")) as {
+          : (JSON.parse(await readFile(transformFile.absolutePath, "utf8")) as {
               fromTransformConfigSha256: string;
               transformConfigSha256: string;
-              acceptanceTests: AcceptanceTest[];
+              acceptanceTests?: AcceptanceTest[];
+              aliasRules?: AliasRule[];
             });
       await inputs.recordBuildOutput(manifest.sandboxVersionId, runId, {
         harnessSha256: manifest.harnessSha256,
         toolchainDigest: manifest.toolchainDigest,
-        ...(tests === undefined
+        ...(transform === undefined
           ? {}
           : {
-              tests: {
-                acceptanceTests: tests.acceptanceTests,
-                fromTransformConfigSha256: tests.fromTransformConfigSha256,
-                transformConfigSha256: tests.transformConfigSha256,
+              transform: {
+                ...(transform.acceptanceTests === undefined
+                  ? {}
+                  : { acceptanceTests: transform.acceptanceTests }),
+                ...(transform.aliasRules === undefined
+                  ? {}
+                  : { aliasRules: transform.aliasRules }),
+                fromTransformConfigSha256: transform.fromTransformConfigSha256,
+                transformConfigSha256: transform.transformConfigSha256,
               },
             }),
       });

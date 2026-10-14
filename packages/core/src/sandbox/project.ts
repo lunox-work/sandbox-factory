@@ -128,6 +128,7 @@ export interface ProjectBlocker {
     | "scope_blocked"
     | "fixture_invalid"
     | "starter_invalid"
+    | "vocabulary_leaked"
     | "baseline_failed";
   readonly file: string | null;
   readonly detail: string;

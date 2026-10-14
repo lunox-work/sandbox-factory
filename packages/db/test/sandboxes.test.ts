@@ -895,7 +895,7 @@ test("a build's output is kept only while the draft still points at that build",
   }
 });
 
-test("a build's hidden tests settle with its output only on the draft it was queued for", async () => {
+test("a build's hidden tests and pseudonyms settle with its output only on the draft it was queued for", async () => {
   const current = {
     version: versionRow(),
     source: sourceRow({ buildRunId: "arn_build" }),
@@ -911,12 +911,20 @@ test("a build's hidden tests settle with its output only on the draft it was que
   const output = {
     harnessSha256: "h".repeat(64),
     toolchainDigest: "d".repeat(64),
-    tests: {
+    transform: {
       acceptanceTests,
       fromTransformConfigSha256: "t".repeat(64),
       transformConfigSha256: "n".repeat(64),
     },
   };
+  const aliasRules = [
+    {
+      before: "acmeOrders",
+      after: "orders",
+      kind: "identifier" as const,
+      paths: [],
+    },
+  ];
   const fake = createSequencedFakeDb([[current], []]);
   assert.equal(
     await createSandboxStore(fake.db).recordBuildOutput(
@@ -935,22 +943,56 @@ test("a build's hidden tests settle with its output only on the draft it was que
     transformConfigSha256: "n".repeat(64),
     updatedAt: now,
   });
-  // A draft that has tests of its own, or whose transform moved since the
-  // build was queued, keeps what it has, and the build records nothing.
-  for (const source of [
-    sourceRow({ buildRunId: "arn_build", acceptanceTests }),
-    sourceRow({
-      buildRunId: "arn_build",
-      transformConfigSha256: "x".repeat(64),
-    }),
-  ]) {
+  // Pseudonyms alone settle without touching the tests.
+  const named = createSequencedFakeDb([[current], []]);
+  assert.equal(
+    await createSandboxStore(named.db).recordBuildOutput(
+      "owner",
+      "sbv_1",
+      "arn_build",
+      {
+        ...output,
+        transform: {
+          aliasRules,
+          fromTransformConfigSha256: "t".repeat(64),
+          transformConfigSha256: "p".repeat(64),
+        },
+      },
+      now,
+    ),
+    true,
+  );
+  assert.deepEqual(named.calls[1]?.values, {
+    harnessSha256: output.harnessSha256,
+    toolchainDigest: output.toolchainDigest,
+    aliasRules,
+    transformConfigSha256: "p".repeat(64),
+    updatedAt: now,
+  });
+  // A draft that has tests or pseudonyms of its own, or whose transform
+  // moved since the build was queued, keeps what it has, and the build
+  // records nothing.
+  for (const [source, transform] of [
+    [sourceRow({ buildRunId: "arn_build", acceptanceTests }), output.transform],
+    [
+      sourceRow({ buildRunId: "arn_build", aliasRules }),
+      { ...output.transform, aliasRules },
+    ],
+    [
+      sourceRow({
+        buildRunId: "arn_build",
+        transformConfigSha256: "x".repeat(64),
+      }),
+      output.transform,
+    ],
+  ] as const) {
     const refused = createSequencedFakeDb([[{ ...current, source }]]);
     assert.equal(
       await createSandboxStore(refused.db).recordBuildOutput(
         "owner",
         "sbv_1",
         "arn_build",
-        output,
+        { ...output, transform },
       ),
       false,
     );
