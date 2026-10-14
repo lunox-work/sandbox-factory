@@ -361,7 +361,14 @@ function Signed({
           }
         }}
         onNavigate={navigate}
-        onSignOut={() => void signOut()}
+        // Home once signed out. Sign-in returns to the address it was opened
+        // at, so a sign-out left on `/bounties` would land the next account
+        // there — past the onboarding only home sends a new workspace to.
+        onSignOut={() =>
+          void signOut().then(({ error }) => {
+            if (error === null || error === undefined) replaceLocation("/");
+          })
+        }
       />
       <div
         ref={contentRef}
