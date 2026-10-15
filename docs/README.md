@@ -38,8 +38,9 @@ product proposals and historical explainers are optional design context.
   boundary. With the default provider `none`, builds fail closed.
 - The VS Code extension can run a local task. Its sign-in flow is not built.
 - Public task publication, contributor submission/adjudication, escrow, payouts,
-  reputation and automated merge-back remain future work. Slack and knowledge
-  integrations are not implemented.
+  reputation and automated merge-back remain future work; see the
+  [roadmap](./roadmap.md) for merge-back and the next sandbox improvements.
+  Slack and knowledge integrations are not implemented.
 
 ## Read by task
 
