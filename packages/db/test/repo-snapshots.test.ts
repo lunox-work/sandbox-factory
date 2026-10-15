@@ -111,7 +111,6 @@ test("built reads the builders' runs, then the snapshots they finished, newest f
   const fake = createSequencedFakeDb([
     [
       run("rsn_1", "graphify", "succeeded"),
-      run("rsn_1", "dependency_cruiser", "succeeded"),
       run("rsn_1", "abstractions", "failed"),
       run("rsn_1", "data_model", "succeeded"),
       // Its map is still running: not built yet.

@@ -23,8 +23,6 @@ import type {
 import {
   abstractionsSummarySchema,
   dataModelSummarySchema,
-  deepwikiSummarySchema,
-  dependencyCruiserSummarySchema,
   graphifySummarySchema,
 } from "@sandbox-factory/shared";
 import {
@@ -920,30 +918,6 @@ function builderFigures(
             { label: "edges", value: summary.edges },
             { label: "unresolved", value: summary.unresolved },
           ];
-    }
-    case "dependency_cruiser": {
-      const summary = summaryOf(
-        artifacts,
-        ["manifest", "dependency_graph"],
-        dependencyCruiserSummarySchema,
-      );
-      return summary === null
-        ? undefined
-        : [
-            { label: "modules", value: summary.counts.modules },
-            { label: "dependencies", value: summary.counts.dependencies },
-            { label: "cycles", value: summary.counts.circular },
-          ];
-    }
-    case "deepwiki": {
-      const summary = summaryOf(
-        artifacts,
-        ["wiki_structure", "manifest"],
-        deepwikiSummarySchema,
-      );
-      return summary === null
-        ? undefined
-        : [{ label: "pages", value: summary.pages.length }];
     }
     case "abstractions": {
       const summary = summaryOf(

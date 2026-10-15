@@ -84,8 +84,7 @@ Their output is supplemental: reviewed rules and explanations stay in
   2.6.68 at a pinned commit into the gitignored `.agents/skills/diagram-design`;
   needs `curl`. Its style guide is also the product's diagram skin:
   `packages/shared/src/diagram-skin.ts` holds its semantic roles, which the
-  worker writes `dependency-cruiser.dot` in and the workbench draws every
-  Graphviz and Mermaid diagram with. Change the roles there, not in either app.
+  workbench draws every Graphviz and Mermaid diagram with. Change the roles there, not in either app.
 
 ## Build and development servers
 

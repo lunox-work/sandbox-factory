@@ -42,7 +42,6 @@ export const errorLabels: Record<AnalysisErrorCode, string> = {
   agent_unavailable: "No agent model is configured on the worker.",
   agent_incomplete:
     "The agent stopped without an answer it could check. Try again.",
-  builder_unavailable: "This builder is not configured on the worker.",
   context_unavailable:
     "A context build this run reads is gone or changed. Build it on this snapshot first.",
 };
@@ -58,8 +57,6 @@ export const statusLabels: Record<AnalysisStatus, string> = {
 /** What a context builder is called on its card. */
 export const builderNames: Record<ContextBuilder, string> = {
   graphify: "Graphify",
-  dependency_cruiser: "Dependency Cruiser",
-  deepwiki: "DeepWiki Open",
   abstractions: "Abstractions",
   data_model: "Data model",
 };
@@ -79,10 +76,6 @@ export function runLabel(run: AnalysisRunDto): string {
       return "Generated starter";
     case "graphify":
       return "Graphify";
-    case "dependency_cruiser":
-      return "Dependency Cruiser";
-    case "deepwiki":
-      return "DeepWiki wiki";
     case "abstractions":
       return "Abstractions";
     case "data_model":

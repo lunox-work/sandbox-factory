@@ -452,8 +452,8 @@ estimates, demand and links; never a person or a comment) and takes its
 text as a run's read does. Repositories are not synced but pinned: `GET
 .../context/github/commits` lists each connected repository's built
 commits (`RepoSnapshotStore.built`: snapshots whose graphify run succeeded
-and whose other builders have all finished, `snapshotBuilt` in core; the
-wiki is not waited on) with the commit the scope holds it at, read from
+and whose other builders have all finished, `snapshotBuilt` in core) with
+the commit the scope holds it at, read from
 the latest version's revision, and `PUT .../context/github/commits` with
 `{ commits: { repoId: snapshotId } }` reads the Markdown of every
 repository the workspace has connected, each at the built commit picked
@@ -682,6 +682,9 @@ the one the bounty's sizing already took: the complexity profile of its
 approved proposal's spec revision in the sandbox's repository
 (`bounty_profile`, matched by the snapshot the spec was drafted beside or
 the repository's name), which the profiler scopes and slices on the worker.
+The profiler's scope reads the snapshot's abstractions and data model: it
+enqueues or finds both on the graph run, waits for them to finish, and names
+those that succeeded.
 `GET .../sandboxes/:id/slice` says where it stands (`SandboxSliceDto`):
 `none` until asked for, the profile's `queued`, `scoping` and `slicing`, then
 `ready`; `failed` with the profile's code, final for that spec revision until
@@ -697,6 +700,11 @@ draft and the run. A draft whose scope has blockers is cut without a build
 not sliced (`published`, 409): contributors work in it, so it is unpublished
 first. The newest unfrozen draft cut from the
 same slice run is built again rather than cut twice. A sliced draft starts
+with no fixtures, so a build of one with none has the fixtures agent write
+them and the walkthrough before anything else (`writeFixtures` in
+`apps/worker/src/tools/fixtures.ts`), reading the slice as the workspace
+wrote it and the snapshot's data model; they settle with the build as the
+hidden tests and pseudonyms below do. A sliced draft starts
 with no hidden tests, and a sandbox none judges could never accept a
 submission, so a build whose baseline fails for that alone has an agent write
 them (`apps/worker/src/tools/hidden-tests.ts`): it reads the public project and
@@ -1069,15 +1077,11 @@ Both connect flows sign their `state` with the same secret, so the state
 carries a `purpose` (`apps/api/src/connect-state.ts`) and each callback
 refuses the other's.
 
-**Analysis runs are private and cached.** Five _context builders_ describe a
+**Analysis runs are private and cached.** Three _context builders_ describe a
 snapshot on their own, started from a repository's page
 (`/o/:slug/repositories/:repoId`) by an owner or admin and read by any
-member: a `graphify` run maps a snapshot's structure in a Fargate worker; a
-`dependency_cruiser` run cruises its module dependencies, cycles and
-orphans; a `deepwiki` run asks a self-hosted DeepWiki-Open service for a
-wiki of the repository (and, unlike the others, that service reads the
-repository's default branch itself; the run records which commit it was
-asked for); an `abstractions` run lists every module's exported surface
+member: a `graphify` run maps a snapshot's structure in a Fargate worker;
+an `abstractions` run lists every module's exported surface
 with its signatures, typed, syntactic or names only; and a `data_model` run
 reads the entities, enums and relations the repository's Prisma schema,
 Drizzle tables or SQL migrations declare, with the modules that touch them.

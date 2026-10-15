@@ -39,6 +39,7 @@ import {
 import { stubModules } from "../src/tools/slice-run.js";
 import { sha256 } from "../src/tools/slice/hash.js";
 import type { ToolInputs, ToolRunInput } from "../src/tools/adapter.js";
+import { contextModel, contextRun } from "./context-fixtures.js";
 import { fixture, slice, sliceRun, stamp } from "./fixture-slice.js";
 
 /**
@@ -248,9 +249,12 @@ async function runBuild(
     outDir: string;
     snapshotId: string;
     agent: AgentSettings;
+    /** Context builders' runs the build can read, beside the slice. */
+    served: readonly ReturnType<typeof contextRun>[];
   }> = {},
 ) {
   const { artifacts, objects } = await slice();
+  const served = options.served ?? [];
   const version =
     options.version === undefined ? await versionFor() : options.version;
   const outDir =
@@ -260,18 +264,25 @@ async function runBuild(
     getRun: async (id) =>
       id === sliceRun.id
         ? { ...sliceRun, status: options.sliceStatus ?? "succeeded" }
-        : null,
-    listArtifacts: async (id) => (id === sliceRun.id ? artifacts : []),
+        : (served.find((entry) => entry.run.id === id)?.run ?? null),
+    listArtifacts: async (id) =>
+      id === sliceRun.id
+        ? artifacts
+        : served.flatMap((entry) =>
+            entry.run.id === id ? [entry.artifact] : [],
+          ),
     readArtifact: async (key) =>
       options.corrupt === true && key.endsWith("boundary-contract.json")
         ? Buffer.from("tampered")
-        : objects.get(key),
+        : (served.find((entry) => entry.artifact.objectKey === key)?.bytes ??
+          objects.get(key)),
     getVersion: async (id) => (id === "sbv_1" ? version : null),
     getTask: async () => null,
     recordBuildOutput: async () => false,
     recordStarterOutput: async () => false,
   };
   const input: ToolRunInput = {
+    runId: "arn_build",
     sourceDir: options.sourceDir ?? fixture,
     outDir,
     params: {
@@ -353,6 +364,12 @@ const jobsOf = (calls: readonly string[][]) =>
 const named: AliasRule[] = [
   { before: "retries", after: "attempts", kind: "identifier", paths: [] },
 ];
+/** Fixtures the draft already has, so no fixtures agent runs. */
+const given: VersionFixtures = {
+  fixtureRunId: null,
+  fixtures: [],
+  scenario: null,
+};
 const hiddenTest = {
   path: "tests/private/acceptance.test.ts",
   text: 'import { test } from "node:test";\nimport assert from "node:assert/strict";\ntest("describes", () => { assert.equal(1, 2); });\n',
@@ -587,6 +604,146 @@ test("fixtures and the walkthrough are aliased with the version, generated, and 
   assert.deepEqual(
     invalid.manifest.blockers.map((blocker) => blocker.code),
     ["fixture_invalid"],
+  );
+});
+
+test("a sliced draft with no fixtures has an agent write them and the walkthrough, renamed with the project, and they settle with the build", async () => {
+  const fixture = {
+    module: "lib/helpers.ts",
+    symbol: "label",
+    member: null,
+    call: "call" as const,
+    implementation: '() => "fixture-label"',
+    reason: "a label the walkthrough can read",
+  };
+  const scenario =
+    'import { run } from "../src/app.js";\n// createService answers with a fixture.\nconsole.log(run({ name: "demo", retries: 1, nested: { enabled: true } }));\n';
+  const model = scripted([
+    // A module the slice does not cut does not compile.
+    turn([
+      call("check_fixtures", {
+        fixtures: [{ ...fixture, module: "lib/nowhere.ts" }],
+        scenario,
+      }),
+    ]),
+    turn([
+      call("submit_fixtures", {
+        fixtures: [fixture],
+        scenario,
+        summary: "Runs the app with a service that describes.",
+      }),
+    ]),
+  ]);
+  const rule: AliasRule = {
+    before: "createService",
+    after: "makeService",
+    kind: "identifier",
+    paths: [],
+  };
+  const fake = fakeProvider((argv) =>
+    argv.includes("--test") && !argv.includes("test") ? TAP_FAILED : {},
+  );
+  const version = await versionFor({ aliasRules: [rule] });
+  const built = await runBuild(fake.provider, {
+    version,
+    agent: { model, limits },
+  });
+  assert.deepEqual(built.manifest.blockers, []);
+  assert.equal(built.manifest.ready, true);
+  // The agent read the bounty's spec and the slice's stubs.
+  assert.match(model.prompts[0] ?? "", /createService describes a thing/);
+  assert.match(model.prompts[0] ?? "", /lib\/service\.ts/);
+  assert.equal(model.results[0]?.[0]?.is_error, true);
+  // What it wrote is in the project, renamed by the table.
+  assert.match(
+    await built.read("project/lib/helpers.js"),
+    /fixture\("module:lib\/helpers\.ts\.label", \(\) => "fixture-label"\)/,
+  );
+  assert.match(
+    await built.read("project/sandbox/run.ts"),
+    /makeService answers with a fixture/,
+  );
+  assert.ok(fake.calls.some((argv) => argv.join(" ") === "npm run dev"));
+  // The set names the build that wrote it, and the transform covers it.
+  const fixtures: VersionFixtures = {
+    fixtureRunId: "arn_build",
+    fixtures: [fixture],
+    scenario,
+  };
+  const transformConfigSha256 = sha256(
+    canonicalJson(
+      transformConfigOf({
+        aliasRules: [rule],
+        dependencyChoices: {},
+        acceptanceTests: version.source.acceptanceTests,
+        fixtures,
+        starterSha256: null,
+      }),
+    ),
+  );
+  assert.equal(built.manifest.transformConfigSha256, transformConfigSha256);
+  const recorded: unknown[] = [];
+  await built.adapter.committed?.({
+    runId: "arn_build",
+    files: built.files,
+    inputs: {
+      getRun: async () => null,
+      listArtifacts: async () => [],
+      readArtifact: async () => undefined,
+      getVersion: async () => null,
+      getTask: async () => null,
+      recordBuildOutput: async (_versionId, _runId, output) => {
+        recorded.push(output.transform);
+        return true;
+      },
+      recordStarterOutput: async () => false,
+    },
+  });
+  assert.deepEqual(recorded, [
+    {
+      fixtures,
+      fromTransformConfigSha256: version.source.transformConfigSha256,
+      transformConfigSha256,
+    },
+  ]);
+
+  // With the snapshot's data model, the agent has it to read.
+  const modelled = scripted([]);
+  await runBuild(fakeProvider().provider, {
+    version,
+    params: { dataModelRunId: "arn_model" },
+    served: [contextRun("arn_model", "data_model", contextModel)],
+    agent: { model: modelled, limits },
+  });
+  assert.match(
+    modelled.prompts[0] ?? "",
+    new RegExp(`data model has ${contextModel.entities.length} entities`),
+  );
+
+  // An agent that gives up leaves the draft without, and the build goes on.
+  const gaveUp = await runBuild(fakeProvider().provider, {
+    version,
+    agent: { model: scripted([]), limits },
+  });
+  assert.ok(
+    gaveUp.messages.some((line) => line.startsWith("Fixtures agent stopped")),
+  );
+  assert.equal(
+    gaveUp.files.some((file) => file.path === "build-transform.json"),
+    false,
+  );
+  // A draft that has fixtures, or a worker with no model, writes none.
+  const kept = scripted([]);
+  await runBuild(fakeProvider().provider, {
+    version: await versionFor({ aliasRules: [rule], fixtures }),
+    agent: { model: kept, limits },
+  });
+  assert.deepEqual(kept.prompts, []);
+  const unconfigured = await runBuild(fakeProvider().provider, { version });
+  assert.ok(
+    unconfigured.messages.includes(
+      "No agent model is configured; no fixtures are written.",
+    ),
   );
 });
 
@@ -1162,7 +1319,7 @@ test("a draft with no pseudonyms has an agent write them, checked as the build a
       }),
     ]),
   ]);
-  const version = await versionFor();
+  const version = await versionFor({ fixtures: given });
   const built = await runBuild(fake.provider, {
     version,
     params: { vocabulary: ["Widget"] },
@@ -1193,7 +1350,7 @@ test("a draft with no pseudonyms has an agent write them, checked as the build a
         aliasRules: rules,
         dependencyChoices: {},
         acceptanceTests: version.source.acceptanceTests,
-        fixtures: null,
+        fixtures: given,
         starterSha256: null,
       }),
     ),
@@ -1282,7 +1439,11 @@ test("a draft with no hidden tests has an agent write them, and the build is the
       }),
     ]),
   ]);
-  const version = await versionFor({ acceptance: false, aliasRules: named });
+  const version = await versionFor({
+    acceptance: false,
+    aliasRules: named,
+    fixtures: given,
+  });
   const built = await runBuild(fake.provider, {
     version,
     agent: { model, limits },
@@ -1315,7 +1476,7 @@ test("a draft with no hidden tests has an agent write them, and the build is the
         aliasRules: named,
         dependencyChoices: {},
         acceptanceTests: [hiddenTest],
-        fixtures: null,
+        fixtures: given,
         starterSha256: null,
       }),
     ),
@@ -1374,7 +1535,11 @@ test("hidden tests that never pass their baseline are not kept, and the build st
     Array.from({ length: HIDDEN_TEST_RUNS_MAX + 1 }, submit),
   );
   const built = await runBuild(fake.provider, {
-    version: await versionFor({ acceptance: false, aliasRules: named }),
+    version: await versionFor({
+      acceptance: false,
+      aliasRules: named,
+      fixtures: given,
+    }),
     agent: { model, limits },
   });
   assert.equal(built.manifest.ready, false);
@@ -1400,7 +1565,7 @@ test("hidden tests are written only for a draft with none whose baseline fails f
       argv.includes("--test") && !argv.includes("test") ? TAP_FAILED : {},
     ).provider,
     {
-      version: await versionFor({ aliasRules: named }),
+      version: await versionFor({ aliasRules: named, fixtures: given }),
       agent: { model: untouched, limits },
     },
   );
@@ -1412,7 +1577,11 @@ test("hidden tests are written only for a draft with none whose baseline fails f
     fakeProvider((argv) => (argv.includes("build") ? { exitCode: 2 } : {}))
       .provider,
     {
-      version: await versionFor({ acceptance: false, aliasRules: named }),
+      version: await versionFor({
+        acceptance: false,
+        aliasRules: named,
+        fixtures: given,
+      }),
       agent: { model: broken, limits },
     },
   );
@@ -1420,7 +1589,11 @@ test("hidden tests are written only for a draft with none whose baseline fails f
   assert.deepEqual(broken.prompts, []);
   // Without a model, the build says why it wrote none.
   const unconfigured = await runBuild(fakeProvider().provider, {
-    version: await versionFor({ acceptance: false, aliasRules: named }),
+    version: await versionFor({
+      acceptance: false,
+      aliasRules: named,
+      fixtures: given,
+    }),
     agent: { model: null, limits },
   });
   assert.equal(unconfigured.manifest.ready, false);

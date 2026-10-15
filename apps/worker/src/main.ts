@@ -20,8 +20,6 @@ import { createTaskReader } from "./tasks.js";
 import { createAbstractionsAdapter } from "./tools/abstractions.js";
 import type { ToolAdapter } from "./tools/adapter.js";
 import { createDataModelAdapter } from "./tools/data-model.js";
-import { createDeepwikiAdapter } from "./tools/deepwiki.js";
-import { createDependencyCruiserAdapter } from "./tools/dependency-cruiser.js";
 import { createFixturesAdapter } from "./tools/fixtures.js";
 import { createGraphifyAdapter } from "./tools/graphify.js";
 import { createSandboxBuildAdapter } from "./tools/sandbox-build.js";
@@ -79,22 +77,6 @@ function adapterFor(run: ClaimedAnalysisRun): ToolAdapter {
   switch (run.tool) {
     case "graphify":
       return createGraphifyAdapter();
-    case "dependency_cruiser":
-      return createDependencyCruiserAdapter();
-    case "deepwiki":
-      return createDeepwikiAdapter({
-        baseUrl: env.DEEPWIKI_OPEN_URL,
-        authCode: env.DEEPWIKI_OPEN_AUTH_CODE,
-        provider: env.DEEPWIKI_OPEN_PROVIDER,
-        model: env.DEEPWIKI_OPEN_MODEL,
-        repository:
-          run.repoFullName === null
-            ? null
-            : {
-                fullName: run.repoFullName,
-                token: repositoryToken(tokens, run),
-              },
-      });
     case "abstractions":
       return createAbstractionsAdapter();
     case "data_model":

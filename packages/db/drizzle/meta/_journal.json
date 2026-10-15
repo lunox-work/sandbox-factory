@@ -442,6 +442,13 @@
       "when": 1791641063689,
       "tag": "0062_bounty_text_edited",
       "breakpoints": true
+    },
+    {
+      "idx": 63,
+      "version": "7",
+      "when": 1792032716723,
+      "tag": "0063_retire_removed_builders",
+      "breakpoints": true
     }
   ]
 }

@@ -150,7 +150,7 @@ test("a wiki link opens the note of its name, nearest first", () => {
     "graphify/wiki/Community_0.md",
     "graphify/wiki/index.md",
     "graphify/graph.json",
-    "deepwiki/wiki/index.md",
+    "notes/wiki/index.md",
   ];
   const report = "graphify/GRAPH_REPORT.md";
   const note = "graphify/wiki/Community_0.md";
@@ -159,8 +159,8 @@ test("a wiki link opens the note of its name, nearest first", () => {
   expect(wikiLinkedFile(paths, report, "_COMMUNITY_Community 0")).toBe(note);
   // Beside the file first, then its own top folder.
   expect(wikiLinkedFile(paths, note, "index")).toBe("graphify/wiki/index.md");
-  expect(wikiLinkedFile(paths, "deepwiki/a.md", "index")).toBe(
-    "deepwiki/wiki/index.md",
+  expect(wikiLinkedFile(paths, "notes/a.md", "index")).toBe(
+    "notes/wiki/index.md",
   );
   expect(wikiLinkedFile(paths, note, "Community 0#Key Concepts")).toBe(note);
   // Only notes: a JSON file is not one.

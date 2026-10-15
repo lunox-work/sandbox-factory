@@ -1,12 +1,10 @@
 # Private repository analysis worker
 
-Ten adapters run here. Graphify analyzes an immutable repository
+Eight adapters run here. Graphify analyzes an immutable repository
 snapshot with `graphifyy==0.4.18`, pinned parser packages and NetworkX 3.4.2.
-Dependency-cruiser, deepwiki, abstractions and data model are the other
-context builders: a module dependency cruise of the snapshot, a wiki
-written by a self-hosted DeepWiki-Open service, every module's callable
-surface, and the entities the repository stores with the modules that
-touch them; the last two read graphify's map. Slice reads a graphify run's graph and the same
+Abstractions and data model are the other context builders: every
+module's callable surface, and the entities the repository stores with the
+modules that touch them; both read graphify's map. Slice reads a graphify run's graph and the same
 source to describe the files one task needs and their boundary. Sandbox
 build turns a slice and a version's private transform into a runnable
 project and checks its baseline in an evaluation job. Scope and fixtures
@@ -14,11 +12,10 @@ are agent runs: a model reads the source to propose a slice for a bounty,
 and to write behaviour for a succeeded slice's mocked calls. Starter is the
 one run with no repository: a model writes a generated version's project
 from the bounty's own text, which is then built and checked like a slice's.
-Graphify, dependency-cruiser, abstractions, data model, slice and the
-agents never execute repository code or install its dependencies; the build and the starter
+Graphify, abstractions, data model, slice and the agents never execute
+repository code or install its dependencies; the build and the starter
 execute the generated project only inside the evaluation provider's job.
-Only the agents call a model; deepwiki hands the repository to the
-configured DeepWiki-Open service, which uses its own.
+Only the agents call a model.
 
 ## Run locally
 
@@ -61,72 +58,12 @@ and do not participate in the graph digest.
 
 ### Context builders
 
-`dependency_cruiser`, `deepwiki`, `abstractions` and `data_model` are the
-other context builders, queued like graphify from
-`POST .../repositories/:id/runs` with the builder's name as `tool`; their
-parameters are graphify's plus a `builder` discriminator (and, for the two
-that read the map, `graphRunId`). Each writes a `manifest.json` whose
-`meta` is the summary the console reads (`dependencyCruiserSummarySchema`,
-`deepwikiSummarySchema`, `abstractionsSummarySchema` and
+`abstractions` and `data_model` are the other context builders, queued
+like graphify from `POST .../repositories/:id/runs` with the builder's
+name as `tool`; their parameters are graphify's plus a `builder`
+discriminator and `graphRunId`. Each writes a `manifest.json` whose `meta`
+is the summary the console reads (`abstractionsSummarySchema` and
 `dataModelSummarySchema` in `packages/shared`).
-
-**dependency_cruiser** runs `dependency-cruiser` 18.5.0 on a thread of its
-own (an abort terminates it) over the extracted source: every module system,
-TypeScript parsed by swc (the worker's own `@swc/core`, so production reads
-`.ts` as development does) with pre-compilation dependencies, only modules
-inside the snapshot, `node_modules`, `dist`, `build`, `vendor`,
-`third_party` and `.git` excluded, no rule set, and none of the repository's own
-`tsconfig`, Babel or webpack configuration, so nothing in the snapshot is
-read as configuration or executed; the cruiser only parses. Outputs:
-`dependency-cruiser.json` (the full cruise, kind `dependency_graph`),
-`dependency-cruiser.dot` (the dot rendering, kind `dependency_dot`) and
-`manifest.json`, whose summary holds counts (modules, dependencies,
-circular, orphans, unresolved, external) and bounded, sorted lists: the 25
-busiest modules by dependents plus dependencies, up to 20 distinct cycles,
-50 orphans and 50 unresolved imports, with `truncated` saying whether any
-list was cut. The snapshot carries no `node_modules`, so a package import
-resolves to nothing; `external` counts every bare specifier (a package or
-a `node:` built-in) whether or not it resolved, and `unresolved` only the
-relative, absolute and `#` subpath imports that name no file. The same
-snapshot gives the same summary.
-
-**deepwiki** asks a self-hosted DeepWiki-Open service (`DEEPWIKI_OPEN_URL`;
-`DEEPWIKI_OPEN_AUTH_CODE`, `DEEPWIKI_OPEN_PROVIDER` and
-`DEEPWIKI_OPEN_MODEL` optional) for a wiki of the repository: it deletes
-the service's cached wiki for the repository, submits a task with the
-repository-scoped read token, polls the task until it completes, then reads
-the cached wiki. Without a URL deepwiki runs fail with
-`builder_unavailable`; a run with no repository fails `source_unavailable`.
-The wiki is concise (four to six pages, no sections). The service clones
-the repository's **default branch** itself, fetches its head before each
-wiki (the local profile's patch; see `apps/worker/deepwiki/README.md`),
-and reads it with its own model; it does not read the worker's snapshot, so
-the wiki may describe a newer commit than the run names. The summary
-records the commit the run was asked for as `requestedCommitSha`. Outputs:
-`wiki/<name>.md` for every page (kind `wiki_page`, at most 500, one per
-page id), the name its id made file-safe, a long one cut to 100 characters
-with a short hash, a repeated one suffixed `-2`, `-3`,
-`wiki-structure.json` (kind `wiki_structure`, the raw structure with the
-repository, provider and model) and `manifest.json`; both JSON artifacts
-carry the summary (title, description, provider, model, pages with their
-importance, file paths, related pages and artifact path, and sections).
-Trust boundary: the repository read token is sent to the configured
-DeepWiki-Open service, so that service must be a trusted deployment the
-operator controls; the worker never logs the token, the URLs it is sent
-in, or anything the service returns beyond fixed lifecycle lines.
-
-Locally, `make deepwiki-up` starts such a service: the `deepwiki` compose
-profile runs DeepWiki-Open with the configuration in `apps/worker/deepwiki/`
-and an Ollama sidecar for its embeddings. DeepWiki-Open has no Anthropic
-provider, so its LiteLLM provider is pointed at DeepSeek with the key sizing
-already uses (`DEEPSEEK_API_KEY`), and `.env.development` sets
-`DEEPWIKI_OPEN_URL=http://deepwiki:8001` and
-`DEEPWIKI_OPEN_PROVIDER=litellm` for the worker. A worker started before
-the profile needs a restart to read them. Indexing a repository embeds
-every chunk through the sidecar, which runs on the CPU; an Ollama
-installed on the host uses the GPU and is pointed at with
-`DEEPWIKI_OLLAMA_HOST=http://host.docker.internal:11434` (pull
-`nomic-embed-text` there first).
 
 **abstractions** and **data_model** read graphify's map, as a slice does:
 their parameters add the succeeded graphify run on the same snapshot
@@ -388,10 +325,12 @@ seams with kinds, summary, risks, the deterministic check of exactly that
 request and the token usage), also carried whole in its artifact row's
 `meta` for the console.
 
-When the snapshot has a succeeded `abstractions` or `data_model` run at
-queue time, the API names it in the scope run's parameters
-(`abstractionsRunId`, `dataModelRunId`), so it joins the cache key, and the
-agent also gets `module_surface(path)` (a module's exports and signatures:
+When the snapshot has a succeeded `abstractions` or `data_model` run, the
+scope run's parameters name it (`abstractionsRunId`, `dataModelRunId`), so
+it joins the cache key. A scope started from a repository's page names those
+there at queue time; the bounty profiler enqueues or finds both on the
+graph run and queues the scope only once they have finished, naming the ones
+that succeeded. With them the agent also gets `module_surface(path)` (a module's exports and signatures:
 what its stub declares if the slice cuts it) and `data_model(entity)` (the
 storage, entities and accessors, or one entity's fields, enum values,
 relations and accessors). The prompt lists the top accessors as where a
@@ -412,7 +351,14 @@ also has `data_model`, so a fixture standing in for a `database` seam keeps
 required fields, enum values and foreign keys across fixtures. Output: `fixture-set.json` (fixtures with reasons, the
 walkthrough, a summary and the token usage), also carried in `meta`.
 
-A version copies a fixture set into its transform. The build aliases the
+A version copies a fixture set into its transform. A sliced build whose
+draft has none writes one first, with the same agent and check
+(`writeFixtures`), before the pseudonyms so the table renames it too; the
+build's `dataModelRunId`, the snapshot's newest succeeded `data_model` run
+when the API queued it, gives it `data_model`. The set names the build run
+as its `fixtureRunId`, joins the transform, and settles on the draft with
+the build (`build-transform.json`). An agent that keeps no set leaves the
+draft without, and the build goes on. The build aliases the
 fixtures and the walkthrough with the version's rules, registers each
 fixture as its mock path's default behaviour (`fixture(path, fn)` in
 `sandbox/mock.js`; `mockImplementation` still overrides it and
@@ -479,6 +425,5 @@ revision through CD when that list changes.
 
 Dependencies added here: the worker uses the existing DB/GitHub/shared/core
 packages, Zod for boot configuration, `typescript-compiler` (an npm alias
-pinned to TypeScript 5.9.3) for its compiler API and `@swc/core`, which
-dependency-cruiser parses TypeScript with. The API adds the ECS SDK for
+pinned to TypeScript 5.9.3) for its compiler API. The API adds the ECS SDK for
 batch launch. The web app uses the existing typed client package.

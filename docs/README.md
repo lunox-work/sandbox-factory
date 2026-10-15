@@ -28,19 +28,19 @@ product proposals and historical explainers are optional design context.
   Jira context filled, and nothing sized. The bounty list filters by
   category, by status and by board; a board's view is that list, where its
   issues are searched and added.
-- GitHub supplies private repository snapshots. Five context builders describe a
-  snapshot from a repository's own page: Graphify, dependency-cruiser,
-  DeepWiki-Open, abstractions (every module's surface) and data model (the
-  entities a schema or migrations declare). Scope, slice and fixture tools
-  prepare the source for versioned private sandbox builds; the scope and
-  fixtures agents read the last two.
+- GitHub supplies private repository snapshots. Three context builders describe a
+  snapshot from a repository's own page: Graphify, abstractions (every
+  module's surface) and data model (the entities a schema or migrations
+  declare). Scope, slice and fixture tools prepare the source for versioned
+  private sandbox builds; the scope and fixtures agents read the last two.
 - Builds generate a runnable project and check its baseline. The available
   evaluator is opt-in `local-process`, for development; it is not an isolation
   boundary. With the default provider `none`, builds fail closed.
 - The VS Code extension can run a local task. Its sign-in flow is not built.
 - Public task publication, contributor submission/adjudication, escrow, payouts,
-  reputation and automated merge-back remain future work. Slack and knowledge
-  integrations are not implemented.
+  reputation and automated merge-back remain future work; see the
+  [roadmap](./roadmap.md) for merge-back and the next sandbox improvements.
+  Slack and knowledge integrations are not implemented.
 
 ## Read by task
 

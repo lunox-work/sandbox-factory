@@ -167,16 +167,18 @@ export interface BuildOutput {
   readonly transform?: BuildTransform;
 }
 /**
- * Hidden tests and pseudonyms a sliced build wrote for a draft that had
- * none, and the transform the draft has with them. They settle only on the
- * draft the build was queued for: still without what the build wrote, its
- * transform still the one the build was queued with.
+ * Fixtures, hidden tests and pseudonyms a sliced build wrote for a draft
+ * that had none, and the transform the draft has with them. They settle
+ * only on the draft the build was queued for: still without what the build
+ * wrote, its transform still the one the build was queued with.
  */
 export interface BuildTransform {
   /** Hidden tests the build proved on its baseline. */
   readonly acceptanceTests?: readonly AcceptanceTest[];
   /** The name table the build renamed the project by. */
   readonly aliasRules?: readonly AliasRule[];
+  /** Fixtures and a walkthrough, naming the build that wrote them. */
+  readonly fixtures?: VersionFixtures;
   /** The transform the build was queued with, before what it wrote. */
   readonly fromTransformConfigSha256: string;
   readonly transformConfigSha256: string;
@@ -326,7 +328,8 @@ export interface SandboxStore {
     now?: Date,
   ): Promise<UpdateVersionResult>;
   /**
-   * Records what a succeeded build proved, with the hidden tests it wrote.
+   * Records what a succeeded build proved, with the fixtures, hidden tests
+   * and pseudonyms it wrote.
    * Applies only while the draft still points at that build and is not
    * frozen, and, with tests, while the draft is as `BuildTests` says;
    * `false` otherwise, and nothing is recorded.
@@ -1012,7 +1015,9 @@ export function createSandboxStore(db: Database): SandboxStore {
             (transform.acceptanceTests !== undefined &&
               current.source.acceptanceTests.length > 0) ||
             (transform.aliasRules !== undefined &&
-              current.source.aliasRules.length > 0))
+              current.source.aliasRules.length > 0) ||
+            (transform.fixtures !== undefined &&
+              current.source.fixtures !== null))
         )
           return false;
         await tx
@@ -1029,6 +1034,9 @@ export function createSandboxStore(db: Database): SandboxStore {
                   ...(transform.aliasRules === undefined
                     ? {}
                     : { aliasRules: [...transform.aliasRules] }),
+                  ...(transform.fixtures === undefined
+                    ? {}
+                    : { fixtures: transform.fixtures }),
                   transformConfigSha256: transform.transformConfigSha256,
                 }),
             updatedAt: now,
