@@ -17,7 +17,7 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { EntityAvatar } from "../src/components/Avatar";
 
 const useSession = vi.fn();
-const signOut = vi.fn();
+const signOut = vi.fn(() => Promise.resolve({ data: {}, error: null }));
 
 /** What `/api/v1/me/invitations` answers with; set per test. */
 let pendingInvitations: unknown[] = [];
@@ -412,6 +412,16 @@ test("signing out from the menu calls signOut", async () => {
   fireEvent.click(screen.getByRole("menuitem", { name: /Sign out/ }));
 
   await waitFor(() => expect(signOut).toHaveBeenCalledTimes(1));
+});
+
+test("signing out leaves the address at home, so the next sign-in starts there", async () => {
+  window.history.replaceState(null, "", "/bounties");
+  render(<App />);
+  await openMenu();
+
+  fireEvent.click(screen.getByRole("menuitem", { name: /Sign out/ }));
+
+  await waitFor(() => expect(window.location.pathname).toBe("/"));
 });
 
 test("the menu offers account and sign out, but not a second way home", async () => {
