@@ -30,8 +30,8 @@
   "devDependencies": {
     "@sandbox-factory/coverage": "*",
     "@sandbox-factory/tsconfig": "*",
-    "@types/node": "^26.6.3",
-    "concurrently": "^10.0.5",
+    "@types/node": "^26.6.5",
+    "concurrently": "^10.0.6",
     "typescript": "^7.0.2"
   }
 }
