@@ -320,10 +320,14 @@ test("a flat file list becomes folders first, each level by name", () => {
 test("an admin browses the private sandbox: the explorer beside the open file, read-only", async () => {
   server();
   open();
+  // The first file shows once the explorer and its Markdown have loaded,
+  // which a full parallel run slows past the default second.
   expect(
-    await screen.findByRole("heading", {
-      name: "Invitations are not sent",
-    }),
+    await screen.findByRole(
+      "heading",
+      { name: "Invitations are not sent" },
+      { timeout: 5_000 },
+    ),
   ).toBeDefined();
   // The way home, and whose it is, either side of it.
   const titleBar = screen.getByRole("banner");
