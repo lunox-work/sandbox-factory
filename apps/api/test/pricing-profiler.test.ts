@@ -306,6 +306,9 @@ class FakeProfiles {
 
 function harness() {
   const runs = new FakeRuns();
+  // A built snapshot: the graph's readers are found in the cache, done.
+  runs.startAs.set("abstractions", "succeeded");
+  runs.startAs.set("data_model", "succeeded");
   const profiles = new FakeProfiles();
   const artifacts = new Map<string, StoredArtifact[]>();
   const snapshots = new Map<string, StoredRepoSnapshot>([
@@ -407,12 +410,22 @@ test("a requested profile is scoped, sliced and built from what was measured", a
   await h.profiler.request(OWNER, request);
   await h.profiler.sweep();
 
-  // The graph and the scope that reads it are queued, by nobody in particular.
+  // The graph, its readers and the scope that reads all three are queued,
+  // by nobody in particular.
   let row = h.profiles.only();
   assert.equal(row.status, "scoping");
-  const [graph, scope] = h.runs.enqueued;
+  const [graph, abstractions, dataModel, scope] = h.runs.enqueued;
   assert.equal(graph?.tool, "graphify");
   assert.deepEqual(graph?.params, { deadlineMinutes: 30 });
+  for (const [reader, builder] of [
+    [abstractions, "abstractions"],
+    [dataModel, "data_model"],
+  ] as const)
+    assert.deepEqual(reader?.params, {
+      deadlineMinutes: 30,
+      builder,
+      graphRunId: h.runs.of("graphify").id,
+    });
   assert.equal(scope?.tool, "scope");
   assert.ok(scope !== undefined && isScopeParams(scope.params));
   assert.deepEqual(scope.params, {
@@ -422,6 +435,8 @@ test("a requested profile is scoped, sliced and built from what was measured", a
     proposalId: "bpr_1",
     specRevision: 2,
     specHash: request.specHash,
+    abstractionsRunId: h.runs.of("abstractions").id,
+    dataModelRunId: h.runs.of("data_model").id,
   });
   assert.equal(scope.requestedBy, null);
   // One slot under the organization's cap of four, kept for a person.
@@ -525,6 +540,50 @@ test("at the organization's analysis cap a profile waits, and the rest of the sw
     [...h.profiles.rows.values()].every((row) => row.status === "scoping"),
     true,
   );
+});
+
+test("the scope waits for the graph's readers, and runs without one that failed", async () => {
+  const h = harness();
+  h.runs.startAs.set("abstractions", "queued");
+  h.runs.startAs.set("data_model", "running");
+  await h.profiles.request(OWNER, request);
+  await h.profiler.sweep();
+  // Both readers are queued behind the graph; the scope is not, yet.
+  assert.equal(h.profiles.only().status, "queued");
+  assert.deepEqual(
+    h.runs.enqueued.map((each) => each.tool),
+    ["graphify", "abstractions", "data_model"],
+  );
+  assert.ok(h.launches() >= 1);
+
+  // One is done, the other failed: the scope names only the one it can read.
+  h.runs.finish("abstractions", "succeeded");
+  h.runs.finish("data_model", "failed", "tool_failed");
+  await h.profiler.sweep();
+  assert.equal(h.profiles.only().status, "scoping");
+  const scope = h.runs.enqueued.at(-1);
+  assert.equal(scope?.tool, "scope");
+  assert.ok(scope !== undefined && isScopeParams(scope.params));
+  assert.equal(scope.params.abstractionsRunId, h.runs.of("abstractions").id);
+  assert.equal("dataModelRunId" in scope.params, false);
+
+  // A reader that meets the cap leaves the profile queued for the next sweep.
+  const capped = harness();
+  capped.runs.refuse.set("data_model", { ok: false, reason: "run_limit" });
+  await capped.profiles.request(OWNER, request);
+  await capped.profiler.sweep();
+  assert.equal(capped.profiles.only().status, "queued");
+  assert.equal(
+    capped.runs.enqueued.some((each) => each.tool === "scope"),
+    false,
+  );
+
+  // A reader with no snapshot to run on is left out like a failed one.
+  const gone = harness();
+  gone.runs.refuse.set("abstractions", { ok: false, reason: "not-found" });
+  await gone.profiles.request(OWNER, request);
+  await gone.profiler.sweep();
+  assert.equal(gone.profiles.only().status, "scoping");
 });
 
 test("a scope that fails, or a graph that already did, fails the profile with the run's code", async () => {
@@ -762,7 +821,8 @@ test("a re-queued run's old log is removed from the bucket", async () => {
   h.runs.obsoleteLogKey = "logs/old.txt";
   await h.profiles.request(OWNER, request);
   await h.profiler.sweep();
-  assert.deepEqual(h.removed, ["logs/old.txt", "logs/old.txt"]);
+  // The graph, its two readers and the scope each re-queued one.
+  assert.deepEqual(h.removed, Array(4).fill("logs/old.txt"));
 });
 
 test("a sweep asked for mid-sweep runs again after it, and the timer starts once", async () => {

@@ -969,14 +969,52 @@ test("a build's hidden tests and pseudonyms settle with its output only on the d
     transformConfigSha256: "p".repeat(64),
     updatedAt: now,
   });
-  // A draft that has tests or pseudonyms of its own, or whose transform
-  // moved since the build was queued, keeps what it has, and the build
-  // records nothing.
+  // Fixtures alone settle too, naming the build that wrote them.
+  const fixtures = {
+    fixtureRunId: "arn_build",
+    fixtures: [],
+    scenario: 'console.log("walkthrough");\n',
+  };
+  const faked = createSequencedFakeDb([[current], []]);
+  assert.equal(
+    await createSandboxStore(faked.db).recordBuildOutput(
+      "owner",
+      "sbv_1",
+      "arn_build",
+      {
+        ...output,
+        transform: {
+          fixtures,
+          fromTransformConfigSha256: "t".repeat(64),
+          transformConfigSha256: "f".repeat(64),
+        },
+      },
+      now,
+    ),
+    true,
+  );
+  assert.deepEqual(faked.calls[1]?.values, {
+    harnessSha256: output.harnessSha256,
+    toolchainDigest: output.toolchainDigest,
+    fixtures,
+    transformConfigSha256: "f".repeat(64),
+    updatedAt: now,
+  });
+  // A draft that has tests, pseudonyms or fixtures of its own, or whose
+  // transform moved since the build was queued, keeps what it has, and the
+  // build records nothing.
   for (const [source, transform] of [
     [sourceRow({ buildRunId: "arn_build", acceptanceTests }), output.transform],
     [
       sourceRow({ buildRunId: "arn_build", aliasRules }),
       { ...output.transform, aliasRules },
+    ],
+    [
+      sourceRow({
+        buildRunId: "arn_build",
+        fixtures: { ...fixtures, fixtureRunId: null },
+      }),
+      { ...output.transform, fixtures },
     ],
     [
       sourceRow({

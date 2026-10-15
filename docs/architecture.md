@@ -682,6 +682,9 @@ the one the bounty's sizing already took: the complexity profile of its
 approved proposal's spec revision in the sandbox's repository
 (`bounty_profile`, matched by the snapshot the spec was drafted beside or
 the repository's name), which the profiler scopes and slices on the worker.
+The profiler's scope reads the snapshot's abstractions and data model: it
+enqueues or finds both on the graph run, waits for them to finish, and names
+those that succeeded.
 `GET .../sandboxes/:id/slice` says where it stands (`SandboxSliceDto`):
 `none` until asked for, the profile's `queued`, `scoping` and `slicing`, then
 `ready`; `failed` with the profile's code, final for that spec revision until
@@ -697,6 +700,11 @@ draft and the run. A draft whose scope has blockers is cut without a build
 not sliced (`published`, 409): contributors work in it, so it is unpublished
 first. The newest unfrozen draft cut from the
 same slice run is built again rather than cut twice. A sliced draft starts
+with no fixtures, so a build of one with none has the fixtures agent write
+them and the walkthrough before anything else (`writeFixtures` in
+`apps/worker/src/tools/fixtures.ts`), reading the slice as the workspace
+wrote it and the snapshot's data model; they settle with the build as the
+hidden tests and pseudonyms below do. A sliced draft starts
 with no hidden tests, and a sandbox none judges could never accept a
 submission, so a build whose baseline fails for that alone has an agent write
 them (`apps/worker/src/tools/hidden-tests.ts`): it reads the public project and

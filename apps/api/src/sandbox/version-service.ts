@@ -775,10 +775,17 @@ export function versionService(options: SandboxRouteOptions) {
         "conflict",
       );
     const vocabulary = await workspaceNames(owner, stored.version.sandboxId);
+    // What a fixtures agent reads, should the build write the draft's.
+    const dataModel = await options.runs.latestSucceeded(
+      owner,
+      sourceSnapshotId,
+      "data_model",
+    );
     const result = await options.runs.enqueue(owner, sourceSnapshotId, {
       tool: "sandbox_build",
       params: {
-        // A draft with no hidden tests has an agent write them.
+        // A draft with no fixtures, pseudonyms or hidden tests has agents
+        // write them.
         deadlineMinutes: AGENT_DEADLINE_MINUTES,
         sliceRunId,
         sandboxVersionId: stored.version.id,
@@ -787,6 +794,7 @@ export function versionService(options: SandboxRouteOptions) {
         transformConfigSha256: stored.source.transformConfigSha256,
         approvedTaskSha256: stored.source.approvedTaskSha256,
         vocabulary,
+        ...(dataModel === null ? {} : { dataModelRunId: dataModel.id }),
       },
       requestedBy: actor,
       maxActive: options.maxActive ?? 3,

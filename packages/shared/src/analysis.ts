@@ -232,6 +232,8 @@ export const sandboxBuildParamsSchema = z.strictObject({
   approvedTaskSha256: sha256Schema,
   /** The names the workspace goes by, which no public file may carry. */
   vocabulary: z.array(z.string().min(1)).optional(),
+  /** The data model the fixtures agent reads, when the build writes fixtures. */
+  dataModelRunId: z.string().min(1).optional(),
 });
 /** Stored starter parameters: the version it writes, and the stack it follows. */
 export const starterParamsSchema = z.strictObject({

@@ -30,7 +30,7 @@ import type {
 
 export interface SandboxRouteOptions {
   readonly sandboxes: SandboxStore;
-  readonly runs: Pick<AnalysisRunStore, "get" | "enqueue">;
+  readonly runs: Pick<AnalysisRunStore, "get" | "enqueue" | "latestSucceeded">;
   readonly artifacts: Pick<ArtifactStore, "list">;
   readonly objects: Pick<ObjectStore, "get" | "remove">;
   readonly proposals: Pick<BountyProposalStore, "get" | "liveForBounty">;

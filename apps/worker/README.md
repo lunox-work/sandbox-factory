@@ -325,10 +325,12 @@ seams with kinds, summary, risks, the deterministic check of exactly that
 request and the token usage), also carried whole in its artifact row's
 `meta` for the console.
 
-When the snapshot has a succeeded `abstractions` or `data_model` run at
-queue time, the API names it in the scope run's parameters
-(`abstractionsRunId`, `dataModelRunId`), so it joins the cache key, and the
-agent also gets `module_surface(path)` (a module's exports and signatures:
+When the snapshot has a succeeded `abstractions` or `data_model` run, the
+scope run's parameters name it (`abstractionsRunId`, `dataModelRunId`), so
+it joins the cache key. A scope started from a repository's page names those
+there at queue time; the bounty profiler enqueues or finds both on the
+graph run and queues the scope only once they have finished, naming the ones
+that succeeded. With them the agent also gets `module_surface(path)` (a module's exports and signatures:
 what its stub declares if the slice cuts it) and `data_model(entity)` (the
 storage, entities and accessors, or one entity's fields, enum values,
 relations and accessors). The prompt lists the top accessors as where a
@@ -349,7 +351,14 @@ also has `data_model`, so a fixture standing in for a `database` seam keeps
 required fields, enum values and foreign keys across fixtures. Output: `fixture-set.json` (fixtures with reasons, the
 walkthrough, a summary and the token usage), also carried in `meta`.
 
-A version copies a fixture set into its transform. The build aliases the
+A version copies a fixture set into its transform. A sliced build whose
+draft has none writes one first, with the same agent and check
+(`writeFixtures`), before the pseudonyms so the table renames it too; the
+build's `dataModelRunId`, the snapshot's newest succeeded `data_model` run
+when the API queued it, gives it `data_model`. The set names the build run
+as its `fixtureRunId`, joins the transform, and settles on the draft with
+the build (`build-transform.json`). An agent that keeps no set leaves the
+draft without, and the build goes on. The build aliases the
 fixtures and the walkthrough with the version's rules, registers each
 fixture as its mock path's default behaviour (`fixture(path, fn)` in
 `sandbox/mock.js`; `mockImplementation` still overrides it and

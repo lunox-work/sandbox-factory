@@ -159,6 +159,7 @@ export async function executeRun(
       now,
     );
     const files = await options.tool.run({
+      runId: run.id,
       sourceDir: source,
       outDir: join(directory, "out"),
       params: run.params,

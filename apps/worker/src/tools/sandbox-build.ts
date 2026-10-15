@@ -13,10 +13,13 @@
  * commands plus every hidden test in a job the provider creates and
  * destroys. Logs stay fixed lines; the job's output is not stored.
  *
- * A draft with no hidden tests cannot judge a submission, so when its
- * baseline fails for that alone, an agent writes them (`hidden-tests.ts`)
- * and the build is the one their accepted baseline ran. They settle on the
- * draft when the run commits, with the transform they hash to.
+ * A sliced draft with no fixtures has an agent write them and the
+ * walkthrough first (`writeFixtures`), from the slice as the workspace
+ * wrote it, so they are renamed with the rest. A draft with no hidden tests
+ * cannot judge a submission, so when its baseline fails for that alone, an
+ * agent writes them (`hidden-tests.ts`) and the build is the one their
+ * accepted baseline ran. What the build wrote settles on the draft when the
+ * run commits, with the transform it hashes to.
  */
 
 import { mkdir, readFile, writeFile } from "node:fs/promises";
@@ -64,6 +67,7 @@ import type {
   SandboxBuildManifest,
   SpecDraft,
   StageExecution,
+  VersionFixtures,
 } from "sandbox-factory";
 import {
   boundaryContractSchema,
@@ -74,6 +78,9 @@ import type { AgentSettings } from "../agent/loop.js";
 import { AnalysisError } from "../errors.js";
 import { snapshotOf } from "./adapter.js";
 import type { ArtifactFile, ToolAdapter, ToolRunInput } from "./adapter.js";
+import { loadDataModel } from "./context-runs.js";
+import { writeFixtures } from "./fixtures.js";
+import type { WrittenFixtures } from "./fixtures.js";
 import { writeHiddenTests } from "./hidden-tests.js";
 import { writePseudonyms } from "./pseudonyms.js";
 import type { WrittenPseudonyms } from "./pseudonyms.js";
@@ -710,10 +717,47 @@ export function createSandboxBuildAdapter(
         first === undefined
           ? undefined
           : nearestCompilerOptions(input.sourceDir, first);
-      // Aliasing, with the inverse proof. The spec rides along unscoped.
       const spec: SpecDraft | null = source.approvedTask.spec?.draft ?? null;
-      const fixtures = source.fixtures?.fixtures ?? [];
-      const scenario = source.fixtures?.scenario ?? null;
+      const model = options.agent?.model ?? null;
+      // Fixtures and a walkthrough, for a draft with none: written in the
+      // workspace's own names, before the pseudonyms that rename them.
+      let fixtureSet: WrittenFixtures | null = null;
+      if (source.fixtures === null && spec !== null) {
+        if (model === null || options.agent === undefined)
+          input.log("No agent model is configured; no fixtures are written.");
+        else
+          fixtureSet = await writeFixtures({
+            model,
+            limits: options.agent.limits,
+            task: { issueKey: null, draft: spec },
+            sourceDir: input.sourceDir,
+            commitSha: snapshot.commitSha,
+            slice,
+            included,
+            dataModel:
+              params.dataModelRunId === undefined
+                ? null
+                : await loadDataModel(
+                    input.inputs,
+                    params.dataModelRunId,
+                    snapshot.snapshotId,
+                  ),
+            signal: input.signal,
+            log: input.log,
+            step: input.step,
+          });
+      }
+      const versionFixtures: VersionFixtures | null =
+        fixtureSet === null
+          ? source.fixtures
+          : {
+              fixtureRunId: input.runId ?? null,
+              fixtures: fixtureSet.fixtures,
+              scenario: fixtureSet.scenario,
+            };
+      // Aliasing, with the inverse proof. The spec rides along unscoped.
+      const fixtures = versionFixtures?.fixtures ?? [];
+      const scenario = versionFixtures?.scenario ?? null;
       const symbols = symbolsOf(contract);
       const symbolLeaves = jsonLeaves(CONTRACT_PSEUDO_PATH, symbols);
       const specLeaves =
@@ -893,7 +937,6 @@ export function createSandboxBuildAdapter(
           generated.filter((file) => file.public),
           vocabulary,
         );
-      const model = options.agent?.model ?? null;
       // Pseudonyms, for a draft with none.
       let pseudonyms: WrittenPseudonyms | null = null;
       if (source.aliasRules.length === 0) {
@@ -1029,20 +1072,21 @@ export function createSandboxBuildAdapter(
       }
       // What the draft's transform becomes once what the build wrote
       // settles on it.
-      const transformConfigSha256 =
-        hidden === null && pseudonyms === null
-          ? source.transformConfigSha256
-          : sha256(
-              canonicalJson(
-                transformConfigOf({
-                  aliasRules,
-                  dependencyChoices: source.dependencyChoices,
-                  acceptanceTests: hidden?.tests ?? source.acceptanceTests,
-                  fixtures: source.fixtures,
-                  starterSha256: source.starterSha256,
-                }),
-              ),
-            );
+      const wrote =
+        hidden !== null || pseudonyms !== null || fixtureSet !== null;
+      const transformConfigSha256 = !wrote
+        ? source.transformConfigSha256
+        : sha256(
+            canonicalJson(
+              transformConfigOf({
+                aliasRules,
+                dependencyChoices: source.dependencyChoices,
+                acceptanceTests: hidden?.tests ?? source.acceptanceTests,
+                fixtures: versionFixtures,
+                starterSha256: source.starterSha256,
+              }),
+            ),
+          );
       const { manifest: buildManifest, written } = await writeBuildOutputs({
         outDir: input.outDir,
         toolVersion: SANDBOX_BUILD_RUN_VERSION,
@@ -1065,7 +1109,7 @@ export function createSandboxBuildAdapter(
         evaluator,
         blockers,
       });
-      if (hidden !== null || pseudonyms !== null) {
+      if (wrote) {
         const absolutePath = join(input.outDir, BUILD_TRANSFORM_PATH);
         await writeFile(
           absolutePath,
@@ -1087,6 +1131,15 @@ export function createSandboxBuildAdapter(
                     usage: pseudonyms.usage,
                   },
                 }),
+            ...(fixtureSet === null || versionFixtures === null
+              ? {}
+              : {
+                  fixtures: versionFixtures,
+                  fixturesAgent: {
+                    summary: fixtureSet.summary,
+                    usage: fixtureSet.usage,
+                  },
+                }),
           }),
           "utf8",
         );
@@ -1098,6 +1151,7 @@ export function createSandboxBuildAdapter(
           meta: {
             hiddenTests: hidden?.tests.length ?? 0,
             pseudonyms: pseudonyms?.rules.length ?? 0,
+            fixtures: fixtureSet?.fixtures.length ?? 0,
           },
         });
         written.sort((a, b) => compare(a.path, b.path));
@@ -1111,7 +1165,8 @@ export function createSandboxBuildAdapter(
     },
     /**
      * A ready build's harness and toolchain become the draft's freeze
-     * evidence, with the hidden tests and pseudonyms it wrote, if any.
+     * evidence, with the fixtures, hidden tests and pseudonyms it wrote, if
+     * any.
      */
     async committed({ runId, files, inputs }) {
       const file = files.find((item) => item.path === "build-manifest.json");
@@ -1131,6 +1186,7 @@ export function createSandboxBuildAdapter(
               transformConfigSha256: string;
               acceptanceTests?: AcceptanceTest[];
               aliasRules?: AliasRule[];
+              fixtures?: VersionFixtures;
             });
       await inputs.recordBuildOutput(manifest.sandboxVersionId, runId, {
         harnessSha256: manifest.harnessSha256,
@@ -1145,6 +1201,9 @@ export function createSandboxBuildAdapter(
                 ...(transform.aliasRules === undefined
                   ? {}
                   : { aliasRules: transform.aliasRules }),
+                ...(transform.fixtures === undefined
+                  ? {}
+                  : { fixtures: transform.fixtures }),
                 fromTransformConfigSha256: transform.fromTransformConfigSha256,
                 transformConfigSha256: transform.transformConfigSha256,
               },

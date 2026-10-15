@@ -8,7 +8,7 @@ import { enqueueAnalysis } from "../analysis/enqueue.js";
  * worker reports a finished run only to the database, so a sweep every
  * `intervalMs` reads each profile still in flight and takes it one step:
  *
- *   queued  → the graph and scope runs are enqueued      → scoping
+ *   queued  → the graph and its readers, then the scope  → scoping
  *   scoping → the scope's slice request is enqueued      → slicing
  *   slicing → the profile is built from the slice        → ready
  *
@@ -212,7 +212,13 @@ export class BountyProfiler {
     }
   }
 
-  /** queued → scoping: the snapshot's graph, then the scope run that reads it. */
+  /**
+   * queued → scoping: the snapshot's graph and the builders that read it,
+   * then the scope run that reads all three. The builders' runs are the
+   * ones "Build all" makes, so a built snapshot finds them in the cache. The
+   * scope waits for them to finish and names those that succeeded; one that
+   * failed is left out, and the scope runs without it.
+   */
   async #scope(owner: string, profile: StoredBountyProfile): Promise<Step> {
     if (profile.snapshotId === null)
       return this.#fail(owner, profile, "source_unavailable");
@@ -224,6 +230,24 @@ export class BountyProfiler {
     if (graph === null) return this.#fail(owner, profile, "source_unavailable");
     if (graph.status === "failed")
       return this.#fail(owner, profile, "scope_failed", graph.errorCode);
+    const context: { abstractionsRunId?: string; dataModelRunId?: string } = {};
+    let building = false;
+    for (const builder of ["abstractions", "data_model"] as const) {
+      const run = await this.#enqueue(owner, profile.snapshotId, {
+        tool: builder,
+        params: {
+          deadlineMinutes: GRAPH_DEADLINE_MINUTES,
+          builder,
+          graphRunId: graph.id,
+        },
+      });
+      if (run === "full") return FULL;
+      if (run === null || run.status === "failed") continue;
+      if (run.status !== "succeeded") building = true;
+      else if (builder === "abstractions") context.abstractionsRunId = run.id;
+      else context.dataModelRunId = run.id;
+    }
+    if (building) return WAIT;
     const scope = await this.#enqueue(owner, profile.snapshotId, {
       tool: "scope",
       params: {
@@ -233,6 +257,7 @@ export class BountyProfiler {
         proposalId: profile.proposalId,
         specRevision: profile.specRevision,
         specHash: profile.specHash,
+        ...context,
       },
     });
     if (scope === "full") return FULL;

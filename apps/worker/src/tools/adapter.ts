@@ -59,6 +59,11 @@ export interface RunSnapshot {
   readonly commitSha: string;
 }
 export interface ToolRunInput {
+  /**
+   * The run being executed, by id. The worker always names it; a tool run
+   * outside the queue, as in a test, may not.
+   */
+  readonly runId?: string;
   /** The extracted source; an empty directory for a tool that reads none. */
   readonly sourceDir: string;
   readonly outDir: string;
