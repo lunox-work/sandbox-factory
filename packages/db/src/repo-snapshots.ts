@@ -11,7 +11,7 @@
 
 import { and, desc, eq, inArray, ne, sql } from "drizzle-orm";
 import {
-  REQUIRED_BUILDERS,
+  CONTEXT_BUILDERS,
   snapshotBuilt,
   type AnalysisStatus,
   type TreeFacts,
@@ -210,7 +210,7 @@ export function createRepoSnapshotStore(db: Database): RepoSnapshotStore {
           and(
             owned(organizationId),
             eq(repoSnapshot.repoId, repoId),
-            inArray(analysisRun.tool, [...REQUIRED_BUILDERS]),
+            inArray(analysisRun.tool, [...CONTEXT_BUILDERS]),
           ),
         )) as {
         snapshotId: string | null;

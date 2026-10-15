@@ -301,20 +301,20 @@ beforeEach(() => {
         return json({
           runs: [
             {
-              ...builderRun("deepwiki", "succeeded"),
-              id: "arn_wiki",
+              ...builderRun("data_model", "succeeded"),
+              id: "arn_model",
               snapshotId: "rsn_1",
               repoId: "ghr_1",
             },
           ],
         });
       }
-      if (method === "GET" && path === `${base}/runs/arn_wiki/artifacts`) {
+      if (method === "GET" && path === `${base}/runs/arn_model/artifacts`) {
         return json({
           artifacts: [
             {
               id: "art_intro",
-              runId: "arn_wiki",
+              runId: "arn_model",
               kind: "manifest",
               path: "pages/intro.md",
               contentType: "text/markdown",
@@ -339,13 +339,9 @@ beforeEach(() => {
         server.runReads += 1;
         if (server.neverStarts === true)
           return json({
-            runs: [
-              "graphify",
-              "dependency_cruiser",
-              "abstractions",
-              "data_model",
-              "deepwiki",
-            ].map((tool) => builderRun(tool, "queued")),
+            runs: ["graphify", "abstractions", "data_model"].map((tool) =>
+              builderRun(tool, "queued"),
+            ),
           });
         // Under way when first read; finished, or its map failed, after.
         const first = server.runReads === 1;
@@ -355,10 +351,9 @@ beforeEach(() => {
             builderRun("graphify", first ? "running" : finished),
             ...(server.graphFails === true
               ? []
-              : ["dependency_cruiser", "abstractions", "data_model"].map(
-                  (tool) => builderRun(tool, first ? "queued" : "succeeded"),
+              : ["abstractions", "data_model"].map((tool) =>
+                  builderRun(tool, first ? "queued" : "succeeded"),
                 )),
-            builderRun("deepwiki", "running"),
           ],
         });
       }
@@ -771,7 +766,6 @@ test("a repository is registered from what the installation can see, and built b
   fireEvent.keyDown(dialog, { key: "Escape" });
   expect(screen.getByRole("dialog")).toBeDefined();
 
-  // The wiki is not waited on.
   expect(
     await within(build).findByText("Built at 0123456", undefined, {
       timeout: 5_000,

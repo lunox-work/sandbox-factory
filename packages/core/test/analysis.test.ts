@@ -17,15 +17,15 @@ test("an expired lease retries only within the configured allowance", () => {
   assert.deepEqual(expiredAnalysis(0, 2), { status: "queued", attempt: 1 });
   assert.deepEqual(expiredAnalysis(2, 2), { status: "failed", attempt: 2 });
 });
-test("a snapshot is built once its map succeeded and every required builder finished", () => {
+test("a snapshot is built once its map succeeded and every context builder finished", () => {
   const done = [
     { tool: "graphify", status: "succeeded" },
-    { tool: "dependency_cruiser", status: "failed" },
-    { tool: "abstractions", status: "succeeded" },
+    { tool: "abstractions", status: "failed" },
     { tool: "data_model", status: "succeeded" },
   ] as const;
   assert.equal(snapshotBuilt(done), true);
-  // The wiki is not waited on, and other tools' runs are not read.
+  // Other tools' runs are not read, nor are runs of a tool this build does
+  // not know.
   assert.equal(
     snapshotBuilt([
       ...done,
@@ -37,12 +37,12 @@ test("a snapshot is built once its map succeeded and every required builder fini
   // A builder still at work holds it back; so does a missing one.
   assert.equal(
     snapshotBuilt([
-      ...done.slice(0, 3),
+      ...done.slice(0, 2),
       { tool: "data_model", status: "running" },
     ]),
     false,
   );
-  assert.equal(snapshotBuilt(done.slice(0, 3)), false);
+  assert.equal(snapshotBuilt(done.slice(0, 2)), false);
   // Without a map there is nothing a slice or a scope could read.
   assert.equal(
     snapshotBuilt([{ tool: "graphify", status: "failed" }, ...done.slice(1)]),

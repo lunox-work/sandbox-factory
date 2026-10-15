@@ -16,9 +16,9 @@
 import { CONTEXT_BUILDERS, toolVersionOf } from "sandbox-factory";
 import { afterEach, expect, test, vi } from "vitest";
 import type {
+  AbstractionsSummaryDto,
   AnalysisRunDto,
   ArtifactDto,
-  DependencyCruiserSummaryDto,
   GithubRepoDto,
 } from "@sandbox-factory/shared";
 
@@ -105,10 +105,6 @@ function queuedRun(tool: AnalysisRunDto["tool"]): AnalysisRunDto {
     finishedAt: null,
   };
   switch (tool) {
-    case "dependency_cruiser":
-      return { ...base, tool, params: { deadlineMinutes: 30, builder: tool } };
-    case "deepwiki":
-      return { ...base, tool, params: { deadlineMinutes: 30, builder: tool } };
     case "abstractions":
     case "data_model":
       return {
@@ -367,13 +363,7 @@ test("the page names the repository, and owners see a card per builder", async (
       .getByRole("link", { name: "github.com/acme/widgets" })
       .getAttribute("href"),
   ).toBe("https://github.com/acme/widgets");
-  const names = [
-    "Graphify",
-    "Dependency Cruiser",
-    "DeepWiki Open",
-    "Abstractions",
-    "Data model",
-  ];
+  const names = ["Graphify", "Abstractions", "Data model"];
   const cards = screen.getAllByRole("region", { name: / builder$/ });
   expect(cards.map((card) => card.getAttribute("aria-label"))).toEqual(
     names.map((name) => `${name} builder`),
@@ -403,13 +393,7 @@ test("Build all posts the snapshot once, and every card follows its run", async 
   renderPage();
   await screen.findByText(/10 files/);
   fireEvent.click(buildAll());
-  for (const name of [
-    "Graphify",
-    "Dependency Cruiser",
-    "DeepWiki Open",
-    "Abstractions",
-    "Data model",
-  ])
+  for (const name of ["Graphify", "Abstractions", "Data model"])
     await within(builderCard(name)).findByText("Queued");
   expect(f.posts).toEqual([{ snapshotId: "rsn_1" }]);
   expect(f.calls.filter((c) => c.startsWith("POST"))).toHaveLength(1);
@@ -484,7 +468,7 @@ test("the context stays at its commit until Build all moves it to the chosen one
     "Every builder reads one commit: eeeeeee.",
   );
   expect(block.textContent).not.toContain("The chosen snapshot is");
-  for (const name of ["Graphify", "Dependency Cruiser", "Abstractions"])
+  for (const name of ["Graphify", "Abstractions", "Data model"])
     expect(within(builderCard(name)).getByText("Queued")).toBeTruthy();
 });
 
@@ -584,22 +568,22 @@ test("a build older than the repository's newest page of runs is still shown bui
 });
 
 test("View opens every build in one explorer, a folder per builder, and reads a file", async () => {
-  const wiki: AnalysisRunDto = {
-    ...queuedRun("deepwiki"),
+  const model: AnalysisRunDto = {
+    ...queuedRun("data_model"),
     status: "succeeded",
     startedAt: stamp,
     finishedAt: stamp,
   };
   const f = server({
-    runs: [wiki, graphRun],
+    runs: [model, graphRun],
     artifacts: {
       arn_1: [
         artifact("arn_1", "graph.json", "graph_json"),
         artifact("arn_1", "graph.html", "graph_html"),
       ],
-      [wiki.id]: [
-        artifact(wiki.id, "pages/intro.md", "manifest"),
-        artifact(wiki.id, "pages/export.csv", "other"),
+      [model.id]: [
+        artifact(model.id, "pages/intro.md", "manifest"),
+        artifact(model.id, "pages/export.csv", "other"),
       ],
     },
     contents: {
@@ -624,7 +608,7 @@ test("View opens every build in one explorer, a folder per builder, and reads a 
   const folders = within(files)
     .getAllByRole("button", { expanded: true })
     .map((folder) => folder.textContent);
-  expect(folders).toEqual(["Graphify", "DeepWiki Open", "pages"]);
+  expect(folders).toEqual(["Graphify", "Data model", "pages"]);
   // The first document opens rendered.
   expect(
     await within(dialog).findByRole("heading", { name: "Intro" }),
@@ -838,7 +822,7 @@ test("a failed run shows its error and the retry cap; admins open the log", asyn
 
 test("Logs lists every run down the side; each opens its own log", async () => {
   const queued = {
-    ...queuedRun("deepwiki"),
+    ...queuedRun("abstractions"),
     createdAt: "2026-10-02T00:00:00.000Z",
   };
   const older: AnalysisRunDto = {
@@ -877,19 +861,19 @@ test("a failed run with retries left is built again by Build all, and says why i
   server({
     runs: [
       {
-        ...queuedRun("deepwiki"),
+        ...queuedRun("data_model"),
         status: "failed",
         attempt: 0,
-        errorCode: "builder_unavailable",
+        errorCode: "tool_failed",
       },
     ],
   });
   renderPage();
   const card = await screen.findByRole("region", {
-    name: "DeepWiki Open builder",
+    name: "Data model builder",
   });
   await within(card).findByText(
-    "This builder is not configured on the worker.",
+    "The analysis tool could not complete this run.",
   );
   expect(buildAll().disabled).toBe(false);
 });
@@ -898,19 +882,14 @@ test("a graph out of retries leaves nothing for its readers to build", async () 
   server({
     runs: [
       { ...graphRun, status: "failed", attempt: 2, errorCode: "too_large" },
-      ...(["dependency_cruiser", "deepwiki"] as const).map(
-        (tool) =>
-          ({ ...queuedRun(tool), status: "succeeded" }) as AnalysisRunDto,
-      ),
     ],
   });
   renderPage();
-  const card = await screen.findByRole("region", {
-    name: "DeepWiki Open builder",
-  });
-  await within(card).findByText("Built");
-  await waitFor(() => expect(viewAll().disabled).toBe(false));
-  expect(buildAll().disabled).toBe(true);
+  const card = await screen.findByRole("region", { name: "Graphify builder" });
+  await within(card).findByText(
+    "This repository exceeds the source size limit.",
+  );
+  await waitFor(() => expect(buildAll().disabled).toBe(true));
 });
 
 test("the API's refusal of a build is shown on the page", async () => {
@@ -940,30 +919,28 @@ test("the API's refusal of a build is shown on the page", async () => {
   await screen.findByText("The active analysis limit has been reached.");
 });
 
-const cruise: DependencyCruiserSummaryDto = {
+const surfaces: AbstractionsSummaryDto = {
   schemaVersion: 1,
-  toolVersion: "dependency-cruiser@18",
-  counts: {
-    modules: 12,
-    dependencies: 30,
-    circular: 1,
-    orphans: 2,
-    unresolved: 1,
-    external: 4,
-  },
+  toolVersion: "abstractions@2",
+  counts: { modules: 12, exports: 30, omissions: 1 },
+  coverage: { typed: 9, syntactic: 3, "names-only": 0 },
+  languages: [{ language: "typescript", modules: 12, exports: 30 }],
   modules: [
-    { source: "src/app.ts", dependents: 3, dependencies: 2 },
-    { source: "src/lib/db.ts", dependents: 1, dependencies: 1 },
+    {
+      path: "src/app.ts",
+      language: "typescript",
+      coverage: "typed",
+      importers: 3,
+      exports: 2,
+    },
   ],
-  cycles: [["src/a.ts", "src/b.ts"]],
-  orphans: ["src/unused.ts", "src/old.ts"],
-  unresolved: [{ from: "src/app.ts", module: "./missing" }],
+  omissions: [],
   truncated: true,
 };
 
 test("each built row carries the headline figures of its own build", async () => {
   const run: AnalysisRunDto = {
-    ...queuedRun("dependency_cruiser"),
+    ...queuedRun("abstractions"),
     status: "succeeded",
     startedAt: stamp,
     finishedAt: stamp,
@@ -976,7 +953,7 @@ test("each built row carries the headline figures of its own build", async () =>
           run.id,
           "manifest.json",
           "manifest",
-          cruise as unknown as Record<string, unknown>,
+          surfaces as unknown as Record<string, unknown>,
         ),
       ],
       arn_1: [
@@ -994,13 +971,13 @@ test("each built row carries the headline figures of its own build", async () =>
   const figure = (name: string, label: string) =>
     within(builderCard(name)).getByText(label).previousElementSibling
       ?.textContent;
-  await within(builderCard("Dependency Cruiser")).findByText("modules");
-  expect(figure("Dependency Cruiser", "modules")).toBe("12");
-  expect(figure("Dependency Cruiser", "cycles")).toBe("1");
+  await within(builderCard("Abstractions")).findByText("modules");
+  expect(figure("Abstractions", "modules")).toBe("12");
+  expect(figure("Abstractions", "typed")).toBe("9");
   await within(builderCard("Graphify")).findByText("nodes");
   expect(figure("Graphify", "edges")).toBe("55");
   // A builder not built has none.
-  expect(within(builderCard("Abstractions")).queryByText("modules")).toBe(null);
+  expect(within(builderCard("Data model")).queryByText("entities")).toBe(null);
 });
 
 test("runs a bounty made are listed with the rest in the logs, with nothing here that would make one", async () => {

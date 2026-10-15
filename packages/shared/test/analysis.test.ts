@@ -31,12 +31,14 @@ test("analysis defaults are canonical and tool parameters are bounded", () => {
     tool: "graphify",
   });
   assert.deepEqual(
-    enqueueAnalysisSchema.parse({ tool: "deepwiki", params: {} }),
-    { tool: "deepwiki", params: { deadlineMinutes: 30 } },
+    enqueueAnalysisSchema.parse({ tool: "data_model", params: {} }),
+    { tool: "data_model", params: { deadlineMinutes: 30 } },
   );
   for (const body of [
     { tool: "other" },
     { tool: "slice" },
+    { tool: "deepwiki" },
+    { tool: "dependency_cruiser" },
     { tool: "graphify", params: { deadlineMinutes: 121 } },
     { tool: "graphify", params: { includeInferred: true } },
     { tool: "graphify", organizationId: "foreign" },

@@ -6136,12 +6136,12 @@ function builtCommits(held: string | null) {
 
 test("a repository's menu opens its page in a new tab, and the files built at the commit the scope reads", async () => {
   const run = {
-    id: "arn_wiki",
+    id: "arn_model",
     snapshotId: "rsn_old",
     repoId: "ghr_1",
-    tool: "deepwiki",
+    tool: "data_model",
     toolVersion: "test",
-    params: { deadlineMinutes: 30, builder: "deepwiki" },
+    params: { deadlineMinutes: 30, builder: "data_model", graphRunId: "arn_1" },
     status: "succeeded",
     attempt: 0,
     maxAttempts: 2,
@@ -6179,13 +6179,13 @@ test("a repository's menu opens its page in a new tab, and the files built at th
     ["GET", "/repositories/ghr_1/runs", () => json({ runs: [run] })],
     [
       "GET",
-      "/runs/arn_wiki/artifacts",
+      "/runs/arn_model/artifacts",
       () =>
         json({
           artifacts: [
             {
               id: "art_intro",
-              runId: "arn_wiki",
+              runId: "arn_model",
               kind: "manifest",
               path: "pages/intro.md",
               contentType: "text/markdown",

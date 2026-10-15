@@ -14,9 +14,7 @@
  */
 
 import {
-  BookOpenText,
   Database,
-  GitFork,
   SquareFunction,
   Waypoints,
   type LucideIcon,
@@ -38,14 +36,6 @@ export const BUILDER_DETAILS: Record<
   graphify: {
     description: "Maps symbols, files and the imports between them.",
     icon: Waypoints,
-  },
-  dependency_cruiser: {
-    description: "Cruises module dependencies, cycles and orphans.",
-    icon: GitFork,
-  },
-  deepwiki: {
-    description: "Writes a wiki of the repository with a model.",
-    icon: BookOpenText,
   },
   abstractions: {
     description:
@@ -203,25 +193,12 @@ export function BuilderRow({
 }
 
 /**
- * A running builder, and how long it has run. DeepWiki's model writes for
- * most of a minute, so it also says how long that usually is; the rest are
- * done in seconds.
+ * A running builder, and how long it has run. The orb follows what each
+ * builds: a graph wires itself, abstractions take shape, the data model's
+ * relations are plaited.
  */
-/**
- * The orb follows what each builds: a graph wires itself, the wiki is
- * written, abstractions take shape, the data model's relations are plaited.
- */
-const RUNNING: Record<
-  ContextBuilder,
-  { line: string; expected?: string; orb: OrbState }
-> = {
+const RUNNING: Record<ContextBuilder, { line: string; orb: OrbState }> = {
   graphify: { line: "Building", orb: "connecting" },
-  dependency_cruiser: { line: "Building", orb: "connecting" },
-  deepwiki: {
-    line: "Writing the wiki",
-    expected: "usually ~1 min",
-    orb: "composing",
-  },
   abstractions: { line: "Building", orb: "shaping" },
   data_model: { line: "Building", orb: "weaving" },
 };
@@ -237,14 +214,9 @@ function Status({
   pending: boolean;
 }) {
   if (run?.status === "running") {
-    const { line, expected, orb } = RUNNING[builder];
+    const { line, orb } = RUNNING[builder];
     return (
-      <ThinkingLine
-        state={orb}
-        className="text-xs"
-        since={run.startedAt}
-        expected={expected}
-      >
+      <ThinkingLine state={orb} className="text-xs" since={run.startedAt}>
         {line}
       </ThinkingLine>
     );

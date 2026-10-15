@@ -464,7 +464,7 @@ test("a file's name picks its icon and its language, as the editor's would", () 
       "sandbox.env",
       "Dockerfile",
       "erd.mmd",
-      "dependency-cruiser.dot",
+      "modules.dot",
       "notes",
     ].map(fileIconName),
   ).toEqual([

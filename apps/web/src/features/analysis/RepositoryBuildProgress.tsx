@@ -1,12 +1,11 @@
 /**
  * Under a repository being set up: how far its first build has got, a
- * line for where it is and a mark per builder. The builders a snapshot
- * waits on come first; the wiki, which is not waited on, last, saying so.
+ * line for where it is and a mark per builder.
  */
 
 import type { AnalysisRunDto } from "@sandbox-factory/shared";
 import { Check, Circle, Loader2, Minus, RotateCw } from "lucide-react";
-import { REQUIRED_BUILDERS, type ContextBuilder } from "sandbox-factory";
+import { CONTEXT_BUILDERS } from "sandbox-factory";
 
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -53,7 +52,6 @@ export function RepositoryBuildProgress({
 }) {
   const runs =
     build.phase === "building" || build.phase === "built" ? build.runs : null;
-  const shown: ContextBuilder[] = [...REQUIRED_BUILDERS, "deepwiki"];
   return (
     <div
       className="flex flex-col gap-1.5 pb-2 pl-7"
@@ -88,17 +86,12 @@ export function RepositoryBuildProgress({
       </p>
       {runs !== null && (
         <ul className="text-muted-foreground flex flex-wrap gap-x-3 gap-y-1 text-2xs">
-          {shown.map((builder) => (
+          {CONTEXT_BUILDERS.map((builder) => (
             <li key={builder} className="flex items-center gap-1">
               <span className="flex size-3 items-center justify-center">
                 <BuilderMark run={runs[builder]} />
               </span>
               {builderNames[builder]}
-              {builder === "deepwiki" && build.phase === "building" && (
-                <span className="text-muted-foreground/70">
-                  (not waited on)
-                </span>
-              )}
             </li>
           ))}
         </ul>

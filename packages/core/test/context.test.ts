@@ -63,7 +63,7 @@ test("the two builders read graphify's map and name themselves in their paramete
   assert.equal(isSliceParams(abstractions), false);
   assert.equal(readsGraph("abstractions"), true);
   assert.equal(readsGraph("data_model"), true);
-  assert.equal(readsGraph("dependency_cruiser"), false);
+  assert.equal(readsGraph("graphify"), false);
   assert.equal(toolVersionOf("abstractions"), ABSTRACTIONS_TOOL_VERSION);
   assert.equal(toolVersionOf("data_model"), DATA_MODEL_TOOL_VERSION);
   assert.equal(toolVersionOf("scope"), SCOPE_TOOL_VERSION);

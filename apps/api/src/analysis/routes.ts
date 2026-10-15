@@ -34,7 +34,6 @@ import {
   enqueueScopeSchema,
   enqueueSliceResponseSchema,
   enqueueSliceSchema,
-  AGENT_DEADLINE_MINUTES,
   GRAPH_DEADLINE_MINUTES,
   repositoryProposalListSchema,
 } from "@sandbox-factory/shared";
@@ -80,22 +79,18 @@ const SANDBOX_TOOLS: ReadonlySet<AnalysisTool> = new Set([
 const hiddenFrom = (role: string, run: StoredAnalysisRun) =>
   SANDBOX_TOOLS.has(run.tool) && !isAtLeastAdmin(role);
 /**
- * A context builder's stored parameters: graphify's, plus its own name and,
- * for a map reader, the graph run it reads. A wiki waits on a model's
- * pages, as an agent run does; the others are deterministic and keep the
- * graph runs' deadline, which is part of the cache key the profiler's graph
- * runs share.
+ * A context builder's stored parameters: graphify's, plus, for a map
+ * reader, its own name and the graph run it reads. Each keeps the graph
+ * runs' deadline, which is part of the cache key the profiler's graph runs
+ * share.
  */
 function builderParams(
   tool: ContextBuilder,
   asked: number | undefined,
   graphRunId: string | undefined,
 ): AnalysisParams {
-  const deadlineMinutes =
-    asked ??
-    (tool === "deepwiki" ? AGENT_DEADLINE_MINUTES : GRAPH_DEADLINE_MINUTES);
+  const deadlineMinutes = asked ?? GRAPH_DEADLINE_MINUTES;
   if (tool === "graphify") return { deadlineMinutes };
-  if (!readsGraph(tool)) return { deadlineMinutes, builder: tool };
   if (graphRunId === undefined)
     throw new Error(`The ${tool} builder needs a graph run.`);
   return { deadlineMinutes, builder: tool, graphRunId };

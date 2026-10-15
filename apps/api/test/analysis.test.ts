@@ -460,28 +460,14 @@ test("enqueue validates scope, role, parameters, cache result, and active cap", 
     404,
   );
 });
-test("a context builder names itself in its parameters", async () => {
+test("a removed builder is not queued", async () => {
   const f = fixture();
-  assert.equal(
-    (
-      await f.request("repositories/ghr_1/runs", {
-        tool: "dependency_cruiser",
-        snapshotId: "rsn_1",
-      })
-    ).status,
-    202,
-  );
-  assert.equal(
-    (await f.request("repositories/ghr_1/runs", { tool: "deepwiki" })).status,
-    202,
-  );
-  assert.deepEqual(f.enqueued, [
-    {
-      tool: "dependency_cruiser",
-      params: { deadlineMinutes: 30, builder: "dependency_cruiser" },
-    },
-    { tool: "deepwiki", params: { deadlineMinutes: 60, builder: "deepwiki" } },
-  ]);
+  for (const tool of ["deepwiki", "dependency_cruiser"])
+    assert.equal(
+      (await f.request("repositories/ghr_1/runs", { tool })).status,
+      400,
+    );
+  assert.deepEqual(f.enqueued, []);
 });
 test("a builder that reads the map queues behind the snapshot's graph run", async () => {
   const f = fixture();
@@ -582,21 +568,15 @@ test("Build all queues the whole set once the cap admits its first run", async (
   const { runs } = (await response.json()) as { runs: StoredAnalysisRun[] };
   assert.deepEqual(
     runs.map((each) => each.tool),
-    [
-      "graphify",
-      "dependency_cruiser",
-      "deepwiki",
-      "abstractions",
-      "data_model",
-    ],
+    ["graphify", "abstractions", "data_model"],
   );
   // The map readers read the graph run the set queued first.
-  assert.deepEqual(runs[4]?.params, {
+  assert.deepEqual(runs[2]?.params, {
     deadlineMinutes: 30,
     builder: "data_model",
     graphRunId: "arn_graphify",
   });
-  assert.deepEqual(caps, [3, 8, 8, 8, 8]);
+  assert.deepEqual(caps, [3, 6, 6]);
   assert.equal(f.launches(), 1);
   // The set's snapshot is now the repository's context.
   assert.deepEqual(f.contexts, ["org_1/ghr_1@rsn_1"]);
@@ -616,11 +596,6 @@ test("Build all answers built runs as is, with each builder's parameters", async
   assert.equal(response.status, 202);
   assert.deepEqual(f.enqueued, [
     { tool: "graphify", params: { deadlineMinutes: 30 } },
-    {
-      tool: "dependency_cruiser",
-      params: { deadlineMinutes: 30, builder: "dependency_cruiser" },
-    },
-    { tool: "deepwiki", params: { deadlineMinutes: 60, builder: "deepwiki" } },
     {
       tool: "abstractions",
       params: {
@@ -659,8 +634,8 @@ test("Build all skips the map readers when the graph is out of retries", async (
   };
   const response = await f.request("repositories/ghr_1/builds", {});
   assert.equal(response.status, 202);
-  assert.deepEqual(tools, ["graphify", "dependency_cruiser", "deepwiki"]);
-  assert.equal(((await response.json()) as { runs: unknown[] }).runs.length, 3);
+  assert.deepEqual(tools, ["graphify"]);
+  assert.equal(((await response.json()) as { runs: unknown[] }).runs.length, 1);
 });
 test("Build all is refused for members, bad input, and other repositories", async () => {
   const f = fixture();
