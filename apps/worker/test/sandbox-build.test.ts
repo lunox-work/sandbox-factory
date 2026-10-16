@@ -1631,6 +1631,55 @@ test("hidden tests that never pass their baseline are not kept, and the build st
   );
 });
 
+test("the early hidden-tests agent's failure fails only a build whose baseline needs its tests", async () => {
+  let failed!: () => void;
+  const hasFailed = new Promise<void>((resolve) => (failed = resolve));
+  const failing = (): AgentModel => ({
+    model: "test-model",
+    turn: async () => {
+      failed();
+      throw new Error("model overloaded");
+    },
+  });
+  const draft = () =>
+    versionFor({ acceptance: false, aliasRules: named, fixtures: given });
+  // The baseline's steps wait until the agent has failed beside them.
+  const base = fakeProvider((argv) =>
+    argv.includes("build") ? { exitCode: 2 } : {},
+  ).provider;
+  const slow: EvaluationProvider = {
+    ...base,
+    async create(options) {
+      const job = await base.create(options);
+      return {
+        ...job,
+        async exec(command) {
+          // Past the agent's own cleanup, as a real baseline's minutes are.
+          await hasFailed;
+          await new Promise((resolve) => setTimeout(resolve, 100));
+          return job.exec(command);
+        },
+      };
+    },
+  };
+  // A project that does not build needs no hidden tests: the build ends
+  // with the baseline's verdict, as it did before the agent ran beside it.
+  const broken = await runBuild(slow, {
+    version: await draft(),
+    agent: { model: failing(), limits },
+  });
+  assert.equal(broken.manifest.ready, false);
+  assert.ok(!broken.messages.some((line) => /wrote \d+ hidden/.test(line)));
+  // One whose baseline lacks them fails with the agent's error.
+  await assert.rejects(
+    runBuild(fakeProvider().provider, {
+      version: await draft(),
+      agent: { model: failing(), limits },
+    }),
+    /model overloaded/,
+  );
+});
+
 test("hidden tests are written only for a draft with none whose baseline fails for that alone", async () => {
   // A draft with hidden tests is built as it is.
   const untouched = scripted([]);

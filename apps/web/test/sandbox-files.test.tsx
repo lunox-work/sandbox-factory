@@ -381,9 +381,13 @@ test("an admin browses the private sandbox: the explorer beside the open file, r
 test("a file named in the address opens with its folders, and one that is not text says so", async () => {
   server();
   open("/sandboxes/acme/sbv_1?path=project%2Flogo.png");
-  const viewer = await screen.findByRole("region", {
-    name: "project/logo.png",
-  });
+  // The viewer is a chunk of its own, which a full parallel run slows past
+  // the default second.
+  const viewer = await screen.findByRole(
+    "region",
+    { name: "project/logo.png" },
+    { timeout: 5_000 },
+  );
   expect(
     await within(viewer).findByText(
       "This file is not text, so it is not shown here.",

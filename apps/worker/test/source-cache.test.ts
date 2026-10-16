@@ -100,6 +100,92 @@ test("past the bound the least recently used idle entry goes, never one in use",
   }
 });
 
+test("a run sharing a fill that fails for the filler's own reasons fills again", async () => {
+  const directory = await root();
+  try {
+    const cache = await createSourceCache({ root: directory });
+    // The first run's fill fails as its deadline or lease would cut it.
+    let cut!: (error: Error) => void;
+    let started!: () => void;
+    const filling = new Promise<void>((resolve) => (started = resolve));
+    const first = cache.checkout(
+      "a",
+      () =>
+        new Promise<string>((_resolve, reject) => {
+          cut = reject;
+          started();
+        }),
+    );
+    const { fill, calls } = filler();
+    const second = cache.checkout("a", fill);
+    await filling;
+    cut(new Error("tool_timeout"));
+    await assert.rejects(first, /tool_timeout/);
+    const own = await second;
+    assert.equal(own.hit, false);
+    assert.equal(calls.length, 1);
+    assert.equal(
+      await readFile(join(own.path, "a.ts"), "utf8"),
+      "x".repeat(10),
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("an entry a run takes while an eviction removes others is kept", async () => {
+  const directory = await root();
+  let clock = 0;
+  let onNow: (() => void) | null = null;
+  try {
+    const cache = await createSourceCache({
+      root: directory,
+      maxBytes: 250,
+      now: () => {
+        const hook = onNow;
+        onNow = null;
+        hook?.();
+        return (clock += 1);
+      },
+    });
+    // `a` is many small files, so removing it spans several turns.
+    const a = await cache.checkout("a", async (into) => {
+      const source = join(into, "source");
+      await mkdir(source);
+      for (let index = 0; index < 200; index++)
+        await writeFile(join(source, `f${index}.ts`), "x");
+      return source;
+    });
+    a.release();
+    const b = await cache.checkout("b", filler(10).fill);
+    b.release();
+    // `c` puts the cache past its bound by both idle entries; while `a` is
+    // removed, a run takes `b`.
+    let taken: Promise<{ path: string; release(): void }> | undefined;
+    const c = await cache.checkout("c", async (into) => {
+      const source = join(into, "source");
+      await mkdir(source);
+      await writeFile(join(source, "c.ts"), "x".repeat(245));
+      onNow = () =>
+        setImmediate(() => {
+          taken = cache.checkout("b", filler(10).fill);
+        });
+      return source;
+    });
+    assert.ok(taken !== undefined);
+    const held = await taken;
+    assert.equal(held.path, b.path);
+    assert.equal(
+      await readFile(join(held.path, "a.ts"), "utf8"),
+      "x".repeat(10),
+    );
+    held.release();
+    c.release();
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("a fill that fails leaves nothing, and the next run fills again", async () => {
   const directory = await root();
   try {

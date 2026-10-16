@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { mkdtemp } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdir } from "node:fs/promises";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import {
   createAnalysisRunStore,
@@ -72,9 +72,17 @@ const agent: AgentSettings = {
 // hosted provider replaces it once qualified.
 // Two jobs at once at most: the agent slots can hold three builds, each
 // with a baseline to run.
+// The caches below live under the worker user's own home, which no other
+// user can create first, at one name, so a restart on the same disk finds
+// them again rather than leaving them behind.
+const caches = join(homedir(), ".cache", "sandbox-factory");
+await mkdir(caches, { recursive: true, mode: 0o700 });
 const evaluation =
   env.EVALUATION_PROVIDER === "local-process"
-    ? limitJobs(createLocalProcessProvider(), EVALUATION_JOBS_MAX)
+    ? limitJobs(
+        createLocalProcessProvider({ npmCache: join(caches, "npm") }),
+        EVALUATION_JOBS_MAX,
+      )
     : null;
 const objects = createObjectStore({
   bucket: env.S3_BUCKET,
@@ -90,10 +98,9 @@ const objects = createObjectStore({
     : {}),
 });
 // Every run of one commit reads the source this worker fetched for the
-// first, for as long as the disk keeps it. Its root is this process's
-// own, not a fixed name in the shared temp directory.
+// first, for as long as the disk keeps it.
 const sourceCache = await createSourceCache({
-  root: await mkdtemp(join(tmpdir(), "sandbox-factory-sources-")),
+  root: join(caches, "sources"),
 });
 const tokens = new InstallationTokens({
   appId: env.GITHUB_APP_ID,

@@ -2662,6 +2662,19 @@ test("a ready slice is cut into a draft from the bounty and built", async () => 
   // A request remembered while the slice was in flight is answered.
   assert.deepEqual(f.cuts, [{ cleared: "sbx_1", owner: "org_1" }]);
 
+  // Unless the cap refuses the build: the draft is cut, and the request
+  // stays for the cutter's next pass to build it.
+  const capped = fixture("owner", {
+    profile: {},
+    bounty: true,
+    noVersions: true,
+    limit: true,
+  });
+  const refused = await capped.request("POST", "/sbx_1/slice");
+  assert.equal(((await refused.json()) as { code: string }).code, "run_limit");
+  assert.equal(capped.created.length, 1);
+  assert.deepEqual(capped.cuts, []);
+
   // The newest draft cut from the same slice is built again, not cut twice.
   const again = fixture("owner", { profile: {}, bounty: true });
   assert.equal((await again.request("POST", "/sbx_1/slice")).status, 201);

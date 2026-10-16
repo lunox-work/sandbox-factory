@@ -976,6 +976,45 @@ test("a worker runs agent runs beside a build, and claims only the slots it has 
     release.get(id)?.();
   await done;
 });
+test("a run that ends while a claim for the other slots is out is followed at once", async () => {
+  const of = (id: string, tool: ClaimedAnalysisRun["tool"]) => ({
+    ...run,
+    id,
+    tool,
+  });
+  const asked: (readonly string[] | undefined)[] = [];
+  const executed: string[] = [];
+  let endGraph = () => {};
+  await workerLoop({
+    runs: {
+      claimNext: async (_token, _now, tools) => {
+        asked.push(tools);
+        if (asked.length === 1) return of("arn_graph", "graphify");
+        // Asked for agent runs alone, the build slot busy; the build ends
+        // before the answer comes back.
+        if (asked.length === 2) {
+          endGraph();
+          await delay(1);
+          return null;
+        }
+        return asked.length === 3 ? of("arn_abs", "abstractions") : null;
+      },
+    },
+    mode: "poll",
+    signal: new AbortController().signal,
+    execute: (claimed) => {
+      executed.push(claimed.id);
+      return claimed.id === "arn_graph"
+        ? new Promise<void>((resolve) => (endGraph = resolve))
+        : Promise.resolve();
+    },
+    // Returns as soon as it is idle: a wait here would end the loop.
+    idleExitMs: 0,
+    now: () => 0,
+  });
+  assert.ok(asked[1] !== undefined && !asked[1].includes("abstractions"));
+  assert.deepEqual(executed, ["arn_graph", "arn_abs"]);
+});
 test("a run that throws ends the loop once the others beside it have ended", async () => {
   let claims = 0;
   let otherEnded = false;

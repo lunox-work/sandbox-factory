@@ -110,6 +110,9 @@ export async function createSourceCache(
       .sort(([, a], [, b]) => a.lastUsed - b.lastUsed);
     for (const [name, entry] of idle) {
       if (total <= maxBytes) break;
+      // A removal awaited above may have let a run take this entry, or a
+      // fill replace it: neither is removed.
+      if (entry.users !== 0 || entries.get(name) !== entry) continue;
       entries.delete(name);
       total -= entry.bytes;
       await rm(entry.directory, { recursive: true, force: true });
@@ -117,73 +120,79 @@ export async function createSourceCache(
   };
   await evict();
 
-  return {
-    async checkout(key, fill) {
-      const name = createHash("sha256").update(key).digest("hex").slice(0, 40);
-      let entry = entries.get(name);
-      const hit = entry !== undefined;
-      if (entry === undefined) {
-        // Its own directory, so an eviction of an earlier fill of the same
-        // key still being removed cannot remove this one's files.
-        const directory = join(options.root, `${name}-${randomUUID()}`);
-        const created: Entry = {
-          directory,
-          path: directory,
-          bytes: 0,
-          users: 0,
-          lastUsed: now(),
-          ready: Promise.resolve(),
-          complete: false,
-        };
-        created.ready = (async () => {
-          try {
-            await mkdir(directory, { recursive: true });
-            const path = await fill(directory);
-            created.bytes = await sizeOf(directory);
-            created.path = path;
-            await writeFile(
-              join(directory, RECORD),
-              JSON.stringify({
-                name,
-                path: relative(directory, path),
-                bytes: created.bytes,
-              }),
-            );
-            created.complete = true;
-          } catch (error) {
-            // A fill that fails leaves nothing for the next run to read.
-            if (entries.get(name) === created) entries.delete(name);
-            await rm(directory, { recursive: true, force: true });
-            throw error;
-          }
-        })();
-        entries.set(name, created);
-        entry = created;
-      }
-      entry.users += 1;
-      try {
-        await entry.ready;
-      } catch (error) {
-        entry.users -= 1;
-        throw error;
-      }
-      entry.lastUsed = now();
-      await evict();
-      const held = entry;
-      let released = false;
-      return {
-        path: held.path,
-        hit,
-        release() {
-          if (released) return;
-          released = true;
-          held.users -= 1;
-          held.lastUsed = now();
-          void evict().catch(() => {});
-        },
+  return { checkout };
+
+  async function checkout(
+    key: string,
+    fill: (directory: string) => Promise<string>,
+  ): Promise<SourceCheckout> {
+    const name = createHash("sha256").update(key).digest("hex").slice(0, 40);
+    let entry = entries.get(name);
+    const hit = entry !== undefined;
+    if (entry === undefined) {
+      // Its own directory, so an eviction of an earlier fill of the same
+      // key still being removed cannot remove this one's files.
+      const directory = join(options.root, `${name}-${randomUUID()}`);
+      const created: Entry = {
+        directory,
+        path: directory,
+        bytes: 0,
+        users: 0,
+        lastUsed: now(),
+        ready: Promise.resolve(),
+        complete: false,
       };
-    },
-  };
+      created.ready = (async () => {
+        try {
+          await mkdir(directory, { recursive: true });
+          const path = await fill(directory);
+          created.bytes = await sizeOf(directory);
+          created.path = path;
+          await writeFile(
+            join(directory, RECORD),
+            JSON.stringify({
+              name,
+              path: relative(directory, path),
+              bytes: created.bytes,
+            }),
+          );
+          created.complete = true;
+        } catch (error) {
+          // A fill that fails leaves nothing for the next run to read.
+          if (entries.get(name) === created) entries.delete(name);
+          await rm(directory, { recursive: true, force: true });
+          throw error;
+        }
+      })();
+      entries.set(name, created);
+      entry = created;
+    }
+    entry.users += 1;
+    try {
+      await entry.ready;
+    } catch (error) {
+      entry.users -= 1;
+      // Another run's fill, which failed for that run's reasons (its
+      // deadline, its lease): this run fills again with its own.
+      if (hit) return checkout(key, fill);
+      throw error;
+    }
+    entry.lastUsed = now();
+    await evict();
+    const held = entry;
+    let released = false;
+    return {
+      path: held.path,
+      hit,
+      release() {
+        if (released) return;
+        released = true;
+        held.users -= 1;
+        held.lastUsed = now();
+        void evict().catch(() => {});
+      },
+    };
+  }
 }
 
 /** The bytes of every file under a directory. */

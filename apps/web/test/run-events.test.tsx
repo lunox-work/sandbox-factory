@@ -19,6 +19,7 @@ class FakeEventSource {
   static opened: FakeEventSource[] = [];
   readonly listeners = new Map<string, ((event: MessageEvent) => void)[]>();
   closed = false;
+  readyState = 0;
   constructor(
     readonly url: string,
     readonly init?: EventSourceInit,
@@ -105,6 +106,30 @@ test("while the stream is open the view's own timer slows, and a reopened one re
   act(() => stream?.emit("error"));
   act(() => stream?.emit("ready"));
   await waitFor(() => expect(read.mock.calls.length).toBeGreaterThan(before));
+});
+
+test("a stream the browser gives up on is opened anew, and reads again once open", async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  const read = vi.fn(async () => running);
+  follow(read);
+  await waitFor(() => expect(FakeEventSource.opened).toHaveLength(1));
+  const [first] = FakeEventSource.opened;
+  act(() => first?.emit("ready"));
+  // An HTTP error on reconnecting, as a deploy gives: the browser closes it
+  // for good, where a dropped connection it retries itself.
+  const before = read.mock.calls.length;
+  if (first !== undefined) first.readyState = 2;
+  act(() => first?.emit("error"));
+  await act(() => vi.advanceTimersByTimeAsync(5_000));
+  expect(FakeEventSource.opened).toHaveLength(2);
+  const second = FakeEventSource.opened[1];
+  expect(second?.url).toBe("/api/v1/orgs/org_1/events");
+  act(() => second?.emit("ready"));
+  await waitFor(() => expect(read.mock.calls.length).toBeGreaterThan(before));
+  // Its changes reach the view as the first one's did.
+  const reads = read.mock.calls.length;
+  act(() => second?.change("analysis", "arn_1"));
+  await waitFor(() => expect(read.mock.calls.length).toBeGreaterThan(reads));
 });
 
 test("views of one workspace share its stream, which closes after them", async () => {

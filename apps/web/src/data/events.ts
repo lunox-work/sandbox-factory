@@ -15,7 +15,7 @@ import { useEffect, useRef, useState } from "react";
 type Listener = () => void;
 
 interface Stream {
-  readonly source: EventSource;
+  source: EventSource;
   readonly topics: Map<string, Set<Listener>>;
   readonly openness: Set<(open: boolean) => void>;
   open: boolean;
@@ -23,6 +23,9 @@ interface Stream {
   opened: boolean;
   users: number;
   closing: ReturnType<typeof setTimeout> | null;
+  /** A source the browser gave up on, waiting to be opened anew. */
+  retrying: ReturnType<typeof setTimeout> | null;
+  retryMs: number;
 }
 
 /**
@@ -30,6 +33,16 @@ interface Stream {
  * follow the same workspace does not open it again.
  */
 const LINGER_MS = 10_000;
+
+/**
+ * How long after the browser gives up on a stream (an HTTP error, as a
+ * deploy gives, rather than a dropped connection it retries itself) it is
+ * opened anew, doubling to the most.
+ */
+const RETRY_MS = 5_000;
+const RETRY_MAX_MS = 60_000;
+/** `EventSource.CLOSED`, which the browser does not open again. */
+const CLOSED = 2;
 
 const streams = new Map<string, Stream>();
 
@@ -43,18 +56,28 @@ function streamFor(owner: string): Stream {
     existing.closing = null;
     return existing;
   }
-  const source = new EventSource(runEventsPath(owner), {
-    withCredentials: true,
-  });
   const stream: Stream = {
-    source,
+    source: connect(owner),
     topics: new Map(),
     openness: new Set(),
     open: false,
     opened: false,
     users: 0,
     closing: null,
+    retrying: null,
+    retryMs: RETRY_MS,
   };
+  listen(owner, stream);
+  streams.set(owner, stream);
+  return stream;
+}
+
+function connect(owner: string): EventSource {
+  return new EventSource(runEventsPath(owner), { withCredentials: true });
+}
+
+function listen(owner: string, stream: Stream) {
+  const { source } = stream;
   const setOpen = (open: boolean) => {
     if (stream.open === open) return;
     stream.open = open;
@@ -65,6 +88,7 @@ function streamFor(owner: string): Stream {
     // so everything followed is read again.
     const reopened = stream.opened && !stream.open;
     stream.opened = true;
+    stream.retryMs = RETRY_MS;
     setOpen(true);
     if (reopened)
       for (const listeners of stream.topics.values())
@@ -75,10 +99,20 @@ function streamFor(owner: string): Stream {
     if (topic === null) return;
     for (const listener of stream.topics.get(topic) ?? []) listener();
   });
-  // The browser opens it again by itself; until then, the timers run.
-  source.addEventListener("error", () => setOpen(false));
-  streams.set(owner, stream);
-  return stream;
+  // The browser opens it again by itself, unless it has given up; until
+  // then, the timers run.
+  source.addEventListener("error", () => {
+    setOpen(false);
+    if (source.readyState !== CLOSED || stream.retrying !== null) return;
+    if (streams.get(owner) !== stream || stream.source !== source) return;
+    stream.retrying = setTimeout(() => {
+      stream.retrying = null;
+      if (streams.get(owner) !== stream) return;
+      stream.source = connect(owner);
+      listen(owner, stream);
+    }, stream.retryMs);
+    stream.retryMs = Math.min(stream.retryMs * 2, RETRY_MAX_MS);
+  });
 }
 
 function topicOf(data: string): string | null {
@@ -96,6 +130,7 @@ function release(owner: string, stream: Stream) {
   stream.users -= 1;
   if (stream.users > 0) return;
   stream.closing = setTimeout(() => {
+    if (stream.retrying !== null) clearTimeout(stream.retrying);
     stream.source.close();
     streams.delete(owner);
   }, LINGER_MS);
@@ -190,6 +225,7 @@ export function nextRunChange(
 export function resetRunStreams() {
   for (const stream of streams.values()) {
     if (stream.closing !== null) clearTimeout(stream.closing);
+    if (stream.retrying !== null) clearTimeout(stream.retrying);
     stream.source.close();
   }
   streams.clear();

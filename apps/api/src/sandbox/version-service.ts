@@ -142,6 +142,8 @@ const failure = <T extends object>(body: T, reason: FailureReason) => ({
   body,
   reason,
 });
+const codeOf = (body: object): unknown =>
+  "code" in body ? body.code : undefined;
 /** A dependency choice must name a package the slice requires. */
 export function unknownChoices(
   manifest: SliceManifest,
@@ -1120,18 +1122,23 @@ export function versionService(options: SandboxRouteOptions) {
       if (!created.ok) return created;
       draft = created.result;
     }
-    // Cut, or found: whatever asked for it is answered.
-    await options.cuts?.clearCut(owner, sandbox.id);
     // A scope with blockers is cut, for its blockers to be read, but not
     // built: the build would only refuse it.
-    if (draft.source.scope.blockers.length > 0)
+    if (draft.source.scope.blockers.length > 0) {
+      await options.cuts?.clearCut(owner, sandbox.id);
       return {
         ok: true as const,
         slice: state.slice,
         result: draft,
         run: null,
       };
+    }
     const built = await build(owner, actor, draft, now);
+    // Cut and built, or refused: whatever asked for it is answered, except
+    // by the cap, which leaves it asked for the cutter's next pass to build
+    // the draft cut here.
+    if (built.ok || codeOf(built.body) !== "run_limit")
+      await options.cuts?.clearCut(owner, sandbox.id);
     if (!built.ok) return built;
     const after = await options.sandboxes.getVersion(owner, draft.version.id);
     return {

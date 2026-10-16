@@ -1118,6 +1118,9 @@ export function createSandboxBuildAdapter(
         source.acceptanceTests.length === 0 &&
         blockers.length === 0;
       const unwanted = new AbortController();
+      // The early agent's own failure, which fails the build only if the
+      // baseline turns out to need its tests.
+      const early: { failed: boolean; error?: unknown } = { failed: false };
       // Shown while the baseline below runs, as the version's files.
       if (generate !== null && files.length > 0)
         await previewProject(input, files, 1);
@@ -1167,11 +1170,14 @@ export function createSandboxBuildAdapter(
               timing: input.timing,
             });
           } catch (error) {
-            if (unwanted.signal.aborted && !signal.aborted) {
+            if (signal.aborted) throw error;
+            if (unwanted.signal.aborted) {
               input.log("Hidden-tests agent stopped: the baseline needs none.");
               return null;
             }
-            throw error;
+            early.failed = true;
+            early.error = error;
+            return null;
           }
         },
       );
@@ -1185,6 +1191,7 @@ export function createSandboxBuildAdapter(
             "No agent model is configured; no hidden tests are written.",
           );
         else {
+          if (early.failed) throw early.error;
           hidden = hiddenWritten;
           if (hidden !== null) {
             files = hidden.files;

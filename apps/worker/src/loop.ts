@@ -53,6 +53,8 @@ export async function workerLoop(options: {
   const active = new Set<Promise<void>>();
   let failure: { error: unknown } | undefined;
   let lastRun = now();
+  /** Runs ended so far, so a claim can tell a slot freed while it was out. */
+  let ended = 0;
   const wait = async (cancel: AbortSignal) => {
     try {
       await (options.wait?.(cancel) ??
@@ -66,6 +68,7 @@ export async function workerLoop(options: {
   try {
     while (!options.signal.aborted) {
       if (failure !== undefined) throw failure.error;
+      const endedBefore = ended;
       const free = RUN_SLOTS.filter((slot) => busy[slot] < slots[slot]);
       const run =
         free.length === 0
@@ -94,12 +97,17 @@ export async function workerLoop(options: {
           )
           .finally(() => {
             busy[slot] -= 1;
+            ended += 1;
             active.delete(work);
             lastRun = now();
           });
         active.add(work);
         continue;
       }
+      // A run ended while the claim was out, freeing a slot it did not ask
+      // for: asked again at once, not after a wait the end's wake was spent
+      // on.
+      if (ended !== endedBefore) continue;
       if (active.size > 0) {
         // A slot frees when a run ends; a wake may bring a run for one
         // that is free already.
