@@ -227,6 +227,39 @@ export const STARTER_TOOL_VERSION = "sandbox_starter@3";
 export function readsSource(tool: AnalysisTool): boolean {
   return tool !== "sandbox_starter";
 }
+/**
+ * Which of a worker's slots a run takes. An agent run spends its time
+ * waiting on a model, so a worker runs several at once; a build spends it
+ * on the worker's CPU, so it runs one. The sandbox build and the starter
+ * run baselines too, but most of their wall time is their agents'.
+ */
+export type RunSlot = "agent" | "build";
+export const RUN_SLOTS = ["agent", "build"] as const;
+/** How many runs of each slot one worker runs at once. */
+export const WORKER_SLOTS: Readonly<Record<RunSlot, number>> = {
+  agent: 3,
+  build: 1,
+};
+export function slotOf(tool: AnalysisTool): RunSlot {
+  switch (tool) {
+    case "scope":
+    case "fixtures":
+    case "sandbox_build":
+    case "sandbox_starter":
+      return "agent";
+    case "graphify":
+    case "abstractions":
+    case "data_model":
+    case "documents":
+    case "brief":
+    case "slice":
+      return "build";
+  }
+}
+/** The tools that take one slot. */
+export function toolsOfSlot(slot: RunSlot): AnalysisTool[] {
+  return ANALYSIS_TOOLS.filter((tool) => slotOf(tool) === slot);
+}
 export function toolVersionOf(tool: AnalysisTool): string {
   switch (tool) {
     case "sandbox_starter":

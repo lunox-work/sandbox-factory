@@ -219,6 +219,20 @@ with the others queued on its snapshot (`documents` with a graphify run
 too): the worker claims them beside it (`claimBeside`) and runs them at
 once on the one cached checkout. Each keeps its own lease and heartbeat.
 
+A worker has slots by kind (`WORKER_SLOTS` in core): three for agent runs
+(`scope`, `fixtures`, `sandbox_build`, `sandbox_starter`), which spend
+their time waiting on a model, and one for builds (the context builders and
+`slice`), which spend it on the CPU. It claims into any free slot as soon
+as it can, beside the runs it already has, and once every slot of a kind
+is busy it claims only the other kinds (`claimNext(..., tools)`). A shared
+claim takes one build slot. A claim takes the oldest run of the
+organization with the fewest running first, so one workspace's burst does
+not hold another's behind it. At most two evaluation jobs run at once on a
+worker (`limitJobs`); a baseline past that waits for one to end. Within an
+agent's turn, reading calls (`list_files`, `read_file`, `search`,
+`graph_neighbours`, `module_surface`, `module_seams`, `data_model`) run
+together; checks, runs and submits run alone, in order.
+
 ### Slice
 
 A slice run names the succeeded graphify run on the same snapshot it reads
@@ -338,8 +352,8 @@ a unique lease and storage prefix, so a late worker cannot overwrite its
 successor. Completion inserts artifacts and changes status in one fenced
 transaction. A heartbeat runs every 15 seconds, the lease lasts 60 seconds, and
 the default deadline is 30 minutes. A watchdog retries lost workers twice;
-manual retries share that limit. SIGTERM stops new claims and allows the current
-run 60 seconds before cancellation and release.
+manual retries share that limit. SIGTERM stops new claims and allows the runs
+in its slots 60 seconds before cancellation and release.
 
 Sources are ephemeral. The fetcher sends the repository-scoped read token only
 to api.github.com and follows a validated codeload redirect without Authorization.
@@ -508,8 +522,11 @@ revision. A task polls (`WORKER_MODE=poll`), wakes on the queue's `NOTIFY`
 (`analysis_run_queued`, `analysis_run_ended`) rather than its five-second poll,
 and exits after `WORKER_IDLE_EXIT_MINUTES` (15) without a run, so a burst pays
 one cold start. Its connections carry `application_name`
-`sandbox-factory-worker`, which is how the launcher sees an idle task and does
-not start a second. Terraform ignores the worker's container definition after bootstrap,
+`sandbox-factory-worker:<id>`, which is how the launcher sees an idle task and
+does not start a second for nothing, and counts the tasks alive. It starts
+another beside them while the claimable and running runs of a kind outnumber
+their slots (`queueState().short`), at most two minutes apart and up to
+`WORKER_MAX_TASKS` (4). Terraform ignores the worker's container definition after bootstrap,
 so an unrelated apply cannot replace the latest worker image with bootstrap.
 Container environment or secret-list changes must be applied to the active
 revision through CD when that list changes.

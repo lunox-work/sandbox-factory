@@ -40,7 +40,7 @@ import type { AgentSettings } from "../agent/loop.js";
 import type { RunTiming } from "../timing.js";
 import type { ArtifactFile, ToolInputs } from "./adapter.js";
 import type { PseudonymCheck, WrittenPseudonyms } from "./pseudonyms.js";
-import { writePseudonyms } from "./pseudonyms.js";
+import { settlePseudonyms, writePseudonyms } from "./pseudonyms.js";
 import { sha256 } from "./slice/hash.js";
 
 /** Where a preparation keeps its name table. */
@@ -130,35 +130,78 @@ export function preparationCheck(input: {
   };
 }
 
-/** Writes a preparation's name table, or none when its agent kept none. */
-export async function writePreparedPseudonyms(input: {
+/** What a preparation's name table is written from. */
+export interface PseudonymsInput {
   readonly settings: AgentSettings;
-  readonly outDir: string;
-  readonly sliceRunId: string;
   readonly listing: { readonly title: string; readonly summary: string };
   readonly spec: SpecDraft;
   readonly files: readonly { readonly path: string; readonly text: string }[];
-  readonly fixtures: readonly SandboxFixture[];
-  readonly scenario: string;
   readonly vocabulary: readonly string[];
   readonly signal: AbortSignal;
   readonly log: (line: string) => void;
   readonly step?: ((text: string) => void) | undefined;
   readonly timing?: RunTiming | undefined;
-}): Promise<ArtifactFile | null> {
+}
+
+/**
+ * A table drafted from the slice while the fixtures agent writes the
+ * fixtures, checked without them; `writePreparedPseudonyms` checks it
+ * against them once they are there.
+ */
+export async function draftPreparedPseudonyms(
+  input: PseudonymsInput,
+): Promise<WrittenPseudonyms | null> {
   if (input.settings.model === null) return null;
-  const written = await writePseudonyms({
+  return writePseudonyms({
     model: input.settings.model,
     limits: input.settings.limits,
     task: { ...input.listing, spec: input.spec },
     files: input.files,
     vocabulary: input.vocabulary,
-    check: preparationCheck(input),
+    check: preparationCheck({ ...input, fixtures: [], scenario: null }),
     signal: input.signal,
     log: input.log,
     step: input.step,
     timing: input.timing,
   });
+}
+
+/**
+ * Writes a preparation's name table, or none when its agent kept none: the
+ * one drafted beside the fixtures when it holds against them, else one an
+ * agent writes, from that draft if there was one.
+ */
+export async function writePreparedPseudonyms(
+  input: PseudonymsInput & {
+    readonly outDir: string;
+    readonly sliceRunId: string;
+    readonly fixtures: readonly SandboxFixture[];
+    readonly scenario: string;
+    readonly drafted: WrittenPseudonyms | null;
+  },
+): Promise<ArtifactFile | null> {
+  const model = input.settings.model;
+  if (model === null) return null;
+  const check = preparationCheck(input);
+  const written = await settlePseudonyms(
+    input.drafted,
+    (drafted) =>
+      writePseudonyms({
+        model,
+        limits: input.settings.limits,
+        task: { ...input.listing, spec: input.spec },
+        files: input.files,
+        vocabulary: input.vocabulary,
+        check,
+        drafted,
+        signal: input.signal,
+        log: input.log,
+        step: input.step,
+        timing: input.timing,
+      }),
+    check,
+    input.log,
+  );
   if (written === null) return null;
   const table = {
     schemaVersion: PREPARED_PSEUDONYMS_SCHEMA_VERSION,

@@ -136,6 +136,7 @@ export function repositoryTools(index: RepositoryIndex): AgentTool[] {
   return [
     {
       name: "list_files",
+      concurrent: true,
       description: `List repository files under a path prefix (such as "src/api/"), ${REPO_TOOL_LIMITS.listPage} at a time, with sizes in bytes. Pass the cursor from the previous page to continue.`,
       inputSchema: {
         properties: { prefix: nullableString, cursor: nullableString },
@@ -173,6 +174,7 @@ export function repositoryTools(index: RepositoryIndex): AgentTool[] {
     },
     {
       name: "read_file",
+      concurrent: true,
       description: `Read a repository text file with line numbers, up to ${REPO_TOOL_LIMITS.readLines} lines per call. Give startLine and endLine to read a range of a longer file.`,
       inputSchema: {
         properties: {
@@ -219,6 +221,7 @@ export function repositoryTools(index: RepositoryIndex): AgentTool[] {
     },
     {
       name: "search",
+      concurrent: true,
       description: `Find lines containing a literal text, case-insensitively, in repository text files under an optional path prefix. Returns up to ${REPO_TOOL_LIMITS.searchMatches} matches as path:line: text.`,
       inputSchema: {
         properties: { text: { type: "string" }, prefix: nullableString },
@@ -281,6 +284,7 @@ export function graphNeighboursTool(graph: SliceGraph): AgentTool {
   const nodes = new Map(graph.nodes.map((node) => [node.id, node]));
   return {
     name: "graph_neighbours",
+    concurrent: true,
     description:
       "List the files and packages a repository file depends on, and the files that depend on it, from the structure analysis.",
     inputSchema: {

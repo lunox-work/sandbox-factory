@@ -507,7 +507,7 @@ test("a requested profile is scoped, sliced and built from what was measured", a
   assert.deepEqual(h.errors, []);
 });
 
-test("at the organization's analysis cap a profile waits, and the rest of the sweep enqueues nothing", async () => {
+test("at the organization's analysis cap a profile waits, and the rest of the sweep enqueues nothing of that slot", async () => {
   const h = harness();
   h.runs.refuse.set("graphify", { ok: false, reason: "run_limit" });
   await h.profiles.request(OWNER, request);
@@ -517,8 +517,9 @@ test("at the organization's analysis cap a profile waits, and the rest of the sw
     [...h.profiles.rows.values()].map((row) => row.status),
     ["queued", "queued"],
   );
-  // The second row was not even tried once the first met the cap.
-  assert.equal(h.runs.enqueued.length, 1);
+  // The second row still asks, since its graph may be built already; the
+  // builds are full, so it waits too.
+  assert.equal(h.runs.enqueued.length, 2);
   assert.equal(h.launches(), 0);
 
   // The graph fits but the scope does not: still queued, tried again later,
@@ -546,6 +547,32 @@ test("at the organization's analysis cap a profile waits, and the rest of the sw
   assert.equal(
     [...h.profiles.rows.values()].every((row) => row.status === "scoping"),
     true,
+  );
+});
+
+test("a full build slot holds back only builds: another profile's scope still goes", async () => {
+  const h = harness();
+  await h.profiles.request(OWNER, request);
+  await h.profiler.sweep();
+  assert.equal(h.profiles.only().status, "scoping");
+  scoped(h);
+  await h.profiles.request(OWNER, { ...request, proposalId: "bpr_2" });
+  h.runs.refuse.set("slice", { ok: false, reason: "run_limit" });
+  await h.profiler.sweep();
+  // The first one's slice meets the cap; the second's scope, an agent run,
+  // is enqueued in the same sweep.
+  assert.deepEqual(
+    [...h.profiles.rows.values()].map((row) => row.status),
+    ["scoping", "scoping"],
+  );
+  // With both slots full, a queued profile asks for nothing.
+  h.runs.refuse.set("scope", { ok: false, reason: "run_limit" });
+  await h.profiles.request(OWNER, { ...request, proposalId: "bpr_3" });
+  await h.profiler.sweep();
+  assert.equal(
+    [...h.profiles.rows.values()].filter((row) => row.status === "queued")
+      .length,
+    1,
   );
 });
 

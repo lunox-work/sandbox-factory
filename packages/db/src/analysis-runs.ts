@@ -17,6 +17,8 @@ import {
   BUILDER_READERS,
   CONTEXT_BUILDERS,
   GRAPH_READERS,
+  RUN_SLOTS,
+  WORKER_SLOTS,
   canonicalJson,
   isAbstractionsParams,
   isDataModelParams,
@@ -24,7 +26,9 @@ import {
   isScopeParams,
   isSliceParams,
   readsSource,
+  slotOf,
   toolOfParams,
+  toolsOfSlot,
   toolVersionOf,
 } from "sandbox-factory";
 import type {
@@ -35,6 +39,7 @@ import type {
   AnalysisTiming,
   AnalysisTool,
   ArtifactKind,
+  RunSlot,
 } from "sandbox-factory";
 import type { Database, QueryExecutor } from "./errors.js";
 import { generateId } from "./mapping.js";
@@ -59,9 +64,14 @@ export const RUN_QUEUED_CHANNEL = "analysis_run_queued";
 export const RUN_ENDED_CHANNEL = "analysis_run_ended";
 /**
  * The `application_name` a worker's connections carry, so the launcher can
- * see a worker that is alive but idle, which has no run to heartbeat.
+ * see a worker that is alive but idle, which has no run to heartbeat. Each
+ * worker adds its own suffix (`workerApplicationName`), so the launcher can
+ * count them.
  */
 export const WORKER_APPLICATION_NAME = "sandbox-factory-worker";
+export function workerApplicationName(workerId: string): string {
+  return `${WORKER_APPLICATION_NAME}:${workerId}`;
+}
 
 async function announce(tx: QueryExecutor, channel: string, runId: string) {
   await tx.execute(sql`select pg_notify(${channel}, ${runId})`);
@@ -148,6 +158,19 @@ export interface NewArtifact {
   readonly sha256: string;
   readonly meta: Record<string, unknown> | null;
 }
+export interface QueueState {
+  /** A run is queued that a worker could claim now. */
+  readonly queued: boolean;
+  readonly freshWorker: boolean;
+  /** Workers connected, at least one while a run heartbeats. */
+  readonly workers: number;
+  /**
+   * The claimable and running runs of some slot outnumber what the workers
+   * connected can run at once (`WORKER_SLOTS`): another worker would start
+   * one at once.
+   */
+  readonly short: boolean;
+}
 export type EnqueueAnalysisResult =
   | {
       ok: true;
@@ -171,6 +194,9 @@ export interface AnalysisRunStore {
    * same snapshot, so it needs no wait. A sandbox build names a succeeded
    * slice run; the API checks that before enqueueing. A starter reads no
    * snapshot: `snapshotId` is null, and its cache is the organization's.
+   * `maxActive` caps the organization's queued and running runs of the
+   * tool's slot (`slotOf`): agent runs and builds are counted apart, as a
+   * worker runs them apart.
    */
   enqueue(
     organizationId: string,
@@ -204,8 +230,18 @@ export interface AnalysisRunStore {
     limit?: number,
     snapshotId?: string,
   ): Promise<StoredAnalysisRun[]>;
-  /** Privileged worker queue discovery. Ownership is returned with the lease. */
-  claimNext(leaseToken: string, now: Date): Promise<ClaimedAnalysisRun | null>;
+  /**
+   * Privileged worker queue discovery. Ownership is returned with the lease.
+   * With `tools`, only a run of one of them: what a worker with only some
+   * slots free can take. The oldest claimable run goes first, except that
+   * an organization with fewer runs already running goes before one with
+   * more, so one workspace's burst does not hold another's behind it.
+   */
+  claimNext(
+    leaseToken: string,
+    now: Date,
+    tools?: readonly AnalysisTool[],
+  ): Promise<ClaimedAnalysisRun | null>;
   /**
    * The oldest claimable run of one of `tools` on one snapshot, claimed as
    * `claimNext` would: what a worker runs beside a run it has just claimed,
@@ -275,7 +311,7 @@ export interface AnalysisRunStore {
    * Privileged queue health, used to launch the trusted worker. A worker is
    * fresh while it heartbeats a run, or while it is connected and idle.
    */
-  queueState(now: Date): Promise<{ queued: boolean; freshWorker: boolean }>;
+  queueState(now: Date): Promise<QueueState>;
   logKey(organizationId: string, runId: string): Promise<string | null>;
 }
 /**
@@ -308,6 +344,17 @@ const CONTEXT_BUILDERS_SQL = sql.raw(
  * is queued or running.
  */
 const CLAIMABLE = sql`a.status = 'queued' and a.tool in (${KNOWN_TOOLS_SQL}) and (a.tool not in (${GRAPH_READERS_SQL}) or not exists (select 1 from analysis_run g where g.id = a.params->>'graphRunId' and g.status in ('queued', 'running'))) and (a.tool not in (${BUILDER_READERS_SQL}) or not exists (select 1 from analysis_run b where b.snapshot_id = a.snapshot_id and b.id <> a.id and b.tool in (${CONTEXT_BUILDERS_SQL}) and b.tool not in (${BUILDER_READERS_SQL}) and b.status in ('queued', 'running')))`;
+/**
+ * How many runs the organization of queued run `a` has running: a claim
+ * takes the run of the organization with the fewest first, so workspaces
+ * share the workers rather than queue behind each other.
+ */
+const RUNNING_BESIDE = sql`(select count(*) from analysis_run r where r.organization_id = a.organization_id and r.status = 'running')`;
+const toolList = (tools: readonly AnalysisTool[]) =>
+  sql.join(
+    tools.map((tool) => sql`${tool}`),
+    sql`, `,
+  );
 function toRun(row: AnalysisRunRow, repoId: string | null): StoredAnalysisRun {
   const tool = knownTool(row.tool);
   if (tool === undefined)
@@ -374,7 +421,7 @@ export function createAnalysisRunStore(db: Database): AnalysisRunStore {
         timing: null,
       })
       .where(
-        sql`${analysisRun.id} = (select a.id from analysis_run a where ${CLAIMABLE} and ${filter} order by a.created_at, a.id for update of a skip locked limit 1)`,
+        sql`${analysisRun.id} = (select a.id from analysis_run a where ${CLAIMABLE} and ${filter} order by ${RUNNING_BESIDE}, a.created_at, a.id for update of a skip locked limit 1)`,
       )
       .returning();
     const run = rows[0];
@@ -522,6 +569,7 @@ export function createAnalysisRunStore(db: Database): AnalysisRunStore {
           .where(
             and(
               owned(owner),
+              inArray(analysisRun.tool, toolsOfSlot(slotOf(tool))),
               or(
                 eq(analysisRun.status, "queued"),
                 eq(analysisRun.status, "running"),
@@ -614,18 +662,17 @@ export function createAnalysisRunStore(db: Database): AnalysisRunStore {
         .filter((row) => knownTool(row.run.tool) !== undefined)
         .map((row) => toRun(row.run, row.repoId));
     },
-    async claimNext(token, now) {
-      return claim(token, now, sql`true`);
+    async claimNext(token, now, tools) {
+      if (tools === undefined) return claim(token, now, sql`true`);
+      if (tools.length === 0) return null;
+      return claim(token, now, sql`a.tool in (${toolList(tools)})`);
     },
     async claimBeside(token, now, beside) {
       if (beside.tools.length === 0) return null;
       return claim(
         token,
         now,
-        sql`a.snapshot_id = ${beside.snapshotId} and a.tool in (${sql.join(
-          beside.tools.map((tool) => sql`${tool}`),
-          sql`, `,
-        )})`,
+        sql`a.snapshot_id = ${beside.snapshotId} and a.tool in (${toolList(beside.tools)})`,
       );
     },
     async heartbeat(owner, id, token, now) {
@@ -801,34 +848,59 @@ export function createAnalysisRunStore(db: Database): AnalysisRunStore {
       return [...new Set(rows.map((row) => row.organizationId))];
     },
     async queueState(now) {
-      const queued = await db
-        .select({ id: analysisRun.id })
-        .from(analysisRun)
-        .where(eq(analysisRun.status, "queued"))
-        .limit(1);
-      const fresh = await db
-        .select({ id: analysisRun.id })
+      // What could be claimed now, and what runs with a live heartbeat, by
+      // tool: the slots a worker would give them.
+      const rows = await db
+        .select({
+          tool: analysisRun.tool,
+          status: analysisRun.status,
+          count: sql<number>`count(*)::int`,
+        })
         .from(analysisRun)
         .where(
-          and(
-            eq(analysisRun.status, "running"),
-            gt(analysisRun.heartbeatAt, new Date(now.getTime() - 60_000)),
-            gt(analysisRun.deadlineAt, now),
+          or(
+            sql`${analysisRun.id} in (select a.id from analysis_run a where ${CLAIMABLE})`,
+            and(
+              eq(analysisRun.status, "running"),
+              gt(analysisRun.heartbeatAt, new Date(now.getTime() - 60_000)),
+              gt(analysisRun.deadlineAt, now),
+            ),
           ),
         )
-        .limit(1);
-      if (fresh.length > 0)
-        return { queued: queued.length > 0, freshWorker: true };
+        .groupBy(analysisRun.tool, analysisRun.status);
       // A polling worker between runs heartbeats nothing, but it holds a
-      // connection to wait for the next enqueue on.
-      const idle = await db
-        .select({ pid: sql<number>`pid` })
+      // connection to wait for the next enqueue on, named for it.
+      const connected = await db
+        .select({
+          workers: sql<number>`count(distinct application_name)::int`,
+        })
         .from(sql`pg_stat_activity`)
         .where(
-          sql`application_name = ${WORKER_APPLICATION_NAME} and datname = current_database()`,
-        )
-        .limit(1);
-      return { queued: queued.length > 0, freshWorker: idle.length > 0 };
+          sql`(application_name = ${WORKER_APPLICATION_NAME} or application_name like ${`${WORKER_APPLICATION_NAME}:%`}) and datname = current_database()`,
+        );
+      const demand = { agent: 0, build: 0 } satisfies Record<RunSlot, number>;
+      let queued = false;
+      let running = false;
+      for (const row of rows) {
+        const tool = knownTool(row.tool);
+        if (tool === undefined) continue;
+        const count = Number(row.count);
+        if (row.status === "queued") queued ||= count > 0;
+        else running ||= count > 0;
+        demand[slotOf(tool)] += count;
+      }
+      const workers = Math.max(
+        Number(connected[0]?.workers ?? 0),
+        running ? 1 : 0,
+      );
+      return {
+        queued,
+        freshWorker: workers > 0,
+        workers,
+        short: RUN_SLOTS.some(
+          (slot) => demand[slot] > workers * WORKER_SLOTS[slot],
+        ),
+      };
     },
     async logKey(owner, id) {
       const row = (

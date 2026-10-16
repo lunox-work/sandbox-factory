@@ -606,6 +606,7 @@ test("worker launch config is optional locally and complete in production", () =
     taskDefinition: "worker",
     subnets: ["one", "two"],
     securityGroup: "egress",
+    maxWorkers: 4,
   });
   assert.throws(
     () => workerLaunchConfig(parseEnv({ ...config, WORKER_SUBNETS: ", ," })),

@@ -40,6 +40,12 @@ export interface AgentToolResult {
 export interface AgentTool extends AgentToolDefinition {
   run(input: unknown, signal: AbortSignal): Promise<AgentToolResult>;
   /**
+   * True for a tool that only reads, so several of its calls in one turn
+   * run at once. A call to any other tool runs alone, in its turn's order:
+   * a submit, a baseline that counts against a budget, a write.
+   */
+  readonly concurrent?: boolean;
+  /**
    * What a call did, in one line for the page following the run: "Read
    * src/mailer.ts". Null for a call not worth a line, as most failed calls
    * are: the agent corrects them on its next turn. Asked of every call, so
@@ -205,38 +211,54 @@ export async function runAgent(input: {
       });
       continue;
     }
-    const results: ToolResultBlock[] = [];
     const counts = new Map<string, number>();
-    let accepted = false;
-    const calling = clock();
-    for (const call of calls) {
+    for (const call of calls)
       counts.set(call.name, (counts.get(call.name) ?? 0) + 1);
+    const answer = async (
+      call: Anthropic.Beta.Messages.BetaToolUseBlock,
+    ): Promise<AgentToolResult> => {
       const tool = byName.get(call.name);
-      let result: AgentToolResult;
       if (reply.stopReason === "max_tokens")
         // A call cut off mid-input can parse as a valid, shorter one.
-        result = {
+        return {
           content:
             "Your reply was cut off before this call was complete. Send it again, shorter.",
           isError: true,
         };
-      else if (tool === undefined)
-        result = {
+      if (tool === undefined)
+        return {
           content: `There is no tool named ${call.name}.`,
           isError: true,
         };
-      else
-        try {
-          result = await tool.run(call.input, signal);
-        } catch (error) {
-          // A coded failure is the platform's, not the agent's to correct:
-          // the evaluator would not start, or a stage failed. It ends the
-          // run under its own code rather than reading as a bad input the
-          // agent spends its next run on.
-          if (signal.aborted || error instanceof AnalysisError) throw error;
-          input.log(`Tool ${call.name} failed.`);
-          result = { content: "The tool failed on that input.", isError: true };
-        }
+      try {
+        return await tool.run(call.input, signal);
+      } catch (error) {
+        // A coded failure is the platform's, not the agent's to correct:
+        // the evaluator would not start, or a stage failed. It ends the
+        // run under its own code rather than reading as a bad input the
+        // agent spends its next run on.
+        if (signal.aborted || error instanceof AnalysisError) throw error;
+        input.log(`Tool ${call.name} failed.`);
+        return { content: "The tool failed on that input.", isError: true };
+      }
+    };
+    const calling = clock();
+    // Consecutive reading calls run together; any other call runs alone,
+    // after those before it and before those after it.
+    const answered: AgentToolResult[] = [];
+    for (let at = 0; at < calls.length;) {
+      let end = at + 1;
+      const together = (index: number) =>
+        byName.get(calls[index]?.name ?? "")?.concurrent === true;
+      if (together(at)) while (end < calls.length && together(end)) end += 1;
+      answered.push(...(await Promise.all(calls.slice(at, end).map(answer))));
+      at = end;
+    }
+    const results: ToolResultBlock[] = [];
+    let accepted = false;
+    calls.forEach((call, index) => {
+      const result = answered[index] as AgentToolResult;
+      const tool = byName.get(call.name);
       // A call cut off or to no tool is not the tool's to describe.
       if (tool?.describe !== undefined && reply.stopReason !== "max_tokens") {
         const line = tool.describe(call.input, result);
@@ -249,7 +271,7 @@ export async function runAgent(input: {
         content: result.content,
         ...(result.isError === true ? { is_error: true } : {}),
       });
-    }
+    });
     input.onTurn?.({ modelMs, toolMs: clock() - calling });
     input.log(
       `Turn ${usage.turns}: ${[...counts.entries()]

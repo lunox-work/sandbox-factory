@@ -14,7 +14,11 @@ import {
   renderGherkin,
   renderSourceContext,
 } from "sandbox-factory";
-import type { ApprovedTaskContext, SpecDraft } from "sandbox-factory";
+import type {
+  AliasRule,
+  ApprovedTaskContext,
+  SpecDraft,
+} from "sandbox-factory";
 
 const SANDBOX_CONTEXT = `You help prepare a sandbox: a small, standalone TypeScript project cut out of a client's private repository, so that an outside developer can implement one ticket without seeing the rest of the code. The developer clones the sandbox, runs \`npm ci\`, \`npm run dev\` and \`npm test\` on their own machine, and changes the copied source.
 
@@ -139,6 +143,11 @@ export function pseudonymsSection(input: {
   /** What the check says of the slice with no pseudonyms. */
   readonly unrenamed: readonly string[];
   readonly overview: string;
+  /** A table drafted before the fixtures, and what the check says of it now. */
+  readonly drafted?: {
+    readonly rules: readonly AliasRule[];
+    readonly problems: readonly string[];
+  };
 }): string {
   return [
     `The bounty's title: ${input.title}`,
@@ -152,6 +161,11 @@ export function pseudonymsSection(input: {
     input.unrenamed.length === 0
       ? "With no pseudonyms, the check finds none of those names in a public file; the slice may still name the workspace in other ways."
       : `With no pseudonyms, the check says:\n${input.unrenamed.map((problem) => `- ${problem}`).join("\n")}`,
+    ...(input.drafted === undefined
+      ? []
+      : [
+          `A table was drafted before the fixtures and the walkthrough were written. Start from it; against them, the check says:\n${input.drafted.problems.map((problem) => `- ${problem}`).join("\n")}\n\nThe drafted table:\n${input.drafted.rules.map((rule, index) => `${index + 1}. ${rule.kind} ${rule.before} -> ${rule.after}${rule.paths.length === 0 ? "" : ` (in ${rule.paths.join(", ")})`}`).join("\n")}`,
+        ]),
     `The slice:\n\n${input.overview}`,
   ].join("\n\n");
 }

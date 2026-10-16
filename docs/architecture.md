@@ -1185,7 +1185,9 @@ the pattern to follow, which the worker checks is a real file. A step that
 meets the organization's analysis cap waits for the next sweep, so a large
 backlog queues behind the cap rather than failing; the profiler meets it a
 slot early, so a person's own analysis is not refused while the backlog
-drains. A failed run fails the
+drains. The cap counts agent runs and builds apart, as a worker runs them
+apart: builds at the cap hold back only builds, so another repository's
+scope still goes in the same sweep. A failed run fails the
 profile for that revision; a re-price drafts a new revision and asks again.
 The whole chain needs what analysis needs, plus the agent's key.
 

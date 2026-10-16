@@ -578,30 +578,63 @@ test("lease mutations refuse stale writes; finish inserts artifacts only after a
 test("watchdog discovery deduplicates owners and reads queue health", async () => {
   const fake = createSequencedFakeDb([
     [{ organizationId: "a" }, { organizationId: "a" }, { organizationId: "b" }],
-    [{ id: "queued" }],
-    [{ id: "live" }],
+    [
+      { tool: "graphify", status: "queued", count: 1 },
+      { tool: "scope", status: "running", count: 1 },
+    ],
+    [{ workers: 1 }],
     [{ logKey: "log" }],
     [],
   ]);
   const store = createAnalysisRunStore(fake.db);
   assert.deepEqual(await store.organizationsWithExpiredRuns(now), ["a", "b"]);
+  // One worker has a slot of each kind for these two.
   assert.deepEqual(await store.queueState(now), {
     queued: true,
     freshWorker: true,
+    workers: 1,
+    short: false,
   });
   assert.equal(await store.logKey("a", "run"), "log");
   assert.equal(await store.logKey("b", "run"), null);
   assert.deepEqual(
     await createAnalysisRunStore(createFakeDb([]).db).queueState(now),
-    { queued: false, freshWorker: false },
+    { queued: false, freshWorker: false, workers: 0, short: false },
   );
   // No run heartbeats, but a polling worker is connected and idle.
   assert.deepEqual(
     await createAnalysisRunStore(
-      createSequencedFakeDb([[{ id: "queued" }], [], [{ pid: 7 }]]).db,
+      createSequencedFakeDb([
+        [{ tool: "scope", status: "queued", count: 1 }],
+        [{ workers: 1 }],
+      ]).db,
     ).queueState(now),
-    { queued: true, freshWorker: true },
+    { queued: true, freshWorker: true, workers: 1, short: false },
   );
+  // Two builds for one worker's one build slot: another worker would start
+  // one now. A run heartbeating counts a worker even unnamed, and a tool
+  // this build does not know counts toward nothing.
+  assert.deepEqual(
+    await createAnalysisRunStore(
+      createSequencedFakeDb([
+        [
+          { tool: "slice", status: "queued", count: 1 },
+          { tool: "graphify", status: "running", count: 1 },
+          { tool: "deepwiki", status: "queued", count: 4 },
+        ],
+        [{ workers: 0 }],
+      ]).db,
+    ).queueState(now),
+    { queued: true, freshWorker: true, workers: 1, short: true },
+  );
+});
+test("a claim filtered to no tools claims nothing", async () => {
+  const idle = createFakeDb([]);
+  const store = createAnalysisRunStore(idle.db);
+  assert.equal(await store.claimNext("lease", now, []), null);
+  assert.equal(idle.calls.length, 0);
+  assert.equal(await store.claimNext("lease", now, ["scope"]), null);
+  assert.equal(idle.calls.length, 1);
 });
 test("artifacts are owner-scoped and never convert dates or expose an absent row incorrectly", async () => {
   const artifact: ArtifactRow = {

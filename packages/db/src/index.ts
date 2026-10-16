@@ -215,6 +215,7 @@ export {
   RUN_ENDED_CHANNEL,
   RUN_QUEUED_CHANNEL,
   WORKER_APPLICATION_NAME,
+  workerApplicationName,
 } from "./analysis-runs.js";
 export type {
   AnalysisRunStore,
@@ -222,6 +223,7 @@ export type {
   ClaimedAnalysisRun,
   EnqueueAnalysisResult,
   NewArtifact,
+  QueueState,
 } from "./analysis-runs.js";
 export { createArtifactStore } from "./artifacts.js";
 export type { ArtifactStore, StoredArtifact } from "./artifacts.js";

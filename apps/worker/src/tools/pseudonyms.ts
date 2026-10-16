@@ -140,6 +140,12 @@ export async function writePseudonyms(input: {
   readonly vocabulary: readonly string[];
   /** The build's check of a table; pure, so cheap to repeat. */
   readonly check: (rules: readonly AliasRule[]) => PseudonymCheck;
+  /**
+   * A table drafted before the fixtures were written, which this check
+   * refuses: the agent starts from it, told why, and what it spent counts
+   * toward this table's usage.
+   */
+  readonly drafted?: WrittenPseudonyms | undefined;
   readonly signal: AbortSignal;
   readonly log: (line: string) => void;
   readonly step?: ((text: string) => void) | undefined;
@@ -227,6 +233,17 @@ export async function writePseudonyms(input: {
         vocabulary: input.vocabulary,
         unrenamed: input.check([]).problems,
         overview: repositoryOverview(index),
+        ...(input.drafted === undefined
+          ? {}
+          : {
+              drafted: {
+                rules: input.drafted.rules,
+                problems: problemsOf(
+                  input.drafted.rules,
+                  input.check(input.drafted.rules),
+                ),
+              },
+            }),
       }),
       tools: [...repositoryTools(index), checkTool, submitTool],
       submitTool: "submit_pseudonyms",
@@ -240,8 +257,53 @@ export async function writePseudonyms(input: {
         ? `Pseudonyms agent stopped (${outcome.stopped}) with no table kept.`
         : `Pseudonyms agent wrote ${answer.rules.length} pseudonym(s).`,
     );
-    return answer === null ? null : { ...answer, usage: outcome.usage };
+    return answer === null
+      ? null
+      : {
+          ...answer,
+          usage:
+            input.drafted === undefined
+              ? outcome.usage
+              : addUsage(input.drafted.usage, outcome.usage),
+        };
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+}
+
+/** Two agents' spend on one table, under the later one's model. */
+function addUsage(first: AgentUsage, second: AgentUsage): AgentUsage {
+  return {
+    model: second.model,
+    turns: first.turns + second.turns,
+    inputTokens: first.inputTokens + second.inputTokens,
+    outputTokens: first.outputTokens + second.outputTokens,
+    cacheReadTokens: first.cacheReadTokens + second.cacheReadTokens,
+    cacheWriteTokens: first.cacheWriteTokens + second.cacheWriteTokens,
+  };
+}
+
+/**
+ * The table for a slice once its fixtures are written: one drafted beside
+ * the fixtures agent when it holds against them too, else an agent's,
+ * started from that draft. Null when no agent settles one.
+ */
+export async function settlePseudonyms(
+  drafted: WrittenPseudonyms | null,
+  write: (
+    drafted: WrittenPseudonyms | undefined,
+  ) => Promise<WrittenPseudonyms | null>,
+  check: (rules: readonly AliasRule[]) => PseudonymCheck,
+  log: (line: string) => void,
+): Promise<WrittenPseudonyms | null> {
+  if (drafted === null) return write(undefined);
+  const problems = problemsOf(drafted.rules, check(drafted.rules));
+  if (problems.length === 0) {
+    log("The pseudonyms drafted beside the fixtures hold against them.");
+    return drafted;
+  }
+  log(
+    `The pseudonyms drafted beside the fixtures do not hold against them (${problems.length} problem(s)); an agent amends the table.`,
+  );
+  return write(drafted);
 }

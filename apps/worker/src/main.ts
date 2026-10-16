@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -10,7 +11,7 @@ import {
   createSandboxStore,
   RUN_ENDED_CHANNEL,
   RUN_QUEUED_CHANNEL,
-  WORKER_APPLICATION_NAME,
+  workerApplicationName,
 } from "@sandbox-factory/db";
 import type { ClaimedAnalysisRun } from "@sandbox-factory/db";
 import type { AnalysisTool } from "sandbox-factory";
@@ -23,6 +24,7 @@ import { createSourceCache } from "./source-cache.js";
 import { createAnthropicModel } from "./agent/anthropic.js";
 import type { AgentSettings } from "./agent/loop.js";
 import { createLocalProcessProvider } from "./evaluation/local-process.js";
+import { EVALUATION_JOBS_MAX, limitJobs } from "./evaluation/limit.js";
 import { createTaskReader } from "./tasks.js";
 import { createAbstractionsAdapter } from "./tools/abstractions.js";
 import { createBriefAdapter } from "./tools/brief.js";
@@ -38,11 +40,12 @@ import { createStarterAdapter } from "./tools/starter.js";
 
 const env = parseWorkerEnv();
 // Named, so the launcher sees this worker while it is idle and has no run
-// to heartbeat.
+// to heartbeat, and tells it from the others it counts. Sized for every
+// slot's run to heartbeat and write beside a claim and the listener.
 const connection = createConnection({
   url: env.DATABASE_URL,
-  max: 3,
-  applicationName: WORKER_APPLICATION_NAME,
+  max: 8,
+  applicationName: workerApplicationName(randomUUID().slice(0, 8)),
 });
 const runs = createAnalysisRunStore(connection.db);
 const artifacts = createArtifactStore(connection.db);
@@ -66,9 +69,11 @@ const agent: AgentSettings = {
 // Development provider: a fresh directory and scrubbed processes, not an
 // isolation boundary, so only a worker that opts in runs builds with it. A
 // hosted provider replaces it once qualified.
+// Two jobs at once at most: the agent slots can hold three builds, each
+// with a baseline to run.
 const evaluation =
   env.EVALUATION_PROVIDER === "local-process"
-    ? createLocalProcessProvider()
+    ? limitJobs(createLocalProcessProvider(), EVALUATION_JOBS_MAX)
     : null;
 const objects = createObjectStore({
   bucket: env.S3_BUCKET,
@@ -150,7 +155,7 @@ try {
     runs,
     mode: env.WORKER_MODE,
     signal: stopClaiming.signal,
-    wait: () => idle.wait(),
+    wait: (cancel) => idle.wait(cancel),
     // A commit's lighter builders read the one checkout and wait on the
     // same graph, so they share a claim rather than queue behind each other.
     beside: (run) => {

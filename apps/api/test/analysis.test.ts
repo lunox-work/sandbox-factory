@@ -858,7 +858,14 @@ test("launcher coalesces launches and skips fresh workers, empty queues, and loc
     securityGroup: "egress",
   };
   const options = {
-    runs: { queueState: async () => ({ queued, freshWorker }) },
+    runs: {
+      queueState: async () => ({
+        queued,
+        freshWorker,
+        workers: freshWorker ? 1 : 0,
+        short: false,
+      }),
+    },
     config,
     now: () => now,
     launch: async (input: unknown) => {

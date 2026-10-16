@@ -705,7 +705,9 @@ test("once drains the queue, poll waits, and stop prevents further claims", asyn
       executions++;
     },
   });
-  assert.equal(claims, 2);
+  // The run, an empty claim for the slots still free beside it, and an
+  // empty one once it has ended.
+  assert.equal(claims, 3);
   assert.equal(executions, 1);
   await workerLoop({
     runs: { claimNext: async () => null },
@@ -806,9 +808,93 @@ test("a polling worker stays warm for its idle minutes after a run, then returns
     idleExitMs: 10_000,
     now: () => clock,
   });
-  // Idle 0 s, a run at 4 s, then idle from 4 s until 14 s.
-  assert.deepEqual(waits, [0, 4_000, 8_000, 12_000]);
-  assert.equal(claims, 6);
+  // Idle 0 s; a run claimed at 4 s, beside which the loop waits for a run
+  // of a free slot (the clock's 4 s more); idle from 8 s until 18 s.
+  assert.deepEqual(waits, [0, 4_000, 8_000, 12_000, 16_000]);
+  assert.equal(claims, 7);
+});
+test("a worker runs agent runs beside a build, and claims only the slots it has free", async () => {
+  const of = (id: string, tool: ClaimedAnalysisRun["tool"]) => ({
+    ...run,
+    id,
+    tool,
+  });
+  const queue = [
+    of("arn_graph", "graphify"),
+    of("arn_scope", "scope"),
+    of("arn_fixtures", "fixtures"),
+    of("arn_build", "sandbox_build"),
+    of("arn_slice", "slice"),
+  ];
+  const asked: (readonly string[] | undefined)[] = [];
+  const release = new Map<string, () => void>();
+  const started: string[] = [];
+  const done = workerLoop({
+    runs: {
+      claimNext: async (_token, _now, tools) => {
+        asked.push(tools);
+        const index = queue.findIndex(
+          (item) => tools === undefined || tools.includes(item.tool),
+        );
+        return index < 0 ? null : (queue.splice(index, 1)[0] ?? null);
+      },
+    },
+    mode: "once",
+    signal: new AbortController().signal,
+    execute: (claimed) => {
+      started.push(claimed.id);
+      return new Promise<void>((resolve) => release.set(claimed.id, resolve));
+    },
+  });
+  await delay(5);
+  // One build and three agent runs at once; the slice waits for the build.
+  assert.deepEqual(started, [
+    "arn_graph",
+    "arn_scope",
+    "arn_fixtures",
+    "arn_build",
+  ]);
+  assert.equal(asked[0], undefined);
+  assert.ok(asked[1]?.includes("scope") && !asked[1].includes("slice"));
+  // Every slot busy: nothing is claimed until a run ends.
+  const claimsWhileFull = asked.length;
+  await delay(5);
+  assert.equal(asked.length, claimsWhileFull);
+  release.get("arn_graph")?.();
+  await delay(5);
+  assert.deepEqual(started.slice(4), ["arn_slice"]);
+  for (const id of ["arn_scope", "arn_fixtures", "arn_build", "arn_slice"])
+    release.get(id)?.();
+  await done;
+});
+test("a run that throws ends the loop once the others beside it have ended", async () => {
+  let claims = 0;
+  let otherEnded = false;
+  await assert.rejects(
+    workerLoop({
+      runs: {
+        claimNext: async () =>
+          ++claims === 1
+            ? { ...run, id: "arn_scope", tool: "scope" }
+            : claims === 2
+              ? { ...run, id: "arn_graph", tool: "graphify" }
+              : null,
+      },
+      mode: "poll",
+      signal: new AbortController().signal,
+      wait: (cancel) =>
+        new Promise((resolve) =>
+          cancel?.addEventListener("abort", () => resolve()),
+        ),
+      execute: async (claimed) => {
+        if (claimed.tool === "scope") throw new Error("broken");
+        await delay(10);
+        otherEnded = true;
+      },
+    }),
+    /broken/,
+  );
+  assert.equal(otherEnded, true);
 });
 test("the poll's wait ends early on a wake, keeps one that came first, and ends on stop", async () => {
   const stop = new AbortController();
@@ -824,6 +910,16 @@ test("the poll's wait ends early on a wake, keeps one that came first, and ends 
   const stopped = idle.wait();
   stop.abort();
   await assert.rejects(stopped);
+  // A wait its caller cancels keeps a wake that comes after for the next.
+  const second = wakeableWait(60_000, new AbortController().signal);
+  const cancel = new AbortController();
+  const cancelled = second.wait(cancel.signal);
+  cancel.abort();
+  await assert.rejects(cancelled);
+  second.wake();
+  const kept = Date.now();
+  await second.wait();
+  assert.ok(Date.now() - kept < 1_000);
 });
 test("worker validates credentials, modes, and bounded limits", () => {
   const privateKey = generateKeyPairSync("rsa", { modulusLength: 2048 })

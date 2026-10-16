@@ -48,6 +48,7 @@ export function moduleSurfaceTool(index: AbstractionIndex): AgentTool {
   const modules = new Map(index.modules.map((module) => [module.path, module]));
   return {
     name: "module_surface",
+    concurrent: true,
     description:
       "Show a repository module's exported surface: each export's kind, signature (bodies elided) and line, and the types it names. Coverage says how it was read: `typed` is the TypeScript compiler's declaration, `syntactic` a signature as written with no type resolved, `names-only` names alone. This is what a stub for the module would declare.",
     inputSchema: {
@@ -139,6 +140,7 @@ export function moduleSeamsTool(
   const known = new Set(files);
   return {
     name: "module_seams",
+    concurrent: true,
     description:
       "Look up, without slicing, the services (SDKs, database and HTTP clients) and environment variables that the given files reach, exactly as `check_scope` would list them for a slice that includes those files. A path may be a directory, for every file under it. Use it to find where the outside world is touched before spending a check.",
     inputSchema: {
@@ -217,6 +219,7 @@ export function dataModelTool(model: DataModel): AgentTool {
   const enums = new Map(model.enums.map((value) => [value.name, value]));
   return {
     name: "data_model",
+    concurrent: true,
     description:
       "Read the repository's data model, from its schema and migrations. With entity null: the storage, every entity with its table and field count, and the accessor modules that read or write entities, which are where a database seam belongs. With an entity's name or table: its fields (type, nullability, default, keys, enum values), its relations both ways with their delete behaviour, and the modules that touch it.",
     inputSchema: {
