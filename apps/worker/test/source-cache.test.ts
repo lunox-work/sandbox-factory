@@ -231,3 +231,120 @@ test("a restarted worker keeps complete entries and removes cut-short ones", asy
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test("past the bound only the least recently used go, and every entry that fits is kept", async () => {
+  const directory = await root();
+  let clock = 0;
+  try {
+    const cache = await createSourceCache({
+      root: directory,
+      maxBytes: 35,
+      now: () => (clock += 1),
+    });
+    const { fill, calls } = filler(10);
+    for (const key of ["a", "b", "c"])
+      (await cache.checkout(key, fill)).release();
+    // `a` is read again, so `b` is the least recently used of the three.
+    (await cache.checkout("a", fill)).release();
+    // A fourth puts the cache 5 bytes past its bound: `b` alone goes.
+    (await cache.checkout("d", fill)).release();
+    assert.equal(calls.length, 4);
+    for (const key of ["a", "c", "d"]) {
+      const kept = await cache.checkout(key, fill);
+      assert.equal(kept.hit, true, key);
+      kept.release();
+    }
+    assert.equal(calls.length, 4);
+    assert.equal((await cache.checkout("b", fill)).hit, false);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("evictions that overlap remove only what puts the cache past its bound", async () => {
+  const directory = await root();
+  let clock = 0;
+  try {
+    const cache = await createSourceCache({
+      root: directory,
+      maxBytes: 25,
+      now: () => (clock += 1),
+    });
+    for (const key of ["a", "b", "c", "d", "e", "f"])
+      (await cache.checkout(key, filler(2).fill)).release();
+    // Two fills of 10 bytes land together, so their evictions overlap:
+    // 32 bytes, of which the four oldest small entries must go, no more.
+    const [x, y] = await Promise.all([
+      cache.checkout("x", filler(10).fill),
+      cache.checkout("y", filler(10).fill),
+    ]);
+    assert.equal((await readdir(directory)).length, 4);
+    for (const key of ["e", "f"]) {
+      const kept = await cache.checkout(key, filler(2).fill);
+      assert.equal(kept.hit, true, key);
+      kept.release();
+    }
+    x.release();
+    y.release();
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("a run waiting on another run's fill stops when its own signal aborts", async () => {
+  const directory = await root();
+  try {
+    const cache = await createSourceCache({ root: directory });
+    let finish!: () => void;
+    let started!: () => void;
+    const filling = new Promise<void>((resolve) => (started = resolve));
+    const { fill, calls } = filler();
+    const owner = cache.checkout("a", async (into) => {
+      started();
+      await new Promise<void>((resolve) => (finish = resolve));
+      return fill(into);
+    });
+    await filling;
+    const abort = new AbortController();
+    const waiter = cache.checkout("a", filler().fill, abort.signal);
+    abort.abort(new Error("tool_timeout"));
+    await assert.rejects(waiter, /tool_timeout/);
+    // A run already cut short does not wait at all.
+    await assert.rejects(
+      cache.checkout("a", filler().fill, abort.signal),
+      /tool_timeout/,
+    );
+    // The fill goes on for the run that started it.
+    finish();
+    const own = await owner;
+    assert.equal(own.hit, false);
+    assert.equal(own.waited, false);
+    assert.equal(calls.length, 1);
+    assert.equal(
+      await readFile(join(own.path, "a.ts"), "utf8"),
+      "x".repeat(10),
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("a run that waits for another run's fill is no hit", async () => {
+  const directory = await root();
+  try {
+    const cache = await createSourceCache({ root: directory });
+    const { fill } = filler();
+    const [owner, waiter] = await Promise.all([
+      cache.checkout("a", fill),
+      cache.checkout("a", fill),
+    ]);
+    assert.deepEqual(
+      [owner.hit, owner.waited, waiter.hit, waiter.waited],
+      [false, false, false, true],
+    );
+    const again = await cache.checkout("a", fill);
+    assert.deepEqual([again.hit, again.waited], [true, false]);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});

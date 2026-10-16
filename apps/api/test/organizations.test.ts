@@ -264,6 +264,44 @@ test("the list answers each workspace's setup, counted for those listed", async 
   });
 });
 
+test("the list's setup counts the caller's own workspaces only", async () => {
+  const counted = (bounties: 0 | 1, proposals: number) => ({
+    jiraConnected: 0,
+    jiraBroken: 0,
+    jiraBoards: 0,
+    githubConnected: 0,
+    githubRepositories: 0,
+    proposals,
+    bounties,
+  });
+  const asked: (readonly string[])[] = [];
+  // A store that answers more than asked still answers no other workspace.
+  const setup: AppOptions["setup"] = {
+    forOrganizations: async (ids) => {
+      asked.push(ids);
+      return new Map([
+        [acme.id, counted(0, 0)],
+        ["org_elsewhere", counted(1, 9)],
+      ]);
+    },
+  };
+  const res = await app({ setup }).request("/api/v1/me/orgs");
+  const body = (await res.json()) as {
+    organizations: { id: string; setup?: { bounties: number } }[];
+  };
+  assert.deepEqual(asked, [[acme.id]]);
+  assert.deepEqual(
+    body.organizations.map(({ id }) => id),
+    [acme.id],
+  );
+  assert.equal(body.organizations[0]?.setup?.bounties, 0);
+  assert.doesNotMatch(JSON.stringify(body), /org_elsewhere|"proposals":9/);
+  // Someone in none is counted for none.
+  const none = await app({ as: stranger, setup }).request("/api/v1/me/orgs");
+  assert.deepEqual(await none.json(), { organizations: [] });
+  assert.deepEqual(asked.at(-1), []);
+});
+
 test("someone in no organization gets an empty list", async () => {
   const res = await app({ as: stranger }).request("/api/v1/me/orgs");
 

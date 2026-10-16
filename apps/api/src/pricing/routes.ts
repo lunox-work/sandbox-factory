@@ -98,7 +98,8 @@ export interface PricingReads {
   /**
    * A proposal's read, its spec and its profiles, each as its own route
    * answers it (`BountyLiveDto` on the wire); null for a proposal that is
-   * not the organization's.
+   * not the organization's. Never waits on Jira: the read's freshness is
+   * as last read or stored, and the proposal's own read checks again.
    */
   live(organizationId: string, proposalId: string): Promise<BountyLive | null>;
 }
@@ -112,14 +113,20 @@ export function mountPricingRoutes<Env extends PricingAppEnv>(
   // A proposal's page reads its issue at most once a minute, its poll too.
   const recentIssues = recentReads<JiraIssueSpec>();
 
-  /** `GET /proposals/:id`'s answer. The stored reads do not wait on Jira's. */
+  /**
+   * `GET /proposals/:id`'s answer. The stored reads do not wait on Jira's;
+   * `storedOnly`, as a bounty's `?with=live` asks, nothing waits on Jira:
+   * its freshness is the last minute's read or the stored bounty's, and
+   * the proposal's own read on mount checks Jira again.
+   */
   const detailBody = async (
     organizationId: string,
     proposal: NonNullable<Awaited<ReturnType<BountyProposalStore["get"]>>>,
+    storedOnly = false,
   ) => {
     const [live, writebackOperations, activeRun] = await Promise.all([
       freshProposal(
-        { ...reviewOptions(options), recent: recentIssues },
+        { ...reviewOptions(options), recent: recentIssues, storedOnly },
         organizationId,
         proposal,
       ),
@@ -1420,7 +1427,7 @@ export function mountPricingRoutes<Env extends PricingAppEnv>(
       const proposal = await options.proposals.get(organizationId, proposalId);
       if (proposal === null) return null;
       const [detail, spec, profiles] = await Promise.all([
-        detailBody(organizationId, proposal),
+        detailBody(organizationId, proposal, true),
         proposal.specRevision === null
           ? null
           : options.specs.get(

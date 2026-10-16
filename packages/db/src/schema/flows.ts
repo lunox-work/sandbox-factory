@@ -15,6 +15,12 @@
  *   proposal it writes; a board's issue run counts when it sized one
  *   bounty a person picked. A backlog run is a batch, and is left out, as
  *   is a run that wrote no proposal (one skipped for a live proposal).
+ *   The write is the run's own `proposal_written_at`: a re-price rewrites
+ *   the proposal in place, moving its `run_id` and keeping its
+ *   `created_at`. Runs from before that was kept fall back to the spec
+ *   revision the run wrote, then to the proposal it created; a re-price's
+ *   proposal says nothing about the re-price, so one with neither is left
+ *   out.
  * - `rubric`: from that click, for the same runs, to the last of the spec
  *   revision's profiles being ready, which is when the rubric can size it.
  * - `sandbox_sliced`, `sandbox_generated`: from a sandbox version's draft
@@ -44,12 +50,16 @@ const SAMPLES = sql`
   select 'price' as flow, r.organization_id, r.created_at as started_at,
     extract(epoch from w.written_at - r.created_at)::double precision as seconds
   from bounty_run r
-  join lateral (
-    select min(p.created_at) as written_at
-    from bounty_proposal p
-    where p.run_id = r.id
-  ) w on w.written_at is not null
-  where (r.kind in ('bounty', 'reprice')
+  cross join lateral (
+    select coalesce(
+      r.proposal_written_at,
+      (select min(s.created_at) from bounty_spec s where s.run_id = r.id),
+      (select min(p.created_at) from bounty_proposal p
+        where p.run_id = r.id and r.kind <> 'reprice')
+    ) as written_at
+  ) w
+  where w.written_at is not null
+    and (r.kind in ('bounty', 'reprice')
       or (r.kind = 'issue' and jsonb_array_length(r.planned) = 1))
     and r.status in ('succeeded', 'partial')
   union all

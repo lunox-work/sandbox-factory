@@ -858,3 +858,85 @@ test("a turn's reading calls run together, and any other call runs alone in its 
     ["a", "b", "w", "c"],
   );
 });
+test("reading calls that finish out of order answer in the turn's order, by id", async () => {
+  const events: string[] = [];
+  let running = 0;
+  const reader = (name: string, ms: number): AgentTool => ({
+    name,
+    description: "Read.",
+    inputSchema: { properties: {}, required: [], additionalProperties: false },
+    concurrent: true,
+    async run(input) {
+      running += 1;
+      events.push(`${name} start`);
+      await new Promise((resolve) => setTimeout(resolve, ms));
+      events.push(`${name} end`);
+      running -= 1;
+      return { content: `${name}:${JSON.stringify(input)}` };
+    },
+  });
+  const alone = (name: string): AgentTool => ({
+    name,
+    description: "Not a read.",
+    inputSchema: { properties: {}, required: [], additionalProperties: false },
+    async run() {
+      // Nothing else of the turn runs while this one does.
+      assert.equal(running, 0);
+      running += 1;
+      events.push(`${name} start`);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      events.push(`${name} end`);
+      running -= 1;
+      return { content: name };
+    },
+  });
+  const model = scripted([
+    turn([
+      call("baseline", {}, "t0"),
+      // The first of the two reads is the slower, so it ends last.
+      call("slow", { n: 1 }, "t1"),
+      call("fast", { n: 2 }, "t2"),
+      call("check", {}, "t3"),
+    ]),
+    turn([call("submit", {}, "t4")]),
+  ]);
+  const outcome = await runAgent({
+    model,
+    system: "s",
+    prompt: "p",
+    tools: [
+      reader("slow", 30),
+      reader("fast", 1),
+      alone("baseline"),
+      alone("check"),
+      submit(() => true),
+    ],
+    submitTool: "submit",
+    limits: { maxTurns: 5, maxTokens: 1_000_000 },
+    signal,
+    log: () => {},
+  });
+  assert.equal(outcome.stopped, "accepted");
+  assert.deepEqual(events, [
+    "baseline start",
+    "baseline end",
+    "slow start",
+    "fast start",
+    "fast end",
+    "slow end",
+    "check start",
+    "check end",
+  ]);
+  const answered = model.requests[1]?.messages.at(-1) as {
+    content: { tool_use_id: string; content: string }[];
+  };
+  assert.deepEqual(
+    answered.content.map((block) => [block.tool_use_id, block.content]),
+    [
+      ["t0", "baseline"],
+      ["t1", 'slow:{"n":1}'],
+      ["t2", 'fast:{"n":2}'],
+      ["t3", "check"],
+    ],
+  );
+});

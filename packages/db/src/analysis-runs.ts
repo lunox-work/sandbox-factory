@@ -18,6 +18,7 @@ import {
   CONTEXT_BUILDERS,
   GRAPH_READERS,
   RUN_SLOTS,
+  SHARED_CLAIM,
   WORKER_SLOTS,
   canonicalJson,
   isAbstractionsParams,
@@ -430,6 +431,25 @@ const fence = (owner: string, id: string, token: string, now: Date) =>
     eq(analysisRun.leaseToken, token),
     gt(analysisRun.leaseExpiresAt, now),
   );
+
+/**
+ * How many claims a worker makes of one snapshot's builders that share
+ * one (`SHARED_CLAIM`): each claim takes a run and one of each tool it
+ * shares with, as the worker's `claimBeside` does.
+ */
+function sharedClaims(tools: Map<AnalysisTool, number>): number {
+  const order = ANALYSIS_TOOLS.filter((tool) => tools.has(tool));
+  let claims = 0;
+  for (;;) {
+    const lead = order.find((tool) => (tools.get(tool) ?? 0) > 0);
+    if (lead === undefined) return claims;
+    claims += 1;
+    for (const tool of [lead, ...(SHARED_CLAIM[lead] ?? [])]) {
+      const left = tools.get(tool) ?? 0;
+      if (left > 0) tools.set(tool, left - 1);
+    }
+  }
+}
 
 export function createAnalysisRunStore(db: Database): AnalysisRunStore {
   // Left: a run with no snapshot has no repository either.
@@ -922,11 +942,12 @@ export function createAnalysisRunStore(db: Database): AnalysisRunStore {
     },
     async queueState(now) {
       // What could be claimed now, and what runs with a live heartbeat, by
-      // tool: the slots a worker would give them.
+      // tool and snapshot: the slots a worker would give them.
       const rows = await db
         .select({
           tool: analysisRun.tool,
           status: analysisRun.status,
+          snapshotId: analysisRun.snapshotId,
           count: sql<number>`count(*)::int`,
         })
         .from(analysisRun)
@@ -940,7 +961,7 @@ export function createAnalysisRunStore(db: Database): AnalysisRunStore {
             ),
           ),
         )
-        .groupBy(analysisRun.tool, analysisRun.status);
+        .groupBy(analysisRun.tool, analysisRun.status, analysisRun.snapshotId);
       // A polling worker between runs heartbeats nothing, but it holds a
       // connection to wait for the next enqueue on, named for it.
       const connected = await db
@@ -952,6 +973,9 @@ export function createAnalysisRunStore(db: Database): AnalysisRunStore {
           sql`(application_name = ${WORKER_APPLICATION_NAME} or application_name like ${`${WORKER_APPLICATION_NAME}:%`}) and datname = current_database()`,
         );
       const demand = { agent: 0, build: 0 } satisfies Record<RunSlot, number>;
+      // A snapshot's builders that share a claim, by tool: counted below as
+      // the claims a worker would make of them, not one slot each.
+      const shared = new Map<string, Map<AnalysisTool, number>>();
       let queued = false;
       let running = false;
       for (const row of rows) {
@@ -960,8 +984,16 @@ export function createAnalysisRunStore(db: Database): AnalysisRunStore {
         const count = Number(row.count);
         if (row.status === "queued") queued ||= count > 0;
         else running ||= count > 0;
-        demand[slotOf(tool)] += count;
+        const snapshotId = row.snapshotId ?? null;
+        if (snapshotId === null || SHARED_CLAIM[tool] === undefined) {
+          demand[slotOf(tool)] += count;
+          continue;
+        }
+        const tools = shared.get(snapshotId) ?? new Map();
+        tools.set(tool, (tools.get(tool) ?? 0) + count);
+        shared.set(snapshotId, tools);
       }
+      for (const tools of shared.values()) demand.build += sharedClaims(tools);
       const workers = Math.max(
         Number(connected[0]?.workers ?? 0),
         running ? 1 : 0,

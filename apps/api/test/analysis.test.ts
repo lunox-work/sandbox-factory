@@ -824,6 +824,46 @@ test("a sandbox's preparation is kept from members, as a build is; a person's fi
     );
   }
 });
+test("a sandbox's preparation and its artifacts never reach a member through ?with=artifacts", async () => {
+  const prepared: StoredAnalysisRun = {
+    ...run,
+    id: "arn_prepared",
+    tool: "fixtures",
+    params: {
+      deadlineMinutes: 90,
+      agent: "fixtures",
+      proposalId: "bpr_1",
+      specRevision: 1,
+      specHash: "h",
+      sliceRunId: "arn_slice",
+      pseudonyms: { vocabulary: [], title: "t", summary: "s" },
+    },
+  };
+  const member = fixture("member");
+  const artifactsFor: string[] = [];
+  const list = member.options.artifacts.list;
+  member.options.runs.list = async () => [prepared, run];
+  member.options.artifacts.list = async (...args: unknown[]) => {
+    artifactsFor.push(String(args[1]));
+    return list(String(args[0]), String(args[1]));
+  };
+  const response = await member.request(
+    "repositories/ghr_1/runs?snapshotId=rsn_1&with=artifacts",
+  );
+  assert.equal(response.status, 200);
+  const text = await response.text();
+  const body = JSON.parse(text) as {
+    runs: { id: string }[];
+    artifacts: Record<string, unknown[]>;
+  };
+  assert.deepEqual(
+    body.runs.map(({ id }) => id),
+    [run.id],
+  );
+  assert.deepEqual(Object.keys(body.artifacts), [run.id]);
+  assert.deepEqual(artifactsFor, [run.id]);
+  assert.doesNotMatch(text, /arn_prepared|pseudonyms|objectKey/);
+});
 test("members read an artifact as text, unless it is binary or too large", async () => {
   const f = fixture("member");
   const text = await f.request("artifacts/art_1/content");

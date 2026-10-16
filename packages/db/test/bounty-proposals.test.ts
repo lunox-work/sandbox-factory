@@ -1036,6 +1036,68 @@ test("remove deletes a proposed proposal by expected revision", async () => {
   if (!conflict.ok) assert.equal(conflict.reason, "changed");
 });
 
+test("a run's proposal write is stamped on the run, which a re-price does not move", async () => {
+  const written = (fake: ReturnType<typeof createSequencedFakeDb>) =>
+    fake.calls.filter(
+      (call) => call.kind === "update" && call.values?.["proposalWrittenAt"],
+    );
+  const running = {
+    id: "brn_1",
+    boardId: "jrb_1",
+    bountyId: null,
+  } as BountyRunRow;
+  const created = createSequencedFakeDb([[running], [BOUNTY], [row()]]);
+  await createBountyProposalStore(created.db).createForLease(
+    "org_1",
+    "lease",
+    input,
+  );
+  // Last in the write's transaction, by the run that wrote it.
+  assert.equal(written(created).length, 1);
+  assert.equal(created.calls.at(-1), written(created)[0]);
+  assert.equal(written(created)[0]?.filtered, true);
+  // A run that wrote nothing is not stamped.
+  const duplicate = createSequencedFakeDb([[running], [BOUNTY], []]);
+  await createBountyProposalStore(duplicate.db).createForLease(
+    "org_1",
+    "lease",
+    input,
+  );
+  assert.equal(written(duplicate).length, 0);
+
+  // The re-price's run is stamped too, rather than the proposal's
+  // creation being read as its end.
+  const repriced = row({ revision: 2, runId: "brn_2" });
+  const reprice = createSequencedFakeDb([
+    [{ id: "brn_2", boardId: "jrb_1", bountyId: null } as BountyRunRow],
+    [row()],
+    [repriced],
+    [{ row: repriced, ...NAME }],
+  ]);
+  const result = await createBountyProposalStore(reprice.db).repriceForLease(
+    "org_1",
+    "lease_1",
+    "bpr_1",
+    1,
+    { ...input, runId: "brn_2" },
+  );
+  assert.equal(result.status, "repriced");
+  assert.equal(written(reprice).length, 1);
+  assert.equal(reprice.calls.at(-1), written(reprice)[0]);
+  const changed = createSequencedFakeDb([
+    [{ id: "brn_2", boardId: "jrb_1", bountyId: null } as BountyRunRow],
+    [],
+  ]);
+  await createBountyProposalStore(changed.db).repriceForLease(
+    "org_1",
+    "lease_1",
+    "bpr_1",
+    1,
+    { ...input, runId: "brn_2" },
+  );
+  assert.equal(written(changed).length, 0);
+});
+
 test("re-price updates the source in place, fenced by its run lease and source revision", async () => {
   const repriced = row({ revision: 2, runId: "brn_2" });
   const fake = createSequencedFakeDb([

@@ -658,6 +658,68 @@ test("watchdog discovery deduplicates owners and reads queue health", async () =
     { queued: true, freshWorker: true, workers: 1, short: true },
   );
 });
+test("a snapshot's builders that share a claim are one build", async () => {
+  const state = (rows: unknown[], workers = 1) =>
+    createAnalysisRunStore(createSequencedFakeDb([rows, [{ workers }]]).db)
+      .queueState(now)
+      .then(({ short }) => short);
+  // Graphify and documents running in one worker's one build slot, beside
+  // a queued scope in one of its agent slots: no second worker would help.
+  assert.equal(
+    await state([
+      { tool: "graphify", status: "running", snapshotId: "rsn_1", count: 1 },
+      { tool: "documents", status: "running", snapshotId: "rsn_1", count: 1 },
+      { tool: "scope", status: "queued", snapshotId: "rsn_1", count: 1 },
+    ]),
+    false,
+  );
+  // Abstractions, the data model and documents, claimed together.
+  assert.equal(
+    await state([
+      { tool: "abstractions", status: "queued", snapshotId: "rsn_1", count: 1 },
+      { tool: "data_model", status: "queued", snapshotId: "rsn_1", count: 1 },
+      { tool: "documents", status: "queued", snapshotId: "rsn_1", count: 1 },
+    ]),
+    false,
+  );
+  // Two snapshots' builds are two claims, for one worker's one slot.
+  assert.equal(
+    await state([
+      { tool: "graphify", status: "queued", snapshotId: "rsn_1", count: 1 },
+      { tool: "documents", status: "queued", snapshotId: "rsn_1", count: 1 },
+      { tool: "graphify", status: "queued", snapshotId: "rsn_2", count: 1 },
+    ]),
+    true,
+  );
+  // As are a snapshot's graphify and its map readers' claim, and a slice
+  // beside a builder, which shares none.
+  assert.equal(
+    await state([
+      { tool: "graphify", status: "running", snapshotId: "rsn_1", count: 1 },
+      { tool: "abstractions", status: "queued", snapshotId: "rsn_1", count: 1 },
+      { tool: "documents", status: "queued", snapshotId: "rsn_1", count: 1 },
+    ]),
+    true,
+  );
+  assert.equal(
+    await state([
+      { tool: "slice", status: "queued", snapshotId: "rsn_1", count: 1 },
+      { tool: "documents", status: "queued", snapshotId: "rsn_1", count: 1 },
+    ]),
+    true,
+  );
+  // Two workers have a build slot for each.
+  assert.equal(
+    await state(
+      [
+        { tool: "graphify", status: "queued", snapshotId: "rsn_1", count: 1 },
+        { tool: "graphify", status: "queued", snapshotId: "rsn_2", count: 1 },
+      ],
+      2,
+    ),
+    false,
+  );
+});
 test("a claim filtered to no tools claims nothing", async () => {
   const idle = createFakeDb([]);
   const store = createAnalysisRunStore(idle.db);

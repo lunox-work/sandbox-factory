@@ -386,6 +386,8 @@ export function versionService(options: SandboxRouteOptions) {
     sandbox: StoredSandbox,
     input: z.infer<typeof createSandboxVersionSchema>,
     now: Date,
+    /** A cut's: the newest draft of the same slice is answered, not doubled. */
+    reuseDraft = false,
   ) {
     // A version is a slice, and a slice needs a repository; the sandbox
     // itself does not, so this is where its absence is refused.
@@ -512,6 +514,7 @@ export function versionService(options: SandboxRouteOptions) {
       specSummary: input.specSummary,
       complexity: input.complexity,
       tags: input.tags,
+      ...(reuseDraft ? { reuseDraft } : {}),
       source: {
         sourceSnapshotId: inputs.snapshotId,
         sliceRunId: inputs.run.id,
@@ -1112,12 +1115,15 @@ export function versionService(options: SandboxRouteOptions) {
           },
           "conflict",
         );
-      let created = await create(owner, actor, sandbox, input.data, now);
+      // The check above is a read before the cut: the cutter and a person
+      // can both pass it for one slice. The store checks again under the
+      // sandbox's lock and answers the draft the first of them cut.
+      let created = await create(owner, actor, sandbox, input.data, now, true);
       // Prepared fixtures that cannot be attached are left to the build to
       // write, as they were before there was a preparation.
       if (!created.ok && input.data.fixtureRunId !== undefined) {
         const { fixtureRunId: _unused, ...without } = input.data;
-        created = await create(owner, actor, sandbox, without, now);
+        created = await create(owner, actor, sandbox, without, now, true);
       }
       if (!created.ok) return created;
       draft = created.result;

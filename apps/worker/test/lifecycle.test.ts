@@ -13,6 +13,7 @@ import type { fetchSource as fetchSourceImpl } from "../src/fetch-source.js";
 import { sourceArchiveKey } from "@sandbox-factory/db";
 import { wakeableWait, workerLoop } from "../src/loop.js";
 import { parseWorkerEnv } from "../src/env.js";
+import { toolsOfSlot } from "sandbox-factory";
 import { uploadArtifacts } from "../src/upload.js";
 import { AnalysisError } from "../src/errors.js";
 import { run, stores } from "./helpers.js";
@@ -1044,6 +1045,56 @@ test("a run that throws ends the loop once the others beside it have ended", asy
   );
   assert.equal(otherEnded, true);
 });
+test("with every agent slot busy, only build runs are claimed", async () => {
+  const of = (id: string, tool: ClaimedAnalysisRun["tool"]) => ({
+    ...run,
+    id,
+    tool,
+  });
+  const queue = [
+    of("arn_scope", "scope"),
+    of("arn_fixtures", "fixtures"),
+    of("arn_build", "sandbox_build"),
+    of("arn_starter", "sandbox_starter"),
+    of("arn_graph", "graphify"),
+  ];
+  const asked: (readonly string[] | undefined)[] = [];
+  const release = new Map<string, () => void>();
+  const started: string[] = [];
+  const done = workerLoop({
+    runs: {
+      claimNext: async (_token, _now, tools) => {
+        asked.push(tools);
+        const index = queue.findIndex(
+          (item) => tools === undefined || tools.includes(item.tool),
+        );
+        return index < 0 ? null : (queue.splice(index, 1)[0] ?? null);
+      },
+    },
+    mode: "once",
+    signal: new AbortController().signal,
+    execute: (claimed) => {
+      started.push(claimed.id);
+      return new Promise<void>((resolve) => release.set(claimed.id, resolve));
+    },
+  });
+  await delay(5);
+  // Three agent runs fill the agent slots; the starter waits, the graph runs.
+  assert.deepEqual(started, [
+    "arn_scope",
+    "arn_fixtures",
+    "arn_build",
+    "arn_graph",
+  ]);
+  assert.deepEqual(asked[3], toolsOfSlot("build"));
+  assert.ok(!asked[3]?.includes("sandbox_starter"));
+  release.get("arn_scope")?.();
+  await delay(5);
+  assert.deepEqual(started.slice(4), ["arn_starter"]);
+  for (const id of ["arn_fixtures", "arn_build", "arn_graph", "arn_starter"])
+    release.get(id)?.();
+  await done;
+});
 test("the poll's wait ends early on a wake, keeps one that came first, and ends on stop", async () => {
   const stop = new AbortController();
   const idle = wakeableWait(60_000, stop.signal);
@@ -1143,4 +1194,63 @@ test("an uncertain finish never keeps an older attempt beside a winning successo
   state.runs.logKey = async () => "logs/arn_1/next-lease.log";
   await executeRun(run, { ...state, tool, source, fetchSource });
   assert.equal(state.bytes.has("runs/arn_1/lease_1/graph.json"), false);
+});
+test("a run that waits on another run's fetch of the commit times the wait as its fetch", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "lifecycle-wait-"));
+  try {
+    const cache = await createSourceCache({ root: directory });
+    let ms = 0;
+    let fetching!: () => void;
+    let fetched!: () => void;
+    const started = new Promise<void>((resolve) => (fetching = resolve));
+    const gate = new Promise<void>((resolve) => (fetched = resolve));
+    let checkedOut!: () => void;
+    const waiting = new Promise<void>((resolve) => (checkedOut = resolve));
+    const options = {
+      tool,
+      source,
+      clock: () => ms,
+      fetchSource: async (
+        _r: typeof run,
+        into: string,
+        fetch: { onStage?: (name: "fetch", ms: number) => void },
+      ) => {
+        fetching();
+        await gate;
+        fetch.onStage?.("fetch", 70);
+        return into;
+      },
+    };
+    const owner = stores();
+    const waiter = stores();
+    const first = executeRun(run, { ...owner, ...options, sourceCache: cache });
+    await started;
+    const second = executeRun(
+      { ...run, id: "arn_2" },
+      {
+        ...waiter,
+        ...options,
+        sourceCache: {
+          checkout: (...args) => {
+            checkedOut();
+            return cache.checkout(...args);
+          },
+        },
+      },
+    );
+    await waiting;
+    ms = 500;
+    fetched();
+    await Promise.all([first, second]);
+    assert.deepEqual(
+      [owner.timings[0]?.stages.fetch, waiter.timings[0]?.stages.fetch],
+      [70, 500],
+    );
+    const log = Buffer.from(
+      waiter.bytes.get("logs/arn_2/lease_1.log") ?? [],
+    ).toString();
+    assert.match(log, /fetched and validated by another run of the commit/);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });

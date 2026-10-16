@@ -8,6 +8,9 @@
  * repeating them would only have to be rewritten alongside it.
  */
 
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+
 import { render, screen } from "./render";
 import { expect, test } from "vitest";
 
@@ -58,4 +61,26 @@ test("a loading line is there at once, and shown only once a read is slow", () =
   // invisible for 150ms by its animation, so an instant read never flashes.
   expect(line.textContent).toBe("Listing its files…");
   expect(line.classList.contains("loading-line-in")).toBe(true);
+});
+
+/*
+ * jsdom applies no stylesheet, so the delay itself is read from the rule the
+ * class names: held invisible (`backwards`) for 150ms before it fades in, and
+ * still held through the delay, though not faded, when motion is reduced.
+ */
+test("the loading line's class holds it back for 150ms", () => {
+  const rule = (block: string) =>
+    [...block.matchAll(/\.loading-line-in\s*\{([^}]*)\}/g)].map(
+      (match) => match[1] ?? "",
+    );
+  const styles = readFileSync(
+    join(import.meta.dirname, "../src/index.css"),
+    "utf8",
+  );
+  const [motion, reduced] = rule(styles);
+  expect(motion).toMatch(
+    /animation:\s*loading-line-in\s+\d+ms\s+[\w-]+\s+150ms\s+backwards/,
+  );
+  expect(reduced).toMatch(/animation-duration:\s*1ms/);
+  expect(reduced).not.toMatch(/animation(-delay)?:\s*none/);
 });

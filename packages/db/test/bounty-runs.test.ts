@@ -50,6 +50,7 @@ function row(overrides: Partial<BountyRunRow> = {}): BountyRunRow {
     fatalErrorCode: null,
     startedAt: null,
     finishedAt: null,
+    proposalWrittenAt: null,
     createdAt: new Date("2026-09-22T00:00:00Z"),
     updatedAt: new Date("2026-09-22T00:00:00Z"),
     ...overrides,

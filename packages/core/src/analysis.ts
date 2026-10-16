@@ -278,6 +278,21 @@ export function slotOf(tool: AnalysisTool): RunSlot {
 export function toolsOfSlot(slot: RunSlot): AnalysisTool[] {
   return ANALYSIS_TOOLS.filter((tool) => slotOf(tool) === slot);
 }
+/**
+ * The builders a claimed run shares its claim, and its one build slot,
+ * with: those of the same snapshot that read the same checkout and wait on
+ * nothing it has not already waited on. `documents` reads no graph, so it
+ * runs beside graphify's map too. The worker claims them together; the
+ * launcher counts them as one build.
+ */
+export const SHARED_CLAIM: Readonly<
+  Partial<Record<AnalysisTool, readonly AnalysisTool[]>>
+> = {
+  graphify: ["documents"],
+  abstractions: ["data_model", "documents"],
+  data_model: ["abstractions", "documents"],
+  documents: ["abstractions", "data_model"],
+};
 export function toolVersionOf(tool: AnalysisTool): string {
   switch (tool) {
     case "sandbox_starter":

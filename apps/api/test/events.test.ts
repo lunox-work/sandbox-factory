@@ -175,3 +175,57 @@ test("typical waits are the workspace's own, for the flows asked", async () => {
     404,
   );
 });
+
+test("a change is told as its kind and id alone, to its own workspace's stream", async () => {
+  const hub = createRunChangeHub();
+  const asked: unknown[] = [];
+  const get = app({
+    events: {
+      hub,
+      visible: async (owner, role, told) => {
+        asked.push({ owner, role, id: told.id });
+        return true;
+      },
+    },
+  });
+  const response = await get("/api/v1/orgs/org_2/events");
+  const reader = (response.body as ReadableStream<Uint8Array>).getReader();
+  await readUntil(reader, /event: ready/);
+
+  hub.publish(change({ organizationId: "org_1", id: "brn_member" }));
+  hub.publish(
+    change({ organizationId: "org_2", kind: "profile", id: "bpr_2" }),
+  );
+  const told = await readUntil(reader, /bpr_2/);
+  const data = [...told.matchAll(/^data: (.*)$/gm)]
+    .map(([, line]) => JSON.parse(line ?? "null") as Record<string, unknown>)
+    .filter((each) => "id" in each);
+  assert.deepEqual(data, [{ kind: "profile", id: "bpr_2" }]);
+  assert.doesNotMatch(told, /org_[12]|organization|brn_member/);
+  // Asked for the stream's own workspace and the caller's role there only.
+  assert.deepEqual(asked, [{ owner: "org_2", role: "owner", id: "bpr_2" }]);
+
+  await reader.cancel();
+  for (let tries = 0; hub.size() > 0 && tries < 50; tries += 1)
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  assert.equal(hub.size(), 0);
+  // A change after the stream closed reaches no one.
+  hub.publish(change({ organizationId: "org_2", id: "late" }));
+  assert.equal(asked.length, 1);
+});
+
+test("a non-member's stream is 404 and subscribes to nothing", async () => {
+  let subscribed = 0;
+  const response = await app({
+    events: {
+      hub: {
+        subscribe: () => {
+          subscribed += 1;
+          return () => {};
+        },
+      },
+    },
+  })("/api/v1/orgs/org_3/events");
+  assert.equal(response.status, 404);
+  assert.equal(subscribed, 0);
+});

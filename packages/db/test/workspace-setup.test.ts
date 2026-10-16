@@ -52,3 +52,27 @@ test("no workspaces is answered without a query", async () => {
   assert.equal(counts.size, 0);
   assert.equal(fake.calls.length, 0);
 });
+
+test("bounties is one for any bounty, however many, and counts only the ids asked", async () => {
+  const counted = (bounties: number) => ({
+    jiraConnected: 0,
+    jiraBroken: 0,
+    jiraBoards: 0,
+    githubConnected: 0,
+    githubRepositories: 0,
+    proposals: 0,
+    bounties,
+  });
+  const fake = createFakeDb([
+    { id: "org_1", ...counted(5) },
+    { id: "org_2", ...counted(0) },
+  ]);
+  const counts = await createWorkspaceSetupStore(fake.db).forOrganizations([
+    "org_1",
+    "org_2",
+  ]);
+  assert.equal(counts.get("org_1")?.bounties, 1);
+  assert.equal(counts.get("org_2")?.bounties, 0);
+  assert.equal(counts.has("org_3"), false);
+  assert.equal(fake.calls[0]?.filtered, true);
+});

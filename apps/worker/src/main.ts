@@ -15,7 +15,7 @@ import {
   workerApplicationName,
 } from "@sandbox-factory/db";
 import type { ClaimedAnalysisRun } from "@sandbox-factory/db";
-import type { AnalysisTool } from "sandbox-factory";
+import { SHARED_CLAIM } from "sandbox-factory";
 import { InstallationTokens } from "@sandbox-factory/github";
 import { repositoryToken } from "./credentials.js";
 import { parseWorkerEnv } from "./env.js";
@@ -131,17 +131,6 @@ function adapterFor(run: ClaimedAnalysisRun): ToolAdapter {
       return createStarterAdapter({ agent, provider: evaluation });
   }
 }
-/**
- * The builders a claimed run shares its claim with: those that read the
- * same checkout and wait on nothing it has not already waited on.
- * `documents` reads no graph, so it runs beside graphify's map too.
- */
-const SHARED_CLAIM: Partial<Record<AnalysisTool, readonly AnalysisTool[]>> = {
-  graphify: ["documents"],
-  abstractions: ["data_model", "documents"],
-  data_model: ["abstractions", "documents"],
-  documents: ["abstractions", "data_model"],
-};
 const stopClaiming = new AbortController();
 const stopCurrent = new AbortController();
 let grace: ReturnType<typeof setTimeout> | undefined;

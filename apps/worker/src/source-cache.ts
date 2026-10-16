@@ -34,6 +34,8 @@ export interface SourceCheckout {
   readonly path: string;
   /** Whether it was already on disk. */
   readonly hit: boolean;
+  /** Whether it waited on another run's fill, which fetched it for both. */
+  readonly waited: boolean;
   /** Lets the entry be evicted again; call once the run is done reading. */
   release(): void;
 }
@@ -42,11 +44,13 @@ export interface SourceCache {
   /**
    * The tree under `key`, filled by `fill` into an empty directory when it
    * is not on disk. `fill` returns the tree's path inside that directory.
-   * Two runs asking for one key while it fills share the one fill.
+   * Two runs asking for one key while it fills share the one fill; one
+   * waiting on another's stops when its own `signal` aborts.
    */
   checkout(
     key: string,
     fill: (directory: string) => Promise<string>,
+    signal?: AbortSignal,
   ): Promise<SourceCheckout>;
 }
 
@@ -102,19 +106,23 @@ export async function createSourceCache(
     }
   }
 
+  const total = () => {
+    let bytes = 0;
+    for (const entry of entries.values()) bytes += entry.bytes;
+    return bytes;
+  };
   const evict = async () => {
-    let total = 0;
-    for (const entry of entries.values()) total += entry.bytes;
     const idle = [...entries]
       .filter(([, entry]) => entry.complete && entry.users === 0)
       .sort(([, a], [, b]) => a.lastUsed - b.lastUsed);
     for (const [name, entry] of idle) {
-      if (total <= maxBytes) break;
+      // Counted again each time: an eviction beside this one may have
+      // removed entries since.
+      if (total() <= maxBytes) break;
       // A removal awaited above may have let a run take this entry, or a
       // fill replace it: neither is removed.
       if (entry.users !== 0 || entries.get(name) !== entry) continue;
       entries.delete(name);
-      total -= entry.bytes;
       await rm(entry.directory, { recursive: true, force: true });
     }
   };
@@ -125,10 +133,12 @@ export async function createSourceCache(
   async function checkout(
     key: string,
     fill: (directory: string) => Promise<string>,
+    signal?: AbortSignal,
   ): Promise<SourceCheckout> {
     const name = createHash("sha256").update(key).digest("hex").slice(0, 40);
     let entry = entries.get(name);
-    const hit = entry !== undefined;
+    const hit = entry?.complete === true;
+    const waited = entry?.complete === false;
     if (entry === undefined) {
       // Its own directory, so an eviction of an earlier fill of the same
       // key still being removed cannot remove this one's files.
@@ -169,13 +179,14 @@ export async function createSourceCache(
     }
     entry.users += 1;
     try {
-      await entry.ready;
+      // Another run's fill goes on for that run when this one is cut short.
+      await (waited ? abortable(entry.ready, signal) : entry.ready);
     } catch (error) {
       entry.users -= 1;
+      if (!waited || signal?.aborted === true) throw error;
       // Another run's fill, which failed for that run's reasons (its
       // deadline, its lease): this run fills again with its own.
-      if (hit) return checkout(key, fill);
-      throw error;
+      return checkout(key, fill, signal);
     }
     entry.lastUsed = now();
     await evict();
@@ -184,6 +195,7 @@ export async function createSourceCache(
     return {
       path: held.path,
       hit,
+      waited,
       release() {
         if (released) return;
         released = true;
@@ -193,6 +205,22 @@ export async function createSourceCache(
       },
     };
   }
+}
+
+/** `promise`, or the signal's reason as soon as it aborts. */
+function abortable(
+  promise: Promise<void>,
+  signal: AbortSignal | undefined,
+): Promise<void> {
+  if (signal === undefined) return promise;
+  return new Promise((resolve, reject) => {
+    const abort = () => reject(signal.reason);
+    if (signal.aborted) abort();
+    signal.addEventListener("abort", abort, { once: true });
+    promise
+      .then(resolve, reject)
+      .finally(() => signal.removeEventListener("abort", abort));
+  });
 }
 
 /** The bytes of every file under a directory. */

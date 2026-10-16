@@ -180,6 +180,8 @@ export async function executeRun(
         source = await fetchInto(directory);
         lines.push("Source archive fetched and validated.");
       } else {
+        const clock = options.clock ?? (() => performance.now());
+        const started = clock();
         const checkout = await cache.checkout(
           `${run.repoId}@${run.commitSha}`,
           async (into) => {
@@ -188,13 +190,18 @@ export async function executeRun(
             await rm(join(into, "source.tar.gz"), { force: true });
             return extracted;
           },
+          abort.signal,
         );
         releaseSource = checkout.release;
         source = checkout.path;
+        // A wait on another run's fetch of the commit is this run's fetch.
+        if (checkout.waited) timing.stage("fetch", clock() - started);
         lines.push(
           checkout.hit
             ? "Source read from the worker's cache."
-            : "Source archive fetched and validated.",
+            : checkout.waited
+              ? "Source archive fetched and validated by another run of the commit."
+              : "Source archive fetched and validated.",
         );
       }
     } else {

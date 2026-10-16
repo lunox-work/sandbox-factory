@@ -50,15 +50,55 @@ describe("flow wait views", () => {
       insert into bounty (id, organization_id, title)
       values ('bty_flow', 'org_flow', 'Fix the login')
     `;
-    const run = (id: string, kind: string, planned = "[]") => sql`
+    const run = (
+      id: string,
+      kind: string,
+      {
+        bountyId = "bty_flow",
+        createdAt = T0,
+        written = null,
+      }: { bountyId?: string; createdAt?: Date; written?: Date | null } = {},
+    ) => sql`
       insert into bounty_run (
         id, organization_id, bounty_id, kind, request_id, status, selection,
         rate_card, requested_model, prompt_version, planned, created_at,
-        finished_at
+        finished_at, source_revision, proposal_written_at
       ) values (
-        ${id}, 'org_flow', 'bty_flow', ${kind}, ${`req_${id}`}, 'succeeded', '{}'::jsonb,
-        '{}'::jsonb, 'model', 'v1', ${planned}::jsonb, ${T0}, ${at(60)}
+        ${id}, 'org_flow', ${bountyId}, ${kind}, ${`req_${id}`}, 'succeeded', '{}'::jsonb,
+        '{}'::jsonb, 'model', 'v1', '[]'::jsonb, ${createdAt},
+        ${new Date(createdAt.getTime() + 60_000)},
+        ${kind === "reprice" ? 1 : null}, ${written}
       )
+    `;
+    const proposal = (id: string, runId: string, bountyId: string) => sql`
+      insert into bounty_proposal (
+        id, organization_id, run_id, spec_hash, rate_card, model_complexity,
+        model_confidence, model_rationale, actual_model, prompt_version,
+        complexity, bounty_id, created_at
+      ) values (
+        ${id}, 'org_flow', ${runId}, ${"0".repeat(64)}, '{}'::jsonb, 'M', 'high',
+        'r', 'model', 'v1', 'unsized', ${bountyId}, ${at(20)}
+      )
+    `;
+    const spec = (
+      proposalId: string,
+      revision: number,
+      runId: string,
+      createdAt: Date,
+    ) => sql`
+      insert into bounty_spec (
+        id, organization_id, proposal_id, revision, spec_hash,
+        spec_hash_version, draft, origin, run_id, created_at
+      ) values (
+        ${`bsp_${runId}`}, 'org_flow', ${proposalId}, ${revision}, ${"0".repeat(64)},
+        1, '{}'::jsonb, 'draft', ${runId}, ${createdAt}
+      )
+    `;
+    await sql`
+      insert into bounty (id, organization_id, title) values
+        ('bty_repriced', 'org_flow', 'Fix the logout'),
+        ('bty_legacy', 'org_flow', 'Fix the signup'),
+        ('bty_bare', 'org_flow', 'Fix the reset')
     `;
     // Sized: its proposal is written 20 s in, the run ends at 60 s.
     await run("brn_sized", "bounty");
@@ -74,6 +114,35 @@ describe("flow wait views", () => {
     `;
     // Skipped for a live proposal: it succeeds, and writes none.
     await run("brn_skipped", "bounty");
+    // Priced 20 s in, then re-priced by a run asked for at 3500 s, which
+    // writes at 3600 s: the proposal keeps the first's `created_at` and
+    // takes the second's `run_id`.
+    await run("brn_first", "bounty", {
+      bountyId: "bty_repriced",
+      written: at(20),
+    });
+    await run("brn_reprice", "reprice", {
+      bountyId: "bty_repriced",
+      createdAt: at(3500),
+      written: at(3600),
+    });
+    await proposal("bpr_repriced", "brn_reprice", "bty_repriced");
+    // The same, from before runs kept their write: each run's spec
+    // revision is the write. A re-price that wrote no spec is no price.
+    await run("brn_legacy_first", "bounty", { bountyId: "bty_legacy" });
+    await run("brn_legacy_reprice", "reprice", {
+      bountyId: "bty_legacy",
+      createdAt: at(3500),
+    });
+    await proposal("bpr_legacy", "brn_legacy_reprice", "bty_legacy");
+    await spec("bpr_legacy", 1, "brn_legacy_first", at(20));
+    await spec("bpr_legacy", 2, "brn_legacy_reprice", at(3600));
+    await run("brn_bare_first", "bounty", { bountyId: "bty_bare" });
+    await run("brn_bare_reprice", "reprice", {
+      bountyId: "bty_bare",
+      createdAt: at(3500),
+    });
+    await proposal("bpr_bare", "brn_bare_reprice", "bty_bare");
     // An analysis run that waited 100 s for a worker and ran for 6 s.
     await sql`
       insert into analysis_run (
@@ -99,10 +168,13 @@ describe("flow wait views", () => {
   test("a price is the click to the proposal written, and a run that wrote none is no price", async () => {
     const rows = await sql<{ seconds: number }[]>`
       select seconds from flow_wait_sample where flow = 'price'
+      order by seconds
     `;
+    // The sized run, and each first run and re-price: 100 s from the
+    // re-price's click, never the first's `created_at` before it.
     assert.deepEqual(
       rows.map((row) => row.seconds),
-      [20],
+      [20, 20, 20, 100, 100],
     );
   });
 

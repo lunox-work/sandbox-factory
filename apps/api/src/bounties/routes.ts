@@ -61,6 +61,8 @@ export interface BountyRouteOptions {
   /**
    * Its live proposal's reads, for `?with=live`: the pricing routes'
    * answers, so a bounty's page has them with the bounty rather than after.
+   * Read from what is stored, never waiting on Jira, so they agree with
+   * the bounty they come with; the proposal's own read checks Jira.
    */
   readonly live?: (
     organizationId: string,

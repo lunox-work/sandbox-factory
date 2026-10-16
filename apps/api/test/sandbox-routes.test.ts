@@ -443,6 +443,12 @@ function fixture(
     profile: Partial<StoredBountyProfile> | null;
     /** The snapshot has no succeeded data model for a build to name. */
     noDataModel: boolean;
+    /**
+     * Versions as the store makes them under the sandbox's lock: each cut
+     * a version of its own, except a cut asked to reuse the draft an
+     * earlier cut of the same slice made.
+     */
+    lockedCut: boolean;
   }> = {},
 ) {
   const published: { versionId: string; actor: string; expiresAt: string }[] =
@@ -577,8 +583,31 @@ function fixture(
         sandboxId: string,
         input: unknown,
       ) => {
+        const typed = input as {
+          reuseDraft?: boolean;
+          source: { sliceRunId: string };
+        };
+        if (overrides.lockedCut === true) {
+          const index = created.findIndex(
+            (each) =>
+              (each as typeof typed).source.sliceRunId ===
+              typed.source.sliceRunId,
+          );
+          if (typed.reuseDraft !== true || index < 0) {
+            created.push(input);
+            return {
+              ok: true,
+              version: { ...stored.version, id: `sbv_${created.length}` },
+              source: stored.source,
+            };
+          }
+          return {
+            ok: true,
+            version: { ...stored.version, id: `sbv_${index + 1}` },
+            source: stored.source,
+          };
+        }
         created.push(input);
-        const typed = input as { source: { sliceRunId: string } };
         return typed.source.sliceRunId === "arn_other"
           ? { ok: false, reason: "slice_mismatch" }
           : sandboxId === "sbx_1"
@@ -2692,6 +2721,37 @@ test("a ready slice is cut into a draft from the bounty and built", async () => 
   assert.equal(
     ((await mismatch.json()) as { code: string }).code,
     "slice_mismatch",
+  );
+});
+
+test("two cuts of one slice at once make one draft and one build", async () => {
+  // Both read the sandbox's versions before either cut: the cutter's pass
+  // and a person's slice, racing.
+  const f = fixture("owner", {
+    profile: {},
+    bounty: true,
+    noVersions: true,
+    lockedCut: true,
+  });
+  const responses = await Promise.all([
+    f.request("POST", "/sbx_1/slice"),
+    f.request("POST", "/sbx_1/slice"),
+  ]);
+  assert.deepEqual(
+    responses.map((response) => response.status),
+    [201, 201],
+  );
+  assert.equal(f.created.length, 1);
+  // Both build the one draft, which the queue answers with one run.
+  assert.deepEqual(
+    new Set(
+      f.enqueued.map(
+        (each) =>
+          (each as { params: { sandboxVersionId: string } }).params
+            .sandboxVersionId,
+      ),
+    ),
+    new Set(["sbv_1"]),
   );
 });
 
