@@ -235,6 +235,12 @@ const runCommon = {
    * dropped rather than failing the run's read: they are a preview.
    */
   progress: analysisProgressSchema.nullable().catch(null),
+  /**
+   * How many files a running build has written before its check, readable
+   * as the version's files while the baseline runs; null when none are, and
+   * once it has ended. Absent from an API that predates it.
+   */
+  previewFiles: z.number().int().nonnegative().nullable().default(null),
   startedAt: z.iso.datetime().nullable(),
   finishedAt: z.iso.datetime().nullable(),
   deadlineAt: z.iso.datetime().nullable(),
@@ -317,6 +323,25 @@ export const analysisRunDtoSchema = z.discriminatedUnion("tool", [
     params: starterParamsSchema,
   }),
 ]);
+/**
+ * The waits a page names beside a stage's clock: `price`, `rubric`,
+ * `sandbox_sliced`, `sandbox_generated`, or one tool's `queue:<tool>` or
+ * `run:<tool>`, as phase 0's `flow_wait_sample` names them.
+ */
+export const FLOW_NAME_PATTERN =
+  /^(price|rubric|sandbox_sliced|sandbox_generated|(queue|run):[a-z_]{1,40})$/;
+/** `GET .../flows/typical?flow=`: the workspace's median wait for each. */
+export const flowTypicalResponseSchema = z.object({
+  flows: z.record(
+    z.string(),
+    z.object({
+      /** Seconds. */
+      p50: z.number().nonnegative(),
+      samples: z.number().int().positive(),
+    }),
+  ),
+});
+export type FlowTypicalResponseDto = z.infer<typeof flowTypicalResponseSchema>;
 export const analysisRunListSchema = z.object({
   runs: z.array(analysisRunDtoSchema),
 });
@@ -341,6 +366,16 @@ export const artifactDtoSchema = z.strictObject({
 });
 export const artifactListSchema = z.object({
   artifacts: z.array(artifactDtoSchema),
+});
+/**
+ * `GET .../repositories/:id/runs?snapshotId=&with=artifacts`: one
+ * snapshot's runs, and beside them, by run id, the artifacts of each
+ * context builder's newest succeeded run, so the page reads the context in
+ * the one request rather than after it.
+ */
+export const analysisRunListWithArtifactsSchema = analysisRunListSchema.extend({
+  /** Absent from an API that predates it: each is then read on its own. */
+  artifacts: z.record(z.string(), z.array(artifactDtoSchema)).default({}),
 });
 export const artifactUrlSchema = z.object({ url: z.url() });
 /**

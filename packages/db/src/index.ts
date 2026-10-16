@@ -211,6 +211,13 @@ export type {
 export { NotFoundError, RepositoryInUseError } from "./errors.js";
 export type { Database } from "./errors.js";
 export {
+  announceChange,
+  parseRunChange,
+  RUN_CHANGE_KINDS,
+  RUN_CHANGED_CHANNEL,
+} from "./run-events.js";
+export type { RunChange, RunChangeKind } from "./run-events.js";
+export {
   createAnalysisRunStore,
   RUN_ENDED_CHANNEL,
   RUN_QUEUED_CHANNEL,
@@ -226,6 +233,13 @@ export type {
   QueueState,
 } from "./analysis-runs.js";
 export { createArtifactStore } from "./artifacts.js";
+export { createWorkspaceSetupStore } from "./workspace-setup.js";
+export { createFlowWaitStore } from "./flow-waits.js";
+export type { FlowTypical, FlowWaitStore } from "./flow-waits.js";
+export type {
+  WorkspaceSetupCounts,
+  WorkspaceSetupStore,
+} from "./workspace-setup.js";
 export type { ArtifactStore, StoredArtifact } from "./artifacts.js";
 export { createSandboxStore, sandboxSlug } from "./sandboxes.js";
 export type {

@@ -24,6 +24,7 @@ const run: StoredAnalysisRun = {
   errorCode: null,
   errorDetail: null,
   progress: null,
+  previewFiles: null,
   startedAt: stamp,
   finishedAt: stamp,
   deadlineAt: stamp,
@@ -740,6 +741,29 @@ test("a repository's runs can be read for one snapshot", async () => {
     ["org_1", "ghr_1", undefined, undefined],
     ["org_1", "ghr_1", 50, "rsn_1"],
   ]);
+});
+
+test("a snapshot's runs can come with each builder's artifacts", async () => {
+  // The repository page reads its context in the one request.
+  const f = fixture("member");
+  const body = (await (
+    await f.request("repositories/ghr_1/runs?snapshotId=rsn_1&with=artifacts")
+  ).json()) as {
+    runs: { id: string }[];
+    artifacts: Record<string, { path: string }[]>;
+  };
+  assert.deepEqual(
+    body.runs.map(({ id }) => id),
+    [run.id],
+  );
+  assert.deepEqual(Object.keys(body.artifacts), [run.id]);
+  assert.ok((body.artifacts[run.id] ?? []).length > 0);
+  assert.doesNotMatch(JSON.stringify(body), /objectKey|runs\/private/);
+  // Not for the repository's history, which no page reads them beside.
+  const history = (await (
+    await f.request("repositories/ghr_1/runs?with=artifacts")
+  ).json()) as Record<string, unknown>;
+  assert.equal("artifacts" in history, false);
 });
 
 test("a sandbox build's run and artifacts are not a member's to read", async () => {

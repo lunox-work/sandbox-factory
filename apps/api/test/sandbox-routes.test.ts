@@ -179,6 +179,7 @@ const sliceRun: StoredAnalysisRun = {
   errorCode: null,
   errorDetail: null,
   progress: null,
+  previewFiles: null,
   startedAt: stamp,
   finishedAt: stamp,
   deadlineAt: stamp,
@@ -417,6 +418,8 @@ function fixture(
     noSpec: boolean;
     seam: boolean;
     built: boolean;
+    /** The build is still running, and has written its project only. */
+    previewing: boolean;
     /** The version has no passing build to publish. */
     unready: boolean;
     /** The bounty's proposal is not approved. */
@@ -660,7 +663,10 @@ function fixture(
         owner === "org_1" && id === "arn_slice"
           ? { ...sliceRun, status: overrides.sliceStatus ?? "succeeded" }
           : owner === "org_1" && id === "arn_build"
-            ? { ...buildRun, status: "succeeded" }
+            ? {
+                ...buildRun,
+                status: overrides.previewing === true ? "running" : "succeeded",
+              }
             : owner === "org_1" && id === "arn_other"
               ? { ...sliceRun, id: "arn_other" }
               : owner === "org_1" && id === "arn_graph"
@@ -703,7 +709,7 @@ function fixture(
       list: async (_owner: string, runId: string) =>
         runId === "arn_slice" || runId === "arn_other"
           ? artifacts
-          : runId === "arn_build"
+          : runId === "arn_build" && overrides.previewing !== true
             ? builtFiles.map(({ path, body }) => ({
                 ...artifactOf("build_manifest", path, body),
                 runId,
@@ -722,6 +728,25 @@ function fixture(
       remove: async (key: string) => {
         removed.push(key);
       },
+    },
+    previews: {
+      preview: async (owner: string, runId: string) =>
+        overrides.previewing === true &&
+        owner === "org_1" &&
+        runId === "arn_build"
+          ? {
+              at: "2026-10-16T00:00:00.000Z",
+              files: builtFiles
+                .filter(({ path }) => path.startsWith("project/"))
+                .map(({ path, body }) => ({
+                  path,
+                  objectKey: `runs/arn_build/lease/${path}`,
+                  contentType: "text/plain; charset=utf-8",
+                  sizeBytes: Buffer.byteLength(body),
+                  sha256: "a".repeat(64),
+                })),
+            }
+          : null,
     },
     repos: { list: async () => workspaceRepos },
     organizationNames: async (owner: string) =>
@@ -1458,6 +1483,40 @@ test("admins read the files a version's build wrote, as text where it is text", 
   assert.equal((await read("")).status, 400);
 });
 
+test("a build still running shows the project it generated, as provisional", async () => {
+  const f = fixture("owner", { built: true, previewing: true });
+  const list = (await (
+    await f.request("GET", "/versions/sbv_1/files")
+  ).json()) as {
+    run: { status: string };
+    files: { path: string }[];
+    provisional: boolean;
+  };
+  assert.equal(list.run.status, "running");
+  assert.equal(list.provisional, true);
+  assert.ok(list.files.length > 0);
+  assert.ok(list.files.every(({ path }) => path.startsWith("project/")));
+  assert.equal(JSON.stringify(list).includes("runs/arn_build"), false);
+  const source = await f.request(
+    "GET",
+    "/versions/sbv_1/files/content?path=project%2Fsrc%2Findex.ts",
+  );
+  assert.equal(
+    ((await source.json()) as { text: string }).text,
+    "export const sum = 1;\n",
+  );
+  // What it has not written yet is not there.
+  assert.equal(
+    (
+      await f.request(
+        "GET",
+        "/versions/sbv_1/files/content?path=private%2Fhidden.test.ts",
+      )
+    ).status,
+    404,
+  );
+});
+
 test("a version's files are for admins, and empty until it is built", async () => {
   const member = fixture("member", { built: true });
   assert.equal(
@@ -1474,7 +1533,11 @@ test("a version's files are for admins, and empty until it is built", async () =
     403,
   );
   const unbuilt = await fixture().request("GET", "/versions/sbv_1/files");
-  assert.deepEqual(await unbuilt.json(), { run: null, files: [] });
+  assert.deepEqual(await unbuilt.json(), {
+    run: null,
+    files: [],
+    provisional: false,
+  });
   assert.equal(
     (
       await fixture().request(

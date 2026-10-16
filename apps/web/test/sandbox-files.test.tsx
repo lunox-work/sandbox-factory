@@ -456,6 +456,31 @@ test("a version not built yet, still building, or not in the workspace says so",
   expect(await screen.findByText("Workspace unavailable")).toBeDefined();
 });
 
+test("a build still checking what it generated shows those files, said to be provisional", async () => {
+  let status = "running";
+  server({
+    files: () => ({
+      run: { id: "arn_build", status },
+      files: built.files,
+      provisional: status === "running",
+    }),
+  });
+  open();
+  expect(
+    await screen.findByText(/Its build is still checking these files/),
+  ).toBeDefined();
+  // Readable already, beside the notice.
+  expect(screen.getByRole("navigation", { name: "Files" })).toBeDefined();
+  status = "succeeded";
+  await waitFor(
+    () =>
+      expect(
+        screen.queryByText(/Its build is still checking these files/),
+      ).toBeNull(),
+    { timeout: 5_000 },
+  );
+});
+
 test("a file's name picks its icon and its language, as the editor's would", () => {
   expect(
     [

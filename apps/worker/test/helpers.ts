@@ -17,6 +17,7 @@ export const run: ClaimedAnalysisRun = {
   errorCode: null,
   errorDetail: null,
   progress: null,
+  previewFiles: null,
   startedAt: new Date().toISOString(),
   finishedAt: null,
   deadlineAt: new Date(Date.now() + 60_000).toISOString(),

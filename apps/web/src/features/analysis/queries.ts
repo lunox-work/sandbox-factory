@@ -1,7 +1,17 @@
 import type { ArtifactDto } from "@sandbox-factory/shared";
 import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback } from "react";
-import { useObservation, terminalRun } from "../../data/observe";
+import { analysisTopic, useObservation, terminalRun } from "../../data/observe";
+import type { AnalysisRunDto } from "@sandbox-factory/shared";
+
+/** The runs of a list still going, each as its changes are pushed. */
+const runningTopics = (
+  _id: string,
+  runs: readonly AnalysisRunDto[] | undefined,
+) =>
+  (runs ?? [])
+    .filter((run) => !terminalRun(run))
+    .map((run) => analysisTopic(run.id));
 import { clients, queryKeys, useUserId } from "../../data/query";
 /**
  * A repository's snapshots and runs, the runs watched until all finish;
@@ -35,6 +45,7 @@ export function useAnalysisResources(
     read: (id, signal) => clients.analysis.runs(owner, id, signal),
     terminal: (runs) => runs.every(terminalRun),
     interval: 2000,
+    topics: runningTopics,
   });
   /*
     The chosen snapshot's runs, read on their own. The history above is the
@@ -46,10 +57,29 @@ export function useAnalysisResources(
     owner,
     resource: "analysis-snapshot-runs",
     id: snapshotId === "" ? null : `${repoId}:${snapshotId}`,
-    read: (_id, signal) =>
-      clients.analysis.runs(owner, repoId, signal, snapshotId),
+    /*
+      With each builder's artifacts, kept where `useRunArtifacts` reads
+      them, so the context is read in this one request rather than after
+      it, a request per builder.
+    */
+    read: async (_id, signal) => {
+      const { runs, artifacts } =
+        await clients.analysis.snapshotRunsWithArtifacts(
+          owner,
+          repoId,
+          snapshotId,
+          signal,
+        );
+      for (const [runId, list] of Object.entries(artifacts))
+        cache.setQueryData(
+          queryKeys.resource(userId, owner, "analysis-artifacts", runId),
+          list,
+        );
+      return runs;
+    },
     terminal: (runs) => runs.every(terminalRun),
     interval: 2000,
+    topics: runningTopics,
   });
   const refresh = useCallback(async () => {
     await Promise.all(

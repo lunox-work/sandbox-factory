@@ -55,6 +55,115 @@ test("success uploads attempt-scoped artifacts, commits, and removes source", as
   assert.ok(state.bytes.has("runs/arn_1/lease_1/graph.json"));
   await assert.rejects(stat(directory));
 });
+test("a preview is shown while the run works, and gone once it commits", async () => {
+  for (const outcome of ["commit", "fail"] as const) {
+    const state = stores();
+    const previews: { path: string; objectKey: string }[][] = [];
+    let seenDuringRun = false;
+    const runs = {
+      ...state.runs,
+      recordPreview: async (
+        _owner: string,
+        _id: string,
+        token: string,
+        preview: { files: { path: string; objectKey: string }[] },
+      ) => {
+        assert.equal(token, "lease_1");
+        previews.push(preview.files);
+        return true;
+      },
+    } as unknown as typeof state.runs;
+    const previewing: ToolAdapter = {
+      ...tool,
+      run: async (input) => {
+        const path = join(input.sourceDir, "index.ts");
+        await writeFile(path, "export {};\n");
+        input.preview?.([
+          {
+            path: "project/src/index.ts",
+            absolutePath: path,
+            kind: "project_file",
+            contentType: "text/plain; charset=utf-8",
+            meta: null,
+          },
+        ]);
+        // The preview is uploaded while the tool goes on.
+        for (let tries = 0; previews.length === 0 && tries < 50; tries += 1)
+          await delay(2);
+        seenDuringRun = state.bytes.has(
+          "runs/arn_1/lease_1/preview/project/src/index.ts",
+        );
+        if (outcome === "fail") throw new Error("baseline broke");
+        return tool.run(input);
+      },
+    };
+    await executeRun(run, {
+      ...state,
+      runs,
+      tool: previewing,
+      source,
+      fetchSource,
+    });
+    // Under the attempt's own preview folder, at the path it will keep.
+    assert.deepEqual(
+      previews.map((files) =>
+        files.map(({ path, objectKey }) => ({ path, objectKey })),
+      ),
+      [
+        [
+          {
+            path: "project/src/index.ts",
+            objectKey: "runs/arn_1/lease_1/preview/project/src/index.ts",
+          },
+        ],
+      ],
+    );
+    assert.equal(seenDuringRun, true);
+    // Committed or not, the preview's bytes do not outlive the run.
+    assert.equal(
+      [...state.bytes.keys()].some((key) => key.includes("/preview/")),
+      false,
+    );
+    assert.deepEqual(state.calls, [
+      outcome === "commit" ? "finish" : "tool_failed",
+    ]);
+  }
+});
+
+test("a preview that cannot be shown does not stop the run", async () => {
+  const state = stores();
+  const runs = {
+    ...state.runs,
+    recordPreview: async () => {
+      throw new Error("database away");
+    },
+  } as unknown as typeof state.runs;
+  await executeRun(run, {
+    ...state,
+    runs,
+    tool: {
+      ...tool,
+      run: async (input) => {
+        const path = join(input.sourceDir, "index.ts");
+        await writeFile(path, "export {};\n");
+        input.preview?.([
+          {
+            path: "project/src/index.ts",
+            absolutePath: path,
+            kind: "project_file",
+            contentType: "text/plain; charset=utf-8",
+            meta: null,
+          },
+        ]);
+        return tool.run(input);
+      },
+    },
+    source,
+    fetchSource,
+  });
+  assert.deepEqual(state.calls, ["finish"]);
+});
+
 test("runs of one commit read the source the cache kept, and release it", async () => {
   const state = stores();
   const directory = await mkdtemp(join(tmpdir(), "lifecycle-cache-"));

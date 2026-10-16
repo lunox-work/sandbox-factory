@@ -1,7 +1,7 @@
 import { ApiError } from "@sandbox-factory/client";
 import { activeRunConflictSchema } from "@sandbox-factory/shared";
 import { useQuery } from "@tanstack/react-query";
-import { terminalRun, useObservation } from "./data/observe";
+import { bountyRunTopic, terminalRun, useObservation } from "./data/observe";
 import { clients, queryKeys, useUserId } from "./data/query";
 /**
  * Changing a proposal's spec from its Scenarios tab: more scenarios of a
@@ -173,6 +173,7 @@ export function useRespec(
     interval: 1_000,
     startDelay: 1_000,
     terminal: terminalRun,
+    topics: (id) => [bountyRunTopic(id)],
     read: (id, signal) =>
       clients.runs.run(
         decodeURIComponent(base.split("/").at(-1) ?? ""),

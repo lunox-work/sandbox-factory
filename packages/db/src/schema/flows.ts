@@ -3,8 +3,9 @@
  *
  * Views, not tables: nothing is stored here, and every number is derived
  * from timestamps the runs, profiles and versions keep. They read across
- * organizations, so they are for an operator at a SQL prompt; no store
- * reads them and no route serves them.
+ * organizations, so they are for an operator at a SQL prompt. The one store
+ * that reads them (`flow-waits.ts`) reads a single organization's samples,
+ * for the typical durations a page shows beside its stages.
  *
  * `flow_wait_sample` is one row per wait that ended, and `flow_wait` its
  * percentiles per flow and week, so a change to the pipeline is measured

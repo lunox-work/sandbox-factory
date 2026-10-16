@@ -46,6 +46,8 @@ import {
 import { Page } from "@/components/Page";
 import { cn } from "@/lib/utils";
 
+import { useRunChanges } from "../../data/events";
+import { analysisTopic, PUSHED_INTERVAL_MS } from "../../data/observe";
 import { clients, queryKeys, useUserId } from "../../data/query";
 import { replaceLocation, useLocation } from "../../navigation/location";
 import { workspaceLabel } from "../../OrganizationSwitcher";
@@ -78,6 +80,15 @@ import {
 
 /** How often a build still running is asked about. */
 const FILES_POLL_MS = 3_000;
+
+/** A short name for a set of files' contents, to key their reads by. */
+function signature(files: readonly { path: string; sha256: string }[]) {
+  let hash = 5381;
+  for (const { path, sha256 } of files)
+    for (const char of `${path}:${sha256};`)
+      hash = ((hash * 33) ^ char.charCodeAt(0)) >>> 0;
+  return hash.toString(36);
+}
 
 /** The folder that holds the hidden tests, marked as such in the tree. */
 const PRIVATE_FOLDER = "private";
@@ -196,19 +207,34 @@ function SandboxFiles({
     queryFn: ({ signal }) =>
       clients.sandbox.sandboxVersion(owner, versionId, signal),
   });
+  // Whether the build's run is pushed to this page; see `useRunChanges`.
+  const [pushed, setPushed] = useState(false);
   const listing = useQuery({
     queryKey: queryKeys.resource(userId, owner, "sandbox-files", versionId),
     queryFn: ({ signal }) =>
       clients.sandbox.sandboxFiles(owner, versionId, signal),
-    // A build still running has written nothing yet; its files arrive when
-    // it commits.
+    // A build still running has written at most what it generated, which
+    // its baseline checks; what it keeps arrives when it commits. Read
+    // again as its run moves, and on a slower timer while that is pushed.
     refetchInterval: (query) => {
       const status = query.state.data?.run?.status;
       return status === "queued" || status === "running"
-        ? FILES_POLL_MS
+        ? pushed
+          ? PUSHED_INTERVAL_MS
+          : FILES_POLL_MS
         : false;
     },
   });
+  const buildRun = listing.data?.run;
+  const building =
+    buildRun != null &&
+    (buildRun.status === "queued" || buildRun.status === "running");
+  const streamOpen = useRunChanges(
+    owner,
+    building ? [analysisTopic(buildRun.id)] : [],
+    () => void listing.refetch(),
+  );
+  useEffect(() => setPushed(streamOpen && building), [streamOpen, building]);
   const { search } = useLocation();
   const params = new URLSearchParams(search);
   const side: SandboxSide =
@@ -294,7 +320,14 @@ function SandboxFiles({
     () => ({
       owner,
       versionId,
-      runId: listing.data?.run?.id ?? null,
+      // A file the build has only generated so far is read again once a
+      // later candidate, or the build itself, has written it.
+      runId:
+        listing.data?.run == null
+          ? null
+          : listing.data.provisional
+            ? `${listing.data.run.id}:preview:${signature(listing.data.files)}`
+            : listing.data.run.id,
       renames:
         side === "private" && aliasRules !== undefined
           ? invertAliasRules(aliasRules)
@@ -566,6 +599,15 @@ function SandboxFiles({
         side={side}
         onSwitchSide={switchSide}
       />
+      {listing.data?.provisional === true && files.length > 0 && (
+        <p
+          role="status"
+          className="bg-muted text-muted-foreground border-b px-3 py-1 text-xs"
+        >
+          Its build is still checking these files: they are what it generated,
+          and may change before it finishes.
+        </p>
+      )}
       <div className="flex min-h-0 flex-1">
         <ActivityBar view={view} onView={setView} />
         {content}

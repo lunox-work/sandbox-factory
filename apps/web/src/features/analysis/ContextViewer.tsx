@@ -47,7 +47,7 @@ import {
   folderIconName,
   languageOf,
 } from "../sandbox/file-types";
-import { DiagramView, SvgPicture } from "../sandbox/Diagram";
+import { DiagramView, SvgPicture } from "../sandbox/LazyDiagram";
 import { diagramKind } from "../sandbox/diagrams";
 import { formatJson } from "../sandbox/json-format";
 import { MarkdownDocument } from "../sandbox/MarkdownDocument";

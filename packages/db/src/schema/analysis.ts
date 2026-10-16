@@ -27,6 +27,7 @@ import {
 import type { TreeFacts } from "sandbox-factory";
 import type {
   AnalysisParams,
+  AnalysisPreview,
   AnalysisProgress,
   AnalysisStatus,
   AnalysisTiming,
@@ -136,6 +137,12 @@ export const analysisRun = pgTable(
      * for one that ended before this was kept.
      */
     timing: jsonb("timing").$type<AnalysisTiming>(),
+    /**
+     * The files a running build has written before its baseline, uploaded
+     * for a page to show while it is checked. Cleared when the run ends or
+     * is claimed again: its artifacts are what it wrote then.
+     */
+    preview: jsonb("preview").$type<AnalysisPreview>(),
     logKey: text("log_key"),
     startedAt: ts("started_at"),
     finishedAt: ts("finished_at"),

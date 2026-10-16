@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import assert from "node:assert/strict";
 import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -273,6 +274,8 @@ async function runBuild(
     options.outDir ?? (await mkdtemp(join(tmpdir(), "build-out-")));
   const messages: string[] = [];
   const timing = timingRecorder();
+  /** Each preview the build showed: its paths, and what was logged before. */
+  const previews: { paths: string[]; logged: string[]; text: string }[] = [];
   const inputs: ToolInputs = {
     getRun: async (id) =>
       id === sliceRun.id
@@ -315,6 +318,14 @@ async function runBuild(
     inputs,
     signal: new AbortController().signal,
     log: (line) => messages.push(line),
+    preview: (shown) => {
+      const app = shown.find(({ path }) => path === "project/src/app.ts");
+      previews.push({
+        paths: shown.map(({ path }) => path),
+        logged: [...messages],
+        text: app === undefined ? "" : readFileSync(app.absolutePath, "utf8"),
+      });
+    },
     timing,
   };
   const adapter = createSandboxBuildAdapter({
@@ -335,6 +346,7 @@ async function runBuild(
     outDir,
     adapter,
     version,
+    previews,
     timing: timing.value(),
   };
 }
@@ -433,18 +445,31 @@ const hiddenTest = {
 
 test("a build produces a standalone project, hidden tests apart, a verified baseline and a bound manifest", async () => {
   const fake = fakeProvider((argv) => (runsHiddenTest(argv) ? TAP_FAILED : {}));
-  const { files, manifest, read, timing } = await runBuild(fake.provider, {
-    version: await versionFor({
-      aliasRules: [
-        {
-          before: "createService",
-          after: "makeService",
-          kind: "identifier",
-          paths: [],
-        },
-      ],
-    }),
-  });
+  const { files, manifest, read, timing, previews } = await runBuild(
+    fake.provider,
+    {
+      version: await versionFor({
+        aliasRules: [
+          {
+            before: "createService",
+            after: "makeService",
+            kind: "identifier",
+            paths: [],
+          },
+        ],
+      }),
+    },
+  );
+  // The generated project was shown before its baseline ran, at the paths
+  // the build keeps it at.
+  assert.equal(previews.length, 1);
+  assert.ok(previews[0]?.paths.includes("project/src/app.ts"));
+  assert.ok(previews[0]?.paths.includes("private/fix.test.ts"));
+  assert.match(previews[0]?.text ?? "", /makeService/);
+  assert.equal(
+    previews[0]?.logged.some((line) => /baseline/i.test(line)),
+    false,
+  );
   // The baseline's steps, each as long as the evaluator said it ran.
   assert.equal(timing.baselines?.length, 1);
   assert.deepEqual(

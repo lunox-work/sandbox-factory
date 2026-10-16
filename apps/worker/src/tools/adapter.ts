@@ -91,6 +91,13 @@ export interface ToolRunInput {
    * run (`progress.ts`). Absent where nothing follows it.
    */
   readonly step?: (text: string) => void;
+  /**
+   * Shows what a build has generated, before its baseline, on the version's
+   * files while the baseline runs: the files are uploaded and recorded on
+   * the run, in place of any shown before. Best effort, and never waited
+   * for; absent where nothing follows the run.
+   */
+  readonly preview?: (files: readonly ArtifactFile[]) => void;
   /** Where the tool's own time went: agent turns and baselines. */
   readonly timing?: RunTiming;
 }

@@ -21,7 +21,11 @@ import {
 } from "@/components/ui/dialog";
 
 import { ProviderIcon } from "../../ProviderIcon";
-import { terminalRun, useObservation } from "../../data/observe";
+import {
+  bountyRunTopic,
+  terminalRun,
+  useObservation,
+} from "../../data/observe";
 import { clients } from "../../data/query";
 import { money, wholeMoney } from "../../lib/format";
 import { KindDot } from "../../RubricScenarios";
@@ -127,6 +131,7 @@ export function TeaserBounty({
       terminalRun(run) || run.outcomes[0]?.proposalId !== undefined,
     interval: 1000,
     startDelay: 1000,
+    topics: (id) => [bountyRunTopic(id)],
   });
   const finished = useRef<string | null>(null);
   // The board's runs can be read after this mounted: a run they name for

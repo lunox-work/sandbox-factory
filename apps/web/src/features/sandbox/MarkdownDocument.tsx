@@ -16,7 +16,7 @@ import remarkGfm from "remark-gfm";
 import { cn } from "@/lib/utils";
 
 import { Colored, useHighlighted } from "./Colored";
-import { DiagramFigure } from "./Diagram";
+import { DiagramFigure } from "./LazyDiagram";
 import { diagramKind } from "./diagrams";
 import { linkedFile, wikiLinkedFile } from "./file-tree";
 import { languageOf } from "./file-types";

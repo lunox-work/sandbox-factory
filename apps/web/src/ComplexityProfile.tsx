@@ -1,4 +1,5 @@
-import { useObservation } from "./data/observe";
+import { profileTopic, useObservation } from "./data/observe";
+import { usually, useTypicalWaits } from "./data/typical";
 import { clients } from "./data/query";
 /**
  * A proposal's complexity profile, in the Price tab under the size: the
@@ -57,6 +58,7 @@ export function useProposalProfile(
     terminal: (profiles) =>
       profiles.every((profile) => !IN_FLIGHT.has(profile.status)),
     interval: PROFILE_POLL_MS,
+    topics: () => [profileTopic(proposalId)],
   });
   if (!drafted) return { state: "ready", profiles: [], owner };
   if (query.isError)
@@ -200,6 +202,11 @@ function RepositoryProfile({
         ? stored.sliceRunId
         : null;
   const run = useRunActivity(owner ?? "", owner === undefined ? null : runId);
+  // Asked only while a run is at work, the one time it is said.
+  const typical = useTypicalWaits(
+    owner ?? "",
+    runId === null ? [] : ["run:scope", "run:slice"],
+  );
   if (stage !== undefined)
     return (
       <RunActivity
@@ -209,7 +216,14 @@ function RepositoryProfile({
           run?.startedAt ??
           (stored.status === "queued" ? null : stored.updatedAt)
         }
-        expected={EXPECTED[stored.status]}
+        expected={usually(
+          stored.status === "scoping"
+            ? typical.get("run:scope")
+            : stored.status === "slicing"
+              ? typical.get("run:slice")
+              : undefined,
+          EXPECTED[stored.status],
+        )}
       >
         {stage}
       </RunActivity>

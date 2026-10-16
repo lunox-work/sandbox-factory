@@ -5,7 +5,7 @@ import type { OrganizationStore } from "@sandbox-factory/db";
 
 import type { Auth } from "../src/auth.js";
 import { rankAtLeast } from "../src/access.js";
-import { createApp } from "../src/routes.js";
+import { createApp, type AppOptions } from "../src/routes.js";
 
 /**
  * The organization routes.
@@ -172,6 +172,8 @@ function app(
     as?: typeof dana;
     store?: OrganizationStore;
     onInvite?: (body: Record<string, unknown>) => unknown;
+    setup?: AppOptions["setup"];
+    jira?: AppOptions["jira"];
   } = {},
 ) {
   const organizations = options.store ?? fakeStore().store;
@@ -182,6 +184,8 @@ function app(
       ...(options.onInvite === undefined ? {} : { onInvite: options.onInvite }),
     }),
     organizations,
+    setup: options.setup,
+    jira: options.jira,
   });
   return {
     request(path: string, init?: RequestInit) {
@@ -208,6 +212,54 @@ test("GET /api/v1/me/orgs lists the caller's organizations with roles", async ()
 
   assert.equal(res.status, 200);
   assert.deepEqual(await res.json(), {
+    organizations: [{ ...acme, role: "owner" }],
+  });
+});
+
+test("the list answers each workspace's setup, counted for those listed", async () => {
+  const asked: (readonly string[])[] = [];
+  const res = await app({
+    setup: {
+      forOrganizations: async (ids) => {
+        asked.push(ids);
+        return new Map([
+          [
+            acme.id,
+            {
+              jiraConnected: 1,
+              jiraBroken: 1,
+              jiraBoards: 2,
+              githubConnected: 0,
+              githubRepositories: 0,
+              proposals: 3,
+              bounties: 1,
+            },
+          ],
+        ]);
+      },
+    },
+  }).request("/api/v1/me/orgs");
+  assert.deepEqual(asked, [[acme.id]]);
+  assert.deepEqual(await res.json(), {
+    organizations: [
+      {
+        ...acme,
+        role: "owner",
+        // Neither Jira nor GitHub is mounted on this server.
+        setup: {
+          jira: { available: false, connected: 1, broken: 1, boards: 2 },
+          github: { available: false, connected: 0, repositories: 0 },
+          proposals: 3,
+          bounties: 1,
+        },
+      },
+    ],
+  });
+  // A workspace with no count is listed as it was.
+  const uncounted = await app({
+    setup: { forOrganizations: async () => new Map() },
+  }).request("/api/v1/me/orgs");
+  assert.deepEqual(await uncounted.json(), {
     organizations: [{ ...acme, role: "owner" }],
   });
 });

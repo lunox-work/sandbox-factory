@@ -200,9 +200,11 @@ function route(run: unknown, ...profiles: unknown[]) {
         JSON.stringify(
           url.includes("/runs/")
             ? { run }
-            : profiles.length > 1
-              ? profiles.shift()
-              : profiles[0],
+            : url.includes("/flows/typical")
+              ? { flows: {} }
+              : profiles.length > 1
+                ? profiles.shift()
+                : profiles[0],
         ),
         { status: 200 },
       ),

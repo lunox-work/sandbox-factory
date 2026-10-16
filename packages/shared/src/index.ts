@@ -73,8 +73,36 @@ export const organizationSummarySchema = z.object({
   image: z.string().nullable().optional(),
 });
 
+/**
+ * How far a workspace is set up: what home and the rail reason about
+ * (`setup.ts` in the web app), counted from the platform's own rows.
+ */
+export const workspaceSetupSchema = z.object({
+  jira: z.object({
+    /** The server mounts Jira at all. */
+    available: z.boolean(),
+    connected: z.number().int().nonnegative(),
+    broken: z.number().int().nonnegative(),
+    boards: z.number().int().nonnegative(),
+  }),
+  github: z.object({
+    available: z.boolean(),
+    connected: z.number().int().nonnegative(),
+    repositories: z.number().int().nonnegative(),
+  }),
+  proposals: z.number().int().nonnegative(),
+  /** Whether it holds any bounty: one or none. */
+  bounties: z.number().int().nonnegative(),
+});
+
 export const membershipSchema = organizationSummarySchema.extend({
   role: heldOrganizationRolesSchema,
+  /**
+   * The workspace's setup, answered with the list of workspaces so the
+   * shell needs no read of its own before it can say what to offer.
+   * Absent from an API that predates it, and from any other read.
+   */
+  setup: workspaceSetupSchema.optional(),
 });
 
 export const membershipListSchema = z.object({
@@ -135,6 +163,7 @@ export type OrganizationRole = z.infer<typeof organizationRoleSchema>;
 export type OrganizationKind = z.infer<typeof organizationKindSchema>;
 export type OrganizationSummaryDto = z.infer<typeof organizationSummarySchema>;
 export type MembershipDto = z.infer<typeof membershipSchema>;
+export type WorkspaceSetupDto = z.infer<typeof workspaceSetupSchema>;
 export type MembershipListDto = z.infer<typeof membershipListSchema>;
 export type OrganizationMemberDto = z.infer<typeof organizationMemberSchema>;
 export type PendingInvitationDto = z.infer<typeof pendingInvitationSchema>;

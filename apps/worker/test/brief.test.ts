@@ -129,6 +129,7 @@ function documentsRun(set: DocumentSet) {
     errorCode: null,
     errorDetail: null,
     progress: null,
+    previewFiles: null,
     startedAt: stamp,
     finishedAt: stamp,
     deadlineAt: stamp,

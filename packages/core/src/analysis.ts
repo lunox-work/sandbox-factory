@@ -40,6 +40,24 @@ export interface AnalysisProgressStep {
   readonly text: string;
 }
 export const ANALYSIS_PROGRESS_STEPS_MAX = 20;
+/**
+ * What a build has written before it is checked: the generated project,
+ * uploaded the moment it exists, so a page can show the files while the
+ * baseline still runs. Replaced as a later candidate is written, cleared
+ * when the run ends; the run's committed artifacts are then what it wrote.
+ */
+export interface AnalysisPreview {
+  /** When it was written, as an ISO timestamp. */
+  readonly at: string;
+  readonly files: readonly AnalysisPreviewFile[];
+}
+export interface AnalysisPreviewFile {
+  readonly path: string;
+  readonly objectKey: string;
+  readonly contentType: string;
+  readonly sizeBytes: number;
+  readonly sha256: string;
+}
 /** The longest a step's line may be; a longer one is cut with an ellipsis. */
 export const ANALYSIS_PROGRESS_TEXT_MAX = 160;
 /**

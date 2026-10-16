@@ -33,6 +33,7 @@ import {
 } from "sandbox-factory";
 import type {
   AnalysisParams,
+  AnalysisPreview,
   AnalysisProgress,
   AnalysisStatus,
   AnalysisErrorCode,
@@ -43,6 +44,7 @@ import type {
 } from "sandbox-factory";
 import type { Database, QueryExecutor } from "./errors.js";
 import { generateId } from "./mapping.js";
+import { announceChange, notifyChange } from "./run-events.js";
 import {
   analysisRun,
   artifact,
@@ -73,9 +75,23 @@ export function workerApplicationName(workerId: string): string {
   return `${WORKER_APPLICATION_NAME}:${workerId}`;
 }
 
-async function announce(tx: QueryExecutor, channel: string, runId: string) {
-  await tx.execute(sql`select pg_notify(${channel}, ${runId})`);
+/**
+ * Announces a run on the queue's `channel`, and to the pages following it
+ * (`RUN_CHANGED_CHANNEL`), in one statement.
+ */
+async function announce(
+  tx: QueryExecutor,
+  channel: string,
+  owner: string,
+  runId: string,
+) {
+  await tx.execute(
+    sql`select pg_notify(${channel}, ${runId}), ${notifyChange({ organizationId: owner, kind: "analysis", id: runId })}`,
+  );
 }
+/** Tells the pages following a run that it changed, outside the queue. */
+const changed = (tx: QueryExecutor, owner: string, runId: string) =>
+  announceChange(tx, { organizationId: owner, kind: "analysis", id: runId });
 
 const isBuilder = (tool: string) =>
   CONTEXT_BUILDERS.some((builder) => builder === tool);
@@ -134,6 +150,11 @@ export interface StoredAnalysisRun {
   readonly errorDetail: string | null;
   /** What an agent run has done so far; null for runs that write none. */
   readonly progress: AnalysisProgress | null;
+  /**
+   * How many files a running build has written before its check, which
+   * `preview` lists; null when it has written none, or has ended.
+   */
+  readonly previewFiles: number | null;
   readonly startedAt: string | null;
   readonly finishedAt: string | null;
   readonly deadlineAt: string | null;
@@ -272,6 +293,22 @@ export interface AnalysisRunStore {
     progress: AnalysisProgress,
     now: Date,
   ): Promise<boolean>;
+  /**
+   * Writes the files a build has written so far, already uploaded, in place
+   * of any it wrote before. Guarded by the lease like a heartbeat.
+   */
+  recordPreview(
+    organizationId: string,
+    runId: string,
+    leaseToken: string,
+    preview: AnalysisPreview,
+    now: Date,
+  ): Promise<boolean>;
+  /** What a running build has written so far; null once it has ended. */
+  preview(
+    organizationId: string,
+    runId: string,
+  ): Promise<AnalysisPreview | null>;
   finish(
     organizationId: string,
     runId: string,
@@ -372,6 +409,7 @@ function toRun(row: AnalysisRunRow, repoId: string | null): StoredAnalysisRun {
     errorCode: row.errorCode,
     errorDetail: row.errorDetail,
     progress: row.progress ?? null,
+    previewFiles: row.preview?.files.length ?? null,
     startedAt: row.startedAt?.toISOString() ?? null,
     finishedAt: row.finishedAt?.toISOString() ?? null,
     deadlineAt: row.deadlineAt?.toISOString() ?? null,
@@ -419,6 +457,7 @@ export function createAnalysisRunStore(db: Database): AnalysisRunStore {
         // A retry starts its steps and its clock again.
         progress: null,
         timing: null,
+        preview: null,
       })
       .where(
         sql`${analysisRun.id} = (select a.id from analysis_run a where ${CLAIMABLE} and ${filter} order by ${RUNNING_BESIDE}, a.created_at, a.id for update of a skip locked limit 1)`,
@@ -426,6 +465,8 @@ export function createAnalysisRunStore(db: Database): AnalysisRunStore {
       .returning();
     const run = rows[0];
     if (run === undefined) return null;
+    // Queued to running: a page following it shows it started.
+    await changed(db, run.organizationId, run.id);
     if (run.snapshotId === null)
       return {
         ...toRun(run, null),
@@ -609,7 +650,7 @@ export function createAnalysisRunStore(db: Database): AnalysisRunStore {
         const row = rows[0] as AnalysisRunRow | undefined;
         if (row === undefined)
           throw new Error("Analysis enqueue did not return a row.");
-        await announce(tx, RUN_QUEUED_CHANNEL, row.id);
+        await announce(tx, RUN_QUEUED_CHANNEL, owner, row.id);
         return {
           ok: true,
           run: toRun(row, repoId),
@@ -696,7 +737,34 @@ export function createAnalysisRunStore(db: Database): AnalysisRunStore {
           and(fence(owner, id, token, now), gt(analysisRun.deadlineAt, now)),
         )
         .returning({ id: analysisRun.id });
-      return rows.length > 0;
+      if (rows.length === 0) return false;
+      await changed(db, owner, id);
+      return true;
+    },
+    async preview(owner, id) {
+      const rows = await db
+        .select({ preview: analysisRun.preview })
+        .from(analysisRun)
+        .where(
+          and(
+            owned(owner),
+            eq(analysisRun.id, id),
+            inArray(analysisRun.status, ["queued", "running"]),
+          ),
+        );
+      return rows[0]?.preview ?? null;
+    },
+    async recordPreview(owner, id, token, preview, now) {
+      const rows = await db
+        .update(analysisRun)
+        .set({ preview })
+        .where(
+          and(fence(owner, id, token, now), gt(analysisRun.deadlineAt, now)),
+        )
+        .returning({ id: analysisRun.id });
+      if (rows.length === 0) return false;
+      await changed(db, owner, id);
+      return true;
     },
     async finish(owner, id, token, artifacts, logKey, now) {
       return db.transaction(async (transaction) => {
@@ -711,6 +779,7 @@ export function createAnalysisRunStore(db: Database): AnalysisRunStore {
             finishedAt: now,
             leaseToken: null,
             leaseExpiresAt: null,
+            preview: null,
           })
           .where(
             and(fence(owner, id, token, now), gt(analysisRun.deadlineAt, now)),
@@ -735,7 +804,7 @@ export function createAnalysisRunStore(db: Database): AnalysisRunStore {
           rows.flatMap((row) => (isBuilder(row.tool) ? [row.snapshotId] : [])),
           now,
         );
-        await announce(tx, RUN_ENDED_CHANNEL, id);
+        await announce(tx, RUN_ENDED_CHANNEL, owner, id);
         return true;
       });
     },
@@ -752,6 +821,7 @@ export function createAnalysisRunStore(db: Database): AnalysisRunStore {
             finishedAt: now,
             leaseToken: null,
             leaseExpiresAt: null,
+            preview: null,
           })
           .where(fence(owner, id, token, now))
           .returning({
@@ -765,7 +835,7 @@ export function createAnalysisRunStore(db: Database): AnalysisRunStore {
           rows.flatMap((row) => (isBuilder(row.tool) ? [row.snapshotId] : [])),
           now,
         );
-        await announce(tx, RUN_ENDED_CHANNEL, id);
+        await announce(tx, RUN_ENDED_CHANNEL, owner, id);
         return true;
       });
     },
@@ -777,11 +847,12 @@ export function createAnalysisRunStore(db: Database): AnalysisRunStore {
           leaseToken: null,
           leaseExpiresAt: null,
           heartbeatAt: null,
+          preview: null,
         })
         .where(fence(owner, id, token, now))
         .returning({ id: analysisRun.id });
       if (rows.length === 0) return false;
-      await announce(db, RUN_QUEUED_CHANNEL, id);
+      await announce(db, RUN_QUEUED_CHANNEL, owner, id);
       return true;
     },
     async recordTiming(owner, id, timing) {
@@ -812,6 +883,7 @@ export function createAnalysisRunStore(db: Database): AnalysisRunStore {
             leaseToken: null,
             leaseExpiresAt: null,
             heartbeatAt: null,
+            preview: null,
           })
           .where(and(owned(owner), expired(now)))
           .returning({
@@ -835,6 +907,7 @@ export function createAnalysisRunStore(db: Database): AnalysisRunStore {
           await announce(
             tx,
             row.status === "queued" ? RUN_QUEUED_CHANNEL : RUN_ENDED_CHANNEL,
+            owner,
             row.id,
           );
         return rows.length;

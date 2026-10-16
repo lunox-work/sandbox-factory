@@ -11,7 +11,7 @@
 import type { AnalysisProgressDto } from "@sandbox-factory/shared";
 import { Check } from "lucide-react";
 
-import { useObservation } from "@/data/observe";
+import { analysisTopic, useObservation } from "@/data/observe";
 import { clients } from "@/data/query";
 import { cn } from "@/lib/utils";
 
@@ -36,6 +36,7 @@ export function useRunActivity(owner: string, runId: string | null) {
     read: (id, signal) => clients.analysis.run(owner, id, signal),
     terminal: (run) => run.status !== "queued" && run.status !== "running",
     interval: ACTIVITY_POLL_MS,
+    topics: (id) => [analysisTopic(id)],
   });
   return query.data ?? null;
 }

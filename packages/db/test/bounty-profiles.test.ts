@@ -267,7 +267,7 @@ test("the sweep discovers each organization with work once", async () => {
 });
 
 test("advance moves a row only from the status it was read in, and sets what the step carries", async () => {
-  const fake = createFakeDb([{ id: "bpf_1" }]);
+  const fake = createFakeDb([{ proposalId: "bpp_1" }]);
   const store = createBountyProfileStore(fake.db);
   assert.equal(
     await store.advance("org_1", "bpf_1", "queued", {
@@ -294,23 +294,27 @@ test("advance moves a row only from the status it was read in, and sets what the
     status: "failed",
     errorCode: "source_unavailable",
   });
+  // Each move tells the pages following the proposal's profiles.
+  assert.equal(fake.calls.filter((call) => call.kind === "execute").length, 5);
   const appended: unknown[] = [];
-  const sets = fake.calls.map((call) => {
-    const { updatedAt, transitions, ...rest } = call.values ?? {};
-    assert.ok(updatedAt instanceof Date);
-    assert.equal(call.filtered, true);
-    // Each step is appended to the row's own list, stamped as it is taken.
-    const moved = (transitions as SQL).queryChunks.find(
-      (chunk) => typeof chunk === "string",
-    );
-    assert.equal(typeof moved, "string");
-    appended.push(...(JSON.parse(moved as string) as unknown[]));
-    assert.deepEqual(appended.at(-1), {
-      status: rest["status"],
-      at: (updatedAt as Date).toISOString(),
+  const sets = fake.calls
+    .filter((call) => call.kind === "update")
+    .map((call) => {
+      const { updatedAt, transitions, ...rest } = call.values ?? {};
+      assert.ok(updatedAt instanceof Date);
+      assert.equal(call.filtered, true);
+      // Each step is appended to the row's own list, stamped as it is taken.
+      const moved = (transitions as SQL).queryChunks.find(
+        (chunk) => typeof chunk === "string",
+      );
+      assert.equal(typeof moved, "string");
+      appended.push(...(JSON.parse(moved as string) as unknown[]));
+      assert.deepEqual(appended.at(-1), {
+        status: rest["status"],
+        at: (updatedAt as Date).toISOString(),
+      });
+      return rest;
     });
-    return rest;
-  });
   assert.deepEqual(sets, [
     { status: "scoping", scopeRunId: "arn_1" },
     { status: "slicing", sliceRunId: "arn_2" },

@@ -4,7 +4,7 @@ import {
   pushLocation,
   replaceLocation,
 } from "./navigation/location";
-import { useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
 
 import { LoadingLine, RetryableError } from "@/components/Message";
 import { Page } from "@/components/Page";
@@ -20,7 +20,16 @@ import { RepositoryPage } from "./Repository";
 import { SideNav, type Screen } from "./SideNav";
 import { SignIn } from "./SignIn";
 import { Bounties, BountyPage, NewBountyPage } from "./Bounties";
-import { SandboxFilesPage } from "./features/sandbox/SandboxFiles";
+/*
+  The sandbox file viewer is its own page and its own chunk: the editor,
+  the highlighter and the diagrams load only when a version's files are
+  opened.
+*/
+const SandboxFilesPage = lazy(() =>
+  import("./features/sandbox/SandboxFiles").then(({ SandboxFilesPage }) => ({
+    default: SandboxFilesPage,
+  })),
+);
 import { newBountyUrl } from "./features/onboarding/prefill";
 import { setupComplete } from "./features/onboarding/setup";
 import { useWorkspaceSetup } from "./features/onboarding/useWorkspaceSetup";
@@ -69,7 +78,15 @@ export function App() {
   return (
     <ServerDataProvider key={session.user.id} userId={session.user.id}>
       {sandboxFiles !== undefined ? (
-        <SandboxFilesPage address={sandboxFiles} />
+        <Suspense
+          fallback={
+            <main className="grid min-h-dvh place-items-center">
+              <LoadingLine />
+            </main>
+          }
+        >
+          <SandboxFilesPage address={sandboxFiles} />
+        </Suspense>
       ) : (
         <Signed
           key={session.user.id}

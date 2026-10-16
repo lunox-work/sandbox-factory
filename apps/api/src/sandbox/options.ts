@@ -33,6 +33,11 @@ export interface SandboxRouteOptions {
   readonly runs: Pick<AnalysisRunStore, "get" | "enqueue" | "latestSucceeded">;
   readonly artifacts: Pick<ArtifactStore, "list">;
   readonly objects: Pick<ObjectStore, "get" | "remove">;
+  /**
+   * What a build still running has written before its baseline, served as
+   * the version's files until it commits. Absent, they arrive at commit.
+   */
+  readonly previews?: Pick<AnalysisRunStore, "preview">;
   readonly proposals: Pick<BountyProposalStore, "get" | "liveForBounty">;
   readonly specs: Pick<BountySpecStore, "get">;
   /** The bounty a generated version is written from: its text and stack. */

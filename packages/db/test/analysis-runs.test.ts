@@ -36,6 +36,7 @@ const row = (overrides: Partial<AnalysisRunRow> = {}): AnalysisRunRow => ({
   errorDetail: null,
   progress: null,
   timing: null,
+  preview: null,
   logKey: null,
   startedAt: null,
   finishedAt: null,
@@ -485,7 +486,9 @@ test("claim returns the source and owner, while empty or deleted source returns 
     "lease",
     now,
   );
-  assert.equal(sourceless.calls.length, 1);
+  // The claim, and the page following the run told it started.
+  assert.equal(sourceless.calls.length, 2);
+  assert.equal(sourceless.calls[1]?.kind, "execute");
   assert.equal(starter?.organizationId, "owner");
   assert.equal(starter?.commitSha, null);
   assert.equal(starter?.repoId, null);
@@ -514,6 +517,33 @@ test("lease mutations refuse stale writes; finish inserts artifacts only after a
         ?.values?.["progress"],
       progress,
     );
+    const preview = {
+      at: now.toISOString(),
+      files: [
+        {
+          path: "project/package.json",
+          objectKey: "runs/run/lease/preview/project/package.json",
+          contentType: "application/json",
+          sizeBytes: 2,
+          sha256: "a".repeat(64),
+        },
+      ],
+    };
+    assert.equal(
+      await store.recordPreview("owner", "run", "lease", preview, now),
+      present,
+    );
+    const previewWrite = fake.calls.find(
+      ({ values }) => values?.["preview"] !== undefined,
+    );
+    assert.deepEqual(previewWrite?.values?.["preview"], preview);
+    assert.equal(previewWrite?.filtered, true);
+    const read = createFakeDb(present ? [{ preview }] : []);
+    assert.deepEqual(
+      await createAnalysisRunStore(read.db).preview("owner", "run"),
+      present ? preview : null,
+    );
+    assert.equal(read.calls[0]?.filtered, true);
     assert.equal(
       await store.finish(
         "owner",
@@ -539,11 +569,11 @@ test("lease mutations refuse stale writes; finish inserts artifacts only after a
       present,
     );
     assert.equal(await store.failExpired("owner", now), present ? 1 : 0);
-    // finish, fail, release and the expiry each announce; a fenced-out
-    // write announces nothing.
+    // Progress, preview, finish, fail, release and the expiry each
+    // announce; a fenced-out write announces nothing.
     assert.equal(
       fake.calls.filter((call) => call.kind === "execute").length,
-      present ? 4 : 0,
+      present ? 6 : 0,
     );
     if (present) {
       const retried = createFakeDb([{ id: "run", status: "queued" }]);

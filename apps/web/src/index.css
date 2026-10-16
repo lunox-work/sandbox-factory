@@ -768,6 +768,22 @@
   }
 }
 
+/*
+  A read that has not answered yet says so only once it has taken a
+  moment: one that answers within 150ms never shows the line at all, so
+  an instant read does not flash. `backwards` holds it invisible through
+  the delay; it is in the document throughout, so a screen reader is told.
+*/
+.loading-line-in {
+  animation: loading-line-in 160ms ease-out 150ms backwards;
+}
+
+@keyframes loading-line-in {
+  from {
+    opacity: 0;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   /* Still: the orb draws one frame of its own, the text keeps its plain
      muted colour. */
@@ -778,6 +794,11 @@
   .bounty-list-in,
   .bounty-row-in {
     animation: none;
+  }
+
+  /* Still held through the delay, then shown at once. */
+  .loading-line-in {
+    animation-duration: 1ms;
   }
 
   .thinking-text {
