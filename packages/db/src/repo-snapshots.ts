@@ -9,13 +9,8 @@
  * Rows are immutable. A new head is a new row; nothing here updates one.
  */
 
-import { and, desc, eq, inArray, ne, sql } from "drizzle-orm";
-import {
-  CONTEXT_BUILDERS,
-  snapshotBuilt,
-  type AnalysisStatus,
-  type TreeFacts,
-} from "sandbox-factory";
+import { and, desc, eq, inArray, isNotNull, ne, sql } from "drizzle-orm";
+import type { TreeFacts } from "sandbox-factory";
 
 import type { Database } from "./errors.js";
 import { generateId } from "./mapping.js";
@@ -108,8 +103,9 @@ export interface RepoSnapshotStore {
   ): Promise<StoredRepoSnapshot | null>;
   /**
    * A repository's built snapshots, newest first: those whose context
-   * builders have finished as `snapshotBuilt` in core says. The commits a
-   * bounty's scope can read the repository at.
+   * builders have finished as `snapshotBuilt` in core says, which the run
+   * store records on the row (`built_at`) as the last of them ends. The
+   * commits a bounty's scope can read the repository at.
    */
   built(organizationId: string, repoId: string): Promise<RepoSnapshotSummary[]>;
   create(
@@ -197,44 +193,12 @@ export function createRepoSnapshotStore(db: Database): RepoSnapshotStore {
     },
 
     async built(organizationId, repoId) {
-      const runs = (await db
-        .select({
-          snapshotId: analysisRun.snapshotId,
-          tool: analysisRun.tool,
-          status: analysisRun.status,
-        })
-        .from(analysisRun)
-        .innerJoin(repoSnapshot, eq(repoSnapshot.id, analysisRun.snapshotId))
-        .innerJoin(githubRepo, eq(githubRepo.id, repoSnapshot.repoId))
-        .where(
-          and(
-            owned(organizationId),
-            eq(repoSnapshot.repoId, repoId),
-            inArray(analysisRun.tool, [...CONTEXT_BUILDERS]),
-          ),
-        )) as {
-        snapshotId: string | null;
-        tool: string;
-        status: AnalysisStatus;
-      }[];
-      const bySnapshot = new Map<string, typeof runs>();
-      for (const run of runs) {
-        if (run.snapshotId === null) continue;
-        bySnapshot.set(run.snapshotId, [
-          ...(bySnapshot.get(run.snapshotId) ?? []),
-          run,
-        ]);
-      }
-      const ids = [...bySnapshot]
-        .filter(([, each]) => snapshotBuilt(each))
-        .map(([id]) => id);
-      if (ids.length === 0) return [];
       const rows = (await joined()
         .where(
           and(
             owned(organizationId),
             eq(repoSnapshot.repoId, repoId),
-            inArray(repoSnapshot.id, ids),
+            isNotNull(repoSnapshot.builtAt),
           ),
         )
         .orderBy(

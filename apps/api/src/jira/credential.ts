@@ -17,11 +17,13 @@
 
 import type { JiraConnectionStore } from "@sandbox-factory/db";
 import {
+  createFieldListCache,
   JiraApiError,
   JiraAuthError,
   JiraClient,
   JiraWriteClient,
   OAuthCredential,
+  type FieldListCache,
   type TokenSource,
 } from "@sandbox-factory/jira";
 
@@ -159,6 +161,22 @@ const credentials = new WeakMap<
   Map<string, OAuthCredential>
 >();
 
+/**
+ * Each site's story points fields, kept per connection store as the
+ * credentials are, so a board import reads a site's field list once an hour
+ * rather than once per ticket.
+ */
+const fieldLists = new WeakMap<JiraConnectionStore, FieldListCache>();
+
+function fieldListCache(connections: JiraConnectionStore): FieldListCache {
+  let cache = fieldLists.get(connections);
+  if (cache === undefined) {
+    cache = createFieldListCache();
+    fieldLists.set(connections, cache);
+  }
+  return cache;
+}
+
 function sharedCredential(
   options: JiraClientFactoryOptions,
   organizationId: string,
@@ -254,6 +272,7 @@ export async function jiraClientsFor(
       // So issue DTOs carry a browsable `browse/` link. The OAuth credential
       // addresses `api.atlassian.com`, whose URL is not one a user can open.
       siteUrl: connection.siteUrl,
+      fieldCache: fieldListCache(connections),
       ...(fetchImpl === undefined ? {} : { fetch: fetchImpl }),
     }),
     writeClient: new JiraWriteClient({

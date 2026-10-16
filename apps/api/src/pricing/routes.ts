@@ -10,7 +10,11 @@ import {
 export type { PricingRouteOptions } from "./options.js";
 
 import { type BountyProposalStore } from "@sandbox-factory/db";
-import { JiraApiError, JiraAuthError } from "@sandbox-factory/jira";
+import {
+  JiraApiError,
+  JiraAuthError,
+  type JiraIssueSpec,
+} from "@sandbox-factory/jira";
 import type {
   JiraIssueDto,
   ProposalCategoriesDto,
@@ -43,6 +47,7 @@ import {
 } from "sandbox-factory";
 
 import { isAtLeastAdmin } from "../access.js";
+import { recentReads } from "../jira/recent.js";
 import { boundedLimit, rowCursor } from "../paging.js";
 import { REVISE_SPEC_PROMPT_VERSION } from "../sizing/tools/revise-spec.js";
 import { describesProposal } from "./delivery.js";
@@ -85,6 +90,8 @@ export function mountPricingRoutes<Env extends PricingAppEnv>(
 ): void {
   const supportedCurrencies =
     options.supportedCurrencies ?? new Set(Intl.supportedValuesOf("currency"));
+  // A proposal's page reads its issue at most once a minute, its poll too.
+  const recentIssues = recentReads<JiraIssueSpec>();
 
   /*
     A price is changed only while its bounty's scope stands approved: the
@@ -630,7 +637,11 @@ export function mountPricingRoutes<Env extends PricingAppEnv>(
     }
     // The stored reads do not wait on Jira's.
     const [live, writebackOperations, activeRun] = await Promise.all([
-      freshProposal(reviewOptions(options), organizationId, proposal),
+      freshProposal(
+        { ...reviewOptions(options), recent: recentIssues },
+        organizationId,
+        proposal,
+      ),
       options.writebacks === undefined
         ? []
         : options.writebacks.listForProposal(organizationId, proposal.id),

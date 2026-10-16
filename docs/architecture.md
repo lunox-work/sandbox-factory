@@ -439,6 +439,9 @@ fingerprints a bounty's title and description, and `packages/jira`'s
 Jira's text and one priced from the stored copy compare. A proposal is
 current while its bounty still hashes to what it was priced from: read live
 from Jira while the bounty follows an issue, and as stored otherwise. A
+proposal's page, and its poll while a Jira update is on its way, read the
+issue at most once a minute per bounty (`apps/api/src/jira/recent.ts`);
+approving a price or changing its scenarios reads Jira every time. A
 bounty's row keeps no issue type, priority or labels. A board's run reads
 them to choose which issues it sizes, and they reach the model only as
 context a person synced (below).
@@ -449,10 +452,14 @@ adds context beyond its text, read only when a person asks: `POST
 (`JiraClient.issueContext`: type, status, priority, labels, components,
 releases, due date, story points found by the site's own field name,
 estimates, demand and links; never a person or a comment) and takes its
-text as a run's read does. Repositories are not synced but pinned: `GET
+text as a run's read does. The site's field list is kept for an hour per
+site, so an import reads it once rather than per issue; where the context
+stands against Jira is kept a minute per issue, so reading it again, or a
+pin's answer, does not ask Jira again. Repositories are not synced but pinned: `GET
 .../context/github/commits` lists each connected repository's built
 commits (`RepoSnapshotStore.built`: snapshots whose graphify run succeeded
-and whose other builders have all finished, `snapshotBuilt` in core) with
+and whose other builders have all finished, `snapshotBuilt` in core, which
+the run store records as `repo_snapshot.built_at` as the last of them ends) with
 the commit the scope holds it at, read from
 the latest version's revision, and `PUT .../context/github/commits` with
 `{ commits: { repoId: snapshotId } }` reads the Markdown of every

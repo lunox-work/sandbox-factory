@@ -120,4 +120,20 @@ resource "aws_s3_bucket_lifecycle_configuration" "private" {
       days_after_initiation = 7
     }
   }
+
+  # A commit's source archive is a copy of GitHub's, kept so a worker
+  # without it on disk need not ask GitHub; one that has expired is fetched
+  # from GitHub again. Their repository's removal takes them sooner.
+  rule {
+    id     = "expire-source-archives"
+    status = "Enabled"
+
+    filter {
+      prefix = "sources/"
+    }
+
+    expiration {
+      days = 30
+    }
+  }
 }

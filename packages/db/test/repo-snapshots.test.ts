@@ -31,6 +31,7 @@ function row(overrides: Partial<RepoSnapshotRow> = {}): RepoSnapshotRow {
     languages: { TypeScript: 10 },
     facts,
     createdAt: new Date("2026-10-02T00:00:00.000Z"),
+    builtAt: null,
     ...overrides,
   };
 }
@@ -102,21 +103,9 @@ test("findByCommit and current read one row, or null", async () => {
   assert.equal(await empty.current("org_1", "ghr_1"), null);
 });
 
-test("built reads the builders' runs, then the snapshots they finished, newest first", async () => {
-  const run = (snapshotId: string, tool: string, status: string) => ({
-    snapshotId,
-    tool,
-    status,
-  });
-  const fake = createSequencedFakeDb([
-    [
-      run("rsn_1", "graphify", "succeeded"),
-      run("rsn_1", "abstractions", "failed"),
-      run("rsn_1", "data_model", "succeeded"),
-      // Its map is still running: not built yet.
-      run("rsn_2", "graphify", "running"),
-    ],
-    [joined()],
+test("built reads the snapshots marked built, newest first, in one read", async () => {
+  const fake = createFakeDb([
+    joined(row({ builtAt: new Date("2026-10-02T00:01:00.000Z") })),
   ]);
   const built = await createRepoSnapshotStore(fake.db).built("org_1", "ghr_1");
   assert.deepEqual(
@@ -124,17 +113,9 @@ test("built reads the builders' runs, then the snapshots they finished, newest f
     ["rsn_1"],
   );
   assert.equal("facts" in (built[0] ?? {}), false);
+  assert.equal(fake.calls.length, 1);
   assert.equal(fake.calls[0]?.filtered, true);
-  assert.equal(fake.calls[1]?.filtered, true);
-  assert.equal(fake.calls[1]?.ordered, true);
-
-  // Nothing built: the snapshots are not read at all.
-  const none = createSequencedFakeDb([[run("rsn_2", "graphify", "queued")]]);
-  assert.deepEqual(
-    await createRepoSnapshotStore(none.db).built("org_1", "ghr_1"),
-    [],
-  );
-  assert.equal(none.calls.length, 1);
+  assert.equal(fake.calls[0]?.ordered, true);
 });
 
 test("create locks the live repository, then inserts ignoring a twin", async () => {

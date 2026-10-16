@@ -1,3 +1,5 @@
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   createAnalysisRunStore,
   createArtifactStore,
@@ -16,6 +18,7 @@ import { repositoryToken } from "./credentials.js";
 import { parseWorkerEnv } from "./env.js";
 import { IDLE_POLL_MS, wakeableWait, workerLoop } from "./loop.js";
 import { executeRun } from "./run.js";
+import { createSourceCache } from "./source-cache.js";
 import { createAnthropicModel } from "./agent/anthropic.js";
 import type { AgentSettings } from "./agent/loop.js";
 import { createLocalProcessProvider } from "./evaluation/local-process.js";
@@ -77,6 +80,11 @@ const objects = createObjectStore({
       }
     : {}),
 });
+// Every run of one commit reads the source this worker fetched for the
+// first, for as long as the disk keeps it.
+const sourceCache = await createSourceCache({
+  root: join(tmpdir(), "sandbox-factory-sources"),
+});
 const tokens = new InstallationTokens({
   appId: env.GITHUB_APP_ID,
   privateKey: env.GITHUB_APP_PRIVATE_KEY,
@@ -137,6 +145,7 @@ try {
         objects,
         tool: adapterFor(run),
         shutdown: stopCurrent.signal,
+        sourceCache,
         source: {
           maxBytes: env.MAX_TARBALL_BYTES,
           maxFiles: env.MAX_FILES,

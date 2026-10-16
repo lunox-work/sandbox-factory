@@ -30,6 +30,7 @@ import {
   repositoriesRevision,
   WORKSPACE_REPOSITORIES,
 } from "../src/bounties/held-context.js";
+import { recentReads } from "../src/jira/recent.js";
 import type { RunClientResult } from "../src/pricing/executor.js";
 import type { AuthVariables } from "../src/routes.js";
 
@@ -597,6 +598,86 @@ test("an issue changed since its sync is ahead, and an issue that cannot be read
     ).jira.reason,
     "jira_unavailable",
   );
+});
+
+test("the issue is read once a minute, a pin's answer and a second look included", async () => {
+  const reads = { client: 0, issue: 0, context: 0, spec: 0 };
+  const counting = {
+    issue: (id: string) => {
+      reads.issue += 1;
+      return Promise.resolve({
+        id,
+        key: "APP-1",
+        updated: "2026-10-07T09:00:00.000+0000",
+      });
+    },
+    issueContext: () => {
+      reads.context += 1;
+      return Promise.resolve(jiraContext());
+    },
+    issueSpec: () => {
+      reads.spec += 1;
+      return Promise.resolve({
+        summary: "From Jira",
+        descriptionText: "Jira's steps.",
+        components: [],
+        inputTruncated: false,
+        updated: "2026-10-07T09:00:00.000+0000",
+      });
+    },
+  };
+  const state = harness({
+    bounty: { jira: jiraLink },
+    contexts: [storedJira(2)],
+  });
+  const app = new Hono<{ Variables: AuthVariables }>();
+  app.use("*", async (c, next) => {
+    c.set("user", { id: "user_1" } as never);
+    c.set("member", { organizationId: "org_1", role: "member" });
+    await next();
+  });
+  mountBountyContextRoutes(app, {
+    ...state.options,
+    clientFor: () => {
+      reads.client += 1;
+      return Promise.resolve({ ok: true, client: counting as never });
+    },
+  });
+  const look = async () =>
+    (
+      (await (
+        await app.request("/api/v1/orgs/org_1/bounties/bty_7/context")
+      ).json()) as BountyContextResponse
+    ).jira.state;
+  assert.equal(await look(), "ahead");
+  assert.equal(await look(), "ahead");
+  const pinned = await app.request(
+    "/api/v1/orgs/org_1/bounties/bty_7/context/github/commits",
+    {
+      method: "PUT",
+      body: JSON.stringify({ commits: { ghr_1: snapshotId("c2") } }),
+      headers: { "content-type": "application/json" },
+    },
+  );
+  assert.equal(
+    ((await pinned.json()) as { context: BountyContextResponse }).context.jira
+      .state,
+    "ahead",
+  );
+  assert.deepEqual(reads, { client: 1, issue: 1, context: 1, spec: 1 });
+});
+
+test("recent reads are kept a minute, the newest first when full", () => {
+  let clock = 0;
+  const recent = recentReads<number>({ now: () => clock, max: 2 });
+  recent.set("a", 1);
+  recent.set("b", 2);
+  recent.set("a", 3);
+  recent.set("c", 4);
+  assert.equal(recent.get("b"), undefined);
+  assert.equal(recent.get("a"), 3);
+  clock = 60_000;
+  assert.equal(recent.get("c"), undefined);
 });
 
 test("an issue gone from Jira, or a context from another issue, is not the bounty's now", async () => {

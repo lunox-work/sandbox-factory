@@ -1,13 +1,16 @@
 import assert from "node:assert/strict";
 import { generateKeyPairSync } from "node:crypto";
 import { renameSync, writeFileSync } from "node:fs";
-import { mkdtemp, writeFile, rm, stat } from "node:fs/promises";
+import { mkdir, mkdtemp, writeFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { test } from "node:test";
 import { repositoryToken } from "../src/credentials.js";
 import { executeRun } from "../src/run.js";
+import { createSourceCache } from "../src/source-cache.js";
+import type { fetchSource as fetchSourceImpl } from "../src/fetch-source.js";
+import { sourceArchiveKey } from "@sandbox-factory/db";
 import { wakeableWait, workerLoop } from "../src/loop.js";
 import { parseWorkerEnv } from "../src/env.js";
 import { uploadArtifacts } from "../src/upload.js";
@@ -51,6 +54,91 @@ test("success uploads attempt-scoped artifacts, commits, and removes source", as
   assert.equal(state.bytes.size, 2);
   assert.ok(state.bytes.has("runs/arn_1/lease_1/graph.json"));
   await assert.rejects(stat(directory));
+});
+test("runs of one commit read the source the cache kept, and release it", async () => {
+  const state = stores();
+  const directory = await mkdtemp(join(tmpdir(), "lifecycle-cache-"));
+  try {
+    const cache = await createSourceCache({ root: directory });
+    const fetched: string[] = [];
+    const reading: ToolAdapter = {
+      ...tool,
+      run: async (input) => {
+        // The tree the cache holds, not a copy in the run's directory.
+        assert.ok(input.sourceDir.startsWith(directory));
+        const path = join(input.outDir, "graph.json");
+        await mkdir(input.outDir, { recursive: true });
+        await writeFile(path, "{}");
+        return [
+          {
+            path: "graph.json",
+            absolutePath: path,
+            kind: "graph_json",
+            contentType: "application/json",
+            meta: null,
+          },
+        ];
+      },
+    };
+    const options = {
+      ...state,
+      tool: reading,
+      source,
+      sourceCache: cache,
+      fetchSource: async (_r: typeof run, into: string) => {
+        fetched.push(into);
+        await writeFile(join(into, "source.tar.gz"), "archive");
+        await mkdir(join(into, "source"));
+        return join(into, "source");
+      },
+    };
+    await executeRun(run, options);
+    await executeRun({ ...run, id: "arn_2" }, options);
+    assert.equal(fetched.length, 1);
+    // Only the tree is kept; the archive is the bucket's to keep.
+    await assert.rejects(stat(join(fetched[0] ?? "", "source.tar.gz")));
+    assert.deepEqual(state.calls, ["finish", "finish"]);
+    // Another organization's repository at the same commit is its own.
+    await executeRun({ ...run, id: "arn_3", repoId: "ghr_2" }, options);
+    assert.equal(fetched.length, 2);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+test("the bucket's copy of a commit's archive is offered to the fetch", async () => {
+  const state = stores();
+  let archive: Parameters<typeof fetchSourceImpl>[2]["archive"];
+  await executeRun(run, {
+    ...state,
+    tool,
+    source,
+    fetchSource: async (r, d, options) => {
+      archive = options.archive;
+      return fetchSource(r, d);
+    },
+  });
+  const key = sourceArchiveKey("ghr_1", "a".repeat(40));
+  assert.equal(await archive?.read(), undefined);
+  const file = join(await mkdtemp(join(tmpdir(), "archive-")), "a.tar.gz");
+  await writeFile(file, "bytes");
+  await archive?.write(file, 5);
+  assert.equal(Buffer.from(state.bytes.get(key) ?? []).toString(), "bytes");
+  assert.equal(Buffer.from((await archive?.read()) ?? []).toString(), "bytes");
+  // A run with no repository is offered none.
+  let offered: unknown = "unset";
+  await executeRun(
+    { ...run, repoId: null },
+    {
+      ...stores(),
+      tool,
+      source,
+      fetchSource: async (r, d, options) => {
+        offered = options.archive;
+        return fetchSource(r, d);
+      },
+    },
+  );
+  assert.equal(offered, undefined);
 });
 test("a run that ends keeps where its time went, stage by stage", async () => {
   const state = stores();

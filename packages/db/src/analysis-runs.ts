@@ -13,6 +13,7 @@ import {
 } from "drizzle-orm";
 import {
   ANALYSIS_TOOLS,
+  CONTEXT_BUILDERS,
   GRAPH_READERS,
   canonicalJson,
   isAbstractionsParams,
@@ -62,6 +63,48 @@ export const WORKER_APPLICATION_NAME = "sandbox-factory-worker";
 
 async function announce(tx: QueryExecutor, channel: string, runId: string) {
   await tx.execute(sql`select pg_notify(${channel}, ${runId})`);
+}
+
+const isBuilder = (tool: string) =>
+  CONTEXT_BUILDERS.some((builder) => builder === tool);
+
+/**
+ * Marks the snapshots of context builder runs that have just ended as built
+ * once `snapshotBuilt` holds for them: a graphify run succeeded and every
+ * builder has ended. Inside the transaction that ended them, after locking
+ * the snapshots, so two builders ending together cannot each miss the
+ * other: the second waits for the first to commit, then reads its run.
+ */
+async function markBuilt(
+  tx: QueryExecutor,
+  snapshotIds: readonly (string | null)[],
+  now: Date,
+) {
+  const ids = [
+    ...new Set(snapshotIds.filter((id): id is string => id !== null)),
+  ];
+  if (ids.length === 0) return;
+  await tx
+    .select({ id: repoSnapshot.id })
+    .from(repoSnapshot)
+    .where(and(inArray(repoSnapshot.id, ids), isNull(repoSnapshot.builtAt)))
+    .orderBy(repoSnapshot.id)
+    .for("update");
+  const ended = (tool: string, statuses: readonly AnalysisStatus[]) =>
+    sql`exists (select 1 from ${analysisRun} where ${analysisRun.snapshotId} = ${repoSnapshot.id} and ${analysisRun.tool} = ${tool} and ${inArray(analysisRun.status, [...statuses])})`;
+  await tx
+    .update(repoSnapshot)
+    .set({ builtAt: now })
+    .where(
+      and(
+        inArray(repoSnapshot.id, ids),
+        isNull(repoSnapshot.builtAt),
+        ended("graphify", ["succeeded"]),
+        ...CONTEXT_BUILDERS.map((builder) =>
+          ended(builder, ["succeeded", "failed"]),
+        ),
+      ),
+    );
 }
 
 export interface StoredAnalysisRun {
@@ -579,7 +622,11 @@ export function createAnalysisRunStore(db: Database): AnalysisRunStore {
           .where(
             and(fence(owner, id, token, now), gt(analysisRun.deadlineAt, now)),
           )
-          .returning({ id: analysisRun.id });
+          .returning({
+            id: analysisRun.id,
+            snapshotId: analysisRun.snapshotId,
+            tool: analysisRun.tool,
+          });
         if (rows.length === 0) return false;
         // One statement for them all: a graph writes dozens.
         if (artifacts.length > 0)
@@ -590,27 +637,44 @@ export function createAnalysisRunStore(db: Database): AnalysisRunStore {
               ...item,
             })),
           );
+        await markBuilt(
+          tx,
+          rows.flatMap((row) => (isBuilder(row.tool) ? [row.snapshotId] : [])),
+          now,
+        );
         await announce(tx, RUN_ENDED_CHANNEL, id);
         return true;
       });
     },
     async fail(owner, id, token, code, logKey, now) {
-      const rows = await db
-        .update(analysisRun)
-        .set({
-          status: "failed",
-          errorCode: code,
-          errorDetail: null,
-          logKey,
-          finishedAt: now,
-          leaseToken: null,
-          leaseExpiresAt: null,
-        })
-        .where(fence(owner, id, token, now))
-        .returning({ id: analysisRun.id });
-      if (rows.length === 0) return false;
-      await announce(db, RUN_ENDED_CHANNEL, id);
-      return true;
+      return db.transaction(async (transaction) => {
+        const tx = transaction;
+        const rows = await tx
+          .update(analysisRun)
+          .set({
+            status: "failed",
+            errorCode: code,
+            errorDetail: null,
+            logKey,
+            finishedAt: now,
+            leaseToken: null,
+            leaseExpiresAt: null,
+          })
+          .where(fence(owner, id, token, now))
+          .returning({
+            id: analysisRun.id,
+            snapshotId: analysisRun.snapshotId,
+            tool: analysisRun.tool,
+          });
+        if (rows.length === 0) return false;
+        await markBuilt(
+          tx,
+          rows.flatMap((row) => (isBuilder(row.tool) ? [row.snapshotId] : [])),
+          now,
+        );
+        await announce(tx, RUN_ENDED_CHANNEL, id);
+        return true;
+      });
     },
     async release(owner, id, token, now) {
       const rows = await db
@@ -642,29 +706,46 @@ export function createAnalysisRunStore(db: Database): AnalysisRunStore {
       return rows.length > 0;
     },
     async failExpired(owner, now) {
-      const rows = await db
-        .update(analysisRun)
-        .set({
-          status: sql`case when ${analysisRun.attempt} < ${analysisRun.maxAttempts} then 'queued' else 'failed' end`,
-          attempt: sql`least(${analysisRun.attempt} + 1, ${analysisRun.maxAttempts})`,
-          errorCode: "worker_lost",
-          errorDetail: null,
-          finishedAt: sql`case when ${analysisRun.attempt} < ${analysisRun.maxAttempts} then null else ${now.toISOString()}::timestamptz end`,
-          leaseToken: null,
-          leaseExpiresAt: null,
-          heartbeatAt: null,
-        })
-        .where(and(owned(owner), expired(now)))
-        .returning({ id: analysisRun.id, status: analysisRun.status });
-      // A run that has attempts left is queued again; one that has not has
-      // ended, and whatever waited on it fails with it.
-      for (const row of rows)
-        await announce(
-          db,
-          row.status === "queued" ? RUN_QUEUED_CHANNEL : RUN_ENDED_CHANNEL,
-          row.id,
+      return db.transaction(async (transaction) => {
+        const tx = transaction;
+        const rows = await tx
+          .update(analysisRun)
+          .set({
+            status: sql`case when ${analysisRun.attempt} < ${analysisRun.maxAttempts} then 'queued' else 'failed' end`,
+            attempt: sql`least(${analysisRun.attempt} + 1, ${analysisRun.maxAttempts})`,
+            errorCode: "worker_lost",
+            errorDetail: null,
+            finishedAt: sql`case when ${analysisRun.attempt} < ${analysisRun.maxAttempts} then null else ${now.toISOString()}::timestamptz end`,
+            leaseToken: null,
+            leaseExpiresAt: null,
+            heartbeatAt: null,
+          })
+          .where(and(owned(owner), expired(now)))
+          .returning({
+            id: analysisRun.id,
+            status: analysisRun.status,
+            snapshotId: analysisRun.snapshotId,
+            tool: analysisRun.tool,
+          });
+        await markBuilt(
+          tx,
+          rows.flatMap((row) =>
+            row.status === "failed" && isBuilder(row.tool)
+              ? [row.snapshotId]
+              : [],
+          ),
+          now,
         );
-      return rows.length;
+        // A run that has attempts left is queued again; one that has not has
+        // ended, and whatever waited on it fails with it.
+        for (const row of rows)
+          await announce(
+            tx,
+            row.status === "queued" ? RUN_QUEUED_CHANNEL : RUN_ENDED_CHANNEL,
+            row.id,
+          );
+        return rows.length;
+      });
     },
     async organizationsWithExpiredRuns(now) {
       const rows = await db

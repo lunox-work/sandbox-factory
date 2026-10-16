@@ -173,7 +173,7 @@ export type {
   OrganizationSummary,
   PendingInvitation,
 } from "./organizations.js";
-export { createObjectStore, isNotFound } from "./objects.js";
+export { createObjectStore, isNotFound, sourceArchiveKey } from "./objects.js";
 export type { ObjectStore, ObjectStoreOptions, PutOptions } from "./objects.js";
 export {
   account,

@@ -238,8 +238,8 @@ test("disconnect locks registration and snapshot writers before collecting every
     [{ id: "ghc_1" }],
     [{ id: "ghr_1" }],
     [
-      { id: "rsn_1", treeKey: "trees/one" },
-      { id: "rsn_2", treeKey: "trees/two" },
+      { id: "rsn_1", treeKey: "trees/one", repoId: "ghr_1", commitSha: "a" },
+      { id: "rsn_2", treeKey: "trees/two", repoId: "ghr_1", commitSha: "b" },
     ],
     [
       { id: "arn_1", logKey: "logs/one" },
@@ -256,7 +256,15 @@ test("disconnect locks registration and snapshot writers before collecting every
     {
       removed: true,
       treeKeys: ["trees/one", "trees/two"],
-      objectKeys: ["trees/one", "trees/two", "runs/one/graph.json", "logs/one"],
+      objectKeys: [
+        "trees/one",
+        "trees/two",
+        // Each commit's source archive, which a worker may have kept.
+        "sources/ghr_1/a.tar.gz",
+        "sources/ghr_1/b.tar.gz",
+        "runs/one/graph.json",
+        "logs/one",
+      ],
     },
   );
   assert.equal(fake.calls[0]?.lock, "update");

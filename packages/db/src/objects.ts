@@ -2,7 +2,8 @@
  * Object storage over the S3 API: the SeaweedFS gateway locally, AWS S3 in
  * production. Only the plain object calls are used, which both answer the same
  * way, so the two differ by configuration alone. Holds uploaded avatars,
- * repository snapshots' file lists, and analysis runs' artifacts and logs.
+ * repository snapshots' file lists, the source archives a worker read them
+ * at, and analysis runs' artifacts and logs.
  *
  * `forcePathStyle` must stay on: the SDK's default virtual-hosted style needs
  * per-bucket DNS that a self-hosted gateway does not have. AWS accepts path
@@ -20,6 +21,16 @@ import {
 } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import type { Readable } from "node:stream";
+
+/**
+ * Where a commit's source archive is kept once a worker has fetched it from
+ * GitHub, so a worker without it on disk reads it from the bucket instead.
+ * Under the repository's own id, which is its organization's: one
+ * organization's archive is never another's, whatever repository it is of.
+ */
+export function sourceArchiveKey(repoId: string, commitSha: string): string {
+  return `sources/${repoId}/${commitSha}.tar.gz`;
+}
 
 export interface ObjectStoreOptions {
   /**

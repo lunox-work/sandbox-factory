@@ -64,6 +64,7 @@ import {
   type JiraContext,
 } from "sandbox-factory";
 
+import { issueKey, recentReads, type RecentReads } from "../jira/recent.js";
 import type { RunClientResult } from "../pricing/executor.js";
 import { mapConcurrent } from "../pricing/review.js";
 import {
@@ -110,6 +111,21 @@ export interface BountyContextOptions extends BountyRouteOptions {
     connectionId: string,
   ) => Promise<RunClientResult>;
   readonly githubContext?: GithubContextSource;
+  /**
+   * Issues read in the last minute, so the context's status is not a Jira
+   * round trip on every read of it, nor a pin's answer a second one. The
+   * routes keep one when none is given.
+   */
+  readonly recentJira?: RecentReads<RecentIssue>;
+}
+
+/** What the context's status read of an issue: its `updated`, and once that has moved, what it says. */
+export interface RecentIssue {
+  readonly updated: string | null;
+  readonly said?: {
+    readonly context: JiraContext;
+    readonly spec: ReturnType<typeof specContent>;
+  };
 }
 
 interface BountyContextAppEnv {
@@ -198,21 +214,6 @@ async function jiraStatus(
   }
   let liveRevision = live ?? null;
   if (live === undefined) {
-    if (options.clientFor === undefined) {
-      return status("unavailable", {
-        reason: "reconnect",
-        linked,
-        latest: synced,
-      });
-    }
-    const ready = await options.clientFor(organizationId, link.connectionId);
-    if (!ready.ok) {
-      return status("unavailable", {
-        reason: ready.reason === "reconnect" ? "reconnect" : "jira_unavailable",
-        linked,
-        latest: synced,
-      });
-    }
     const unreadable = (error: unknown) =>
       status("unavailable", {
         reason: needsReconnect(error)
@@ -223,29 +224,61 @@ async function jiraStatus(
         linked,
         latest: synced,
       });
-    try {
-      liveRevision = (await ready.client.issue(link.externalId)).updated;
-    } catch (error) {
-      return unreadable(error);
-    }
-    if (liveRevision !== null && later(liveRevision, latest.jira.revision)) {
+    // What Jira said in the last minute is answered from memory, the
+    // client included, which may itself go to Atlassian for a token.
+    const key = issueKey(organizationId, link.connectionId, link.externalId);
+    let read = options.recentJira?.get(key);
+    let ready: RunClientResult | undefined;
+    const client = async () =>
+      (ready ??=
+        options.clientFor === undefined
+          ? { ok: false, reason: "reconnect" }
+          : await options.clientFor(organizationId, link.connectionId));
+    const unconnected = (failed: Exclude<RunClientResult, { ok: true }>) =>
+      status("unavailable", {
+        reason:
+          failed.reason === "reconnect" ? "reconnect" : "jira_unavailable",
+        linked,
+        latest: synced,
+      });
+    if (read === undefined) {
+      const reader = await client();
+      if (!reader.ok) return unconnected(reader);
       try {
-        const [context, spec] = await Promise.all([
-          ready.client.issueContext(link.externalId),
-          ready.client.issueSpec(link.externalId),
-        ]);
-        const said =
-          contextHash({ source: "jira", content: context }) !==
-            latest.jira.contentHash ||
-          jiraContentChange(bounty, specContent(spec)) !== null;
-        return status(said ? "ahead" : "current", {
-          linked,
-          liveRevision,
-          latest: synced,
-        });
+        read = {
+          updated: (await reader.client.issue(link.externalId)).updated,
+        };
       } catch (error) {
         return unreadable(error);
       }
+      options.recentJira?.set(key, read);
+    }
+    liveRevision = read.updated;
+    if (liveRevision !== null && later(liveRevision, latest.jira.revision)) {
+      let told = read.said;
+      if (told === undefined) {
+        const reader = await client();
+        if (!reader.ok) return unconnected(reader);
+        try {
+          const [context, spec] = await Promise.all([
+            reader.client.issueContext(link.externalId),
+            reader.client.issueSpec(link.externalId),
+          ]);
+          told = { context, spec: specContent(spec) };
+        } catch (error) {
+          return unreadable(error);
+        }
+        options.recentJira?.set(key, { ...read, said: told });
+      }
+      const said =
+        contextHash({ source: "jira", content: told.context }) !==
+          latest.jira.contentHash ||
+        jiraContentChange(bounty, told.spec) !== null;
+      return status(said ? "ahead" : "current", {
+        linked,
+        liveRevision,
+        latest: synced,
+      });
     }
   }
   return status(
@@ -661,8 +694,12 @@ export async function syncGithub(
 
 export function mountBountyContextRoutes<Env extends BountyContextAppEnv>(
   app: Hono<Env>,
-  options: BountyContextOptions,
+  given: BountyContextOptions,
 ): void {
+  const options: BountyContextOptions = {
+    ...given,
+    recentJira: given.recentJira ?? recentReads<RecentIssue>(),
+  };
   const base = "/api/v1/orgs/:orgId/bounties/:id/context";
 
   app.get(base, async (c) => {

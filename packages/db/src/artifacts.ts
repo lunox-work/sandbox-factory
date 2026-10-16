@@ -1,5 +1,6 @@
 import { and, eq, asc, type SQL } from "drizzle-orm";
 import type { Database } from "./errors.js";
+import { sourceArchiveKey } from "./objects.js";
 import { artifact, analysisRun, repoSnapshot, githubRepo } from "./schema.js";
 import type { ArtifactRow } from "./schema.js";
 
@@ -56,7 +57,12 @@ export async function collectRepositoryObjects(
 ) {
   const predicate = and(eq(githubRepo.organizationId, owner), scope);
   const snapshots = await db
-    .select({ id: repoSnapshot.id, treeKey: repoSnapshot.treeKey })
+    .select({
+      id: repoSnapshot.id,
+      treeKey: repoSnapshot.treeKey,
+      repoId: repoSnapshot.repoId,
+      commitSha: repoSnapshot.commitSha,
+    })
     .from(repoSnapshot)
     .innerJoin(githubRepo, eq(githubRepo.id, repoSnapshot.repoId))
     .where(predicate)
@@ -80,6 +86,8 @@ export async function collectRepositoryObjects(
     treeKeys,
     objectKeys: [
       ...treeKeys,
+      // Kept only for a commit a worker read, but absent ones remove cleanly.
+      ...snapshots.map((row) => sourceArchiveKey(row.repoId, row.commitSha)),
       ...objects.map((row) => row.objectKey),
       ...runs.flatMap((row) => (row.logKey === null ? [] : [row.logKey])),
     ],

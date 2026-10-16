@@ -207,3 +207,99 @@ test("the download and the unpacking are timed apart, a failed unpacking too", a
     await rm(directory, { recursive: true, force: true });
   }
 });
+test("the bucket's copy is read before GitHub, and GitHub's is kept once it unpacks", async () => {
+  const directory = await fixture();
+  try {
+    const execute = async () => "";
+    // Kept: GitHub is not asked.
+    const kept = fetcher(new Response("unused"));
+    const writes: number[] = [];
+    await fetchSource(run, directory, {
+      maxBytes: 5000,
+      maxFiles: 5,
+      signal,
+      token: async () => "x",
+      fetch: kept.fetch,
+      execute,
+      archive: {
+        read: async () => new TextEncoder().encode("from the bucket"),
+        write: async (_path, bytes) => {
+          writes.push(bytes);
+        },
+      },
+    });
+    assert.equal(kept.calls.length, 0);
+    assert.deepEqual(writes, []);
+    assert.equal(
+      await readFile(join(directory, "source.tar.gz"), "utf8"),
+      "from the bucket",
+    );
+
+    // Absent, unreadable or past the cap: GitHub's is read, then kept.
+    for (const read of [
+      async () => undefined,
+      async () => {
+        throw new Error("bucket down");
+      },
+      async () => new Uint8Array(6000),
+    ]) {
+      const github = fetcher(new Response("archive"));
+      const stored: [string, number][] = [];
+      await fetchSource(run, directory, {
+        maxBytes: 5000,
+        maxFiles: 5,
+        signal,
+        token: async () => "x",
+        fetch: github.fetch,
+        execute,
+        archive: {
+          read,
+          write: async (path, bytes) => {
+            stored.push([await readFile(path, "utf8"), bytes]);
+          },
+        },
+      });
+      assert.equal(github.calls.length, 2);
+      assert.deepEqual(stored, [["archive", 7]]);
+    }
+
+    // One that does not unpack is not kept, and a failed write is no failure.
+    const unpacked = { write: 0 };
+    await assert.rejects(
+      fetchSource(run, directory, {
+        maxBytes: 5000,
+        maxFiles: 5,
+        signal,
+        token: async () => "x",
+        fetch: fetcher(new Response("archive")).fetch,
+        execute: async () => {
+          throw new CommandError(4);
+        },
+        archive: {
+          read: async () => undefined,
+          write: async () => {
+            unpacked.write += 1;
+          },
+        },
+      }),
+      code("source_unavailable"),
+    );
+    assert.equal(unpacked.write, 0);
+    await fetchSource(run, directory, {
+      maxBytes: 5000,
+      maxFiles: 5,
+      signal,
+      token: async () => "x",
+      fetch: fetcher(new Response("archive")).fetch,
+      execute,
+      archive: {
+        read: async () => undefined,
+        write: async () => {
+          throw new Error("bucket down");
+        },
+      },
+    });
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});

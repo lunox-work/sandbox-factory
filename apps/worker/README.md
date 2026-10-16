@@ -63,6 +63,31 @@ calls; for a build or starter, each baseline's steps with the duration the
 evaluator reported. Durations only, never inputs or output. A released run
 writes none: it is claimed again, and the claim clears the last attempt's.
 
+### Source on disk
+
+A run that reads source checks it out of the worker's source cache
+(`src/source-cache.ts`), kept under the OS temp directory by
+`(repository, commit)`, so a commit's builders, scope, slice and build fetch
+and extract it once between them. The cache holds 4 GiB by default and
+evicts the least recently used entry no run is reading; a restarted worker
+on the same disk keeps the entries it finds complete. Runs read the tree and
+never write to it.
+
+On a miss the archive is read from the private bucket
+(`sources/<repoId>/<sha>.tar.gz`) before GitHub. One fetched from GitHub is
+written there once it has unpacked, so a fresh worker reads the bucket
+instead; the bucket expires them after 30 days, and removing the repository
+removes them. A cache hit records no `fetch` or `extract` stage in the run's
+timing.
+
+The local evaluation provider shares one npm cache across jobs, outside any
+job's directory, with `prefer-offline`, and keeps the lockfile it prepares
+for each set of dependencies, keyed by what `package.json` asks to install,
+so the next job with the same set starts from it. A baseline builds the
+project once and runs the walkthrough and the public tests with `node`
+directly; the `dev` and `test` scripts build first only for a developer's
+own runs.
+
 ### Context builders
 
 `abstractions` and `data_model` are the other context builders, queued

@@ -1,4 +1,5 @@
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { createReadStream } from "node:fs";
+import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type {
@@ -8,8 +9,10 @@ import type {
   ObjectStore,
   SandboxStore,
 } from "@sandbox-factory/db";
+import { sourceArchiveKey } from "@sandbox-factory/db";
 import { readsSource } from "sandbox-factory";
 import { fetchSource } from "./fetch-source.js";
+import type { SourceCache } from "./source-cache.js";
 import { progressRecorder } from "./progress.js";
 import { timingRecorder } from "./timing.js";
 import { AnalysisError } from "./errors.js";
@@ -40,8 +43,16 @@ export interface RunOptions {
   };
   readonly objects: ObjectStore;
   readonly tool: ToolAdapter;
-  readonly source: Omit<Parameters<typeof fetchSource>[2], "signal">;
+  readonly source: Omit<
+    Parameters<typeof fetchSource>[2],
+    "signal" | "archive"
+  >;
   readonly fetchSource?: typeof fetchSource;
+  /**
+   * Extracted source kept between runs. Absent, each run fetches its own
+   * into its temporary directory, which goes with it.
+   */
+  readonly sourceCache?: SourceCache;
   readonly now?: () => Date;
   readonly shutdown?: AbortSignal;
   readonly heartbeatMs?: number;
@@ -65,6 +76,7 @@ export async function executeRun(
   let heartbeat: Promise<void> | undefined;
   let logRetained = false;
   let stage: "source" | "tool" = "source";
+  let releaseSource = () => {};
   const shutdown = () => abort.abort(new AnalysisError("cancelled"));
   // Object keys are not owner-scoped; only those an owner-scoped listing
   // returned may be read.
@@ -142,13 +154,42 @@ export async function executeRun(
       if (run.snapshotId === null || run.commitSha === null)
         throw new AnalysisError("source_unavailable");
       snapshot = { snapshotId: run.snapshotId, commitSha: run.commitSha };
-      source = await (options.fetchSource ?? fetchSource)(run, directory, {
-        ...options.source,
-        signal: abort.signal,
-        onStage: timing.stage,
-        ...(options.clock === undefined ? {} : { clock: options.clock }),
-      });
-      lines.push("Source archive fetched and validated.");
+      const archiveKey =
+        run.repoId === null
+          ? null
+          : sourceArchiveKey(run.repoId, run.commitSha);
+      const fetchInto = (into: string) =>
+        (options.fetchSource ?? fetchSource)(run, into, {
+          ...options.source,
+          signal: abort.signal,
+          onStage: timing.stage,
+          ...(options.clock === undefined ? {} : { clock: options.clock }),
+          ...(archiveKey === null
+            ? {}
+            : { archive: archiveOf(options.objects, archiveKey) }),
+        });
+      const cache = options.sourceCache;
+      if (cache === undefined || run.repoId === null) {
+        source = await fetchInto(directory);
+        lines.push("Source archive fetched and validated.");
+      } else {
+        const checkout = await cache.checkout(
+          `${run.repoId}@${run.commitSha}`,
+          async (into) => {
+            const extracted = await fetchInto(into);
+            // The tree is what is kept; the archive is in the bucket.
+            await rm(join(into, "source.tar.gz"), { force: true });
+            return extracted;
+          },
+        );
+        releaseSource = checkout.release;
+        source = checkout.path;
+        lines.push(
+          checkout.hit
+            ? "Source read from the worker's cache."
+            : "Source archive fetched and validated.",
+        );
+      }
     } else {
       source = join(directory, "empty");
       await mkdir(source);
@@ -273,6 +314,7 @@ export async function executeRun(
           .catch(() => false);
     }
   } finally {
+    releaseSource();
     clearInterval(timer);
     clearTimeout(deadline);
     options.shutdown?.removeEventListener("abort", shutdown);
@@ -289,4 +331,24 @@ export async function executeRun(
     if (!logRetained) await options.objects.remove(logKey).catch(() => {});
     await rm(directory, { recursive: true, force: true });
   }
+}
+
+/**
+ * A commit's archive in the bucket. Written as a stream where the store
+ * can, since an archive runs to the worker's size cap.
+ */
+function archiveOf(
+  objects: ObjectStore,
+  key: string,
+): NonNullable<Parameters<typeof fetchSource>[2]["archive"]> {
+  const contentType = "application/gzip";
+  return {
+    read: () => objects.get(key),
+    write: async (path, bytes) =>
+      objects.putStream === undefined
+        ? objects.put(key, await readFile(path), { contentType })
+        : objects.putStream(key, createReadStream(path), bytes, {
+            contentType,
+          }),
+  };
 }

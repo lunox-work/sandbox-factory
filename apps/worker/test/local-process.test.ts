@@ -198,3 +198,60 @@ test("a holder of the output outside the group does not keep the command running
     if (alive(pid)) process.kill(pid, "SIGKILL");
   }
 });
+
+test("jobs share one npm cache, and a dependency set's lockfile is kept for the next job", async () => {
+  const root = await mkdtemp(join(tmpdir(), "local-eval-"));
+  const npmCache = join(root, "npm");
+  const signal = new AbortController().signal;
+  try {
+    const provider = createLocalProcessProvider({ root, npmCache });
+    const manifest = {
+      path: "package.json",
+      text: '{"name":"a","dependencies":{"zod":"4.0.0"}}',
+    };
+    const first = await provider.create({ label: "one", signal });
+    await first.stage([manifest]);
+    assert.equal(await first.read("package-lock.json"), null);
+    const env = await first.exec({
+      argv: [
+        "node",
+        "-e",
+        "require('fs').writeFileSync('package-lock.json', 'locked'); console.log(process.env.npm_config_cache, process.env.npm_config_prefer_offline)",
+      ],
+      limits,
+    });
+    assert.equal(env.stdout.trim(), `${npmCache} true`);
+    assert.equal(await first.read("package-lock.json"), "locked");
+    await first.destroy();
+
+    // The same dependencies start from it, whatever the project is called;
+    // others, a manifest that does not parse, or a lockfile staged with
+    // them, do not.
+    const second = await provider.create({ label: "two", signal });
+    await second.stage([
+      {
+        path: "package.json",
+        text: '{"name":"a-next","dependencies":{"zod":"4.0.0"}}',
+      },
+    ]);
+    assert.equal(await second.read("package-lock.json"), "locked");
+    const third = await provider.create({ label: "three", signal });
+    await third.stage([
+      { path: "package.json", text: '{"dependencies":{"zod":"4.1.0"}}' },
+    ]);
+    assert.equal(await third.read("package-lock.json"), null);
+    const garbled = await provider.create({ label: "garbled", signal });
+    await garbled.stage([{ path: "package.json", text: "{" }]);
+    assert.equal(await garbled.read("package-lock.json"), null);
+    await garbled.destroy();
+    const fourth = await provider.create({ label: "four", signal });
+    await fourth.stage([
+      manifest,
+      { path: "package-lock.json", text: "its own" },
+    ]);
+    assert.equal(await fourth.read("package-lock.json"), "its own");
+    for (const job of [second, third, fourth]) await job.destroy();
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

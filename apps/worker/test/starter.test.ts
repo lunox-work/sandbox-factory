@@ -591,7 +591,7 @@ test("a failing baseline goes back to the agent, until the runs are spent and it
   const fake = fakeProvider((argv) =>
     argv.some((arg) => arg.startsWith("tests/private/"))
       ? { exitCode: 0, stdout: `ok ${"x".repeat(STEP_OUTPUT_CHARS + 10)}` }
-      : argv.includes("dev")
+      : argv.includes("sandbox/run.js")
         ? { exitCode: 1, stderr: "TypeError: boom" }
         : {},
   );

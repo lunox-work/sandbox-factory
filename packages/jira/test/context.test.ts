@@ -5,6 +5,7 @@ import {
   BOUNTY_LABEL,
   ApiTokenCredential,
   CONTEXT_FIELDS,
+  createFieldListCache,
   JiraApiError,
   JiraClient,
   storyPointFields,
@@ -18,7 +19,10 @@ const credential = new ApiTokenCredential({
   apiToken: "token-1",
 });
 
-function client(responses: { status?: number; body?: unknown }[]) {
+function client(
+  responses: { status?: number; body?: unknown }[],
+  fieldCache?: ReturnType<typeof createFieldListCache>,
+) {
   const urls: string[] = [];
   let index = 0;
   const fetch = (async (url: string | URL | Request) => {
@@ -38,6 +42,7 @@ function client(responses: { status?: number; body?: unknown }[]) {
       fetch,
       sleep: () => Promise.resolve(),
       maxRetries: 0,
+      ...(fieldCache === undefined ? {} : { fieldCache }),
     }),
   };
 }
@@ -198,4 +203,62 @@ test("a cancelled read is not taken for a site with no story points", async () =
   controller.abort();
   const { client: jira } = client([{ body: [] }]);
   await assert.rejects(jira.issueContext("ACME-1", controller.signal));
+});
+
+test("a site's field list is read once for its issues, until it is an hour old", async () => {
+  let clock = 0;
+  const cache = createFieldListCache({ now: () => clock });
+  const pointField = {
+    id: "customfield_10016",
+    name: "Story Points",
+    schema: { type: "number" },
+  };
+  const { client: jira, urls } = client(
+    [
+      { body: [pointField] },
+      { body: issue },
+      { body: issue },
+      { body: [pointField] },
+      { body: issue },
+    ],
+    cache,
+  );
+  await jira.issueContext("ACME-1");
+  const second = await jira.issueContext("ACME-2");
+  assert.equal(second.storyPoints, 5);
+  assert.equal(
+    urls.filter((url) => url.endsWith("/rest/api/3/field")).length,
+    1,
+  );
+  clock = 60 * 60_000;
+  await jira.issueContext("ACME-3");
+  assert.equal(
+    urls.filter((url) => url.endsWith("/rest/api/3/field")).length,
+    2,
+  );
+});
+
+test("a field list that could not be read is asked for again", async () => {
+  const cache = createFieldListCache();
+  const { client: jira, urls } = client(
+    [{ status: 403 }, { body: issue }, { body: [] }, { body: issue }],
+    cache,
+  );
+  await jira.issueContext("ACME-1");
+  await jira.issueContext("ACME-2");
+  assert.equal(
+    urls.filter((url) => url.endsWith("/rest/api/3/field")).length,
+    2,
+  );
+});
+
+test("the cache keeps the newest sites", () => {
+  const cache = createFieldListCache({ maxSites: 2 });
+  cache.set("a", ["one"]);
+  cache.set("b", []);
+  cache.set("a", ["two"]);
+  cache.set("c", []);
+  assert.equal(cache.get("b"), undefined);
+  assert.deepEqual(cache.get("a"), ["two"]);
+  assert.deepEqual(cache.get("c"), []);
 });

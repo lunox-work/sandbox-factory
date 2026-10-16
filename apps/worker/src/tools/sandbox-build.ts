@@ -33,6 +33,7 @@ import {
   PSEUDONYMS_SCHEMA_VERSION,
   RUN_PATH,
   SANDBOX_BUILD_RUN_VERSION,
+  SANDBOX_RUN_ARGV,
   SANDBOX_BUILD_SCHEMA_VERSION,
   SANDBOX_TOOLCHAIN,
   applyAliases,
@@ -360,8 +361,10 @@ async function runBaseline(
         const { step: built } = await run("build", ["npm", "run", "build"]);
         if (built.ok) {
           // The walkthrough a developer runs first must run on the baseline.
-          await run("dev", ["npm", "run", "dev"]);
-          await run("public-tests", ["npm", "test"]);
+          // Both scripts build again first, for a developer's own runs; the
+          // baseline has just built, so it runs what they run after.
+          await run("dev", SANDBOX_RUN_ARGV.dev);
+          await run("public-tests", SANDBOX_RUN_ARGV.test);
           for (const test of input.acceptanceTests) {
             const { step, stdout } = await run(
               "private-test",

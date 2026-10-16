@@ -166,7 +166,9 @@ export function readsGraph(tool: AnalysisTool): boolean {
  * slices, scopes and the map readers all read, and every other context
  * builder has finished, however it finished. A builder that fails on the
  * repository does not keep its commit from being picked. Runs of any tool
- * may be passed; only the context builders' are read.
+ * may be passed; only the context builders' are read. The run store keeps
+ * the same rule in SQL, to mark a snapshot built as its last builder ends
+ * (`repo_snapshot.built_at`); a change here changes it there.
  */
 export function snapshotBuilt(
   runs: readonly { readonly tool: string; readonly status: AnalysisStatus }[],

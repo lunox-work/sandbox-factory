@@ -71,6 +71,12 @@ export const repoSnapshot = pgTable(
     /** `TreeFacts` from `packages/core`. */
     facts: jsonb("facts").$type<TreeFacts>().notNull(),
     createdAt: ts("created_at").notNull().defaultNow(),
+    /**
+     * When its context builders had all ended as `snapshotBuilt` in core
+     * says; null until then. Set by the run store as the last of them ends,
+     * and never cleared: an ended run does not change again.
+     */
+    builtAt: ts("built_at"),
   },
   (table) => [
     // The webhook and the sweep can both see a new head within seconds;
