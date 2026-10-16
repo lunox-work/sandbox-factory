@@ -16,6 +16,8 @@ import {
   type BuildInfoDto,
 } from "@sandbox-factory/shared";
 import { Hono } from "hono";
+import { mountEventRoutes, type EventRouteOptions } from "./events.js";
+import { mountFlowRoutes, type FlowRouteOptions } from "./flows.js";
 import { cors } from "hono/cors";
 import type { ErrorHandler } from "hono";
 
@@ -24,6 +26,7 @@ import type {
   EmailStore,
   OrganizationStore,
   UserProfileStore,
+  WorkspaceSetupStore,
 } from "@sandbox-factory/db";
 
 import type { Auth } from "./auth.js";
@@ -126,6 +129,19 @@ export interface AppOptions {
    */
   originVerify?: string | undefined;
 
+  /**
+   * The push channel pages follow their runs by. Not mounted without it, as
+   * in a test: a page then follows its runs on its timers alone.
+   */
+  events?: EventRouteOptions | undefined;
+  /**
+   * Each workspace's setup, answered with `/api/v1/me/orgs`. Without it
+   * the list carries none, and the shell reads the facts itself.
+   */
+  setup?: Pick<WorkspaceSetupStore, "forOrganizations"> | undefined;
+  /** Typical waits, for the clocks beside a flow's stages. */
+  flows?: FlowRouteOptions | undefined;
+
   /** The build record to report. Defaults to the unknown record. */
   buildInfo?: BuildInfoDto | undefined;
 }
@@ -146,6 +162,9 @@ export function createApp({
   sandbox,
   settings,
   avatars,
+  events,
+  setup,
+  flows,
   buildInfo = unknownBuildInfo,
   originVerify,
 }: AppOptions): Hono<AppEnv> {
@@ -389,8 +408,34 @@ export function createApp({
      * field on `/api/v1/me`.
      */
     app.get("/api/v1/me/orgs", async (c) => {
+      const listed = await organizations.listForUser(c.get("user").id);
+      if (setup === undefined) return c.json({ organizations: listed });
+      // Counted for the workspaces just listed, so only the caller's own.
+      const counts = await setup.forOrganizations(listed.map(({ id }) => id));
       return c.json({
-        organizations: await organizations.listForUser(c.get("user").id),
+        organizations: listed.map((entry) => {
+          const counted = counts.get(entry.id);
+          return counted === undefined
+            ? entry
+            : {
+                ...entry,
+                setup: {
+                  jira: {
+                    available: jira !== undefined,
+                    connected: counted.jiraConnected,
+                    broken: counted.jiraBroken,
+                    boards: counted.jiraBoards,
+                  },
+                  github: {
+                    available: github !== undefined,
+                    connected: counted.githubConnected,
+                    repositories: counted.githubRepositories,
+                  },
+                  proposals: counted.proposals,
+                  bounties: counted.bounties,
+                },
+              };
+        }),
       });
     });
 
@@ -456,6 +501,9 @@ export function createApp({
       await next();
       return;
     });
+
+    if (events !== undefined) mountEventRoutes(app, events);
+    if (flows !== undefined) mountFlowRoutes(app, flows);
 
     /** The organization, plus the caller's role in it. Members only. */
     app.get("/api/v1/orgs/:orgId", async (c) => {
@@ -600,10 +648,10 @@ export function createApp({
       );
     }
     if (pricing !== undefined) {
-      mountPricingRoutes(app, pricing);
+      const reads = mountPricingRoutes(app, pricing);
       // The organization's own bounties, which need nothing but the
       // database: written here, they are sized with no Jira at all.
-      mountBountyRoutes(app, pricing);
+      mountBountyRoutes(app, { ...pricing, live: reads.live });
       // Its Jira issue, picked for it from any of the workspace's boards.
       mountBountyJiraRoutes(app, pricing);
       // A board's backlog scan, imported as bounties on request.

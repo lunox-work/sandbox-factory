@@ -84,14 +84,90 @@ export function issueSearchJql(query: string): string | null {
   return words === "" ? null : `text ~ "${words}*"`;
 }
 
+/**
+ * What the pricing routes answer, for another route to answer with: a
+ * bounty's read carries its live proposal's (`?with=live`).
+ */
+export interface BountyLive {
+  readonly proposalId: string;
+  readonly detail: unknown;
+  readonly spec: { readonly spec: unknown };
+  readonly profiles: unknown;
+}
+export interface PricingReads {
+  /**
+   * A proposal's read, its spec and its profiles, each as its own route
+   * answers it (`BountyLiveDto` on the wire); null for a proposal that is
+   * not the organization's. Never waits on Jira: the read's freshness is
+   * as last read or stored, and the proposal's own read checks again.
+   */
+  live(organizationId: string, proposalId: string): Promise<BountyLive | null>;
+}
+
 export function mountPricingRoutes<Env extends PricingAppEnv>(
   app: Hono<Env>,
   options: PricingRouteOptions,
-): void {
+): PricingReads {
   const supportedCurrencies =
     options.supportedCurrencies ?? new Set(Intl.supportedValuesOf("currency"));
   // A proposal's page reads its issue at most once a minute, its poll too.
   const recentIssues = recentReads<JiraIssueSpec>();
+
+  /**
+   * `GET /proposals/:id`'s answer. The stored reads do not wait on Jira's;
+   * `storedOnly`, as a bounty's `?with=live` asks, nothing waits on Jira:
+   * its freshness is the last minute's read or the stored bounty's, and
+   * the proposal's own read on mount checks Jira again.
+   */
+  const detailBody = async (
+    organizationId: string,
+    proposal: NonNullable<Awaited<ReturnType<BountyProposalStore["get"]>>>,
+    storedOnly = false,
+  ) => {
+    const [live, writebackOperations, activeRun] = await Promise.all([
+      freshProposal(
+        { ...reviewOptions(options), recent: recentIssues, storedOnly },
+        organizationId,
+        proposal,
+      ),
+      options.writebacks === undefined
+        ? []
+        : options.writebacks.listForProposal(organizationId, proposal.id),
+      options.runs.activeForProposal(organizationId, proposal.id),
+    ]);
+    const { proposal: stored, liveSpec, ...freshness } = live;
+    return {
+      proposal: stored,
+      liveSpec: liveSpec ?? null,
+      freshness,
+      writebackOperations,
+      activeRun,
+    };
+  };
+  /** `GET /proposals/:id/profile`'s answer. */
+  const profilesBody = async (organizationId: string, proposalId: string) => {
+    const stored =
+      options.profiles === undefined
+        ? []
+        : await options.profiles.latest(organizationId, proposalId);
+    return proposalProfileResponseSchema.parse({
+      profiles: stored.map((profile) => ({
+        id: profile.id,
+        proposalId: profile.proposalId,
+        specRevision: profile.specRevision,
+        repository: profile.repository,
+        status: profile.status,
+        errorCode: profile.errorCode,
+        runErrorCode: profile.runErrorCode,
+        snapshotId: profile.snapshotId,
+        scopeRunId: profile.scopeRunId,
+        sliceRunId: profile.sliceRunId,
+        profile: profile.profile,
+        createdAt: profile.createdAt,
+        updatedAt: profile.updatedAt,
+      })),
+    });
+  };
 
   /*
     A price is changed only while its bounty's scope stands approved: the
@@ -635,26 +711,7 @@ export function mountPricingRoutes<Env extends PricingAppEnv>(
         return c.json({ error: "Not found" }, 404);
       }
     }
-    // The stored reads do not wait on Jira's.
-    const [live, writebackOperations, activeRun] = await Promise.all([
-      freshProposal(
-        { ...reviewOptions(options), recent: recentIssues },
-        organizationId,
-        proposal,
-      ),
-      options.writebacks === undefined
-        ? []
-        : options.writebacks.listForProposal(organizationId, proposal.id),
-      options.runs.activeForProposal(organizationId, proposal.id),
-    ]);
-    const { proposal: stored, liveSpec, ...freshness } = live;
-    return c.json({
-      proposal: stored,
-      liveSpec: liveSpec ?? null,
-      freshness,
-      writebackOperations,
-      activeRun,
-    });
+    return c.json(await detailBody(organizationId, proposal));
   });
 
   /*
@@ -703,29 +760,7 @@ export function mountPricingRoutes<Env extends PricingAppEnv>(
       c.req.param("id"),
     );
     if (proposal === null) return c.json({ error: "Not found" }, 404);
-    const stored =
-      options.profiles === undefined
-        ? []
-        : await options.profiles.latest(organizationId, proposal.id);
-    return c.json(
-      proposalProfileResponseSchema.parse({
-        profiles: stored.map((profile) => ({
-          id: profile.id,
-          proposalId: profile.proposalId,
-          specRevision: profile.specRevision,
-          repository: profile.repository,
-          status: profile.status,
-          errorCode: profile.errorCode,
-          runErrorCode: profile.runErrorCode,
-          snapshotId: profile.snapshotId,
-          scopeRunId: profile.scopeRunId,
-          sliceRunId: profile.sliceRunId,
-          profile: profile.profile,
-          createdAt: profile.createdAt,
-          updatedAt: profile.updatedAt,
-        })),
-      }),
-    );
+    return c.json(await profilesBody(organizationId, proposal.id));
   });
 
   /* Every revision the spec has had, newest first, without the scenarios. */
@@ -1386,6 +1421,30 @@ export function mountPricingRoutes<Env extends PricingAppEnv>(
         )
       : c.json({ operation });
   });
+
+  return {
+    async live(organizationId, proposalId) {
+      const proposal = await options.proposals.get(organizationId, proposalId);
+      if (proposal === null) return null;
+      const [detail, spec, profiles] = await Promise.all([
+        detailBody(organizationId, proposal, true),
+        proposal.specRevision === null
+          ? null
+          : options.specs.get(
+              organizationId,
+              proposal.id,
+              proposal.specRevision,
+            ),
+        profilesBody(organizationId, proposal.id),
+      ]);
+      return {
+        proposalId: proposal.id,
+        detail,
+        spec: { spec },
+        profiles: profiles.profiles,
+      };
+    },
+  };
 }
 
 /** Why a Jira comment could not be adopted, as the page shows it. */

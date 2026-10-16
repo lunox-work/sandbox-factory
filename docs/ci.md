@@ -3,20 +3,20 @@
 Workflows in [`.github/workflows/`](../.github/workflows/), plus branch
 protection on `main`.
 
-| Workflow              | Does                                                                    |
-| --------------------- | ----------------------------------------------------------------------- |
-| `ci.yml`              | Lint, format, build, test on Node 22 and 24; worker image smoke         |
-| `e2e.yml`             | Playwright browser smoke on Chromium — the `Browser smoke` check        |
-| `autofix.yml`         | Pushes `npm run format` fixes to same-repository PRs                    |
-| `codeql.yml`          | Security analysis — the `Analyze` check                                 |
-| `auto-merge.yml`      | Arms auto-merge on every PR                                             |
-| `labeler.yml`         | Labels PRs by path                                                      |
-| `cd.yml`              | Deploys `main`, then tags and releases                                  |
-| `release.yml`         | Builds, signs and attaches release artifacts                            |
-| `terraform.yml`       | Validates infra; plans on PRs only, with a read-only role               |
-| `deploy-watchdog.yml` | Daily: is production at `main`'s head?                                  |
-| `security-sweep.yml`  | Nightly security sweep                                                  |
-| `scorecard.yml`       | OpenSSF supply-chain posture, weekly. Pinned to an exact action version |
+| Workflow              | Does                                                                          |
+| --------------------- | ----------------------------------------------------------------------------- |
+| `ci.yml`              | Lint, format, build, test on Node 22 and 24; worker image smoke; formal specs |
+| `e2e.yml`             | Playwright browser smoke on Chromium — the `Browser smoke` check              |
+| `autofix.yml`         | Pushes `npm run format` fixes to same-repository PRs                          |
+| `codeql.yml`          | Security analysis — the `Analyze` check                                       |
+| `auto-merge.yml`      | Arms auto-merge on every PR                                                   |
+| `labeler.yml`         | Labels PRs by path                                                            |
+| `cd.yml`              | Deploys `main`, then tags and releases                                        |
+| `release.yml`         | Builds, signs and attaches release artifacts                                  |
+| `terraform.yml`       | Validates infra; plans on PRs only, with a read-only role                     |
+| `deploy-watchdog.yml` | Daily: is production at `main`'s head?                                        |
+| `security-sweep.yml`  | Nightly security sweep                                                        |
+| `scorecard.yml`       | OpenSSF supply-chain posture, weekly. Pinned to an exact action version       |
 
 ## Branch protection
 
@@ -25,7 +25,7 @@ one active ruleset, no bypass actors, no force-push/deletion, linear history
 and squash-only PR merges. These contexts are required, from their expected
 GitHub Apps:
 
-- `Test (Node 22)`, `Test (Node 24)`, `Worker image smoke`,
+- `Test (Node 22)`, `Test (Node 24)`, `Worker image smoke`, `Formal specs`,
   `Browser smoke (Chromium)`, `Analyze`: GitHub Actions.
 - `CodeQL`: GitHub Advanced Security (the findings result, not just the scanner job).
 
@@ -99,6 +99,18 @@ change must be applied before any worker launches; CD checks both the event
 filter and the Lambda's configured API service group before registering a worker
 revision. Worker tags are immutable, and rollback dispatches reuse existing
 worker images instead of rebuilding them.
+
+The `Formal specs` job checks everything under [docs/specs](./specs/README.md):
+TLC, from the last stable TLA+ release pinned by checksum and cached under it,
+runs every model's invariants and temporal properties and confirms the one
+configuration written to fail still fails on the invariant it documents; then
+`leanprover/lean-action` builds the Lean proofs with the toolchain
+`lean-toolchain` names, and `docs/specs/lean/Audit.lean` prints the axioms of
+every declaration in the project and refuses anything beyond `propext` and
+`Quot.sound`, which also catches a `sorry`. It needs neither Node nor a
+service and takes a minute or two. It is deliberately outside `npm run verify`, which must pass without
+Java or Lean installed; run the specs by hand as the README says when the
+modelled code changes.
 
 ## CodeQL and Scorecard
 

@@ -24,6 +24,7 @@ const run: StoredAnalysisRun = {
   errorCode: null,
   errorDetail: null,
   progress: null,
+  previewFiles: null,
   startedAt: stamp,
   finishedAt: stamp,
   deadlineAt: stamp,
@@ -742,6 +743,29 @@ test("a repository's runs can be read for one snapshot", async () => {
   ]);
 });
 
+test("a snapshot's runs can come with each builder's artifacts", async () => {
+  // The repository page reads its context in the one request.
+  const f = fixture("member");
+  const body = (await (
+    await f.request("repositories/ghr_1/runs?snapshotId=rsn_1&with=artifacts")
+  ).json()) as {
+    runs: { id: string }[];
+    artifacts: Record<string, { path: string }[]>;
+  };
+  assert.deepEqual(
+    body.runs.map(({ id }) => id),
+    [run.id],
+  );
+  assert.deepEqual(Object.keys(body.artifacts), [run.id]);
+  assert.ok((body.artifacts[run.id] ?? []).length > 0);
+  assert.doesNotMatch(JSON.stringify(body), /objectKey|runs\/private/);
+  // Not for the repository's history, which no page reads them beside.
+  const history = (await (
+    await f.request("repositories/ghr_1/runs?with=artifacts")
+  ).json()) as Record<string, unknown>;
+  assert.equal("artifacts" in history, false);
+});
+
 test("a sandbox build's run and artifacts are not a member's to read", async () => {
   // Its artifacts are a version's private sandbox, hidden tests among them,
   // which the sandbox routes keep to owners and admins.
@@ -799,6 +823,46 @@ test("a sandbox's preparation is kept from members, as a build is; a person's fi
       shown === 0 ? 404 : 200,
     );
   }
+});
+test("a sandbox's preparation and its artifacts never reach a member through ?with=artifacts", async () => {
+  const prepared: StoredAnalysisRun = {
+    ...run,
+    id: "arn_prepared",
+    tool: "fixtures",
+    params: {
+      deadlineMinutes: 90,
+      agent: "fixtures",
+      proposalId: "bpr_1",
+      specRevision: 1,
+      specHash: "h",
+      sliceRunId: "arn_slice",
+      pseudonyms: { vocabulary: [], title: "t", summary: "s" },
+    },
+  };
+  const member = fixture("member");
+  const artifactsFor: string[] = [];
+  const list = member.options.artifacts.list;
+  member.options.runs.list = async () => [prepared, run];
+  member.options.artifacts.list = async (...args: unknown[]) => {
+    artifactsFor.push(String(args[1]));
+    return list(String(args[0]), String(args[1]));
+  };
+  const response = await member.request(
+    "repositories/ghr_1/runs?snapshotId=rsn_1&with=artifacts",
+  );
+  assert.equal(response.status, 200);
+  const text = await response.text();
+  const body = JSON.parse(text) as {
+    runs: { id: string }[];
+    artifacts: Record<string, unknown[]>;
+  };
+  assert.deepEqual(
+    body.runs.map(({ id }) => id),
+    [run.id],
+  );
+  assert.deepEqual(Object.keys(body.artifacts), [run.id]);
+  assert.deepEqual(artifactsFor, [run.id]);
+  assert.doesNotMatch(text, /arn_prepared|pseudonyms|objectKey/);
 });
 test("members read an artifact as text, unless it is binary or too large", async () => {
   const f = fixture("member");

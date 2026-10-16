@@ -1,4 +1,7 @@
-import { isWorkspaceSource } from "@sandbox-factory/shared";
+import {
+  isWorkspaceSource,
+  type WorkspaceSetupDto,
+} from "@sandbox-factory/shared";
 import { useQuery } from "@tanstack/react-query";
 import { useRef } from "react";
 import { rankAtLeast } from "sandbox-factory";
@@ -16,14 +19,21 @@ import type { SetupFacts } from "./setup";
  * lists, the workspace's proposal counts and the first page of its bounties.
  * None of them reaches Jira or GitHub; they are the platform's own rows.
  *
- * `facts` is null until every read has answered once. Home shows nothing
- * rather than a stage it would change a moment later — a workspace with
- * Jira briefly drawn as one without would offer to connect what it has.
+ * Until every read has answered once, `facts` are what the workspace list
+ * said (`setup` on `/api/v1/me/orgs`), counted from the same rows when the
+ * list was read, so the shell need not wait on six reads made after it;
+ * null for a list that did not say. Home shows nothing rather than a stage
+ * it would change a moment later — a workspace with Jira briefly drawn as
+ * one without would offer to connect what it has.
  * A read that failed counts as having nothing, and `failed` says so, so the
  * page is still usable and can offer to read again.
  */
 export function useWorkspaceSetup(
-  organization: { id: string; role: string } | null,
+  organization: {
+    id: string;
+    role: string;
+    setup?: WorkspaceSetupDto | undefined;
+  } | null,
 ) {
   const userId = useUserId();
   const owner = organization?.id;
@@ -60,6 +70,12 @@ export function useWorkspaceSetup(
     proposals.isPending ||
     bounties.isPending;
 
+  const canManage = rankAtLeast(organization?.role ?? "member", "admin");
+  // What the workspace list said, while this workspace's reads are out.
+  const listed: SetupFacts | null =
+    organization?.setup === undefined
+      ? null
+      : { ...organization.setup, canManage };
   const healthyJira = jira.connections.filter(({ healthy }) => healthy);
   const current: SetupFacts | null = loading
     ? null
@@ -77,7 +93,7 @@ export function useWorkspaceSetup(
         },
         proposals: proposals.data?.total ?? 0,
         bounties: bounties.data?.bounties.length ?? 0,
-        canManage: rankAtLeast(organization?.role ?? "member", "admin"),
+        canManage,
       };
   /*
     Once known, kept while any read goes again. A read that failed has no
@@ -89,7 +105,9 @@ export function useWorkspaceSetup(
   const known = useRef<{ owner: string; facts: SetupFacts } | null>(null);
   if (current !== null && owner !== undefined)
     known.current = { owner, facts: current };
-  const facts = current ?? known.current?.facts ?? null;
+  const held = known.current;
+  const ownKnown = held !== null && held.owner === owner ? held.facts : null;
+  const facts = current ?? ownKnown ?? listed ?? held?.facts ?? null;
 
   return {
     facts,
@@ -98,7 +116,9 @@ export function useWorkspaceSetup(
      * went again. False while they are still another's — the one switched
      * away from — or nobody's yet.
      */
-    ownFacts: owner !== undefined && known.current?.owner === owner,
+    ownFacts:
+      owner !== undefined &&
+      (known.current?.owner === owner || listed !== null),
     failed:
       jira.error !== null ||
       github.error !== null ||

@@ -87,3 +87,32 @@ test("a job waiting for a slot stops with its run, and a failed create frees its
   assert.equal(next.id, "e");
   await next.destroy();
 });
+
+test("an abort after a waiting job was handed its slot takes no other waiter's turn", async () => {
+  // The abort listener is removed when the turn comes; were it not, its
+  // `splice(indexOf(turn), 1)` would read -1 and drop the last waiter.
+  const fake = provider();
+  const limited = limitJobs(fake.inner, 1);
+  const held = await limited.create({ label: "a", signal });
+  const stop = new AbortController();
+  const second = limited.create({ label: "b", signal: stop.signal });
+  let thirdCreated = false;
+  const third = limited
+    .create({ label: "c", signal })
+    .then((job) => ((thirdCreated = true), job));
+  await held.destroy();
+  const handed = await second;
+  stop.abort(new Error("stopped"));
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  assert.equal(thirdCreated, false);
+  await handed.destroy();
+  const created = await Promise.race([
+    third,
+    new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error("c never got its turn")), 200),
+    ),
+  ]);
+  assert.equal(created.id, "c");
+  assert.equal(fake.most(), 1);
+  await created.destroy();
+});

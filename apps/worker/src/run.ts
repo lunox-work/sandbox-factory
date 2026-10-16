@@ -19,6 +19,7 @@ import { AnalysisError } from "./errors.js";
 import { uploadArtifacts } from "./upload.js";
 import type {
   AgentTask,
+  ArtifactFile,
   ToolAdapter,
   ToolInputs,
   ToolRunInput,
@@ -77,6 +78,10 @@ export async function executeRun(
   let logRetained = false;
   let stage: "source" | "tool" = "source";
   let releaseSource = () => {};
+  /** The previews being shown, one after another; see `preview`. */
+  let previewing: Promise<void> = Promise.resolve();
+  /** Every key a preview uploaded, removed once the run has committed. */
+  const previewKeys = new Set<string>();
   const shutdown = () => abort.abort(new AnalysisError("cancelled"));
   // Object keys are not owner-scoped; only those an owner-scoped listing
   // returned may be read.
@@ -175,6 +180,8 @@ export async function executeRun(
         source = await fetchInto(directory);
         lines.push("Source archive fetched and validated.");
       } else {
+        const clock = options.clock ?? (() => performance.now());
+        const started = clock();
         const checkout = await cache.checkout(
           `${run.repoId}@${run.commitSha}`,
           async (into) => {
@@ -183,13 +190,18 @@ export async function executeRun(
             await rm(join(into, "source.tar.gz"), { force: true });
             return extracted;
           },
+          abort.signal,
         );
         releaseSource = checkout.release;
         source = checkout.path;
+        // A wait on another run's fetch of the commit is this run's fetch.
+        if (checkout.waited) timing.stage("fetch", clock() - started);
         lines.push(
           checkout.hit
             ? "Source read from the worker's cache."
-            : "Source archive fetched and validated.",
+            : checkout.waited
+              ? "Source archive fetched and validated by another run of the commit."
+              : "Source archive fetched and validated.",
         );
       }
     } else {
@@ -197,6 +209,46 @@ export async function executeRun(
       await mkdir(source);
     }
     stage = "tool";
+    /*
+      What a build has generated, shown before its baseline: uploaded under
+      the attempt's own `preview/`, so a failed attempt's cleanup takes it
+      with the rest, and recorded on the run. One at a time, in order.
+    */
+    const preview = (files: readonly ArtifactFile[]) => {
+      previewing = previewing.then(async () => {
+        try {
+          const shown = await uploadArtifacts(
+            options.objects,
+            run.id,
+            `${run.leaseToken}/preview`,
+            files,
+            abort.signal,
+            uploaded,
+          );
+          for (const { objectKey } of shown) previewKeys.add(objectKey);
+          await options.runs.recordPreview(
+            run.organizationId,
+            run.id,
+            run.leaseToken,
+            {
+              at: now().toISOString(),
+              files: shown.map(
+                ({ path, objectKey, contentType, sizeBytes, sha256 }) => ({
+                  path,
+                  objectKey,
+                  contentType,
+                  sizeBytes,
+                  sha256,
+                }),
+              ),
+            },
+            now(),
+          );
+        } catch {
+          lines.push("A preview of the generated files could not be shown.");
+        }
+      });
+    };
     const progress = progressRecorder(
       (value) =>
         options.runs.recordProgress(
@@ -221,11 +273,14 @@ export async function executeRun(
           if (lines.length < 100) lines.push(line);
         },
         step: progress.step,
+        preview,
         timing,
       }),
     );
-    // The last steps land before the run says it is done.
+    // The last steps land before the run says it is done, and the last
+    // preview, which the run's end clears.
     await progress.settled();
+    await previewing;
     let artifacts;
     try {
       artifacts = await timing.time("upload", () =>
@@ -321,6 +376,8 @@ export async function executeRun(
     clearTimeout(deadline);
     options.shutdown?.removeEventListener("abort", shutdown);
     await heartbeat;
+    // A preview still uploading lands before the cleanup that removes it.
+    await previewing;
     // Once it has ended: a released run is claimed again, and starts over.
     if (committed || failed)
       await options.runs
@@ -329,6 +386,11 @@ export async function executeRun(
     if (!committed && !commitUncertain)
       await Promise.allSettled(
         uploaded.map((key) => options.objects.remove(key)),
+      );
+    // A committed run's previews are not what it wrote; its artifacts are.
+    else if (committed)
+      await Promise.allSettled(
+        [...previewKeys].map((key) => options.objects.remove(key)),
       );
     if (!logRetained) await options.objects.remove(logKey).catch(() => {});
     await rm(directory, { recursive: true, force: true });

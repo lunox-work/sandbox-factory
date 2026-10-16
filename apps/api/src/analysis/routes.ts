@@ -24,6 +24,7 @@ import {
 } from "sandbox-factory";
 import {
   analysisRunListSchema,
+  analysisRunListWithArtifactsSchema,
   analysisRunResponseSchema,
   ARTIFACT_TEXT_MAX_BYTES,
   artifactContentSchema,
@@ -78,7 +79,7 @@ const SANDBOX_TOOLS: ReadonlySet<AnalysisTool> = new Set([
   "sandbox_build",
   "sandbox_starter",
 ]);
-const hiddenFrom = (role: string, run: StoredAnalysisRun) =>
+export const hiddenFrom = (role: string, run: StoredAnalysisRun) =>
   (SANDBOX_TOOLS.has(run.tool) || preparation(run)) && !isAtLeastAdmin(role);
 /** A sandbox's preparation writes a name table too, so it is one of them. */
 const preparation = (run: StoredAnalysisRun) =>
@@ -689,18 +690,39 @@ export function mountAnalysisRoutes(
     const repoId = c.req.param("id");
     if ((await options.repos.get(owner, repoId)) === null)
       return c.json({ error: "Not found." }, 404);
+    const snapshotId = c.req.query("snapshotId") || undefined;
+    // One snapshot's, when named: its builds, however many runs the
+    // repository's other snapshots have had since.
+    const runs = (
+      await options.runs.list(
+        owner,
+        repoId,
+        snapshotId === undefined ? undefined : 50,
+        snapshotId,
+      )
+    ).filter((run) => !hiddenFrom(role, run));
+    if (snapshotId === undefined || c.req.query("with") !== "artifacts")
+      return c.json(analysisRunListSchema.parse({ runs }));
+    // Each builder's newest succeeded run, as the context shows it.
+    const built = CONTEXT_BUILDERS.flatMap((builder) => {
+      const run = runs.find(
+        (each) => each.tool === builder && each.status === "succeeded",
+      );
+      return run === undefined ? [] : [run.id];
+    });
+    const artifacts = await Promise.all(
+      built.map(
+        async (id) =>
+          [
+            id,
+            (await options.artifacts.list(owner, id)).map(publicArtifact),
+          ] as const,
+      ),
+    );
     return c.json(
-      analysisRunListSchema.parse({
-        // One snapshot's, when named: its builds, however many runs the
-        // repository's other snapshots have had since.
-        runs: (
-          await options.runs.list(
-            owner,
-            repoId,
-            c.req.query("snapshotId") === undefined ? undefined : 50,
-            c.req.query("snapshotId") || undefined,
-          )
-        ).filter((run) => !hiddenFrom(role, run)),
+      analysisRunListWithArtifactsSchema.parse({
+        runs,
+        artifacts: Object.fromEntries(artifacts),
       }),
     );
   });

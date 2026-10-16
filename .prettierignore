@@ -15,3 +15,7 @@ test-results
 
 # Installed at a pinned upstream release (gitignored); never reformat it.
 .agents/skills/archify
+
+# lake writes this for the Lean proofs; reformatting it creates a diff
+# the next `lake build` reverts.
+docs/specs/lean/lake-manifest.json

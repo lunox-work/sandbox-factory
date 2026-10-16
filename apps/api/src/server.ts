@@ -30,6 +30,10 @@ import {
   createRateCardStore,
   createSandboxStore,
   createTokenCipher,
+  createFlowWaitStore,
+  createWorkspaceSetupStore,
+  parseRunChange,
+  RUN_CHANGED_CHANNEL,
   RUN_ENDED_CHANNEL,
   type NewBountyProfile,
 } from "@sandbox-factory/db";
@@ -58,6 +62,9 @@ import {
 } from "./env.js";
 import { WorkerLauncher } from "./github/launcher.js";
 import { AnalysisWatchdog } from "./analysis/watchdog.js";
+import { hiddenFrom } from "./analysis/routes.js";
+import { isAtLeastAdmin } from "./access.js";
+import { createRunChangeHub } from "./events.js";
 import { GithubReconciler } from "./github/reconcile.js";
 import { GithubSnapshotter } from "./github/snapshot.js";
 import { resolveImageDigest } from "./image-digest.js";
@@ -490,6 +497,7 @@ const sandbox =
         runs: analysisRuns,
         artifacts: analysis.artifacts,
         objects: analysis.objects,
+        previews: analysisRuns,
         proposals: bountyProposals,
         specs: bountySpecs,
         bounties,
@@ -625,6 +633,8 @@ const githubContext =
             }),
       };
 
+/** What the pages following runs are told, from the database's announcements. */
+const runChanges = createRunChangeHub();
 const app = createApp({
   corsOrigins: env.CORS_ORIGINS,
   auth,
@@ -671,6 +681,18 @@ const app = createApp({
     onChanged: () => sandboxPreparer?.kick(),
   },
   avatars,
+  events: {
+    hub: runChanges,
+    // A private sandbox's runs are read by owners and admins only, so the
+    // others are not told they moved.
+    visible: async (organizationId, role, change) => {
+      if (change.kind !== "analysis" || isAtLeastAdmin(role)) return true;
+      const run = await analysisRuns.get(organizationId, change.id);
+      return run !== null && !hiddenFrom(role, run);
+    },
+  },
+  setup: createWorkspaceSetupStore(connection.db),
+  flows: { waits: createFlowWaitStore(connection.db) },
   buildInfo: build,
   originVerify: env.ORIGIN_VERIFY,
 });
@@ -694,6 +716,17 @@ if (bountyProfiler !== undefined)
     .catch((error: unknown) =>
       console.error("analysis_run_listen_failed", describeError(error)),
     );
+
+// One connection for every page's stream; each change goes to its
+// workspace's. A page keeps a slow timer for a change lost to a reconnect.
+connection
+  .listen(RUN_CHANGED_CHANNEL, (payload) => {
+    const change = parseRunChange(payload);
+    if (change !== null) runChanges.publish(change);
+  })
+  .catch((error: unknown) =>
+    console.error("run_changed_listen_failed", describeError(error)),
+  );
 
 const server = serve({ fetch: app.fetch, port: env.PORT }, (info) => {
   // First log line names the build. Logs outlive the deployment, whereas

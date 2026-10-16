@@ -4102,6 +4102,42 @@ test("an admin slices a version from its sizing's slice, and follows its build",
   ).toBe(true);
 });
 
+test("a build at work offers the files it has written, and says what it usually takes", async () => {
+  const state = slicingServer({
+    versions: () => [generatedVersion],
+    slice: () => sliceOf(),
+    routes: [
+      [
+        "GET",
+        "/github/runs/arn_build",
+        () => json({ run: buildRun({ status: "running", previewFiles: 12 }) }),
+      ],
+      [
+        "GET",
+        "/flows/typical",
+        () =>
+          json({
+            flows: {
+              "run:sandbox_build": { p50: 180, samples: 5 },
+              // Too few to say anything by.
+              "queue:sandbox_build": { p50: 4, samples: 1 },
+            },
+          }),
+      ],
+    ],
+  });
+  vi.stubGlobal("fetch", state.fetchMock);
+  const part = await sandboxPart();
+  expect(await within(part).findByText(/12 files written/)).toBeDefined();
+  const browse = within(part).getByRole("link", { name: "Browse them" });
+  expect(browse.getAttribute("href")).toBe("/sandboxes/acme/sbv_1");
+  await waitFor(() =>
+    expect(within(part).getByTestId("thinking-elapsed").textContent).toMatch(
+      /usually ~3 min/,
+    ),
+  );
+});
+
 test("a built draft holds Slice again, and says a new price cuts a new slice", async () => {
   vi.stubGlobal(
     "fetch",
@@ -4864,6 +4900,47 @@ test("a bounty's page opens on the tab its address names", async () => {
   expect(within(page).getByRole("region", { name: "Sandbox" })).toBeDefined();
 });
 
+test("a bounty's page shows its live proposal from the bounty's own read", async () => {
+  const state = server([
+    [
+      "GET",
+      "/bounties/bty_7",
+      () =>
+        json({
+          bounty: detail({ ...SCOPED, proposal: liveProposal() }),
+          live: {
+            proposalId: "bpr_9",
+            detail: {
+              proposal: proposal(),
+              freshness: { freshness: "current", checkedAt: stamp },
+              liveSpec: null,
+              writebackOperations: [],
+            },
+            spec: { spec: null },
+            profiles: [],
+          },
+        }),
+    ],
+  ]);
+  // The proposal's own read never answers: what shows is what came with
+  // the bounty.
+  const fetchMock = vi.fn((input: string, init?: RequestInit) =>
+    String(input).endsWith("/proposals/bpr_9")
+      ? new Promise<Response>(() => {})
+      : state.fetchMock(input, init),
+  );
+  vi.stubGlobal("fetch", fetchMock);
+  window.history.replaceState(null, "", "/bounties/acme/bty_7?tab=price");
+  render(<Shell {...inAcme("admin")} />);
+  const peek = await screen.findByTestId("proposal-detail");
+  expect(
+    await within(peek).findByRole("group", { name: "Resize" }),
+  ).toBeTruthy();
+  expect(
+    state.calls.some(({ url }) => url.endsWith("/bounties/bty_7?with=live")),
+  ).toBe(true);
+});
+
 test("a bounty not yet approved shows no price at a glance, however it is resized", async () => {
   let resized = false;
   const live = () =>
@@ -4919,7 +4996,7 @@ test("a bounty not yet approved shows no price at a glance, however it is resize
     expect(
       state.calls.filter(
         ({ method, url }) =>
-          method === "GET" && url.endsWith("/bounties/bty_7"),
+          method === "GET" && /\/bounties\/bty_7(\?with=live)?$/.test(url),
       ).length,
     ).toBeGreaterThanOrEqual(2),
   );

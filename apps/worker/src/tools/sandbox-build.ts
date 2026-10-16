@@ -495,9 +495,7 @@ export async function writeBuildOutputs(input: {
       meta: { rules: input.aliasRules.length },
     },
     ...files.map((file) => ({
-      path: file.public
-        ? `project/${file.path}`
-        : `private/${file.path.replace(`${PRIVATE_TESTS_DIR}/`, "")}`,
+      path: outputPath(file),
       text: file.text,
       meta: null,
     })),
@@ -519,6 +517,51 @@ export async function writeBuildOutputs(input: {
     });
   }
   return { manifest, written: written.sort((a, b) => compare(a.path, b.path)) };
+}
+
+/** Where a generated file is kept: `project/`, or `private/` for a hidden test. */
+function outputPath(file: GeneratedFile): string {
+  return file.public
+    ? `project/${file.path}`
+    : `private/${file.path.replace(`${PRIVATE_TESTS_DIR}/`, "")}`;
+}
+
+/**
+ * Shows the generated files on the version while their baseline runs:
+ * written beside the run's outputs, each candidate in a folder of its own,
+ * under the paths the build will keep them at, and handed to the run.
+ * Nothing when nothing follows the run.
+ */
+export async function previewProject(
+  input: Pick<ToolRunInput, "outDir" | "preview" | "log">,
+  files: readonly GeneratedFile[],
+  candidate: number,
+): Promise<void> {
+  const show = input.preview;
+  if (show === undefined || files.length === 0) return;
+  const root = join(`${input.outDir}-preview`, String(candidate));
+  const written: ArtifactFile[] = [];
+  try {
+    for (const file of [...files].sort((a, b) => compare(a.path, b.path))) {
+      const path = outputPath(file);
+      const absolutePath = join(root, path);
+      await mkdir(dirname(absolutePath), { recursive: true });
+      await writeFile(absolutePath, file.text, "utf8");
+      written.push({
+        path,
+        absolutePath,
+        kind: buildArtifactKind(path),
+        contentType: path.endsWith(".json")
+          ? "application/json"
+          : "text/plain; charset=utf-8",
+        meta: null,
+      });
+    }
+  } catch {
+    input.log("The generated files could not be written for a preview.");
+    return;
+  }
+  show(written);
 }
 
 /**
@@ -1075,6 +1118,12 @@ export function createSandboxBuildAdapter(
         source.acceptanceTests.length === 0 &&
         blockers.length === 0;
       const unwanted = new AbortController();
+      // The early agent's own failure, which fails the build only if the
+      // baseline turns out to need its tests.
+      const early: { failed: boolean; error?: unknown } = { failed: false };
+      // Shown while the baseline below runs, as the version's files.
+      if (generate !== null && files.length > 0)
+        await previewProject(input, files, 1);
       const [firstBaseline, hiddenWritten] = await together(
         input.signal,
         async (signal) => {
@@ -1121,11 +1170,14 @@ export function createSandboxBuildAdapter(
               timing: input.timing,
             });
           } catch (error) {
-            if (unwanted.signal.aborted && !signal.aborted) {
+            if (signal.aborted) throw error;
+            if (unwanted.signal.aborted) {
               input.log("Hidden-tests agent stopped: the baseline needs none.");
               return null;
             }
-            throw error;
+            early.failed = true;
+            early.error = error;
+            return null;
           }
         },
       );
@@ -1139,6 +1191,7 @@ export function createSandboxBuildAdapter(
             "No agent model is configured; no hidden tests are written.",
           );
         else {
+          if (early.failed) throw early.error;
           hidden = hiddenWritten;
           if (hidden !== null) {
             files = hidden.files;

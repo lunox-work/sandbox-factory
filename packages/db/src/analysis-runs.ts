@@ -18,6 +18,7 @@ import {
   CONTEXT_BUILDERS,
   GRAPH_READERS,
   RUN_SLOTS,
+  SHARED_CLAIM,
   WORKER_SLOTS,
   canonicalJson,
   isAbstractionsParams,
@@ -33,6 +34,7 @@ import {
 } from "sandbox-factory";
 import type {
   AnalysisParams,
+  AnalysisPreview,
   AnalysisProgress,
   AnalysisStatus,
   AnalysisErrorCode,
@@ -43,6 +45,7 @@ import type {
 } from "sandbox-factory";
 import type { Database, QueryExecutor } from "./errors.js";
 import { generateId } from "./mapping.js";
+import { announceChange, notifyChange } from "./run-events.js";
 import {
   analysisRun,
   artifact,
@@ -73,9 +76,23 @@ export function workerApplicationName(workerId: string): string {
   return `${WORKER_APPLICATION_NAME}:${workerId}`;
 }
 
-async function announce(tx: QueryExecutor, channel: string, runId: string) {
-  await tx.execute(sql`select pg_notify(${channel}, ${runId})`);
+/**
+ * Announces a run on the queue's `channel`, and to the pages following it
+ * (`RUN_CHANGED_CHANNEL`), in one statement.
+ */
+async function announce(
+  tx: QueryExecutor,
+  channel: string,
+  owner: string,
+  runId: string,
+) {
+  await tx.execute(
+    sql`select pg_notify(${channel}, ${runId}), ${notifyChange({ organizationId: owner, kind: "analysis", id: runId })}`,
+  );
 }
+/** Tells the pages following a run that it changed, outside the queue. */
+const changed = (tx: QueryExecutor, owner: string, runId: string) =>
+  announceChange(tx, { organizationId: owner, kind: "analysis", id: runId });
 
 const isBuilder = (tool: string) =>
   CONTEXT_BUILDERS.some((builder) => builder === tool);
@@ -134,6 +151,11 @@ export interface StoredAnalysisRun {
   readonly errorDetail: string | null;
   /** What an agent run has done so far; null for runs that write none. */
   readonly progress: AnalysisProgress | null;
+  /**
+   * How many files a running build has written before its check, which
+   * `preview` lists; null when it has written none, or has ended.
+   */
+  readonly previewFiles: number | null;
   readonly startedAt: string | null;
   readonly finishedAt: string | null;
   readonly deadlineAt: string | null;
@@ -272,6 +294,22 @@ export interface AnalysisRunStore {
     progress: AnalysisProgress,
     now: Date,
   ): Promise<boolean>;
+  /**
+   * Writes the files a build has written so far, already uploaded, in place
+   * of any it wrote before. Guarded by the lease like a heartbeat.
+   */
+  recordPreview(
+    organizationId: string,
+    runId: string,
+    leaseToken: string,
+    preview: AnalysisPreview,
+    now: Date,
+  ): Promise<boolean>;
+  /** What a running build has written so far; null once it has ended. */
+  preview(
+    organizationId: string,
+    runId: string,
+  ): Promise<AnalysisPreview | null>;
   finish(
     organizationId: string,
     runId: string,
@@ -372,6 +410,7 @@ function toRun(row: AnalysisRunRow, repoId: string | null): StoredAnalysisRun {
     errorCode: row.errorCode,
     errorDetail: row.errorDetail,
     progress: row.progress ?? null,
+    previewFiles: row.preview?.files.length ?? null,
     startedAt: row.startedAt?.toISOString() ?? null,
     finishedAt: row.finishedAt?.toISOString() ?? null,
     deadlineAt: row.deadlineAt?.toISOString() ?? null,
@@ -392,6 +431,25 @@ const fence = (owner: string, id: string, token: string, now: Date) =>
     eq(analysisRun.leaseToken, token),
     gt(analysisRun.leaseExpiresAt, now),
   );
+
+/**
+ * How many claims a worker makes of one snapshot's builders that share
+ * one (`SHARED_CLAIM`): each claim takes a run and one of each tool it
+ * shares with, as the worker's `claimBeside` does.
+ */
+function sharedClaims(tools: Map<AnalysisTool, number>): number {
+  const order = ANALYSIS_TOOLS.filter((tool) => tools.has(tool));
+  let claims = 0;
+  for (;;) {
+    const lead = order.find((tool) => (tools.get(tool) ?? 0) > 0);
+    if (lead === undefined) return claims;
+    claims += 1;
+    for (const tool of [lead, ...(SHARED_CLAIM[lead] ?? [])]) {
+      const left = tools.get(tool) ?? 0;
+      if (left > 0) tools.set(tool, left - 1);
+    }
+  }
+}
 
 export function createAnalysisRunStore(db: Database): AnalysisRunStore {
   // Left: a run with no snapshot has no repository either.
@@ -419,6 +477,7 @@ export function createAnalysisRunStore(db: Database): AnalysisRunStore {
         // A retry starts its steps and its clock again.
         progress: null,
         timing: null,
+        preview: null,
       })
       .where(
         sql`${analysisRun.id} = (select a.id from analysis_run a where ${CLAIMABLE} and ${filter} order by ${RUNNING_BESIDE}, a.created_at, a.id for update of a skip locked limit 1)`,
@@ -426,6 +485,8 @@ export function createAnalysisRunStore(db: Database): AnalysisRunStore {
       .returning();
     const run = rows[0];
     if (run === undefined) return null;
+    // Queued to running: a page following it shows it started.
+    await changed(db, run.organizationId, run.id);
     if (run.snapshotId === null)
       return {
         ...toRun(run, null),
@@ -609,7 +670,7 @@ export function createAnalysisRunStore(db: Database): AnalysisRunStore {
         const row = rows[0] as AnalysisRunRow | undefined;
         if (row === undefined)
           throw new Error("Analysis enqueue did not return a row.");
-        await announce(tx, RUN_QUEUED_CHANNEL, row.id);
+        await announce(tx, RUN_QUEUED_CHANNEL, owner, row.id);
         return {
           ok: true,
           run: toRun(row, repoId),
@@ -696,7 +757,34 @@ export function createAnalysisRunStore(db: Database): AnalysisRunStore {
           and(fence(owner, id, token, now), gt(analysisRun.deadlineAt, now)),
         )
         .returning({ id: analysisRun.id });
-      return rows.length > 0;
+      if (rows.length === 0) return false;
+      await changed(db, owner, id);
+      return true;
+    },
+    async preview(owner, id) {
+      const rows = await db
+        .select({ preview: analysisRun.preview })
+        .from(analysisRun)
+        .where(
+          and(
+            owned(owner),
+            eq(analysisRun.id, id),
+            inArray(analysisRun.status, ["queued", "running"]),
+          ),
+        );
+      return rows[0]?.preview ?? null;
+    },
+    async recordPreview(owner, id, token, preview, now) {
+      const rows = await db
+        .update(analysisRun)
+        .set({ preview })
+        .where(
+          and(fence(owner, id, token, now), gt(analysisRun.deadlineAt, now)),
+        )
+        .returning({ id: analysisRun.id });
+      if (rows.length === 0) return false;
+      await changed(db, owner, id);
+      return true;
     },
     async finish(owner, id, token, artifacts, logKey, now) {
       return db.transaction(async (transaction) => {
@@ -711,6 +799,7 @@ export function createAnalysisRunStore(db: Database): AnalysisRunStore {
             finishedAt: now,
             leaseToken: null,
             leaseExpiresAt: null,
+            preview: null,
           })
           .where(
             and(fence(owner, id, token, now), gt(analysisRun.deadlineAt, now)),
@@ -735,7 +824,7 @@ export function createAnalysisRunStore(db: Database): AnalysisRunStore {
           rows.flatMap((row) => (isBuilder(row.tool) ? [row.snapshotId] : [])),
           now,
         );
-        await announce(tx, RUN_ENDED_CHANNEL, id);
+        await announce(tx, RUN_ENDED_CHANNEL, owner, id);
         return true;
       });
     },
@@ -752,6 +841,7 @@ export function createAnalysisRunStore(db: Database): AnalysisRunStore {
             finishedAt: now,
             leaseToken: null,
             leaseExpiresAt: null,
+            preview: null,
           })
           .where(fence(owner, id, token, now))
           .returning({
@@ -765,7 +855,7 @@ export function createAnalysisRunStore(db: Database): AnalysisRunStore {
           rows.flatMap((row) => (isBuilder(row.tool) ? [row.snapshotId] : [])),
           now,
         );
-        await announce(tx, RUN_ENDED_CHANNEL, id);
+        await announce(tx, RUN_ENDED_CHANNEL, owner, id);
         return true;
       });
     },
@@ -777,11 +867,12 @@ export function createAnalysisRunStore(db: Database): AnalysisRunStore {
           leaseToken: null,
           leaseExpiresAt: null,
           heartbeatAt: null,
+          preview: null,
         })
         .where(fence(owner, id, token, now))
         .returning({ id: analysisRun.id });
       if (rows.length === 0) return false;
-      await announce(db, RUN_QUEUED_CHANNEL, id);
+      await announce(db, RUN_QUEUED_CHANNEL, owner, id);
       return true;
     },
     async recordTiming(owner, id, timing) {
@@ -812,6 +903,7 @@ export function createAnalysisRunStore(db: Database): AnalysisRunStore {
             leaseToken: null,
             leaseExpiresAt: null,
             heartbeatAt: null,
+            preview: null,
           })
           .where(and(owned(owner), expired(now)))
           .returning({
@@ -835,6 +927,7 @@ export function createAnalysisRunStore(db: Database): AnalysisRunStore {
           await announce(
             tx,
             row.status === "queued" ? RUN_QUEUED_CHANNEL : RUN_ENDED_CHANNEL,
+            owner,
             row.id,
           );
         return rows.length;
@@ -849,11 +942,12 @@ export function createAnalysisRunStore(db: Database): AnalysisRunStore {
     },
     async queueState(now) {
       // What could be claimed now, and what runs with a live heartbeat, by
-      // tool: the slots a worker would give them.
+      // tool and snapshot: the slots a worker would give them.
       const rows = await db
         .select({
           tool: analysisRun.tool,
           status: analysisRun.status,
+          snapshotId: analysisRun.snapshotId,
           count: sql<number>`count(*)::int`,
         })
         .from(analysisRun)
@@ -867,7 +961,7 @@ export function createAnalysisRunStore(db: Database): AnalysisRunStore {
             ),
           ),
         )
-        .groupBy(analysisRun.tool, analysisRun.status);
+        .groupBy(analysisRun.tool, analysisRun.status, analysisRun.snapshotId);
       // A polling worker between runs heartbeats nothing, but it holds a
       // connection to wait for the next enqueue on, named for it.
       const connected = await db
@@ -879,6 +973,9 @@ export function createAnalysisRunStore(db: Database): AnalysisRunStore {
           sql`(application_name = ${WORKER_APPLICATION_NAME} or application_name like ${`${WORKER_APPLICATION_NAME}:%`}) and datname = current_database()`,
         );
       const demand = { agent: 0, build: 0 } satisfies Record<RunSlot, number>;
+      // A snapshot's builders that share a claim, by tool: counted below as
+      // the claims a worker would make of them, not one slot each.
+      const shared = new Map<string, Map<AnalysisTool, number>>();
       let queued = false;
       let running = false;
       for (const row of rows) {
@@ -887,8 +984,16 @@ export function createAnalysisRunStore(db: Database): AnalysisRunStore {
         const count = Number(row.count);
         if (row.status === "queued") queued ||= count > 0;
         else running ||= count > 0;
-        demand[slotOf(tool)] += count;
+        const snapshotId = row.snapshotId ?? null;
+        if (snapshotId === null || SHARED_CLAIM[tool] === undefined) {
+          demand[slotOf(tool)] += count;
+          continue;
+        }
+        const tools = shared.get(snapshotId) ?? new Map();
+        tools.set(tool, (tools.get(tool) ?? 0) + count);
+        shared.set(snapshotId, tools);
       }
+      for (const tools of shared.values()) demand.build += sharedClaims(tools);
       const workers = Math.max(
         Number(connected[0]?.workers ?? 0),
         running ? 1 : 0,

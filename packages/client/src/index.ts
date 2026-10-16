@@ -17,6 +17,7 @@ export { ApiClient, ApiError, type ClientOptions } from "./transport.js";
 
 import {
   analysisRunListSchema,
+  analysisRunListWithArtifactsSchema,
   analysisRunResponseSchema,
   artifactContentSchema,
   artifactListSchema,
@@ -108,6 +109,24 @@ export class GithubAnalysisClient extends ApiClient {
         { signal },
       ),
     ).runs;
+  }
+  /**
+   * One snapshot's runs, with each context builder's newest succeeded
+   * run's artifacts beside them by run id: the context in one request.
+   */
+  async snapshotRunsWithArtifacts(
+    owner: string,
+    repoId: string,
+    snapshotId: string,
+    signal?: AbortSignal,
+  ) {
+    const query = new URLSearchParams({ snapshotId, with: "artifacts" });
+    return analysisRunListWithArtifactsSchema.parse(
+      await this.request(
+        `${this.#base(owner)}/repositories/${encodeURIComponent(repoId)}/runs?${query.toString()}`,
+        { signal },
+      ),
+    );
   }
   async run(owner: string, runId: string, signal?: AbortSignal) {
     return analysisRunResponseSchema.parse(

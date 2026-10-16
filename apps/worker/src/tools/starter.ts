@@ -59,7 +59,11 @@ import {
 } from "../agent/prompts.js";
 import { invalidInput } from "../agent/repo-tools.js";
 import type { ArtifactFile, ToolAdapter, ToolRunInput } from "./adapter.js";
-import { reportedBaselineOf, writeBuildOutputs } from "./sandbox-build.js";
+import {
+  previewProject,
+  reportedBaselineOf,
+  writeBuildOutputs,
+} from "./sandbox-build.js";
 import { sha256 } from "./slice/hash.js";
 import { checkStarter } from "./starter-check.js";
 
@@ -261,6 +265,8 @@ export function createStarterAdapter(options: {
         runs += 1;
         const files = [...checked.project.files];
         const blockers = [...checked.project.blockers];
+        // Shown as the version's files while this candidate's baseline runs.
+        await previewProject(input, files, runs);
         // The hidden tests run against the renamed project, renamed with it.
         const hiddenTests = checked.starter.hiddenTests;
         const { baseline, evaluator, report } = await reportedBaselineOf(

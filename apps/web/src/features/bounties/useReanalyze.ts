@@ -5,7 +5,11 @@ import {
 } from "@sandbox-factory/shared";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { clients } from "../../data/query";
-import { terminalRun, useObservation } from "../../data/observe";
+import {
+  bountyRunTopic,
+  terminalRun,
+  useObservation,
+} from "../../data/observe";
 
 /**
  * Where a re-analysis stands: none, one at work (`queued` while it waits
@@ -101,6 +105,7 @@ export function useReanalyze(
     interval: 1_000,
     startDelay: 1_000,
     terminal: terminalRun,
+    topics: (id) => [bountyRunTopic(id)],
     read: (id, signal) => clients.runs.run(owner, id, signal),
   });
   useEffect(() => {

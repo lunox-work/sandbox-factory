@@ -22,6 +22,7 @@ import {
 
 import { isUniqueViolation, type Database } from "./errors.js";
 import { generateId } from "./mapping.js";
+import { announceChange } from "./run-events.js";
 import { bountyRun, jiraBoard, bounty } from "./schema.js";
 import type { BountyRunRow } from "./schema.js";
 
@@ -368,6 +369,9 @@ function sameRequest(row: BountyRunRow, input: CreateBountyRunInput): boolean {
 }
 
 export function createBountyRunStore(db: Database): BountyRunStore {
+  /** Tells the pages following a run that it changed. */
+  const changed = (organizationId: string, id: string) =>
+    announceChange(db, { organizationId, kind: "bounty", id });
   return {
     async create(organizationId, input) {
       const existing = await firstByRequest(
@@ -556,7 +560,9 @@ export function createBountyRunStore(db: Database): BountyRunStore {
           ),
         )
         .returning()) as BountyRunRow[];
-      return rows[0] === undefined ? null : toDto(rows[0]);
+      if (rows[0] === undefined) return null;
+      await changed(organizationId, runId);
+      return toDto(rows[0]);
     },
 
     async heartbeat(organizationId, runId, leaseToken, now) {
@@ -602,7 +608,9 @@ export function createBountyRunStore(db: Database): BountyRunStore {
           ),
         )
         .returning()) as BountyRunRow[];
-      return rows[0] === undefined ? null : toDto(rows[0]);
+      if (rows[0] === undefined) return null;
+      await changed(organizationId, runId);
+      return toDto(rows[0]);
     },
 
     async recordOutcome(organizationId, runId, leaseToken, outcome) {
@@ -627,7 +635,9 @@ export function createBountyRunStore(db: Database): BountyRunStore {
           ),
         )
         .returning()) as BountyRunRow[];
-      return rows.length > 0;
+      if (rows.length === 0) return false;
+      await changed(organizationId, runId);
+      return true;
     },
 
     async recordProgress(organizationId, runId, leaseToken, progress) {
@@ -648,7 +658,9 @@ export function createBountyRunStore(db: Database): BountyRunStore {
           ),
         )
         .returning({ id: bountyRun.id })) as { id: string }[];
-      return rows.length > 0;
+      if (rows.length === 0) return false;
+      await changed(organizationId, runId);
+      return true;
     },
 
     async recordModelCalls(organizationId, runId, calls) {
@@ -698,7 +710,9 @@ export function createBountyRunStore(db: Database): BountyRunStore {
           ),
         )
         .returning()) as BountyRunRow[];
-      return rows[0] === undefined ? null : toDto(rows[0]);
+      if (rows[0] === undefined) return null;
+      await changed(organizationId, runId);
+      return toDto(rows[0]);
     },
 
     async failExpired(organizationId, now) {
@@ -728,6 +742,7 @@ export function createBountyRunStore(db: Database): BountyRunStore {
           ),
         )
         .returning()) as BountyRunRow[];
+      for (const row of rows) await changed(organizationId, row.id);
       return rows.length;
     },
 

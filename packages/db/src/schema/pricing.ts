@@ -148,6 +148,14 @@ export const bountyRun = pgTable(
     fatalErrorCode: text("fatal_error_code"),
     startedAt: ts("started_at"),
     finishedAt: ts("finished_at"),
+    /**
+     * When the run wrote its proposal, or re-priced one, in the write's
+     * transaction: the end of its price (`flow_wait_sample`). Kept on the
+     * run because the proposal is not the run's alone: a re-price moves
+     * its `run_id` and keeps its `created_at`. Null for a run that wrote
+     * none, and for runs that ended before this was kept.
+     */
+    proposalWrittenAt: ts("proposal_written_at"),
     createdAt: ts("created_at").notNull().defaultNow(),
     updatedAt: ts("updated_at").notNull().defaultNow(),
   },

@@ -47,6 +47,7 @@ import {
 
 import { isAtLeastAdmin } from "../access.js";
 import { boundedLimit, rowCursor } from "../paging.js";
+import type { BountyLive } from "../pricing/routes.js";
 import { contextVersionsOf, heldContext } from "./held-context.js";
 
 export interface BountyRouteOptions {
@@ -57,6 +58,16 @@ export interface BountyRouteOptions {
    * and nothing is behind on any.
    */
   readonly contexts?: Pick<BountyContextStore, "latest">;
+  /**
+   * Its live proposal's reads, for `?with=live`: the pricing routes'
+   * answers, so a bounty's page has them with the bounty rather than after.
+   * Read from what is stored, never waiting on Jira, so they agree with
+   * the bounty they come with; the proposal's own read checks Jira.
+   */
+  readonly live?: (
+    organizationId: string,
+    proposalId: string,
+  ) => Promise<BountyLive | null>;
 }
 
 interface BountyAppEnv {
@@ -107,7 +118,17 @@ export function mountBountyRoutes<Env extends BountyAppEnv>(
       c.req.param("id"),
     );
     if (bounty === null) return c.json({ error: "Not found" }, 404);
-    return c.json({ bounty: await detail(options, bounty) });
+    const answered = await detail(options, bounty);
+    if (c.req.query("with") !== "live" || options.live === undefined)
+      return c.json({ bounty: answered });
+    const proposalId = answered.proposal?.id;
+    return c.json({
+      bounty: answered,
+      live:
+        proposalId === undefined
+          ? null
+          : await options.live(organizationId, proposalId),
+    });
   });
 
   /** Its scope's versions, newest first: what it said, by whom, when. */

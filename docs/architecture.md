@@ -1171,7 +1171,11 @@ or disabled profiling retains the existing behavior; respec does not implicitly
 request profiles, and historical rows are not backfilled.
 `apps/api/src/pricing/profiler.ts` moves the rows in flight when a run
 ends: the run store sends `NOTIFY analysis_run_ended` in the same write, and
-the API listens. A sweep every 30 seconds stays, for a notification missed
+the API listens. Every change a page follows (an analysis or bounty run
+claimed, stepping, previewing or ended; a profile moving) is also sent on
+`run_changed`, which the API passes to the workspace's push channel
+(`GET /api/v1/orgs/:orgId/events`, `apps/api/src/events.ts`); the web app
+reads what changed again when told and keeps a slower timer behind it. A sweep every 30 seconds stays, for a notification missed
 across a reconnect or a restart. Each pass: it
 enqueues the snapshot's graph and a `scope` run for the spec (no person
 behind either, so `requested_by` is null), then slices exactly the request

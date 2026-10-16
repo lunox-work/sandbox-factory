@@ -49,6 +49,13 @@ export interface ProposalReviewOptions {
    * an approval, Jira is read every time.
    */
   readonly recent?: RecentReads<JiraIssueSpec>;
+  /**
+   * Answered from what is held, never waiting on Jira: an issue read in the
+   * last minute as it was then, any other as the bounty stores it. For a
+   * read beside another that must stay fast, as a bounty's `?with=live`;
+   * the proposal's own read checks Jira again.
+   */
+  readonly storedOnly?: boolean;
 }
 
 /**
@@ -88,6 +95,8 @@ export async function freshProposal(
     // a client, which may itself go to Atlassian to refresh its token.
     if (kept !== undefined && registered !== null)
       return live(proposal, checkedAt, registered.siteUrl, kept);
+    if (options.storedOnly === true)
+      return storedFreshness(proposal, checkedAt, bounty, registered?.siteUrl);
     const ready: RunClientResult =
       registered === null
         ? { ok: false, reason: "not-found" }
@@ -157,7 +166,10 @@ async function storedFreshness(
   proposal: StoredBountyProposal,
   checkedAt: string,
   bounty: StoredBounty,
+  /** The issue's site, to link it as a read from Jira would. */
+  siteUrl?: string,
 ): Promise<FreshProposal> {
+  const key = bounty.jira?.key ?? null;
   return compared(
     proposal,
     checkedAt,
@@ -165,8 +177,11 @@ async function storedFreshness(
     {
       summary: bounty.title,
       descriptionText: bounty.description,
-      key: bounty.jira?.key ?? null,
-      url: null,
+      key,
+      url:
+        key === null || siteUrl === undefined
+          ? null
+          : `${siteUrl}/browse/${encodeURIComponent(key)}`,
       inputTruncated: bounty.inputTruncated,
     },
   );

@@ -191,6 +191,7 @@ class FakeRuns {
       errorCode: this.startAs.get(tool) === "failed" ? "tool_failed" : null,
       errorDetail: null,
       progress: null,
+      previewFiles: null,
       startedAt: null,
       finishedAt: null,
       deadlineAt: null,

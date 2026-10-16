@@ -36,6 +36,20 @@ cannot verify, preserving the service-free local verification path.
 - Extension tests use `node:test` with a fake `Host`. Keep logic in `commands.ts`,
   `task.ts` and `origin.ts`; only `extension.ts` imports `vscode`. That entry point,
   `build.js` and type-only `host.js` are excluded from coverage.
+- Core's `*-laws.test.ts` and `*-properties.test.ts` check what a rule
+  promises of every input rather than of chosen examples: the pricing
+  arithmetic and stage rules over their whole bounded domain, handles,
+  aliases and the slice walk on generated inputs (`fast-check`), and the
+  fixture expression gate against a real parser (`acorn`). Both are test
+  dependencies of `packages/core` only; its `src` stays dependency-free.
+  When a law test fails, the law or the code is wrong; fix the one that
+  is, never the bound.
+- The lease protocol, the worker's job limiter and its progress writer are
+  modelled in TLA+ under [docs/specs](./specs/README.md); alias
+  reversibility and the handle stem law are proved in Lean 4 under
+  `docs/specs/lean`. CI's `Formal specs` job checks both; locally, re-run
+  TLC or `lake build` by hand when the modelled code changes, since
+  `npm run verify` stays free of Java and Lean.
 
 ## Import boundaries
 

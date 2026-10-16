@@ -63,6 +63,17 @@ calls; for a build or starter, each baseline's steps with the duration the
 evaluator reported. Durations only, never inputs or output. A released run
 writes none: it is claimed again, and the claim clears the last attempt's.
 
+A build or starter shows what it has generated before its baseline runs
+(`preview` in `src/tools/adapter.ts`): the project's files are uploaded under
+the attempt's `runs/<id>/<lease>/preview/` and listed on
+`analysis_run.preview`, so the version's files are readable, marked
+provisional, while the baseline checks them. A starter shows each candidate
+it runs. A preview is best effort and never waited for; the run's end clears
+the listing, a failed attempt's cleanup removes its objects with the rest,
+and a committed run removes them once its artifacts are written. Each change
+a page shows (claimed, a step, a preview, ended) is also announced on
+`run_changed` for the API's push channel.
+
 ### Source on disk
 
 A run that reads source checks it out of the worker's source cache

@@ -655,6 +655,27 @@ async function liveProposalIds(
   );
 }
 
+/**
+ * Stamps the run with its proposal's write, in the write's transaction and
+ * by its clock, as the proposal's own `created_at` is: the end of the
+ * run's price, which a later re-price of the proposal does not move.
+ */
+async function markProposalWritten(
+  tx: Transaction,
+  organizationId: string,
+  runId: string,
+): Promise<void> {
+  await tx
+    .update(bountyRun)
+    .set({ proposalWrittenAt: sql`now()` })
+    .where(
+      and(
+        eq(bountyRun.organizationId, organizationId),
+        eq(bountyRun.id, runId),
+      ),
+    );
+}
+
 export function createBountyProposalStore(db: Database): BountyProposalStore {
   return {
     async create(organizationId, input) {
@@ -767,6 +788,7 @@ export function createBountyProposalStore(db: Database): BountyProposalStore {
             });
           }
         }
+        await markProposalWritten(tx, organizationId, input.runId);
         return {
           status: "created",
           proposal: toDto(created, name),
@@ -1331,6 +1353,7 @@ export function createBountyProposalStore(db: Database): BountyProposalStore {
             });
           }
         }
+        await markProposalWritten(tx, organizationId, input.runId);
         return {
           status: "repriced",
           proposal: toDto(found.row, found.name),

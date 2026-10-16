@@ -36,6 +36,7 @@ const row = (overrides: Partial<AnalysisRunRow> = {}): AnalysisRunRow => ({
   errorDetail: null,
   progress: null,
   timing: null,
+  preview: null,
   logKey: null,
   startedAt: null,
   finishedAt: null,
@@ -485,7 +486,9 @@ test("claim returns the source and owner, while empty or deleted source returns 
     "lease",
     now,
   );
-  assert.equal(sourceless.calls.length, 1);
+  // The claim, and the page following the run told it started.
+  assert.equal(sourceless.calls.length, 2);
+  assert.equal(sourceless.calls[1]?.kind, "execute");
   assert.equal(starter?.organizationId, "owner");
   assert.equal(starter?.commitSha, null);
   assert.equal(starter?.repoId, null);
@@ -514,6 +517,33 @@ test("lease mutations refuse stale writes; finish inserts artifacts only after a
         ?.values?.["progress"],
       progress,
     );
+    const preview = {
+      at: now.toISOString(),
+      files: [
+        {
+          path: "project/package.json",
+          objectKey: "runs/run/lease/preview/project/package.json",
+          contentType: "application/json",
+          sizeBytes: 2,
+          sha256: "a".repeat(64),
+        },
+      ],
+    };
+    assert.equal(
+      await store.recordPreview("owner", "run", "lease", preview, now),
+      present,
+    );
+    const previewWrite = fake.calls.find(
+      ({ values }) => values?.["preview"] !== undefined,
+    );
+    assert.deepEqual(previewWrite?.values?.["preview"], preview);
+    assert.equal(previewWrite?.filtered, true);
+    const read = createFakeDb(present ? [{ preview }] : []);
+    assert.deepEqual(
+      await createAnalysisRunStore(read.db).preview("owner", "run"),
+      present ? preview : null,
+    );
+    assert.equal(read.calls[0]?.filtered, true);
     assert.equal(
       await store.finish(
         "owner",
@@ -539,11 +569,11 @@ test("lease mutations refuse stale writes; finish inserts artifacts only after a
       present,
     );
     assert.equal(await store.failExpired("owner", now), present ? 1 : 0);
-    // finish, fail, release and the expiry each announce; a fenced-out
-    // write announces nothing.
+    // Progress, preview, finish, fail, release and the expiry each
+    // announce; a fenced-out write announces nothing.
     assert.equal(
       fake.calls.filter((call) => call.kind === "execute").length,
-      present ? 4 : 0,
+      present ? 6 : 0,
     );
     if (present) {
       const retried = createFakeDb([{ id: "run", status: "queued" }]);
@@ -626,6 +656,68 @@ test("watchdog discovery deduplicates owners and reads queue health", async () =
       ]).db,
     ).queueState(now),
     { queued: true, freshWorker: true, workers: 1, short: true },
+  );
+});
+test("a snapshot's builders that share a claim are one build", async () => {
+  const state = (rows: unknown[], workers = 1) =>
+    createAnalysisRunStore(createSequencedFakeDb([rows, [{ workers }]]).db)
+      .queueState(now)
+      .then(({ short }) => short);
+  // Graphify and documents running in one worker's one build slot, beside
+  // a queued scope in one of its agent slots: no second worker would help.
+  assert.equal(
+    await state([
+      { tool: "graphify", status: "running", snapshotId: "rsn_1", count: 1 },
+      { tool: "documents", status: "running", snapshotId: "rsn_1", count: 1 },
+      { tool: "scope", status: "queued", snapshotId: "rsn_1", count: 1 },
+    ]),
+    false,
+  );
+  // Abstractions, the data model and documents, claimed together.
+  assert.equal(
+    await state([
+      { tool: "abstractions", status: "queued", snapshotId: "rsn_1", count: 1 },
+      { tool: "data_model", status: "queued", snapshotId: "rsn_1", count: 1 },
+      { tool: "documents", status: "queued", snapshotId: "rsn_1", count: 1 },
+    ]),
+    false,
+  );
+  // Two snapshots' builds are two claims, for one worker's one slot.
+  assert.equal(
+    await state([
+      { tool: "graphify", status: "queued", snapshotId: "rsn_1", count: 1 },
+      { tool: "documents", status: "queued", snapshotId: "rsn_1", count: 1 },
+      { tool: "graphify", status: "queued", snapshotId: "rsn_2", count: 1 },
+    ]),
+    true,
+  );
+  // As are a snapshot's graphify and its map readers' claim, and a slice
+  // beside a builder, which shares none.
+  assert.equal(
+    await state([
+      { tool: "graphify", status: "running", snapshotId: "rsn_1", count: 1 },
+      { tool: "abstractions", status: "queued", snapshotId: "rsn_1", count: 1 },
+      { tool: "documents", status: "queued", snapshotId: "rsn_1", count: 1 },
+    ]),
+    true,
+  );
+  assert.equal(
+    await state([
+      { tool: "slice", status: "queued", snapshotId: "rsn_1", count: 1 },
+      { tool: "documents", status: "queued", snapshotId: "rsn_1", count: 1 },
+    ]),
+    true,
+  );
+  // Two workers have a build slot for each.
+  assert.equal(
+    await state(
+      [
+        { tool: "graphify", status: "queued", snapshotId: "rsn_1", count: 1 },
+        { tool: "graphify", status: "queued", snapshotId: "rsn_2", count: 1 },
+      ],
+      2,
+    ),
+    false,
   );
 });
 test("a claim filtered to no tools claims nothing", async () => {

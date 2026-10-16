@@ -11,7 +11,8 @@ import {
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
-import { observeUntil, terminalRun } from "./data/observe";
+import { bountyRunTopic, observeUntil, terminalRun } from "./data/observe";
+import { seedLiveProposal } from "./features/bounties/queries";
 import { clients, queryKeys, useUserId } from "./data/query";
 /**
  * Bounties: the caller's, read a page at a time across every workspace they
@@ -326,8 +327,18 @@ export function useBounties(organizationId: string): Bounties {
               "bounty-detail",
               id,
             ),
-            queryFn: ({ signal }) =>
-              clients.bounties.bounty(organizationId, id, signal),
+            // With its live proposal's reads, kept where those reads keep
+            // them, so the page has them with the bounty.
+            queryFn: async ({ signal }) => {
+              const { bounty, live } = await clients.bounties.bountyWithLive(
+                organizationId,
+                id,
+                signal,
+              );
+              if (live !== null)
+                seedLiveProposal(queryClient, userId, organizationId, live);
+              return bounty;
+            },
             staleTime: 0,
           }),
         };
@@ -567,6 +578,10 @@ export function useBounties(organizationId: string): Bounties {
           terminal: (run) =>
             run.outcomes[0]?.proposalId !== undefined || terminalRun(run),
           interval: PROPOSE_POLL_MS,
+          pushed: {
+            owner: organizationId,
+            topic: (run) => bountyRunTopic(run.id),
+          },
           ...(signal === undefined ? {} : { signal }),
         });
         await load();

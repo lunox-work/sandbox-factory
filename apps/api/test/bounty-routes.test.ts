@@ -190,6 +190,10 @@ function harness(
     /** Whether the Jira site answers; absent, it needs reconnecting. */
     siteReady?: boolean;
     approved?: unknown[];
+    /** The live proposal's spec, at whatever revision it is asked for. */
+    spec?: Record<string, unknown>;
+    /** The Jira site's client, in place of the one `siteReady` says. */
+    clientFor?: PricingRouteOptions["clientFor"];
   } = {},
 ) {
   const held = new Map((options.bounties ?? []).map((t) => [t.id, t]));
@@ -266,12 +270,19 @@ function harness(
     },
   };
   const proposals = {
-    get: (_org: string, id: string) =>
+    // As the store is: another organization's proposal is not found.
+    get: (org: string, id: string) =>
       Promise.resolve(
-        Object.values(options.live ?? {}).find((p) => p.id === id) ?? null,
+        Object.values(options.live ?? {}).find(
+          (p) => p.id === id && p.organizationId === org,
+        ) ?? null,
       ),
-    liveForBounty: (_org: string, bountyId: string) =>
-      Promise.resolve(options.live?.[bountyId]?.id ?? null),
+    liveForBounty: (org: string, bountyId: string) => {
+      const live = options.live?.[bountyId];
+      return Promise.resolve(
+        live === undefined || live.organizationId !== org ? null : live.id,
+      );
+    },
     list: record("proposals.list", () => []),
     approve: record("approve", (...args) => {
       options.approved?.push(args);
@@ -305,7 +316,14 @@ function harness(
         }),
     } as never,
     proposals: proposals as never,
-    specs: {} as never,
+    specs: {
+      get: (_org: string, proposalId: string, revision: number) =>
+        Promise.resolve(
+          options.spec === undefined
+            ? null
+            : { ...options.spec, proposalId, revision },
+        ),
+    } as never,
     issues: { markRemoved: () => Promise.resolve(true) } as never,
     bounties: bounties as never,
     ...((options.sizing ?? true)
@@ -319,12 +337,14 @@ function harness(
       : {}),
     ...((options.jira ?? true)
       ? {
-          clientFor: () =>
-            Promise.resolve(
-              options.siteReady === true
-                ? { ok: true as const, client: {} as never }
-                : { ok: false as const, reason: "reconnect" as const },
-            ),
+          clientFor:
+            options.clientFor ??
+            (() =>
+              Promise.resolve(
+                options.siteReady === true
+                  ? { ok: true as const, client: {} as never }
+                  : { ok: false as const, reason: "reconnect" as const },
+              )),
         }
       : {}),
   };
@@ -337,8 +357,8 @@ function harness(
     });
     await next();
   });
-  mountPricingRoutes(app, pricing);
-  mountBountyRoutes(app, pricing);
+  const reads = mountPricingRoutes(app, pricing);
+  mountBountyRoutes(app, { ...pricing, live: reads.live });
   const request = (method: string, path: string, body?: unknown) =>
     app.request(`/api/v1/orgs/org_1/${path}`, {
       method,
@@ -763,6 +783,107 @@ test("a bounty reads with its live proposal, or 404", async () => {
     currency: "USD",
   });
   assert.equal((await state.request("GET", "bounties/bty_x")).status, 404);
+});
+
+test("asked with its live proposal, a bounty answers its proposal's reads too", async () => {
+  const bounty = written();
+  const state = harness({
+    bounties: [bounty, written({ id: "bty_8" })],
+    live: { bty_7: proposalOf(bounty, { specRevision: 2 }) },
+    spec: { marker: "the spec" },
+    // Answered as the spec route answers it, unparsed.
+  });
+  const response = await state.request("GET", "bounties/bty_7?with=live");
+  assert.equal(response.status, 200);
+  const body = (await response.json()) as {
+    bounty: { proposal: { id: string } };
+    live: {
+      proposalId: string;
+      detail: { proposal: { id: string }; writebackOperations: unknown[] };
+      spec: { spec: { revision: number } | null };
+      profiles: unknown[];
+    };
+  };
+  assert.equal(body.live.proposalId, "bpr_1");
+  // As `GET /proposals/:id`, `/spec` and `/profile` answer them.
+  assert.equal(body.live.detail.proposal.id, "bpr_1");
+  assert.deepEqual(body.live.detail.writebackOperations, []);
+  assert.equal(body.live.spec.spec?.revision, 2);
+  assert.deepEqual(body.live.profiles, []);
+  // One with no live proposal says so; one not asked carries none.
+  const none = (await (
+    await state.request("GET", "bounties/bty_8?with=live")
+  ).json()) as { live: unknown };
+  assert.equal(none.live, null);
+  const plain = (await (
+    await state.request("GET", "bounties/bty_7")
+  ).json()) as Record<string, unknown>;
+  assert.equal("live" in plain, false);
+});
+
+test("asked with its live proposal, a bounty answers from what is stored, never waiting on Jira", async () => {
+  const bounty = imported();
+  let asked = 0;
+  const state = harness({
+    bounties: [bounty],
+    live: { bty_1: proposalOf(bounty) },
+    // A Jira that never answers: the read must not wait on it.
+    clientFor: () => {
+      asked += 1;
+      return Promise.resolve({
+        ok: true as const,
+        client: { issueSpec: () => new Promise(() => {}) } as never,
+      });
+    },
+  });
+  const answered = await Promise.race([
+    state.request("GET", "bounties/bty_1?with=live"),
+    new Promise<null>((resolve) => setTimeout(() => resolve(null), 1000)),
+  ]);
+  assert.ok(answered !== null, "the read waited on Jira");
+  assert.equal(answered.status, 200);
+  const body = (await answered.json()) as {
+    bounty: { title: string };
+    live: {
+      detail: {
+        proposal: { id: string };
+        liveSpec: { summary: string; key: string; url: string };
+        freshness: { freshness: string; liveUrl: string };
+      };
+    };
+  };
+  assert.equal(asked, 0);
+  assert.equal(body.live.detail.proposal.id, "bpr_1");
+  // As the bounty it comes with says it, linked as a read from Jira is.
+  assert.equal(body.live.detail.liveSpec.summary, body.bounty.title);
+  assert.equal(body.live.detail.liveSpec.key, "APP-1");
+  assert.equal(
+    body.live.detail.freshness.liveUrl,
+    "https://acme.atlassian.net/browse/APP-1",
+  );
+  // The proposal's own read still asks Jira.
+  void state.request("GET", "proposals/bpr_1");
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(asked, 1);
+});
+
+test("asked with its live proposal, a bounty never answers another organization's", async () => {
+  const bounty = written();
+  const state = harness({
+    bounties: [bounty],
+    live: { bty_7: proposalOf(bounty, { organizationId: "org_2" }) },
+    spec: { marker: "the spec" },
+  });
+  const response = await state.request("GET", "bounties/bty_7?with=live");
+  assert.equal(response.status, 200);
+  const text = await response.text();
+  const body = JSON.parse(text) as {
+    bounty: { proposal: unknown };
+    live: unknown;
+  };
+  assert.equal(body.bounty.proposal, null);
+  assert.equal(body.live, null);
+  assert.doesNotMatch(text, /bpr_1|the spec/);
 });
 
 test("a bounty reads with each step's version, and the one before it each was built on", async () => {

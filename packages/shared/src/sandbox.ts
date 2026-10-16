@@ -408,6 +408,12 @@ export const sandboxFileListSchema = z.object({
     .object({ id: z.string(), status: z.enum(ANALYSIS_STATUSES) })
     .nullable(),
   files: z.array(sandboxFileDtoSchema),
+  /**
+   * The files a build still running has written before its baseline: what
+   * it generated, which a later candidate may replace. False once the run
+   * has committed what it wrote.
+   */
+  provisional: z.boolean().default(false),
 });
 /**
  * `GET .../sandboxes/versions/:id/files/content?path=`: one file as text.

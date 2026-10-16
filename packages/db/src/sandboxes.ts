@@ -136,6 +136,13 @@ export interface NewSandboxVersion {
   readonly tags: readonly string[];
   readonly testSummary?: readonly { label: string; count: number }[];
   readonly source: NewSlicedSource | NewStarterSource;
+  /**
+   * A slice cut for the sandbox rather than asked for by hand: when its
+   * newest version is a draft already cut from the same slice run, that
+   * draft is returned and none is made. Read under the sandbox's lock, so
+   * two cuts of one slice at once (the cutter and a person) make one draft.
+   */
+  readonly reuseDraft?: boolean;
 }
 /** What may change on a draft. Everything here is private or pre-publication. */
 export interface SandboxVersionPatch {
@@ -756,6 +763,24 @@ export function createSandboxStore(db: Database): SandboxStore {
           const sourceRepoId = parent.sourceRepoId;
           if (sourceRepoId === null)
             return { ok: false, reason: "no_source" } as const;
+          if (input.reuseDraft === true) {
+            const newest = (
+              await versions(tx)
+                .where(eq(sandboxVersion.sandboxId, sandboxId))
+                .orderBy(desc(sandboxVersion.version))
+                .limit(1)
+            )[0];
+            if (
+              newest !== undefined &&
+              newest.version.frozenAt === null &&
+              newest.source.sliceRunId === source.sliceRunId
+            )
+              return {
+                ok: true,
+                version: toVersion(newest.version),
+                source: toSource(newest.source, newest.commitSha),
+              } as const;
+          }
           // The slice must have succeeded on a snapshot of this sandbox's own
           // source repository, which is the owner's.
           const slice = (

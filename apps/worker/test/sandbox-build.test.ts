@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import assert from "node:assert/strict";
 import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -273,6 +274,8 @@ async function runBuild(
     options.outDir ?? (await mkdtemp(join(tmpdir(), "build-out-")));
   const messages: string[] = [];
   const timing = timingRecorder();
+  /** Each preview the build showed: its paths, and what was logged before. */
+  const previews: { paths: string[]; logged: string[]; text: string }[] = [];
   const inputs: ToolInputs = {
     getRun: async (id) =>
       id === sliceRun.id
@@ -315,6 +318,14 @@ async function runBuild(
     inputs,
     signal: new AbortController().signal,
     log: (line) => messages.push(line),
+    preview: (shown) => {
+      const app = shown.find(({ path }) => path === "project/src/app.ts");
+      previews.push({
+        paths: shown.map(({ path }) => path),
+        logged: [...messages],
+        text: app === undefined ? "" : readFileSync(app.absolutePath, "utf8"),
+      });
+    },
     timing,
   };
   const adapter = createSandboxBuildAdapter({
@@ -335,6 +346,7 @@ async function runBuild(
     outDir,
     adapter,
     version,
+    previews,
     timing: timing.value(),
   };
 }
@@ -433,18 +445,31 @@ const hiddenTest = {
 
 test("a build produces a standalone project, hidden tests apart, a verified baseline and a bound manifest", async () => {
   const fake = fakeProvider((argv) => (runsHiddenTest(argv) ? TAP_FAILED : {}));
-  const { files, manifest, read, timing } = await runBuild(fake.provider, {
-    version: await versionFor({
-      aliasRules: [
-        {
-          before: "createService",
-          after: "makeService",
-          kind: "identifier",
-          paths: [],
-        },
-      ],
-    }),
-  });
+  const { files, manifest, read, timing, previews } = await runBuild(
+    fake.provider,
+    {
+      version: await versionFor({
+        aliasRules: [
+          {
+            before: "createService",
+            after: "makeService",
+            kind: "identifier",
+            paths: [],
+          },
+        ],
+      }),
+    },
+  );
+  // The generated project was shown before its baseline ran, at the paths
+  // the build keeps it at.
+  assert.equal(previews.length, 1);
+  assert.ok(previews[0]?.paths.includes("project/src/app.ts"));
+  assert.ok(previews[0]?.paths.includes("private/fix.test.ts"));
+  assert.match(previews[0]?.text ?? "", /makeService/);
+  assert.equal(
+    previews[0]?.logged.some((line) => /baseline/i.test(line)),
+    false,
+  );
   // The baseline's steps, each as long as the evaluator said it ran.
   assert.equal(timing.baselines?.length, 1);
   assert.deepEqual(
@@ -1603,6 +1628,55 @@ test("hidden tests that never pass their baseline are not kept, and the build st
   assert.ok(
     built.messages.some((line) => /with no tests kept/.test(line)),
     built.messages.join("\n"),
+  );
+});
+
+test("the early hidden-tests agent's failure fails only a build whose baseline needs its tests", async () => {
+  let failed!: () => void;
+  const hasFailed = new Promise<void>((resolve) => (failed = resolve));
+  const failing = (): AgentModel => ({
+    model: "test-model",
+    turn: async () => {
+      failed();
+      throw new Error("model overloaded");
+    },
+  });
+  const draft = () =>
+    versionFor({ acceptance: false, aliasRules: named, fixtures: given });
+  // The baseline's steps wait until the agent has failed beside them.
+  const base = fakeProvider((argv) =>
+    argv.includes("build") ? { exitCode: 2 } : {},
+  ).provider;
+  const slow: EvaluationProvider = {
+    ...base,
+    async create(options) {
+      const job = await base.create(options);
+      return {
+        ...job,
+        async exec(command) {
+          // Past the agent's own cleanup, as a real baseline's minutes are.
+          await hasFailed;
+          await new Promise((resolve) => setTimeout(resolve, 100));
+          return job.exec(command);
+        },
+      };
+    },
+  };
+  // A project that does not build needs no hidden tests: the build ends
+  // with the baseline's verdict, as it did before the agent ran beside it.
+  const broken = await runBuild(slow, {
+    version: await draft(),
+    agent: { model: failing(), limits },
+  });
+  assert.equal(broken.manifest.ready, false);
+  assert.ok(!broken.messages.some((line) => /wrote \d+ hidden/.test(line)));
+  // One whose baseline lacks them fails with the agent's error.
+  await assert.rejects(
+    runBuild(fakeProvider().provider, {
+      version: await draft(),
+      agent: { model: failing(), limits },
+    }),
+    /model overloaded/,
   );
 });
 

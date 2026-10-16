@@ -1,5 +1,9 @@
-import { useQuery, useQueryClient } from "@tanstack/react-query";
-import type { BountyProposalDto } from "@sandbox-factory/shared";
+import {
+  useQuery,
+  useQueryClient,
+  type QueryClient,
+} from "@tanstack/react-query";
+import type { BountyLiveDto, BountyProposalDto } from "@sandbox-factory/shared";
 import { useCallback } from "react";
 import { clients, queryKeys, useUserId } from "../../data/query";
 type Detail = Awaited<ReturnType<typeof clients.pricing.detail>>;
@@ -108,6 +112,49 @@ export function useProposalDetail(owner: string, proposalId: string) {
     );
   };
   return { detail, refresh, apply };
+}
+
+/**
+ * Keeps a bounty's live proposal, read with the bounty, where the
+ * proposal's own reads keep it: its read, its spec and its profiles. The
+ * page then shows them with the bounty, rather than asking for each once
+ * the bounty has answered and for the spec and profiles after that.
+ */
+export function seedLiveProposal(
+  cache: QueryClient,
+  userId: string,
+  owner: string,
+  live: BountyLiveDto,
+) {
+  const { proposalId, detail } = live;
+  const { specRevision } = detail.proposal;
+  cache.setQueryData(
+    queryKeys.resource(userId, owner, "proposal-detail", proposalId, undefined),
+    detail,
+  );
+  if (specRevision != null)
+    // As `useProposalSpec` keys the latest spec.
+    cache.setQueryData(
+      queryKeys.resource(
+        userId,
+        owner,
+        "proposal-spec",
+        proposalId,
+        specRevision,
+        undefined,
+      ),
+      live.spec,
+    );
+  // As `useComplexityProfile` keys a proposal's profiles.
+  cache.setQueryData(
+    queryKeys.resource(
+      userId,
+      owner,
+      "profile",
+      `${proposalId}:${specRevision ?? ""}`,
+    ),
+    live.profiles,
+  );
 }
 
 /**

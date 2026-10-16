@@ -139,3 +139,84 @@ jobs:
           node-version: 22
       - name: Run pinned Graphify and archive fixture in the real worker image
         run: npm run worker:smoke
+
+  # The TLA+ models and Lean proofs under docs/specs: a claim about the code
+  # that must stay true as it changes. Independent of Node and cheap, so it
+  # runs beside the tests on every push and PR. Not in `npm run verify`,
+  # which must pass without Java or Lean installed.
+  formal:
+    name: Formal specs
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      TLA2TOOLS_URL: https://github.com/tlaplus/tlaplus/releases/download/v1.7.4/tla2tools.jar
+      TLA2TOOLS_SHA256: 936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88
+    steps:
+      - uses: actions/checkout@v7
+
+      # TLC from the last stable TLA+ release, pinned by checksum and cached
+      # under it, so a cache hit is the same bytes. Java is on the runner image.
+      - name: Cache TLC
+        id: tlc
+        uses: actions/cache@v6
+        with:
+          path: /tmp/tla2tools.jar
+          key: tla2tools-${{ env.TLA2TOOLS_SHA256 }}
+      - name: Fetch TLC
+        if: steps.tlc.outputs.cache-hit != 'true'
+        run: curl -sSfL -o /tmp/tla2tools.jar "$TLA2TOOLS_URL"
+      - name: Verify TLC
+        run: |
+          echo "$TLA2TOOLS_SHA256  /tmp/tla2tools.jar" | sha256sum -c -
+          java -version
+
+      # Every invariant and temporal property of every spec; see
+      # docs/specs/README.md for what each one states.
+      - name: Model-check the TLA+ specs
+        working-directory: docs/specs
+        run: |
+          for spec in ProgressWriter JobLimit RunLease; do
+            echo "::group::$spec"
+            java -XX:+UseParallelGC -jar /tmp/tla2tools.jar -workers auto -deadlock -cleanup -config "$spec.cfg" "$spec.tla"
+            echo "::endgroup::"
+          done
+
+      # The documented non-property: the fence makes writes exclusive, not
+      # execution. TLC must still find that trace; exit 12 is an invariant
+      # violation, and the output must name this invariant rather than some
+      # other. Anything else means the model, or the claim, has moved.
+      - name: Confirm the documented counterexample still exists
+        working-directory: docs/specs
+        run: |
+          set +e
+          java -XX:+UseParallelGC -jar /tmp/tla2tools.jar -workers auto -deadlock -cleanup -config RunLease_Exclusive.cfg RunLease.tla | tee /tmp/exclusive.txt
+          status=${PIPESTATUS[0]}
+          set -e
+          if [ "$status" -ne 12 ]; then
+            echo "::error::RunLease_Exclusive.cfg is expected to fail with an invariant violation (exit 12), got $status; see docs/specs/README.md"
+            exit 1
+          fi
+          if ! grep -q "Invariant ExecutionExclusive is violated" /tmp/exclusive.txt; then
+            echo "::error::TLC failed, but not on ExecutionExclusive; see output above"
+            exit 1
+          fi
+          echo "ok: ExecutionExclusive is violated, as documented"
+
+      # Installs the toolchain `lean-toolchain` names and runs `lake build`.
+      - name: Build the Lean proofs
+        uses: leanprover/lean-action@v1
+        with:
+          lake-package-directory: docs/specs/lean
+          build: "true"
+          test: "false"
+          lint: "false"
+          use-github-cache: "true"
+
+      # A proof is only as good as what it assumes: every declaration under
+      # the project's namespace must rest on Lean's two standard axioms and
+      # nothing else, which also rules out `sorry` (it would appear as
+      # `sorryAx`). Audit.lean finds the declarations itself, so a theorem
+      # added later is audited without being listed here.
+      - name: Audit the proofs' axioms
+        working-directory: docs/specs/lean
+        run: PATH="$HOME/.elan/bin:$PATH" lake env lean Audit.lean

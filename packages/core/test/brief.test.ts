@@ -13,6 +13,7 @@ import {
   type AbstractionIndex,
   type DataModel,
   type DocumentSet,
+  WORKSPACE_BRIEF_MAX_CHARS,
 } from "../src/index.js";
 
 const facts = treeFacts(
@@ -201,6 +202,38 @@ test("a workspace's briefs share one cap, with a floor", () => {
   assert.equal(briefCharsEach(0), BRIEF_MAX_CHARS);
   assert.equal(briefCharsEach(6), 4_000);
   assert.equal(briefCharsEach(100), 1_500);
+});
+
+test("up to three repositories each keep a whole brief; past that they share the workspace's", () => {
+  assert.equal(briefCharsEach(1), 8_000);
+  assert.equal(briefCharsEach(3), 8_000);
+  for (const repositories of [4, 16]) {
+    const each = briefCharsEach(repositories);
+    assert.ok(each < BRIEF_MAX_CHARS, String(repositories));
+    const total = each * repositories;
+    assert.ok(total <= WORKSPACE_BRIEF_MAX_CHARS, String(repositories));
+    // Within a character a repository of the workspace's cap.
+    assert.ok(WORKSPACE_BRIEF_MAX_CHARS - total < repositories);
+  }
+  assert.equal(briefCharsEach(4), 6_000);
+  assert.equal(briefCharsEach(16), 1_500);
+});
+
+test("a brief cut again keeps within the cap and says it was cut once", () => {
+  const text = Array.from(
+    { length: 400 },
+    (_, index) => `line ${index} ${"y".repeat(index % 40)}`,
+  ).join("\n");
+  for (const max of [2_000, 500, 80]) {
+    const once = cutBrief(text, max);
+    assert.ok(once.length <= max, String(max));
+    for (const again of [max, Math.floor(max / 2)]) {
+      const twice = cutBrief(once, again);
+      assert.ok(twice.length <= again, `${max} then ${again}`);
+      assert.equal(twice.match(/\(cut for length\)/g)?.length, 1);
+      assert.ok(twice.endsWith("(cut for length)"));
+    }
+  }
 });
 
 test("a repository's documents are every one a sync could read, in its order", () => {

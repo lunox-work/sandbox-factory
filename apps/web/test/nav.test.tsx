@@ -175,7 +175,8 @@ vi.stubGlobal(
     if (url.includes("/members")) {
       return Promise.resolve(Response.json({ members: [] }));
     }
-    if (url.endsWith("/orgs/org_1/bounties/bty_1")) {
+    // Asked with its live proposal, which a bounty with none answers null.
+    if (/\/orgs\/org_1\/bounties\/bty_1(\?with=live)?$/.test(url)) {
       return Promise.resolve(Response.json({ bounty: BOUNTY }));
     }
     if (url.includes("/bounties?")) {

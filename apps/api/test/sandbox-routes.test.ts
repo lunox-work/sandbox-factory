@@ -179,6 +179,7 @@ const sliceRun: StoredAnalysisRun = {
   errorCode: null,
   errorDetail: null,
   progress: null,
+  previewFiles: null,
   startedAt: stamp,
   finishedAt: stamp,
   deadlineAt: stamp,
@@ -417,6 +418,8 @@ function fixture(
     noSpec: boolean;
     seam: boolean;
     built: boolean;
+    /** The build is still running, and has written its project only. */
+    previewing: boolean;
     /** The version has no passing build to publish. */
     unready: boolean;
     /** The bounty's proposal is not approved. */
@@ -440,6 +443,12 @@ function fixture(
     profile: Partial<StoredBountyProfile> | null;
     /** The snapshot has no succeeded data model for a build to name. */
     noDataModel: boolean;
+    /**
+     * Versions as the store makes them under the sandbox's lock: each cut
+     * a version of its own, except a cut asked to reuse the draft an
+     * earlier cut of the same slice made.
+     */
+    lockedCut: boolean;
   }> = {},
 ) {
   const published: { versionId: string; actor: string; expiresAt: string }[] =
@@ -574,8 +583,31 @@ function fixture(
         sandboxId: string,
         input: unknown,
       ) => {
+        const typed = input as {
+          reuseDraft?: boolean;
+          source: { sliceRunId: string };
+        };
+        if (overrides.lockedCut === true) {
+          const index = created.findIndex(
+            (each) =>
+              (each as typeof typed).source.sliceRunId ===
+              typed.source.sliceRunId,
+          );
+          if (typed.reuseDraft !== true || index < 0) {
+            created.push(input);
+            return {
+              ok: true,
+              version: { ...stored.version, id: `sbv_${created.length}` },
+              source: stored.source,
+            };
+          }
+          return {
+            ok: true,
+            version: { ...stored.version, id: `sbv_${index + 1}` },
+            source: stored.source,
+          };
+        }
         created.push(input);
-        const typed = input as { source: { sliceRunId: string } };
         return typed.source.sliceRunId === "arn_other"
           ? { ok: false, reason: "slice_mismatch" }
           : sandboxId === "sbx_1"
@@ -660,7 +692,10 @@ function fixture(
         owner === "org_1" && id === "arn_slice"
           ? { ...sliceRun, status: overrides.sliceStatus ?? "succeeded" }
           : owner === "org_1" && id === "arn_build"
-            ? { ...buildRun, status: "succeeded" }
+            ? {
+                ...buildRun,
+                status: overrides.previewing === true ? "running" : "succeeded",
+              }
             : owner === "org_1" && id === "arn_other"
               ? { ...sliceRun, id: "arn_other" }
               : owner === "org_1" && id === "arn_graph"
@@ -703,7 +738,7 @@ function fixture(
       list: async (_owner: string, runId: string) =>
         runId === "arn_slice" || runId === "arn_other"
           ? artifacts
-          : runId === "arn_build"
+          : runId === "arn_build" && overrides.previewing !== true
             ? builtFiles.map(({ path, body }) => ({
                 ...artifactOf("build_manifest", path, body),
                 runId,
@@ -722,6 +757,25 @@ function fixture(
       remove: async (key: string) => {
         removed.push(key);
       },
+    },
+    previews: {
+      preview: async (owner: string, runId: string) =>
+        overrides.previewing === true &&
+        owner === "org_1" &&
+        runId === "arn_build"
+          ? {
+              at: "2026-10-16T00:00:00.000Z",
+              files: builtFiles
+                .filter(({ path }) => path.startsWith("project/"))
+                .map(({ path, body }) => ({
+                  path,
+                  objectKey: `runs/arn_build/lease/${path}`,
+                  contentType: "text/plain; charset=utf-8",
+                  sizeBytes: Buffer.byteLength(body),
+                  sha256: "a".repeat(64),
+                })),
+            }
+          : null,
     },
     repos: { list: async () => workspaceRepos },
     organizationNames: async (owner: string) =>
@@ -1458,6 +1512,40 @@ test("admins read the files a version's build wrote, as text where it is text", 
   assert.equal((await read("")).status, 400);
 });
 
+test("a build still running shows the project it generated, as provisional", async () => {
+  const f = fixture("owner", { built: true, previewing: true });
+  const list = (await (
+    await f.request("GET", "/versions/sbv_1/files")
+  ).json()) as {
+    run: { status: string };
+    files: { path: string }[];
+    provisional: boolean;
+  };
+  assert.equal(list.run.status, "running");
+  assert.equal(list.provisional, true);
+  assert.ok(list.files.length > 0);
+  assert.ok(list.files.every(({ path }) => path.startsWith("project/")));
+  assert.equal(JSON.stringify(list).includes("runs/arn_build"), false);
+  const source = await f.request(
+    "GET",
+    "/versions/sbv_1/files/content?path=project%2Fsrc%2Findex.ts",
+  );
+  assert.equal(
+    ((await source.json()) as { text: string }).text,
+    "export const sum = 1;\n",
+  );
+  // What it has not written yet is not there.
+  assert.equal(
+    (
+      await f.request(
+        "GET",
+        "/versions/sbv_1/files/content?path=private%2Fhidden.test.ts",
+      )
+    ).status,
+    404,
+  );
+});
+
 test("a version's files are for admins, and empty until it is built", async () => {
   const member = fixture("member", { built: true });
   assert.equal(
@@ -1474,7 +1562,11 @@ test("a version's files are for admins, and empty until it is built", async () =
     403,
   );
   const unbuilt = await fixture().request("GET", "/versions/sbv_1/files");
-  assert.deepEqual(await unbuilt.json(), { run: null, files: [] });
+  assert.deepEqual(await unbuilt.json(), {
+    run: null,
+    files: [],
+    provisional: false,
+  });
   assert.equal(
     (
       await fixture().request(
@@ -2599,6 +2691,19 @@ test("a ready slice is cut into a draft from the bounty and built", async () => 
   // A request remembered while the slice was in flight is answered.
   assert.deepEqual(f.cuts, [{ cleared: "sbx_1", owner: "org_1" }]);
 
+  // Unless the cap refuses the build: the draft is cut, and the request
+  // stays for the cutter's next pass to build it.
+  const capped = fixture("owner", {
+    profile: {},
+    bounty: true,
+    noVersions: true,
+    limit: true,
+  });
+  const refused = await capped.request("POST", "/sbx_1/slice");
+  assert.equal(((await refused.json()) as { code: string }).code, "run_limit");
+  assert.equal(capped.created.length, 1);
+  assert.deepEqual(capped.cuts, []);
+
   // The newest draft cut from the same slice is built again, not cut twice.
   const again = fixture("owner", { profile: {}, bounty: true });
   assert.equal((await again.request("POST", "/sbx_1/slice")).status, 201);
@@ -2616,6 +2721,37 @@ test("a ready slice is cut into a draft from the bounty and built", async () => 
   assert.equal(
     ((await mismatch.json()) as { code: string }).code,
     "slice_mismatch",
+  );
+});
+
+test("two cuts of one slice at once make one draft and one build", async () => {
+  // Both read the sandbox's versions before either cut: the cutter's pass
+  // and a person's slice, racing.
+  const f = fixture("owner", {
+    profile: {},
+    bounty: true,
+    noVersions: true,
+    lockedCut: true,
+  });
+  const responses = await Promise.all([
+    f.request("POST", "/sbx_1/slice"),
+    f.request("POST", "/sbx_1/slice"),
+  ]);
+  assert.deepEqual(
+    responses.map((response) => response.status),
+    [201, 201],
+  );
+  assert.equal(f.created.length, 1);
+  // Both build the one draft, which the queue answers with one run.
+  assert.deepEqual(
+    new Set(
+      f.enqueued.map(
+        (each) =>
+          (each as { params: { sandboxVersionId: string } }).params
+            .sandboxVersionId,
+      ),
+    ),
+    new Set(["sbv_1"]),
   );
 });
 

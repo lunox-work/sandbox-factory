@@ -125,6 +125,19 @@ export class BountyClient extends ApiClient {
       ),
     ).bounty;
   }
+  /**
+   * A bounty with its live proposal's reads (its read, spec and profiles),
+   * in one request; `live` is null for a bounty with no live proposal.
+   */
+  async bountyWithLive(owner: string, id: string, signal?: AbortSignal) {
+    const { bounty, live } = bountyResponseSchema.parse(
+      await this.request(
+        `${ownerPath(owner)}/bounties/${encodeURIComponent(id)}?with=live`,
+        { signal },
+      ),
+    );
+    return { bounty, live: live ?? null };
+  }
   /** Its scope's versions, newest first. */
   async scopeVersions(owner: string, id: string, signal?: AbortSignal) {
     return scopeVersionListSchema.parse(

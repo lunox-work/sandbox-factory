@@ -25,6 +25,9 @@ import {
   contextVersionsDefault,
 } from "./context.js";
 import { stackDtoSchema, stackInputSchema } from "./stack.js";
+import { proposalProfileResponseSchema } from "./profile.js";
+import { proposalSpecResponseSchema } from "./spec.js";
+import { proposalDetailResponseSchema } from "./web-api.js";
 
 /**
  * The fingerprint a proposal is priced against, and the bounds a bounty's
@@ -205,7 +208,25 @@ export const bountyListResponseSchema = z.object({
   nextCursor: z.string().nullable(),
 });
 
-export const bountyResponseSchema = z.object({ bounty: bountyDtoSchema });
+/**
+ * A bounty's live proposal as its page shows it: the proposal's own read,
+ * its spec and its profiles, each as its own route answers it, so the page
+ * keeps each where it would have kept that route's answer.
+ */
+export const bountyLiveSchema = z.object({
+  proposalId: z.string(),
+  detail: proposalDetailResponseSchema,
+  spec: proposalSpecResponseSchema,
+  profiles: proposalProfileResponseSchema.shape.profiles,
+});
+/**
+ * `GET .../bounties/:id`. With `?with=live`, `live` is its live proposal,
+ * or null for a bounty with none; absent otherwise.
+ */
+export const bountyResponseSchema = z.object({
+  bounty: bountyDtoSchema,
+  live: bountyLiveSchema.nullable().optional(),
+});
 
 /**
  * What a bounty list may be narrowed to, as its query says it: one
@@ -347,6 +368,7 @@ export type BountySandboxSummaryDto = z.infer<
 >;
 export type BountySummaryDto = z.infer<typeof bountySummaryDtoSchema>;
 export type BountyDto = z.infer<typeof bountyDtoSchema>;
+export type BountyLiveDto = z.infer<typeof bountyLiveSchema>;
 export type BountyStagesDto = z.infer<typeof bountyStagesSchema>;
 export type ScopeVersionDto = z.infer<typeof scopeVersionDtoSchema>;
 export type ScopeVersionList = z.infer<typeof scopeVersionListSchema>;

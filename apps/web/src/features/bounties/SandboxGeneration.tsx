@@ -45,10 +45,11 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
 
-import { terminalRun, useObservation } from "../../data/observe";
+import { analysisTopic, terminalRun, useObservation } from "../../data/observe";
 import { clients, queryKeys, useUserId } from "../../data/query";
 import { dateTime } from "../../lib/format";
 import { sandboxFilesPath } from "../../routes";
+import { usually, useTypicalWaits } from "../../data/typical";
 import { LunoxMark } from "@/components/LunoxMark";
 
 import { PublishMenu } from "./PublishMenu";
@@ -280,6 +281,7 @@ export function SandboxGeneration({
     read: (id, signal) => clients.analysis.run(organizationId, id, signal),
     terminal: terminalRun,
     interval: GENERATION_POLL_MS,
+    topics: (id) => [analysisTopic(id)],
   });
   const finished = run.data?.status === "succeeded";
   const artifacts = useQuery({
@@ -339,6 +341,11 @@ export function SandboxGeneration({
       clients.sandbox.sandboxSlice(organizationId, id, signal),
     terminal: (value) => !sliceUnderWay(value),
     interval: GENERATION_POLL_MS,
+    // Its runs; before it has one, its own timer.
+    topics: (_id, value) =>
+      [value?.scopeRunId, value?.sliceRunId].flatMap((runId) =>
+        runId == null ? [] : [analysisTopic(runId)],
+      ),
   });
   const sliceWatched = useRef(false);
   if (slice.data !== undefined && sliceUnderWay(slice.data))
@@ -373,6 +380,7 @@ export function SandboxGeneration({
     read: (id, signal) => clients.analysis.run(organizationId, id, signal),
     terminal: terminalRun,
     interval: GENERATION_POLL_MS,
+    topics: (id) => [analysisTopic(id)],
   });
 
   /*
@@ -495,6 +503,22 @@ export function SandboxGeneration({
     pending || (run.data !== undefined && !terminalRun(run.data));
   // What its build wrote can be read once it has written it.
   const browsable = canManage && !pending && finished;
+  // A build still at work that has written its project: how many files.
+  const previewFiles =
+    canManage &&
+    selectedId !== null &&
+    run.data?.status === "running" &&
+    (run.data.previewFiles ?? 0) > 0
+      ? run.data.previewFiles
+      : null;
+  // What each stage usually takes here, beside its clock.
+  const buildTool = sliced ? "sandbox_build" : "sandbox_starter";
+  const typical = useTypicalWaits(organizationId, [
+    `queue:${buildTool}`,
+    `run:${buildTool}`,
+    "run:scope",
+    "run:slice",
+  ]);
   // Published by an owner or admin, once its build passed and recorded so.
   const publishes = canManage && !readOnly && !versions.isPending;
   const publishable =
@@ -684,7 +708,14 @@ export function SandboxGeneration({
             state={run.data?.status === "queued" ? "breathing" : "working"}
             progress={run.data?.progress}
             since={run.data?.startedAt}
-            expected={sliced ? undefined : "usually 2–4 min"}
+            expected={
+              run.data?.status === "queued"
+                ? usually(typical.get(`queue:${buildTool}`))
+                : usually(
+                    typical.get(`run:${buildTool}`),
+                    sliced ? undefined : "usually 2–4 min",
+                  )
+            }
           >
             {run.data?.status === "queued"
               ? sliced
@@ -694,6 +725,26 @@ export function SandboxGeneration({
                 ? "Building the slice and checking its baseline"
                 : "The agent is writing the starter and its tests, then building and checking it"}
           </RunActivity>
+        )}
+        {previewFiles !== null && (
+          // What the build has written, readable while its baseline runs.
+          <p className="text-muted-foreground text-sm" role="status">
+            {previewFiles === 1
+              ? "1 file written"
+              : `${previewFiles} files written`}
+            , checked next.{" "}
+            <a
+              className="text-foreground font-medium underline-offset-4 hover:underline"
+              href={sandboxFilesPath({
+                workspace,
+                versionId: selectedId ?? "",
+              })}
+              target="_blank"
+              rel="noopener"
+            >
+              Browse them
+            </a>
+          </p>
         )}
         {standing?.note != null && (
           <p
@@ -914,6 +965,13 @@ export function SandboxGeneration({
         state={sliceState.status === "queued" ? "breathing" : "working"}
         progress={scopeRun.data?.progress}
         since={scopeRun.data?.startedAt}
+        expected={
+          sliceState.status === "scoping"
+            ? usually(typical.get("run:scope"))
+            : sliceState.status === "slicing"
+              ? usually(typical.get("run:slice"))
+              : undefined
+        }
       >
         {sliceActivity(sliceState)}
       </RunActivity>

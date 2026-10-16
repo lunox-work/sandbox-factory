@@ -13,6 +13,7 @@ import type { fetchSource as fetchSourceImpl } from "../src/fetch-source.js";
 import { sourceArchiveKey } from "@sandbox-factory/db";
 import { wakeableWait, workerLoop } from "../src/loop.js";
 import { parseWorkerEnv } from "../src/env.js";
+import { toolsOfSlot } from "sandbox-factory";
 import { uploadArtifacts } from "../src/upload.js";
 import { AnalysisError } from "../src/errors.js";
 import { run, stores } from "./helpers.js";
@@ -55,6 +56,115 @@ test("success uploads attempt-scoped artifacts, commits, and removes source", as
   assert.ok(state.bytes.has("runs/arn_1/lease_1/graph.json"));
   await assert.rejects(stat(directory));
 });
+test("a preview is shown while the run works, and gone once it commits", async () => {
+  for (const outcome of ["commit", "fail"] as const) {
+    const state = stores();
+    const previews: { path: string; objectKey: string }[][] = [];
+    let seenDuringRun = false;
+    const runs = {
+      ...state.runs,
+      recordPreview: async (
+        _owner: string,
+        _id: string,
+        token: string,
+        preview: { files: { path: string; objectKey: string }[] },
+      ) => {
+        assert.equal(token, "lease_1");
+        previews.push(preview.files);
+        return true;
+      },
+    } as unknown as typeof state.runs;
+    const previewing: ToolAdapter = {
+      ...tool,
+      run: async (input) => {
+        const path = join(input.sourceDir, "index.ts");
+        await writeFile(path, "export {};\n");
+        input.preview?.([
+          {
+            path: "project/src/index.ts",
+            absolutePath: path,
+            kind: "project_file",
+            contentType: "text/plain; charset=utf-8",
+            meta: null,
+          },
+        ]);
+        // The preview is uploaded while the tool goes on.
+        for (let tries = 0; previews.length === 0 && tries < 50; tries += 1)
+          await delay(2);
+        seenDuringRun = state.bytes.has(
+          "runs/arn_1/lease_1/preview/project/src/index.ts",
+        );
+        if (outcome === "fail") throw new Error("baseline broke");
+        return tool.run(input);
+      },
+    };
+    await executeRun(run, {
+      ...state,
+      runs,
+      tool: previewing,
+      source,
+      fetchSource,
+    });
+    // Under the attempt's own preview folder, at the path it will keep.
+    assert.deepEqual(
+      previews.map((files) =>
+        files.map(({ path, objectKey }) => ({ path, objectKey })),
+      ),
+      [
+        [
+          {
+            path: "project/src/index.ts",
+            objectKey: "runs/arn_1/lease_1/preview/project/src/index.ts",
+          },
+        ],
+      ],
+    );
+    assert.equal(seenDuringRun, true);
+    // Committed or not, the preview's bytes do not outlive the run.
+    assert.equal(
+      [...state.bytes.keys()].some((key) => key.includes("/preview/")),
+      false,
+    );
+    assert.deepEqual(state.calls, [
+      outcome === "commit" ? "finish" : "tool_failed",
+    ]);
+  }
+});
+
+test("a preview that cannot be shown does not stop the run", async () => {
+  const state = stores();
+  const runs = {
+    ...state.runs,
+    recordPreview: async () => {
+      throw new Error("database away");
+    },
+  } as unknown as typeof state.runs;
+  await executeRun(run, {
+    ...state,
+    runs,
+    tool: {
+      ...tool,
+      run: async (input) => {
+        const path = join(input.sourceDir, "index.ts");
+        await writeFile(path, "export {};\n");
+        input.preview?.([
+          {
+            path: "project/src/index.ts",
+            absolutePath: path,
+            kind: "project_file",
+            contentType: "text/plain; charset=utf-8",
+            meta: null,
+          },
+        ]);
+        return tool.run(input);
+      },
+    },
+    source,
+    fetchSource,
+  });
+  assert.deepEqual(state.calls, ["finish"]);
+});
+
 test("runs of one commit read the source the cache kept, and release it", async () => {
   const state = stores();
   const directory = await mkdtemp(join(tmpdir(), "lifecycle-cache-"));
@@ -867,6 +977,45 @@ test("a worker runs agent runs beside a build, and claims only the slots it has 
     release.get(id)?.();
   await done;
 });
+test("a run that ends while a claim for the other slots is out is followed at once", async () => {
+  const of = (id: string, tool: ClaimedAnalysisRun["tool"]) => ({
+    ...run,
+    id,
+    tool,
+  });
+  const asked: (readonly string[] | undefined)[] = [];
+  const executed: string[] = [];
+  let endGraph = () => {};
+  await workerLoop({
+    runs: {
+      claimNext: async (_token, _now, tools) => {
+        asked.push(tools);
+        if (asked.length === 1) return of("arn_graph", "graphify");
+        // Asked for agent runs alone, the build slot busy; the build ends
+        // before the answer comes back.
+        if (asked.length === 2) {
+          endGraph();
+          await delay(1);
+          return null;
+        }
+        return asked.length === 3 ? of("arn_abs", "abstractions") : null;
+      },
+    },
+    mode: "poll",
+    signal: new AbortController().signal,
+    execute: (claimed) => {
+      executed.push(claimed.id);
+      return claimed.id === "arn_graph"
+        ? new Promise<void>((resolve) => (endGraph = resolve))
+        : Promise.resolve();
+    },
+    // Returns as soon as it is idle: a wait here would end the loop.
+    idleExitMs: 0,
+    now: () => 0,
+  });
+  assert.ok(asked[1] !== undefined && !asked[1].includes("abstractions"));
+  assert.deepEqual(executed, ["arn_graph", "arn_abs"]);
+});
 test("a run that throws ends the loop once the others beside it have ended", async () => {
   let claims = 0;
   let otherEnded = false;
@@ -895,6 +1044,56 @@ test("a run that throws ends the loop once the others beside it have ended", asy
     /broken/,
   );
   assert.equal(otherEnded, true);
+});
+test("with every agent slot busy, only build runs are claimed", async () => {
+  const of = (id: string, tool: ClaimedAnalysisRun["tool"]) => ({
+    ...run,
+    id,
+    tool,
+  });
+  const queue = [
+    of("arn_scope", "scope"),
+    of("arn_fixtures", "fixtures"),
+    of("arn_build", "sandbox_build"),
+    of("arn_starter", "sandbox_starter"),
+    of("arn_graph", "graphify"),
+  ];
+  const asked: (readonly string[] | undefined)[] = [];
+  const release = new Map<string, () => void>();
+  const started: string[] = [];
+  const done = workerLoop({
+    runs: {
+      claimNext: async (_token, _now, tools) => {
+        asked.push(tools);
+        const index = queue.findIndex(
+          (item) => tools === undefined || tools.includes(item.tool),
+        );
+        return index < 0 ? null : (queue.splice(index, 1)[0] ?? null);
+      },
+    },
+    mode: "once",
+    signal: new AbortController().signal,
+    execute: (claimed) => {
+      started.push(claimed.id);
+      return new Promise<void>((resolve) => release.set(claimed.id, resolve));
+    },
+  });
+  await delay(5);
+  // Three agent runs fill the agent slots; the starter waits, the graph runs.
+  assert.deepEqual(started, [
+    "arn_scope",
+    "arn_fixtures",
+    "arn_build",
+    "arn_graph",
+  ]);
+  assert.deepEqual(asked[3], toolsOfSlot("build"));
+  assert.ok(!asked[3]?.includes("sandbox_starter"));
+  release.get("arn_scope")?.();
+  await delay(5);
+  assert.deepEqual(started.slice(4), ["arn_starter"]);
+  for (const id of ["arn_fixtures", "arn_build", "arn_graph", "arn_starter"])
+    release.get(id)?.();
+  await done;
 });
 test("the poll's wait ends early on a wake, keeps one that came first, and ends on stop", async () => {
   const stop = new AbortController();
@@ -995,4 +1194,63 @@ test("an uncertain finish never keeps an older attempt beside a winning successo
   state.runs.logKey = async () => "logs/arn_1/next-lease.log";
   await executeRun(run, { ...state, tool, source, fetchSource });
   assert.equal(state.bytes.has("runs/arn_1/lease_1/graph.json"), false);
+});
+test("a run that waits on another run's fetch of the commit times the wait as its fetch", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "lifecycle-wait-"));
+  try {
+    const cache = await createSourceCache({ root: directory });
+    let ms = 0;
+    let fetching!: () => void;
+    let fetched!: () => void;
+    const started = new Promise<void>((resolve) => (fetching = resolve));
+    const gate = new Promise<void>((resolve) => (fetched = resolve));
+    let checkedOut!: () => void;
+    const waiting = new Promise<void>((resolve) => (checkedOut = resolve));
+    const options = {
+      tool,
+      source,
+      clock: () => ms,
+      fetchSource: async (
+        _r: typeof run,
+        into: string,
+        fetch: { onStage?: (name: "fetch", ms: number) => void },
+      ) => {
+        fetching();
+        await gate;
+        fetch.onStage?.("fetch", 70);
+        return into;
+      },
+    };
+    const owner = stores();
+    const waiter = stores();
+    const first = executeRun(run, { ...owner, ...options, sourceCache: cache });
+    await started;
+    const second = executeRun(
+      { ...run, id: "arn_2" },
+      {
+        ...waiter,
+        ...options,
+        sourceCache: {
+          checkout: (...args) => {
+            checkedOut();
+            return cache.checkout(...args);
+          },
+        },
+      },
+    );
+    await waiting;
+    ms = 500;
+    fetched();
+    await Promise.all([first, second]);
+    assert.deepEqual(
+      [owner.timings[0]?.stages.fetch, waiter.timings[0]?.stages.fetch],
+      [70, 500],
+    );
+    const log = Buffer.from(
+      waiter.bytes.get("logs/arn_2/lease_1.log") ?? [],
+    ).toString();
+    assert.match(log, /fetched and validated by another run of the commit/);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });

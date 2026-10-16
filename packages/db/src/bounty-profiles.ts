@@ -20,6 +20,7 @@ import {
 import { snapshotForWrite } from "./snapshot-write.js";
 import type { Database } from "./errors.js";
 import { generateId } from "./mapping.js";
+import { announceChange } from "./run-events.js";
 import {
   bountyProfile,
   bountyProposal,
@@ -394,8 +395,16 @@ export function createBountyProfileStore(db: Database): BountyProfileStore {
             eq(bountyProfile.status, from),
           ),
         )
-        .returning({ id: bountyProfile.id });
-      return rows.length > 0;
+        .returning({ proposalId: bountyProfile.proposalId });
+      const proposalId = rows[0]?.proposalId;
+      if (proposalId === undefined) return false;
+      // A page reads a proposal's profiles together, so names the proposal.
+      await announceChange(db, {
+        organizationId: owner,
+        kind: "profile",
+        id: proposalId,
+      });
+      return true;
     },
   };
 }

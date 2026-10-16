@@ -50,6 +50,7 @@ function row(overrides: Partial<BountyRunRow> = {}): BountyRunRow {
     fatalErrorCode: null,
     startedAt: null,
     finishedAt: null,
+    proposalWrittenAt: null,
     createdAt: new Date("2026-09-22T00:00:00Z"),
     updatedAt: new Date("2026-09-22T00:00:00Z"),
     ...overrides,
@@ -494,7 +495,11 @@ test("claims, heartbeats, records and finishes only under the lease", async () =
     }),
     true,
   );
-  assert.ok(fake.calls.slice(0, 6).every(({ filtered }) => filtered));
+  const writes = fake.calls.filter(({ kind }) => kind !== "execute");
+  assert.ok(writes.slice(0, 6).every(({ filtered }) => filtered));
+  // Claim, plan, outcome, finish and progress each tell the page; a
+  // heartbeat changes nothing it shows.
+  assert.equal(fake.calls.length - writes.length, 5);
 });
 
 test("a run's preview reads back as written, and a run without one as null", async () => {

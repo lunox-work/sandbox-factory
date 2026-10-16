@@ -778,8 +778,10 @@ export function mountSandboxRoutes(
     if (stored === null) return c.json({ error: "Not found." }, 404);
     const runId = stored.source.buildRunId;
     const run = runId === null ? null : await options.runs.get(owner, runId);
-    const files =
-      run === null ? [] : await options.artifacts.list(owner, run.id);
+    const { files, provisional } =
+      run === null
+        ? { files: [], provisional: false }
+        : await filesOf(owner, run.id);
     c.header("Cache-Control", "no-store");
     return c.json(
       sandboxFileListSchema.parse({
@@ -789,9 +791,23 @@ export function mountSandboxRoutes(
           sizeBytes,
           sha256,
         })),
+        provisional,
       }),
     );
   });
+  /**
+   * What a build run wrote: its artifacts once it has committed them, and
+   * until then, what it has generated before its baseline, as provisional.
+   */
+  async function filesOf(owner: string, runId: string) {
+    const committed = await options.artifacts.list(owner, runId);
+    if (committed.length > 0 || options.previews === undefined)
+      return { files: committed, provisional: false };
+    const preview = await options.previews.preview(owner, runId);
+    return preview === null
+      ? { files: committed, provisional: false }
+      : { files: preview.files, provisional: true };
+  }
   /**
    * One of those files as text. Read through the API rather than a signed
    * link, which the browser could not read across origins; named by its
@@ -813,7 +829,7 @@ export function mountSandboxRoutes(
     );
     const runId = stored?.source.buildRunId ?? null;
     if (runId === null) return c.json({ error: "Not found." }, 404);
-    const file = (await options.artifacts.list(owner, runId)).find(
+    const file = (await filesOf(owner, runId)).files.find(
       (item) => item.path === path,
     );
     if (file === undefined) return c.json({ error: "Not found." }, 404);

@@ -415,6 +415,55 @@ test("a version is cut only from a succeeded slice of the sandbox's own source, 
   );
 });
 
+test("a cut reuses, under the sandbox's lock, the newest draft cut from the same slice", async () => {
+  const locked = { sandbox: sandboxRow(), sourceRepoId: "ghr_1" };
+  const draft = {
+    version: versionRow({ id: "sbv_2", version: 2 }),
+    source: sourceRow({ sandboxVersionId: "sbv_2" }),
+    commitSha: "a".repeat(40),
+  };
+  // A second cut of one slice, after the first made its draft: no draft is
+  // made, and the first's is answered.
+  const again = createSequencedFakeDb([[locked], [draft]]);
+  const reused = await createSandboxStore(again.db).createVersion(
+    "owner",
+    "sbx_1",
+    { ...newVersion, reuseDraft: true },
+  );
+  assert.equal(reused.ok, true);
+  if (!reused.ok) return;
+  assert.equal(reused.version.id, "sbv_2");
+  assert.equal(reused.source.sourceCommitSha, "a".repeat(40));
+  // Read after the lock, inside the same transaction.
+  assert.equal(again.calls[0]?.lock, "update");
+  assert.equal(again.calls[1]?.limited, 1);
+  assert.ok(again.calls.every((call) => call.kind === "select"));
+
+  // A frozen newest version, or one of another slice, is not a draft to
+  // reuse: a new one is cut after it.
+  for (const newest of [
+    { ...draft, version: versionRow({ id: "sbv_2", frozenAt: now }) },
+    { ...draft, source: sourceRow({ sliceRunId: "arn_other" }) },
+    undefined,
+  ]) {
+    const fresh = createSequencedFakeDb([
+      [locked],
+      newest === undefined ? [] : [newest],
+      [{ commitSha: "a".repeat(40) }],
+      [{ version: 2 }],
+      [versionRow({ id: "sbv_3", version: 3 })],
+      [sourceRow({ sandboxVersionId: "sbv_3" })],
+    ]);
+    const cut = await createSandboxStore(fresh.db).createVersion(
+      "owner",
+      "sbx_1",
+      { ...newVersion, reuseDraft: true },
+    );
+    assert.equal(cut.ok && cut.version.id, "sbv_3");
+    assert.equal(fresh.calls[4]?.kind, "insert");
+  }
+});
+
 /** A generated version's source: a starter run where the slice was. */
 const generatedRow = (overrides: Partial<SandboxVersionSourceRow> = {}) =>
   sourceRow({

@@ -120,6 +120,10 @@ export function RetryableError({
  * the reader is idle, not interrupt to say a list is still arriving. The
  * orb is `aria-hidden`, or it would be announced as an image beside the
  * word it illustrates.
+ *
+ * Shown only after 150ms (`loading-line-in`), so a read that answers
+ * sooner never flashes it. In the document from the start, invisible, so
+ * it holds its place and a screen reader is still told.
  */
 export function LoadingLine({
   children = "Loading…",
@@ -132,7 +136,7 @@ export function LoadingLine({
     <p
       role="status"
       className={cn(
-        "text-muted-foreground flex items-center gap-2 text-sm",
+        "text-muted-foreground loading-line-in flex items-center gap-2 text-sm",
         className,
       )}
     >
