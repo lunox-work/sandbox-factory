@@ -74,8 +74,9 @@ export const organizationSummarySchema = z.object({
 });
 
 /**
- * How far a workspace is set up: what home and the rail reason about
- * (`setup.ts` in the web app), counted from the platform's own rows.
+ * How far a workspace is set up, and how much it holds: what home and the
+ * rail reason about (`setup.ts` in the web app) and what home's overview
+ * shows of each workspace, counted from the platform's own rows.
  */
 export const workspaceSetupSchema = z.object({
   jira: z.object({
@@ -91,8 +92,10 @@ export const workspaceSetupSchema = z.object({
     repositories: z.number().int().nonnegative(),
   }),
   proposals: z.number().int().nonnegative(),
-  /** Whether it holds any bounty: one or none. */
+  /** Bounties the workspace holds, sized or not. */
   bounties: z.number().int().nonnegative(),
+  /** Members, the caller among them: one for a personal workspace. */
+  members: z.number().int().nonnegative(),
 });
 
 export const membershipSchema = organizationSummarySchema.extend({

@@ -142,6 +142,7 @@ import {
 import { BountyProposal } from "./features/bounties/BountyProposal";
 import { usePrefetchProposal } from "./features/bounties/queries";
 import { BoardFilter } from "./features/bounties/BoardScope";
+import { WorkspaceFilter } from "./features/bounties/WorkspaceScope";
 import {
   CategoryFilter,
   CategoryMark,
@@ -239,6 +240,12 @@ function canManage(role: string): boolean {
 /** Enough of a bounty to open it: which one, and whose. */
 type OpenedBounty = Pick<BountySummaryDto, "id" | "organizationId">;
 
+/**
+ * The id the list is read for when the address names a workspace the person
+ * is not in: none the server knows, so it answers with nothing.
+ */
+const NO_WORKSPACE = "none";
+
 /** The workspace an address names by its handle, in any case. */
 function workspaceNamed(
   organizations: MembershipDto[],
@@ -295,27 +302,40 @@ export function Bounties({
     scope.board === undefined
       ? undefined
       : workspaceNamed(organizations, scope.board.workspace);
+  /*
+    The workspace the list is narrowed to, by its id: the server knows no
+    handle. One the person is not in — a link to another's, a handle since
+    renamed — narrows to none, as the server would, rather than to all.
+  */
+  const own =
+    scope.workspace === undefined
+      ? undefined
+      : (workspaceNamed(organizations, scope.workspace)?.id ?? NO_WORKSPACE);
   const bounties = useAllBounties({
     category: scope.category,
     board: scope.board?.boardId,
     source: scope.source,
     status: scope.status,
+    workspace: own,
   });
   const counts = useBountyCategories(
     scope.board?.boardId,
     scope.source,
     scope.status,
+    own,
   );
   const statusCounts = useBountyStatuses(
     scope.category,
     scope.board?.boardId,
     scope.source,
+    own,
   );
   const narrowed =
     scope.category !== undefined ||
     scope.board !== undefined ||
     scope.source !== undefined ||
-    scope.status !== undefined;
+    scope.status !== undefined ||
+    scope.workspace !== undefined;
   /** The list narrowed otherwise; a bounty open over it stays open. */
   const narrow = (next: BountyListScope) =>
     replaceLocation(bountiesUrl(peek, next));
@@ -395,6 +415,20 @@ export function Bounties({
               narrow({ ...scope, status: status ?? undefined })
             }
           />
+          {/*
+            Whose bounties: one of the person's workspaces, or every one.
+            Only once there are two to choose between; in one, the list is
+            that one's already. Still read from the address with one, so a
+            link from home narrows all the same.
+          */}
+          {(organizations.length > 1 || scope.workspace !== undefined) && (
+            <WorkspaceFilter
+              organizations={organizations}
+              viewer={viewer}
+              selected={scope.workspace}
+              onSelect={(workspace) => narrow({ ...scope, workspace })}
+            />
+          )}
           <button
             type="button"
             disabled={!narrowed}

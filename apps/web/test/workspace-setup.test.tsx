@@ -13,6 +13,7 @@ const listed = {
   github: { available: true, connected: 1, repositories: 1 },
   proposals: 3,
   bounties: 1,
+  members: 2,
 };
 
 test("the workspace list's setup answers until the workspace's own reads do", async () => {

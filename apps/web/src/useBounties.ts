@@ -167,25 +167,26 @@ function runFailure(run: BountyRunDto): string {
  */
 /**
  * What the list is narrowed to: a category's id, `uncategorized` for the
- * bounties in none, a board's id, `lunox` for those written in Lunox, and
- * how far the bounties have got. Absent, all of them.
+ * bounties in none, a board's id, `lunox` for those written in Lunox, how
+ * far the bounties have got, and one workspace's id. Absent, all of them.
  */
 export interface BountyFilter {
   category?: string | undefined;
   board?: string | undefined;
   source?: "lunox" | undefined;
   status?: BountyStatus | undefined;
+  workspace?: string | undefined;
 }
 
 export function useAllBounties(filter: BountyFilter = {}): AllBounties {
   const userId = useUserId();
-  const { category, board, source, status } = filter;
+  const { category, board, source, status, workspace } = filter;
   const query = useInfiniteQuery({
     // Under the list's own key, so whatever reads the list again reads
     // every filtered copy of it too.
     queryKey: [
       ...queryKeys.me(userId, "bounties"),
-      { category, board, source, status },
+      { category, board, source, status, workspace },
     ],
     initialPageParam: undefined as string | undefined,
     queryFn: ({ pageParam, signal }) =>
@@ -197,6 +198,7 @@ export function useAllBounties(filter: BountyFilter = {}): AllBounties {
           ...(board === undefined ? {} : { board }),
           ...(source === undefined ? {} : { source }),
           ...(status === undefined ? {} : { status }),
+          ...(workspace === undefined ? {} : { workspace }),
         },
         signal,
       ),
@@ -205,7 +207,7 @@ export function useAllBounties(filter: BountyFilter = {}): AllBounties {
     // the list changes once rather than going blank in between.
     placeholderData: keepPreviousData,
   });
-  const key = JSON.stringify([category, board, source, status]);
+  const key = JSON.stringify([category, board, source, status, workspace]);
   const [view, setView] = useState(key);
   if (view !== key && query.data !== undefined && !query.isPlaceholderData) {
     setView(key);
@@ -230,18 +232,19 @@ export function useAllBounties(filter: BountyFilter = {}): AllBounties {
 
 /**
  * How many of the caller's bounties each category holds, on `board`'s, or
- * on Lunox's own by `source`.
+ * on Lunox's own by `source`, and in one `workspace` when named.
  */
 export function useBountyCategories(
   board: string | undefined,
   source?: "lunox",
   status?: BountyStatus,
+  workspace?: string,
 ) {
   const userId = useUserId();
   return useQuery({
     queryKey: [
       ...queryKeys.me(userId, "bounty-categories"),
-      { board, source, status },
+      { board, source, status, workspace },
     ],
     queryFn: ({ signal }) =>
       clients.bounties.myBountyCategories(
@@ -249,6 +252,7 @@ export function useBountyCategories(
           ...(board === undefined ? {} : { board }),
           ...(source === undefined ? {} : { source }),
           ...(status === undefined ? {} : { status }),
+          ...(workspace === undefined ? {} : { workspace }),
         },
         signal,
       ),
@@ -264,12 +268,13 @@ export function useBountyStatuses(
   category: string | undefined,
   board: string | undefined,
   source?: "lunox",
+  workspace?: string,
 ) {
   const userId = useUserId();
   return useQuery({
     queryKey: [
       ...queryKeys.me(userId, "bounty-statuses"),
-      { category, board, source },
+      { category, board, source, workspace },
     ],
     queryFn: ({ signal }) =>
       clients.bounties.myBountyStatuses(
@@ -277,6 +282,7 @@ export function useBountyStatuses(
           ...(category === undefined ? {} : { category }),
           ...(board === undefined ? {} : { board }),
           ...(source === undefined ? {} : { source }),
+          ...(workspace === undefined ? {} : { workspace }),
         },
         signal,
       ),

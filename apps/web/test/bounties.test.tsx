@@ -18,6 +18,7 @@ import {
   bountyForSearch,
   bountyPagePath,
   canonicalUrl,
+  listScopeForSearch,
   NEW_BOUNTY_PATH,
   pathForScreen,
   screenForPath,
@@ -2819,11 +2820,116 @@ test("the bounties page has a path and a trail of its own", () => {
   expect(canonicalUrl("/bounties", "?tab=proposals")).toBe("/bounties");
   expect(canonicalUrl("/bounties", "?peek=acme/bty_1")).toBeUndefined();
   expect(canonicalUrl("/bounties", "")).toBeUndefined();
+  // A workspace on its own is the list narrowed to it, which the page
+  // writes: not an old address, and kept where an old tab rode on it.
+  expect(canonicalUrl("/bounties", "?workspace=acme")).toBeUndefined();
+  expect(canonicalUrl("/bounties", "?workspace=acme&tab=proposals")).toBe(
+    "/bounties?workspace=acme",
+  );
+  expect(bountiesUrl(null, { workspace: "acme", status: "new" })).toBe(
+    "/bounties?workspace=acme&status=new",
+  );
+  expect(listScopeForSearch("?workspace=acme&status=new")).toEqual({
+    workspace: "acme",
+    status: "new",
+  });
+  expect(listScopeForSearch("?workspace=")).toEqual({});
   expect(
     trailFor("bounties", { name: "Acme", slug: "acme" }).map(
       ({ label }) => label,
     ),
   ).toEqual(["Home", "Bounties"]);
+});
+
+test("the list narrows to one workspace by its handle, read by its id", async () => {
+  const { fetchMock, calls } = server();
+  vi.stubGlobal("fetch", fetchMock);
+  const globex = {
+    id: "org_2",
+    name: "Globex",
+    slug: "globex",
+    kind: "team" as const,
+    role: "member",
+  };
+  const inBoth = {
+    ...inAcme("member"),
+    organizations: [{ ...acme, role: "member" }, globex],
+  };
+  // Where home's count of a workspace's bounties leads.
+  window.history.replaceState(
+    null,
+    "",
+    bountiesUrl(null, { workspace: "globex" }),
+  );
+  render(<Bounties {...inBoth} />);
+
+  const filter = await screen.findByTestId("workspace-filter");
+  expect(within(filter).getByText("Globex")).toBeDefined();
+  await waitFor(() =>
+    expect(
+      calls.some(({ url }) =>
+        url.includes("/me/bounties?limit=50&workspace=org_2"),
+      ),
+    ).toBe(true),
+  );
+  // The counts narrow with it.
+  expect(
+    calls.some(({ url }) =>
+      url.includes("/me/bounty-categories?workspace=org_2"),
+    ),
+  ).toBe(true);
+  expect(
+    calls.some(({ url }) =>
+      url.includes("/me/bounty-statuses?workspace=org_2"),
+    ),
+  ).toBe(true);
+
+  // Let go from the box, the list is every workspace's again.
+  await userEvent.click(
+    within(filter).getByRole("button", { name: "Show every workspace" }),
+  );
+  expect(window.location.search).toBe("");
+  expect(within(filter).getByText("All workspaces")).toBeDefined();
+
+  // Picked again from the box.
+  await chooseOption(within(filter).getByRole("combobox"), /Acme/);
+  expect(window.location.search).toBe("?workspace=acme");
+  await waitFor(() =>
+    expect(
+      calls.some(({ url }) =>
+        url.includes("/me/bounties?limit=50&workspace=org_1"),
+      ),
+    ).toBe(true),
+  );
+});
+
+test("a workspace the person is not in narrows the list to nothing, not to everything", async () => {
+  const { fetchMock, calls } = server();
+  vi.stubGlobal("fetch", fetchMock);
+  window.history.replaceState(null, "", "/bounties?workspace=hidden");
+  render(<Bounties {...inAcme("member")} />);
+
+  // Offered even in one workspace, so the address can be let go of.
+  const filter = await screen.findByTestId("workspace-filter");
+  expect(within(filter).getByText("@hidden")).toBeDefined();
+  await waitFor(() =>
+    expect(
+      calls.some(({ url }) =>
+        url.includes("/me/bounties?limit=50&workspace=none"),
+      ),
+    ).toBe(true),
+  );
+  // Never read as everyone's.
+  expect(calls.some(({ url }) => /\/me\/bounties\?limit=50$/.test(url))).toBe(
+    false,
+  );
+});
+
+test("in one workspace, the list offers no workspace filter", async () => {
+  vi.stubGlobal("fetch", server().fetchMock);
+  render(<Bounties {...inAcme("member")} />);
+  await screen.findByTestId("bounty-list");
+  expect(screen.queryByTestId("workspace-filter")).toBeNull();
 });
 
 test("a bounty is addressed the same in the panel and on its own page", () => {

@@ -301,8 +301,27 @@ export function mountCallerBountyRoutes<Env extends BountyAppEnv>(
     readonly organizationsOf: (userId: string) => Promise<readonly string[]>;
   },
 ): void {
-  app.get("/api/v1/me/bounties", async (c) => {
+  /**
+   * The organizations a list is read across: every one the caller is in,
+   * or the one `?workspace=` names among them. One named that the caller
+   * is not in narrows to none, as a non-member is told nothing of it.
+   * Null for a workspace named as it should not be.
+   */
+  async function across(c: Context): Promise<readonly string[] | null> {
+    const workspace = bountyListFilterSchema.shape.workspace.safeParse(
+      c.req.query("workspace"),
+    );
+    if (!workspace.success) return null;
     const organizationIds = await options.organizationsOf(c.get("user").id);
+    return workspace.data === undefined
+      ? organizationIds
+      : organizationIds.filter((id) => id === workspace.data);
+  }
+
+  app.get("/api/v1/me/bounties", async (c) => {
+    const organizationIds = await across(c);
+    if (organizationIds === null)
+      return c.json({ error: "Invalid filter." }, 400);
     return listPage(c, (page) =>
       options.bounties.listAcross(organizationIds, page),
     );
@@ -313,12 +332,13 @@ export function mountCallerBountyRoutes<Env extends BountyAppEnv>(
    * filter: every category in the registry, in order, zero when none fit
    * it. `?board=` narrows the counts to that board's, `?source=lunox` to
    * the bounties written in Lunox, and `?status=` to those that far along,
-   * as they do the list.
+   * as they do the list, and `?workspace=` to one workspace's.
    */
   app.get("/api/v1/me/bounty-categories", async (c) => {
     const filter = listFilter(c);
-    if (filter === null) return c.json({ error: "Invalid filter." }, 400);
-    const organizationIds = await options.organizationsOf(c.get("user").id);
+    const organizationIds = await across(c);
+    if (filter === null || organizationIds === null)
+      return c.json({ error: "Invalid filter." }, 400);
     const counts = await options.bounties.categoryCounts(organizationIds, {
       ...(filter.boardId === undefined ? {} : { boardId: filter.boardId }),
       ...(filter.unlinked === undefined ? {} : { unlinked: filter.unlinked }),
@@ -346,8 +366,9 @@ export function mountCallerBountyRoutes<Env extends BountyAppEnv>(
    */
   app.get("/api/v1/me/bounty-statuses", async (c) => {
     const filter = listFilter(c);
-    if (filter === null) return c.json({ error: "Invalid filter." }, 400);
-    const organizationIds = await options.organizationsOf(c.get("user").id);
+    const organizationIds = await across(c);
+    if (filter === null || organizationIds === null)
+      return c.json({ error: "Invalid filter." }, 400);
     const counts = await options.bounties.statusCounts(organizationIds, {
       ...(filter.category === undefined ? {} : { category: filter.category }),
       ...(filter.uncategorized === undefined

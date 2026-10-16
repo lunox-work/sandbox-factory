@@ -232,7 +232,8 @@ test("the list answers each workspace's setup, counted for those listed", async 
               githubConnected: 0,
               githubRepositories: 0,
               proposals: 3,
-              bounties: 1,
+              bounties: 4,
+              members: 2,
             },
           ],
         ]);
@@ -250,7 +251,8 @@ test("the list answers each workspace's setup, counted for those listed", async 
           jira: { available: false, connected: 1, broken: 1, boards: 2 },
           github: { available: false, connected: 0, repositories: 0 },
           proposals: 3,
-          bounties: 1,
+          bounties: 4,
+          members: 2,
         },
       },
     ],
@@ -265,7 +267,7 @@ test("the list answers each workspace's setup, counted for those listed", async 
 });
 
 test("the list's setup counts the caller's own workspaces only", async () => {
-  const counted = (bounties: 0 | 1, proposals: number) => ({
+  const counted = (bounties: number, proposals: number) => ({
     jiraConnected: 0,
     jiraBroken: 0,
     jiraBoards: 0,
@@ -273,6 +275,7 @@ test("the list's setup counts the caller's own workspaces only", async () => {
     githubRepositories: 0,
     proposals,
     bounties,
+    members: 1,
   });
   const asked: (readonly string[])[] = [];
   // A store that answers more than asked still answers no other workspace.

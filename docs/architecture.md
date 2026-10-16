@@ -101,9 +101,17 @@ writes and retains the latest queued draft, revision conflicts and failed edits.
 Its controller is in `features/pricing/useRateCardAutosave.ts`; proposal lists,
 categories, peeks, search, titles and sizing progress are in `features/bounties`.
 
-Home is `apps/web/src/Home.tsx` and onboarding, at `/onboarding`, is
-`apps/web/src/Onboarding.tsx`; both change with what a workspace has
-connected. `features/onboarding/setup.ts` decides the stage (nothing, Jira,
+Home is `apps/web/src/Home.tsx`: one card per workspace the person is in,
+personal first, with the counts the workspace list answers for each (`setup`
+on `/api/v1/me/orgs`, counted in one query by `packages/db/src/workspace-setup.ts`:
+bounties, proposals, healthy and broken connections, repositories, boards and
+members). Every count is a link — the bounties to `/bounties?workspace=<slug>`,
+the list narrowed to that workspace (`?workspace=<id>` on the `/me/bounties`
+routes), the connections, repositories and boards to the settings tab they are
+made on, the members to the members tab — and a workspace not set up yet says
+how far it has got and leads to onboarding instead. Onboarding, at `/onboarding`,
+is `apps/web/src/Onboarding.tsx`; it changes with what the workspace in the rail
+has connected. `features/onboarding/setup.ts` decides the stage (nothing, Jira,
 GitHub, both) and the getting-started checklist from facts that
 `useWorkspaceSetup.ts` reads through the same cache keys as the pages they
 summarise. Onboarding holds
