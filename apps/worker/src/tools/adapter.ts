@@ -12,6 +12,7 @@ import type {
   StoredVersionWithSource,
 } from "@sandbox-factory/db";
 import { AnalysisError } from "../errors.js";
+import type { RunTiming } from "../timing.js";
 
 /** The ticket an agent run works for: one revision of a proposal's spec. */
 export interface AgentTask {
@@ -34,6 +35,15 @@ export interface ArtifactFile {
  */
 export interface ToolInputs {
   getRun(runId: string): Promise<StoredAnalysisRun | null>;
+  /**
+   * The newest succeeded run of a tool on a snapshot, at the tool's
+   * current version: the builders' runs a brief reads. Absent outside the
+   * queue, as in a test, where a brief reads none.
+   */
+  latestSucceeded?(
+    snapshotId: string,
+    tool: AnalysisTool,
+  ): Promise<StoredAnalysisRun | null>;
   listArtifacts(runId: string): Promise<readonly StoredArtifact[]>;
   readArtifact(objectKey: string): Promise<Uint8Array | undefined>;
   /** A sandbox version with its private provenance, for a build. */
@@ -81,6 +91,8 @@ export interface ToolRunInput {
    * run (`progress.ts`). Absent where nothing follows it.
    */
   readonly step?: (text: string) => void;
+  /** Where the tool's own time went: agent turns and baselines. */
+  readonly timing?: RunTiming;
 }
 export interface ToolCommittedInput {
   readonly runId: string;

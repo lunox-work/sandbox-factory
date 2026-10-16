@@ -42,6 +42,45 @@ export interface AnalysisProgressStep {
 export const ANALYSIS_PROGRESS_STEPS_MAX = 20;
 /** The longest a step's line may be; a longer one is cut with an ellipsis. */
 export const ANALYSIS_PROGRESS_TEXT_MAX = 160;
+/**
+ * Where a run's time went, written once when it ends, so the waits a person
+ * sees can be measured against the work behind them. Milliseconds
+ * throughout. A stage the run never reached is absent, as are the lists a
+ * tool of its kind does not make.
+ */
+export interface AnalysisTiming {
+  readonly stages: Partial<Record<AnalysisTimingStage, number>>;
+  /** An agent run's turns, oldest first, at most `ANALYSIS_TIMING_TURNS_MAX`. */
+  readonly turns?: readonly AnalysisTurnTiming[];
+  /** A run's baselines in the order they ran, at most `ANALYSIS_TIMING_BASELINES_MAX`. */
+  readonly baselines?: readonly (readonly AnalysisBaselineStepTiming[])[];
+}
+/**
+ * `fetch` is the archive's download, `extract` its unpacking, `tool` the
+ * tool's own work, `upload` its artifacts' and `commit` the database write
+ * that makes them visible.
+ */
+export const ANALYSIS_TIMING_STAGES = [
+  "fetch",
+  "extract",
+  "tool",
+  "upload",
+  "commit",
+] as const;
+export type AnalysisTimingStage = (typeof ANALYSIS_TIMING_STAGES)[number];
+export interface AnalysisTurnTiming {
+  /** The model call. */
+  readonly modelMs: number;
+  /** The turn's tool calls, end to end. */
+  readonly toolMs: number;
+}
+export interface AnalysisBaselineStepTiming {
+  readonly name: string;
+  readonly durationMs: number;
+  readonly ok: boolean;
+}
+export const ANALYSIS_TIMING_TURNS_MAX = 100;
+export const ANALYSIS_TIMING_BASELINES_MAX = 20;
 export const ARTIFACT_KINDS = [
   "graph_json",
   "graph_html",
@@ -65,6 +104,9 @@ export const ARTIFACT_KINDS = [
   "abstraction_index",
   "data_model",
   "erd_mermaid",
+  "documents",
+  "brief_md",
+  "seams_index",
   "other",
 ] as const;
 export type ArtifactKind = (typeof ARTIFACT_KINDS)[number];
@@ -75,12 +117,19 @@ export type ArtifactKind = (typeof ARTIFACT_KINDS)[number];
  * structure. `abstractions` lists every module's callable surface, and `data_model`
  * the entities a repository stores and the modules that touch them; both
  * read graphify's map of the same snapshot, and the scope and fixtures
- * agents read them. An owner or admin can start one from a repository's page.
+ * agents read them. `documents` keeps the repository's Markdown documents,
+ * so a bounty's context is read from storage rather than GitHub. `brief`
+ * reads what the others wrote into one bounded document (`renderBrief`),
+ * which the price reads for every connected repository; it waits for the
+ * other builders on its snapshot to end. An owner or admin can start one
+ * from a repository's page.
  */
 export const CONTEXT_BUILDERS = [
   "graphify",
   "abstractions",
   "data_model",
+  "documents",
+  "brief",
 ] as const;
 export type ContextBuilder = (typeof CONTEXT_BUILDERS)[number];
 /**
@@ -105,9 +154,13 @@ export const ANALYSIS_TOOLS = [
 export type AnalysisTool = (typeof ANALYSIS_TOOLS)[number];
 export const GRAPHIFY_TOOL_VERSION = "graphifyy@0.4.18+driver-1";
 /** Bumped when an extractor, a visibility rule or the index's shape changes meaning. */
-export const ABSTRACTIONS_TOOL_VERSION = "abstractions@2";
+export const ABSTRACTIONS_TOOL_VERSION = "abstractions@3";
 /** Bumped when a recognizer, the replay rules or the model's shape change meaning. */
 export const DATA_MODEL_TOOL_VERSION = "data_model@1";
+/** Bumped when which documents are kept, or how, changes. */
+export const DOCUMENTS_TOOL_VERSION = "documents@1";
+/** Bumped when what the brief says, its order or its cap change meaning. */
+export const BRIEF_TOOL_VERSION = "brief@1";
 /**
  * Tools that read a graphify run of the same snapshot, named in
  * `params.graphRunId`. The queue hands one to a worker only once that run
@@ -123,11 +176,22 @@ export function readsGraph(tool: AnalysisTool): boolean {
   return GRAPH_READERS.some((name) => name === tool);
 }
 /**
+ * Tools that read what every other context builder on their snapshot
+ * wrote. The queue hands one to a worker only once none of those is queued
+ * or running.
+ */
+export const BUILDER_READERS = ["brief"] as const;
+export function readsBuilders(tool: AnalysisTool): boolean {
+  return BUILDER_READERS.some((name) => name === tool);
+}
+/**
  * Whether a snapshot's runs make it built: its graphify map succeeded, which
  * slices, scopes and the map readers all read, and every other context
  * builder has finished, however it finished. A builder that fails on the
  * repository does not keep its commit from being picked. Runs of any tool
- * may be passed; only the context builders' are read.
+ * may be passed; only the context builders' are read. The run store keeps
+ * the same rule in SQL, to mark a snapshot built as its last builder ends
+ * (`repo_snapshot.built_at`); a change here changes it there.
  */
 export function snapshotBuilt(
   runs: readonly { readonly tool: string; readonly status: AnalysisStatus }[],
@@ -154,7 +218,7 @@ export const SLICE_TOOL_VERSION = "slice@2";
 /** Bumped when the generated project, harness or baseline rules change meaning. */
 export const SANDBOX_BUILD_RUN_VERSION = "sandbox_build@7";
 /** Bumped when the scope agent's tools, prompt or proposal shape change meaning. */
-export const SCOPE_TOOL_VERSION = "scope@3";
+export const SCOPE_TOOL_VERSION = "scope@4";
 /** Bumped when the fixtures agent's tools, prompt or set shape change meaning. */
 export const FIXTURES_TOOL_VERSION = "fixtures@2";
 /** Bumped when the starter agent's tools, prompt, set or project change meaning. */
@@ -162,6 +226,39 @@ export const STARTER_TOOL_VERSION = "sandbox_starter@3";
 /** Tools that read a repository snapshot; every other one runs without source. */
 export function readsSource(tool: AnalysisTool): boolean {
   return tool !== "sandbox_starter";
+}
+/**
+ * Which of a worker's slots a run takes. An agent run spends its time
+ * waiting on a model, so a worker runs several at once; a build spends it
+ * on the worker's CPU, so it runs one. The sandbox build and the starter
+ * run baselines too, but most of their wall time is their agents'.
+ */
+export type RunSlot = "agent" | "build";
+export const RUN_SLOTS = ["agent", "build"] as const;
+/** How many runs of each slot one worker runs at once. */
+export const WORKER_SLOTS: Readonly<Record<RunSlot, number>> = {
+  agent: 3,
+  build: 1,
+};
+export function slotOf(tool: AnalysisTool): RunSlot {
+  switch (tool) {
+    case "scope":
+    case "fixtures":
+    case "sandbox_build":
+    case "sandbox_starter":
+      return "agent";
+    case "graphify":
+    case "abstractions":
+    case "data_model":
+    case "documents":
+    case "brief":
+    case "slice":
+      return "build";
+  }
+}
+/** The tools that take one slot. */
+export function toolsOfSlot(slot: RunSlot): AnalysisTool[] {
+  return ANALYSIS_TOOLS.filter((tool) => slotOf(tool) === slot);
 }
 export function toolVersionOf(tool: AnalysisTool): string {
   switch (tool) {
@@ -181,6 +278,10 @@ export function toolVersionOf(tool: AnalysisTool): string {
       return ABSTRACTIONS_TOOL_VERSION;
     case "data_model":
       return DATA_MODEL_TOOL_VERSION;
+    case "documents":
+      return DOCUMENTS_TOOL_VERSION;
+    case "brief":
+      return BRIEF_TOOL_VERSION;
   }
 }
 
@@ -200,6 +301,17 @@ export interface AbstractionsParams extends GraphifyParams {
 export interface DataModelParams extends GraphifyParams {
   readonly builder: "data_model";
   readonly graphRunId: string;
+}
+/** The documents builder reads the source alone. */
+export interface DocumentsParams extends GraphifyParams {
+  readonly builder: "documents";
+}
+/**
+ * The brief reads the other builders' newest succeeded runs on its
+ * snapshot when it runs, which the queue holds it back for.
+ */
+export interface BriefParams extends GraphifyParams {
+  readonly builder: "brief";
 }
 export interface SliceBudget {
   /** Files inside the slice; the first file past it on any path is a cut. */
@@ -239,6 +351,13 @@ export interface SandboxBuildParams extends GraphifyParams {
    * agent reads when the build writes fixtures for a draft with none.
    */
   readonly dataModelRunId?: string;
+  /**
+   * A succeeded preparation run on the same slice (`FixturesParams` with
+   * `pseudonyms`): a draft with no fixtures takes its fixtures, and one
+   * with no name table its table when the build's checks pass it, rather
+   * than running the agents again.
+   */
+  readonly preparedRunId?: string;
 }
 /**
  * The bounty an agent run works for: a proposal and one immutable revision
@@ -270,6 +389,18 @@ export interface FixturesParams extends AgentTaskParams {
   readonly agent: "fixtures";
   readonly sliceRunId: string;
   readonly dataModelRunId?: string;
+  /**
+   * A sandbox's preparation, run once a bounty's profile is ready and its
+   * price approved: after the fixtures, the run writes the name table too,
+   * checked against the workspace's names (`workspaceVocabulary`) over the
+   * slice, the spec, the fixtures and the listing a cut would give the
+   * version. Absent for a person's fixtures run, which keeps its cache key.
+   */
+  readonly pseudonyms?: {
+    readonly vocabulary: readonly string[];
+    readonly title: string;
+    readonly summary: string;
+  };
 }
 /**
  * The starter agent writes the draft version it names, for the bounty the
@@ -286,6 +417,8 @@ export type AnalysisParams =
   | GraphifyParams
   | AbstractionsParams
   | DataModelParams
+  | DocumentsParams
+  | BriefParams
   | SliceParams
   | SandboxBuildParams
   | ScopeParams
@@ -300,6 +433,14 @@ export function isDataModelParams(
   params: AnalysisParams,
 ): params is DataModelParams {
   return "builder" in params && params.builder === "data_model";
+}
+export function isDocumentsParams(
+  params: AnalysisParams,
+): params is DocumentsParams {
+  return "builder" in params && params.builder === "documents";
+}
+export function isBriefParams(params: AnalysisParams): params is BriefParams {
+  return "builder" in params && params.builder === "brief";
 }
 export function isScopeParams(params: AnalysisParams): params is ScopeParams {
   return "agent" in params && params.agent === "scope";

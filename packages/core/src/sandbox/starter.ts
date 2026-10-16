@@ -46,6 +46,7 @@ import {
   PRIVATE_TESTS_DIR,
   PUBLIC_TESTS_DIR,
   RUN_PATH,
+  SANDBOX_SCRIPTS,
   ambientDeclarations,
   isScript,
   runtimePath,
@@ -678,11 +679,7 @@ export function generateStarterProject(
         type: "module",
         engines: { node: toolchain.nodeRange },
         packageManager: `npm@${toolchain.npm}`,
-        scripts: {
-          build: "tsc -p tsconfig.json",
-          dev: `npm run build && node --env-file=${ENV_FILE} ${runtimePath(RUN_PATH)}`,
-          test: `npm run build && node --env-file=${ENV_FILE} --test "${PUBLIC_TESTS_DIR}/**/*.test.js"`,
-        },
+        scripts: SANDBOX_SCRIPTS,
         dependencies: Object.fromEntries(
           packages.map((item) => [item.name, item.version]),
         ),

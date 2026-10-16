@@ -1,5 +1,5 @@
 import { ApiError } from "@sandbox-factory/client";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { rankAtLeast } from "sandbox-factory";
 import { clients, queryKeys, useUserId } from "./data/query";
 /**
@@ -24,6 +24,7 @@ import type {
   GithubAvailableInstallationDto,
   GithubConnectionDto,
   GithubConnectOutcome,
+  GithubInstallationRepositoryDto,
   GithubRepoDto,
 } from "@sandbox-factory/shared";
 import {
@@ -1026,7 +1027,10 @@ export function RepositoryDialog({
   registeredLoading: boolean;
   onRegister: (
     externalId: string,
-  ) => Promise<{ ok: true } | { ok: false; error: string; code?: string }>;
+  ) => Promise<
+    | { ok: true; value: GithubRepoDto }
+    | { ok: false; error: string; code?: string }
+  >;
   onRemove: (
     repoId: string,
   ) => Promise<{ ok: true } | { ok: false; error: string }>;
@@ -1038,13 +1042,15 @@ export function RepositoryDialog({
   onClose: () => void;
 }) {
   const userId = useUserId();
+  const queryClient = useQueryClient();
+  const listingKey = queryKeys.resource(
+    userId,
+    organizationId,
+    "github-installation-repositories",
+    connectionId,
+  );
   const query = useQuery({
-    queryKey: queryKeys.resource(
-      userId,
-      organizationId,
-      "github-installation-repositories",
-      connectionId,
-    ),
+    queryKey: listingKey,
     queryFn: ({ signal }) =>
       clients.github.installationRepositories(
         organizationId,
@@ -1099,7 +1105,17 @@ export function RepositoryDialog({
     setRegistering(null);
     if (result.ok) {
       setRegisteredHere((current) => new Set(current).add(externalId));
-      await query.refetch();
+      // Marked here rather than listed again: GitHub's listing has not
+      // changed, only which of it is registered.
+      queryClient.setQueryData<GithubInstallationRepositoryDto[]>(
+        listingKey,
+        (listing) =>
+          listing?.map((repository) =>
+            repository.externalId === externalId
+              ? { ...repository, registeredId: result.value.id }
+              : repository,
+          ),
+      );
     } else if (result.code === "unhealthy") {
       unhealthyRef.current();
     } else {

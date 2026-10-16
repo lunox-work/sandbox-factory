@@ -59,11 +59,14 @@ import {
   contextKeywords,
   keptDocumentsAligned,
   scopeApproved,
+  type DocumentSet,
   type GithubContext,
+  type GithubContextDocument,
   type GithubRepositoryContext,
   type JiraContext,
 } from "sandbox-factory";
 
+import { issueKey, recentReads, type RecentReads } from "../jira/recent.js";
 import type { RunClientResult } from "../pricing/executor.js";
 import { mapConcurrent } from "../pricing/review.js";
 import {
@@ -98,6 +101,15 @@ export interface GithubContextSource {
     organizationId: string,
     repo: GithubRepoSummary,
   ) => Promise<DocumentReader | null>;
+  /**
+   * The documents a `documents` build kept of a snapshot, read from
+   * storage; null for a snapshot built before it, which is read from
+   * GitHub. Absent, every repository is read from GitHub.
+   */
+  readonly documentsFor?: (
+    organizationId: string,
+    snapshotId: string,
+  ) => Promise<DocumentSet | null>;
 }
 
 export interface BountyContextOptions extends BountyRouteOptions {
@@ -110,6 +122,21 @@ export interface BountyContextOptions extends BountyRouteOptions {
     connectionId: string,
   ) => Promise<RunClientResult>;
   readonly githubContext?: GithubContextSource;
+  /**
+   * Issues read in the last minute, so the context's status is not a Jira
+   * round trip on every read of it, nor a pin's answer a second one. The
+   * routes keep one when none is given.
+   */
+  readonly recentJira?: RecentReads<RecentIssue>;
+}
+
+/** What the context's status read of an issue: its `updated`, and once that has moved, what it says. */
+export interface RecentIssue {
+  readonly updated: string | null;
+  readonly said?: {
+    readonly context: JiraContext;
+    readonly spec: ReturnType<typeof specContent>;
+  };
 }
 
 interface BountyContextAppEnv {
@@ -198,21 +225,6 @@ async function jiraStatus(
   }
   let liveRevision = live ?? null;
   if (live === undefined) {
-    if (options.clientFor === undefined) {
-      return status("unavailable", {
-        reason: "reconnect",
-        linked,
-        latest: synced,
-      });
-    }
-    const ready = await options.clientFor(organizationId, link.connectionId);
-    if (!ready.ok) {
-      return status("unavailable", {
-        reason: ready.reason === "reconnect" ? "reconnect" : "jira_unavailable",
-        linked,
-        latest: synced,
-      });
-    }
     const unreadable = (error: unknown) =>
       status("unavailable", {
         reason: needsReconnect(error)
@@ -223,29 +235,61 @@ async function jiraStatus(
         linked,
         latest: synced,
       });
-    try {
-      liveRevision = (await ready.client.issue(link.externalId)).updated;
-    } catch (error) {
-      return unreadable(error);
-    }
-    if (liveRevision !== null && later(liveRevision, latest.jira.revision)) {
+    // What Jira said in the last minute is answered from memory, the
+    // client included, which may itself go to Atlassian for a token.
+    const key = issueKey(organizationId, link.connectionId, link.externalId);
+    let read = options.recentJira?.get(key);
+    let ready: RunClientResult | undefined;
+    const client = async () =>
+      (ready ??=
+        options.clientFor === undefined
+          ? { ok: false, reason: "reconnect" }
+          : await options.clientFor(organizationId, link.connectionId));
+    const unconnected = (failed: Exclude<RunClientResult, { ok: true }>) =>
+      status("unavailable", {
+        reason:
+          failed.reason === "reconnect" ? "reconnect" : "jira_unavailable",
+        linked,
+        latest: synced,
+      });
+    if (read === undefined) {
+      const reader = await client();
+      if (!reader.ok) return unconnected(reader);
       try {
-        const [context, spec] = await Promise.all([
-          ready.client.issueContext(link.externalId),
-          ready.client.issueSpec(link.externalId),
-        ]);
-        const said =
-          contextHash({ source: "jira", content: context }) !==
-            latest.jira.contentHash ||
-          jiraContentChange(bounty, specContent(spec)) !== null;
-        return status(said ? "ahead" : "current", {
-          linked,
-          liveRevision,
-          latest: synced,
-        });
+        read = {
+          updated: (await reader.client.issue(link.externalId)).updated,
+        };
       } catch (error) {
         return unreadable(error);
       }
+      options.recentJira?.set(key, read);
+    }
+    liveRevision = read.updated;
+    if (liveRevision !== null && later(liveRevision, latest.jira.revision)) {
+      let told = read.said;
+      if (told === undefined) {
+        const reader = await client();
+        if (!reader.ok) return unconnected(reader);
+        try {
+          const [context, spec] = await Promise.all([
+            reader.client.issueContext(link.externalId),
+            reader.client.issueSpec(link.externalId),
+          ]);
+          told = { context, spec: specContent(spec) };
+        } catch (error) {
+          return unreadable(error);
+        }
+        options.recentJira?.set(key, { ...read, said: told });
+      }
+      const said =
+        contextHash({ source: "jira", content: told.context }) !==
+          latest.jira.contentHash ||
+        jiraContentChange(bounty, told.spec) !== null;
+      return status(said ? "ahead" : "current", {
+        linked,
+        liveRevision,
+        latest: synced,
+      });
     }
   }
   return status(
@@ -469,7 +513,10 @@ type Readable =
       readonly commitSha: string;
       readonly branch: string;
       readonly blobs: readonly { path: string; size: number; sha: string }[];
-      readonly reader: DocumentReader;
+      /** What its `documents` build kept, by path; empty with none. */
+      readonly stored: ReadonlyMap<string, GithubContextDocument>;
+      /** GitHub, for a document the build did not keep; asked once. */
+      readonly reader: () => Promise<DocumentReader | null>;
     }
   | {
       readonly ok: false;
@@ -542,11 +589,16 @@ export async function syncGithub(
   const readable: Readable[] = await Promise.all(
     at.map(async ({ repo, snapshot }): Promise<Readable> => {
       if (snapshot === null) return { ok: false, repo, commitSha: null };
-      const [tree, reader] = await Promise.all([
+      // A snapshot whose build kept its documents is read from storage,
+      // and GitHub only for a document the build did not keep.
+      const [tree, documents] = await Promise.all([
         source.tree(snapshot.treeKey),
-        source.readerFor(organizationId, repo),
+        source.documentsFor?.(organizationId, snapshot.id).catch(() => null) ??
+          null,
       ]);
-      if (tree === null || reader === null)
+      let asked: Promise<DocumentReader | null> | undefined;
+      const reader = () => (asked ??= source.readerFor(organizationId, repo));
+      if (tree === null || (documents === null && (await reader()) === null))
         return { ok: false, repo, commitSha: snapshot.commitSha };
       return {
         ok: true,
@@ -554,6 +606,12 @@ export async function syncGithub(
         commitSha: snapshot.commitSha,
         branch: snapshot.ref.replace(/^refs\/heads\//, ""),
         blobs: tree.entries.filter((entry) => entry.type === "blob"),
+        stored: new Map(
+          (documents?.documents ?? []).map((document) => [
+            document.path,
+            document,
+          ]),
+        ),
         reader,
       };
     }),
@@ -581,7 +639,14 @@ export async function syncGithub(
   const byPath = reading.map(
     ({ blobs }) => new Map(blobs.map((entry) => [entry.path, entry])),
   );
-  let read: { repository: number; path: string; bytes: number; text: string }[];
+  let read: {
+    repository: number;
+    path: string;
+    bytes: number;
+    text: string;
+    /** Cut by the build that kept it, before the caps below. */
+    cut: boolean;
+  }[];
   try {
     read = await mapConcurrent(
       chosen.chosen,
@@ -589,14 +654,28 @@ export async function syncGithub(
       async ({ repository, path }) => {
         const from = reading[repository];
         const entry = byPath[repository]?.get(path);
+        const stored = from?.stored.get(path);
+        if (stored !== undefined)
+          return {
+            repository,
+            path,
+            bytes: stored.bytes,
+            text: stored.text,
+            cut: stored.truncated,
+          };
+        const reader =
+          from === undefined || entry === undefined
+            ? null
+            : await from.reader();
         return {
           repository,
           path,
           bytes: entry?.size ?? 0,
           text:
-            from === undefined || entry === undefined
+            from === undefined || entry === undefined || reader === null
               ? ""
-              : await from.reader.blobText(from.repo.fullName, entry.sha),
+              : await reader.blobText(from.repo.fullName, entry.sha),
+          cut: false,
         };
       },
     );
@@ -609,7 +688,15 @@ export async function syncGithub(
         )
       : refused(502, "github_failed", "GitHub could not be read.");
   }
-  const kept = keptDocumentsAligned(read);
+  // A document the build cut is cut still, though the caps here keep all
+  // that was stored of it.
+  const kept = keptDocumentsAligned(read).map((document, index) =>
+    document === null ||
+    read[index]?.cut !== true ||
+    document.text.length !== read[index]?.text.length
+      ? document
+      : { ...document, truncated: true },
+  );
   const repositories: GithubRepositoryContext[] = reading.map(
     ({ repo, branch, commitSha }, repository) => {
       const own = read.flatMap((document, index) => {
@@ -661,8 +748,12 @@ export async function syncGithub(
 
 export function mountBountyContextRoutes<Env extends BountyContextAppEnv>(
   app: Hono<Env>,
-  options: BountyContextOptions,
+  given: BountyContextOptions,
 ): void {
+  const options: BountyContextOptions = {
+    ...given,
+    recentJira: given.recentJira ?? recentReads<RecentIssue>(),
+  };
   const base = "/api/v1/orgs/:orgId/bounties/:id/context";
 
   app.get(base, async (c) => {

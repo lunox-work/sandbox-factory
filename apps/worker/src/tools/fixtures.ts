@@ -9,7 +9,9 @@
  * included source, under the generated project's own compiler settings.
  * The set is recorded for a person to attach to a sandbox version, and a
  * sliced build whose draft has none writes one itself (`writeFixtures`);
- * the build then aliases it with the version and runs the walkthrough.
+ * the build then aliases it with the version and runs the walkthrough. A
+ * sandbox's preparation is a run of this tool that writes the name table
+ * after the set (`preparation.ts`).
  */
 
 import { mkdir, writeFile } from "node:fs/promises";
@@ -19,6 +21,7 @@ import {
   FIXTURE_SET_SCHEMA_VERSION,
   canonicalJson,
   isFixturesParams,
+  workspaceVocabulary,
 } from "sandbox-factory";
 import type {
   AgentUsage,
@@ -48,8 +51,15 @@ import { loadDataModel } from "./context-runs.js";
 import type { ArtifactFile, ToolAdapter, ToolRunInput } from "./adapter.js";
 import { checkFixtures } from "./fixtures-check.js";
 import { nearestCompilerOptions } from "./compiler-config.js";
+import {
+  draftPreparedPseudonyms,
+  packageVocabulary,
+  writePreparedPseudonyms,
+} from "./preparation.js";
 import { loadSliceRun, readIncludedSource } from "./slice-run.js";
 import type { LoadedSliceRun } from "./slice-run.js";
+import type { RunTiming } from "../timing.js";
+import { together } from "../together.js";
 
 /** Candidate sets one run may check before it must submit. */
 export const FIXTURE_CHECKS_MAX = 8;
@@ -129,6 +139,7 @@ export async function writeFixtures(input: {
   readonly signal: AbortSignal;
   readonly log: (line: string) => void;
   readonly step?: ((text: string) => void) | undefined;
+  readonly timing?: RunTiming | undefined;
 }): Promise<WrittenFixtures | null> {
   const { slice } = input;
   input.log("Fixtures agent started.");
@@ -230,6 +241,7 @@ export async function writeFixtures(input: {
   const outcome = await runAgent({
     model: input.model,
     step: input.step,
+    onTurn: input.timing?.turn,
     system: FIXTURES_SYSTEM_PROMPT,
     prompt: [
       bountySection(input.task.issueKey, input.task.draft),
@@ -274,7 +286,8 @@ export function createFixturesAdapter(settings: AgentSettings): ToolAdapter {
       const params = input.params;
       if (!isFixturesParams(params)) throw new AnalysisError("tool_failed");
       const snapshot = snapshotOf(input);
-      if (settings.model === null) {
+      const model = settings.model;
+      if (model === null) {
         input.log("No agent model is configured on this worker.");
         throw new AnalysisError("agent_unavailable");
       }
@@ -289,26 +302,68 @@ export function createFixturesAdapter(settings: AgentSettings): ToolAdapter {
         params.sliceRunId,
         snapshot.snapshotId,
       );
-      const written = await writeFixtures({
-        model: settings.model,
-        limits: settings.limits,
-        task,
-        sourceDir: input.sourceDir,
-        commitSha: snapshot.commitSha,
-        slice,
-        included: await readIncludedSource(input.sourceDir, slice.manifest),
-        dataModel:
-          params.dataModelRunId === undefined
-            ? null
-            : await loadDataModel(
-                input.inputs,
-                params.dataModelRunId,
-                snapshot.snapshotId,
-              ),
-        signal: input.signal,
-        log: input.log,
-        step: input.step,
-      });
+      const included = await readIncludedSource(
+        input.sourceDir,
+        slice.manifest,
+      );
+      // A sandbox's preparation writes the name table too, drafted from the
+      // slice while the fixtures are written.
+      const pseudonymsInput =
+        params.pseudonyms === undefined
+          ? null
+          : {
+              settings,
+              listing: {
+                title: params.pseudonyms.title,
+                summary: params.pseudonyms.summary,
+              },
+              spec: task.draft,
+              files: [
+                ...included,
+                ...slice.stubs.map((stub) => ({
+                  path: stub.module,
+                  text: stub.text,
+                })),
+              ],
+              vocabulary: workspaceVocabulary([
+                ...params.pseudonyms.vocabulary,
+                ...(await packageVocabulary(input.sourceDir)),
+              ]),
+              signal: input.signal,
+              log: input.log,
+              step: input.step,
+              timing: input.timing,
+            };
+      const dataModel =
+        params.dataModelRunId === undefined
+          ? null
+          : await loadDataModel(
+              input.inputs,
+              params.dataModelRunId,
+              snapshot.snapshotId,
+            );
+      const [written, drafted] = await together(
+        input.signal,
+        (signal) =>
+          writeFixtures({
+            model,
+            limits: settings.limits,
+            task,
+            sourceDir: input.sourceDir,
+            commitSha: snapshot.commitSha,
+            slice,
+            included,
+            dataModel,
+            signal,
+            log: input.log,
+            step: input.step,
+            timing: input.timing,
+          }),
+        (signal) =>
+          pseudonymsInput === null
+            ? Promise.resolve(null)
+            : draftPreparedPseudonyms({ ...pseudonymsInput, signal }),
+      );
       if (written === null) throw new AnalysisError("agent_incomplete");
       const { usage, ...answer } = written;
       const set: FixtureSet = {
@@ -326,7 +381,7 @@ export function createFixturesAdapter(settings: AgentSettings): ToolAdapter {
       const absolutePath = join(input.outDir, "fixture-set.json");
       await writeFile(absolutePath, canonicalJson(set), "utf8");
       input.log(`Fixture set recorded: ${set.fixtures.length} fixtures.`);
-      return [
+      const files: ArtifactFile[] = [
         {
           path: "fixture-set.json",
           absolutePath,
@@ -335,6 +390,20 @@ export function createFixturesAdapter(settings: AgentSettings): ToolAdapter {
           meta: JSON.parse(canonicalJson(set)) as Record<string, unknown>,
         },
       ];
+      // One its agent could not settle leaves the build to write it, as it
+      // would have.
+      if (pseudonymsInput !== null) {
+        const table = await writePreparedPseudonyms({
+          ...pseudonymsInput,
+          outDir: input.outDir,
+          sliceRunId: slice.run.id,
+          fixtures: set.fixtures,
+          scenario: set.scenario,
+          drafted,
+        });
+        if (table !== null) files.push(table);
+      }
+      return files;
     },
   };
 }

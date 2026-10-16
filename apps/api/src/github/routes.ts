@@ -378,15 +378,14 @@ export function mountGithubRoutes<Env extends GithubAppEnv>(
       const free = listed.filter(
         (installation) => !owners.has(String(installation.id)),
       );
-      // Linked without a choice only when exactly one is theirs. Two found
-      // is enough to know the picker is needed, so the checks stop there.
-      const linkable: GithubInstallationResponse[] = [];
-      for (const installation of free) {
-        if ((await authority(person, installation)) === "yours") {
-          linkable.push(installation);
-          if (linkable.length > 1) break;
-        }
-      }
+      // Linked without a choice only when exactly one is theirs. Each check
+      // is its own call to GitHub, so they are asked together.
+      const verdicts = await Promise.all(
+        free.map((installation) => authority(person, installation)),
+      );
+      const linkable = free.filter(
+        (_installation, index) => verdicts[index] === "yours",
+      );
       const only = linkable.length === 1 ? linkable[0] : undefined;
       if (only !== undefined) {
         return c.redirect(linked(returnTo, await link(organizationId, only)));
@@ -408,13 +407,14 @@ export function mountGithubRoutes<Env extends GithubAppEnv>(
           owners.get(String(installation.id)) === organizationId,
       );
       if (ours.length > 0) {
-        let relinked = false;
-        for (const installation of ours) {
-          if ((await authority(person, installation)) !== "yours") continue;
-          if ((await link(organizationId, installation)).status === "linked") {
-            relinked = true;
-          }
-        }
+        const relinks = await Promise.all(
+          ours.map(
+            async (installation) =>
+              (await authority(person, installation)) === "yours" &&
+              (await link(organizationId, installation)).status === "linked",
+          ),
+        );
+        const relinked = relinks.includes(true);
         // None could be: the picker says why for each.
         return c.redirect(back(returnTo, relinked ? "connected" : "pick"));
       }
@@ -647,11 +647,13 @@ export function mountGithubRoutes<Env extends GithubAppEnv>(
   );
 
   /**
-   * Register a repository. Only one the installation can see — checked
-   * against the installation's own listing, so a public repository outside
-   * it cannot be registered by id. The head is read before answering, so a
-   * new row comes back `ok` with a commit; its snapshot follows in the
-   * background, since a large tree takes longer than a click should.
+   * Register a repository. Only one the installation can see: it is read
+   * with a token narrowed to it, which GitHub refuses for a repository
+   * outside the installation, so a public one cannot be registered by id.
+   * One read, where listing the installation took a page per hundred. The
+   * head is read before answering, so a new row comes back `ok` with a
+   * commit; its snapshot follows in the background, since a large tree
+   * takes longer than a click should.
    */
   app.post(
     "/api/v1/orgs/:orgId/github/connections/:id/repositories",
@@ -677,17 +679,19 @@ export function mountGithubRoutes<Env extends GithubAppEnv>(
       if (!connection.healthy) return unhealthy(c);
 
       try {
-        const { repositories } = await installationClient(
+        const client = installationClient(
           installations,
           connection.installationId,
-          { kind: "discovery" },
+          { kind: "repository", repositoryId: parsed.data.externalId },
           fetchImpl,
-        ).installationRepositories();
-        const repository = repositories.find(
-          (candidate) => String(candidate.id) === parsed.data.externalId,
         );
-        if (repository === undefined) {
-          return c.json({ error: "Not found" }, 404);
+        let repository;
+        try {
+          repository = await client.repository(parsed.data.externalId);
+        } catch (error) {
+          if (error instanceof GithubNotFound)
+            return c.json({ error: "Not found" }, 404);
+          throw error;
         }
         const registered = await repos.register(organizationId, {
           ...repoMetadata(repository),
@@ -697,12 +701,7 @@ export function mountGithubRoutes<Env extends GithubAppEnv>(
         });
         const outcome = await syncRepo(
           repos,
-          installationClient(
-            installations,
-            connection.installationId,
-            { kind: "repository", repositoryId: registered.externalId },
-            fetchImpl,
-          ),
+          client,
           {
             organizationId,
             repoId: registered.id,

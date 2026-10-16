@@ -1,5 +1,5 @@
 import { createWriteStream } from "node:fs";
-import { mkdir } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
@@ -16,6 +16,19 @@ export interface FetchSourceOptions {
   readonly fetch?: typeof globalThis.fetch;
   readonly execute?: typeof command;
   readonly python?: string;
+  /**
+   * The bucket's copy of the commit's archive, read before GitHub is asked
+   * and written once GitHub's has been read, so the next worker without the
+   * source on disk reads it from the bucket. Either failing only means
+   * GitHub is asked, now or next time.
+   */
+  readonly archive?: {
+    read(): Promise<Uint8Array | undefined>;
+    write(path: string, bytes: number): Promise<void>;
+  };
+  /** Told how long the download and the unpacking each took. */
+  readonly onStage?: (stage: "fetch" | "extract", ms: number) => void;
+  readonly clock?: () => number;
 }
 export async function fetchSource(
   run: ClaimedAnalysisRun,
@@ -31,8 +44,59 @@ export async function fetchSource(
     !/^[\w.-]+\/[\w.-]+$/.test(run.repoFullName)
   )
     throw new AnalysisError("source_unavailable");
-  const fetchImpl = options.fetch ?? globalThis.fetch;
+  const clock = options.clock ?? (() => performance.now());
   options.signal.throwIfAborted();
+  const fetching = clock();
+  await mkdir(directory, { recursive: true });
+  const path = join(directory, "source.tar.gz");
+  const kept = await options.archive?.read().catch(() => undefined);
+  let downloaded: number | null = null;
+  if (kept !== undefined && kept.byteLength <= options.maxBytes) {
+    options.signal.throwIfAborted();
+    await writeFile(path, kept);
+  } else downloaded = await download(run, path, options);
+  options.onStage?.("fetch", clock() - fetching);
+  const source = join(directory, "source");
+  const extracting = clock();
+  try {
+    await (options.execute ?? command)(
+      options.python ?? "python3",
+      [
+        fileURLToPath(new URL("../python/extract_archive.py", import.meta.url)),
+        path,
+        source,
+        String(options.maxFiles),
+        String(options.maxBytes * 5),
+      ],
+      { signal: options.signal },
+    );
+  } catch (error) {
+    if (error instanceof CommandError)
+      throw new AnalysisError(
+        error.exitCode === 2
+          ? "too_large"
+          : error.exitCode === 3
+            ? "too_many_files"
+            : "source_unavailable",
+      );
+    throw error;
+  } finally {
+    options.onStage?.("extract", clock() - extracting);
+  }
+  // Kept only once it has unpacked, so the bucket never holds one that
+  // would fail every later run of the commit.
+  if (downloaded !== null)
+    await options.archive?.write(path, downloaded).catch(() => {});
+  return source;
+}
+
+/** Downloads GitHub's archive of the run's commit to `path`; its bytes. */
+async function download(
+  run: ClaimedAnalysisRun,
+  path: string,
+  options: FetchSourceOptions,
+): Promise<number> {
+  const fetchImpl = options.fetch ?? globalThis.fetch;
   const token = await options.token();
   const redirect = await fetchImpl(
     `https://api.github.com/repos/${run.repoFullName}/tarball/${run.commitSha}`,
@@ -70,11 +134,9 @@ export async function fetchSource(
     await body.cancel();
     throw new AnalysisError("too_large");
   }
-  await mkdir(directory, { recursive: true });
-  const path = join(directory, "source.tar.gz");
   const reader = body.getReader();
+  let bytes = 0;
   async function* chunks() {
-    let bytes = 0;
     try {
       while (true) {
         options.signal.throwIfAborted();
@@ -92,29 +154,5 @@ export async function fetchSource(
   await pipeline(Readable.from(chunks()), createWriteStream(path), {
     signal: options.signal,
   });
-  const source = join(directory, "source");
-  try {
-    await (options.execute ?? command)(
-      options.python ?? "python3",
-      [
-        fileURLToPath(new URL("../python/extract_archive.py", import.meta.url)),
-        path,
-        source,
-        String(options.maxFiles),
-        String(options.maxBytes * 5),
-      ],
-      { signal: options.signal },
-    );
-  } catch (error) {
-    if (error instanceof CommandError)
-      throw new AnalysisError(
-        error.exitCode === 2
-          ? "too_large"
-          : error.exitCode === 3
-            ? "too_many_files"
-            : "source_unavailable",
-      );
-    throw error;
-  }
-  return source;
+  return bytes;
 }

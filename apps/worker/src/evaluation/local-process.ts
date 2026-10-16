@@ -12,7 +12,15 @@
  */
 
 import { spawn } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { createHash, randomUUID } from "node:crypto";
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  rename,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import {
   basename,
@@ -33,6 +41,38 @@ import type {
 export interface LocalProcessOptions {
   /** Where job directories are created; the OS temp directory by default. */
   readonly root?: string;
+  /**
+   * The npm cache every job shares, outside any job's directory, and the
+   * lockfiles resolved for each distinct `package.json` beside it. A
+   * directory of this provider's own under the OS temp directory by
+   * default, made once and not at a name another user could guess.
+   */
+  readonly npmCache?: string;
+}
+
+/**
+ * Where the lockfile resolved for a dependency set is kept: keyed by what
+ * `package.json` asks to install, not by its name or version, which differ
+ * between the versions of one sandbox. Null for one that does not parse.
+ */
+function lockfilePath(cache: string, packageJson: string): string | null {
+  let manifest: Record<string, unknown>;
+  try {
+    manifest = JSON.parse(packageJson) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+  const asked = [
+    "dependencies",
+    "devDependencies",
+    "optionalDependencies",
+    "peerDependencies",
+    "overrides",
+  ].map((field) => [field, manifest[field] ?? null]);
+  const digest = createHash("sha256")
+    .update(JSON.stringify(asked))
+    .digest("hex");
+  return join(cache, "_lockfiles", `${digest}.json`);
 }
 
 function inside(root: string, path: string): string {
@@ -168,6 +208,11 @@ export function runProcess(
 export function createLocalProcessProvider(
   options: LocalProcessOptions = {},
 ): EvaluationProvider {
+  let sharedCache: Promise<string> | undefined;
+  const npmCacheOf = () =>
+    options.npmCache !== undefined
+      ? Promise.resolve(options.npmCache)
+      : (sharedCache ??= mkdtemp(join(tmpdir(), "sandbox-factory-npm-cache-")));
   return {
     name: "local-process",
     async create({ label, signal }) {
@@ -178,27 +223,35 @@ export function createLocalProcessProvider(
       );
       const home = join(directory, "home");
       const work = join(directory, "work");
+      let npmCache: string;
       try {
         await mkdir(home);
         await mkdir(work);
+        npmCache = await npmCacheOf();
       } catch (error) {
         // No job to destroy it later: the directory goes now.
         await rm(directory, { recursive: true, force: true });
         throw error;
       }
       // No platform variables reach the processes: PATH to find node and
-      // npm, a private HOME and npm cache, and nothing else.
+      // npm, a private HOME, the shared npm cache, and nothing else. The
+      // cache is content-addressed and checked against the lockfile's
+      // integrity on every install, so a package one job fetched is read
+      // from disk by the next rather than from the registry.
       const env: Record<string, string> = {
         PATH: process.env["PATH"] ?? "",
         HOME: home,
         LANG: "C.UTF-8",
         NO_COLOR: "1",
         CI: "1",
-        npm_config_cache: join(home, ".npm"),
+        npm_config_cache: npmCache,
+        npm_config_prefer_offline: "true",
         npm_config_update_notifier: "false",
         npm_config_fund: "false",
         npm_config_audit: "false",
       };
+      /** Where this job's dependency set keeps its lockfile, once staged. */
+      let lockfile: string | null = null;
       const job: EvaluationJob = {
         id: basename(directory),
         environment: {
@@ -212,6 +265,21 @@ export function createLocalProcessProvider(
             await mkdir(dirname(absolute), { recursive: true });
             await writeFile(absolute, file.text, "utf8");
           }
+          // A dependency set resolved before starts from its lockfile, so
+          // preparing it confirms the tree rather than resolving it again.
+          const manifest = files.find((file) => file.path === "package.json");
+          if (
+            manifest !== undefined &&
+            !files.some((file) => file.path === "package-lock.json")
+          ) {
+            lockfile = lockfilePath(npmCache, manifest.text);
+            const kept =
+              lockfile === null
+                ? null
+                : await readFile(lockfile, "utf8").catch(() => null);
+            if (kept !== null)
+              await writeFile(join(work, "package-lock.json"), kept, "utf8");
+          }
         },
         async exec(command) {
           const cwd =
@@ -221,7 +289,18 @@ export function createLocalProcessProvider(
           return runProcess(command, { cwd, env, signal });
         },
         async read(path) {
-          return readFile(inside(work, path), "utf8").catch(() => null);
+          const text = await readFile(inside(work, path), "utf8").catch(
+            () => null,
+          );
+          // A lockfile is read once it is prepared: it is kept for the
+          // next job with the same dependencies.
+          if (
+            path === "package-lock.json" &&
+            text !== null &&
+            lockfile !== null
+          )
+            await keepLockfile(lockfile, text).catch(() => {});
+          return text;
         },
         async destroy() {
           await rm(directory, { recursive: true, force: true });
@@ -230,4 +309,12 @@ export function createLocalProcessProvider(
       return job;
     },
   };
+}
+
+/** Writes whole or not at all, so a job never reads half a lockfile. */
+async function keepLockfile(path: string, lockfile: string): Promise<void> {
+  await mkdir(dirname(path), { recursive: true });
+  const partial = `${path}.${randomUUID()}`;
+  await writeFile(partial, lockfile, "utf8");
+  await rename(partial, path);
 }

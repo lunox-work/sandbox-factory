@@ -1,11 +1,18 @@
 /**
  * Read-only tools over the context builders' documents: a module's callable
- * surface from an `abstractions` run, and the entities from a `data_model`
- * run. They only describe; `check_scope` and `check_fixtures` still decide.
- * Every answer is capped, so one call cannot fill the context window.
+ * surface and what it reaches outside from an `abstractions` run, and the
+ * entities from a `data_model` run. They only describe; `check_scope` and
+ * `check_fixtures` still decide. Every answer is capped, so one call cannot
+ * fill the context window.
  */
 
-import type { AbstractionIndex, DataModel } from "sandbox-factory";
+import { lookupSeams } from "sandbox-factory";
+import type {
+  AbstractionIndex,
+  DataModel,
+  SeamsIndex,
+  SliceExternals,
+} from "sandbox-factory";
 import { z } from "zod";
 import { inputText, type AgentTool, type AgentToolResult } from "./loop.js";
 import { REPO_TOOL_LIMITS, invalidInput } from "./repo-tools.js";
@@ -14,6 +21,8 @@ import { REPO_TOOL_LIMITS, invalidInput } from "./repo-tools.js";
 export const CONTEXT_TOOL_LIMITS = {
   overviewEntities: 80,
   accessors: 15,
+  /** Files under a directory `module_seams` lists one by one. */
+  seamFiles: 30,
 } as const;
 
 const error = (content: string): AgentToolResult => ({
@@ -39,6 +48,7 @@ export function moduleSurfaceTool(index: AbstractionIndex): AgentTool {
   const modules = new Map(index.modules.map((module) => [module.path, module]));
   return {
     name: "module_surface",
+    concurrent: true,
     description:
       "Show a repository module's exported surface: each export's kind, signature (bodies elided) and line, and the types it names. Coverage says how it was read: `typed` is the TypeScript compiler's declaration, `syntactic` a signature as written with no type resolved, `names-only` names alone. This is what a stub for the module would declare.",
     inputSchema: {
@@ -78,6 +88,126 @@ export function moduleSurfaceTool(index: AbstractionIndex): AgentTool {
   };
 }
 
+const seamsInput = z.strictObject({
+  paths: z.array(z.string().min(1).max(1_000)).min(1).max(20),
+});
+
+/** The services and environment names externals list, on one line. */
+function describeSeams(
+  externals: SliceExternals,
+  unknown: readonly string[],
+): string {
+  const services = new Map<string, string[]>();
+  for (const entry of externals.packages)
+    services.set(entry.service, [
+      ...(services.get(entry.service) ?? []),
+      entry.specifier,
+    ]);
+  const parts = [
+    ...(services.size === 0
+      ? []
+      : [
+          `services ${[...services]
+            .map(
+              ([service, specifiers]) =>
+                `${service} (${specifiers.join(", ")})`,
+            )
+            .join(", ")}`,
+        ]),
+    ...(externals.environment.length === 0
+      ? []
+      : [
+          `environment ${externals.environment.map((entry) => entry.name).join(", ")}`,
+        ]),
+  ];
+  const known =
+    parts.length === 0
+      ? "no services or environment variables"
+      : parts.join("; ");
+  return unknown.length === 0
+    ? known
+    : `${known}; not indexed, so only check_scope can tell: ${unknown.join(", ")}`;
+}
+
+/**
+ * Per module, the services and environment variables the slice would list,
+ * from the seams index: a lookup, where `check_scope` slices.
+ */
+export function moduleSeamsTool(
+  index: SeamsIndex,
+  files: readonly string[],
+): AgentTool {
+  const known = new Set(files);
+  return {
+    name: "module_seams",
+    concurrent: true,
+    description:
+      "Look up, without slicing, the services (SDKs, database and HTTP clients) and environment variables that the given files reach, exactly as `check_scope` would list them for a slice that includes those files. A path may be a directory, for every file under it. Use it to find where the outside world is touched before spending a check.",
+    inputSchema: {
+      properties: {
+        paths: {
+          type: "array",
+          items: { type: "string" },
+          description: "Repository file or directory paths, at most 20.",
+        },
+      },
+      required: ["paths"],
+      additionalProperties: false,
+    },
+    describe: (_input, result) =>
+      result.isError === true ? null : "Looked up where the code reaches out",
+    async run(raw) {
+      const parsed = seamsInput.safeParse(raw);
+      if (!parsed.success) return invalidInput(parsed.error.issues);
+      const lines: string[] = [];
+      const all = new Set<string>();
+      for (const path of parsed.data.paths) {
+        const trimmed = path.replace(/\/+$/, "");
+        if (known.has(trimmed)) {
+          all.add(trimmed);
+          const found = lookupSeams(index, [trimmed]);
+          lines.push(
+            `${trimmed}: ${describeSeams(found.externals, found.unknown)}.`,
+          );
+          continue;
+        }
+        const prefix = `${trimmed}/`;
+        const under = files.filter((file) => file.startsWith(prefix));
+        if (under.length === 0) {
+          lines.push(`${path} names no file in the structure analysis.`);
+          continue;
+        }
+        for (const file of under) all.add(file);
+        const found = lookupSeams(index, under);
+        const reaching = [
+          ...new Set([
+            ...found.externals.packages.flatMap((entry) => entry.files),
+            ...found.externals.environment.flatMap((entry) => entry.files),
+          ]),
+        ].sort();
+        const shown = reaching.slice(0, CONTEXT_TOOL_LIMITS.seamFiles);
+        lines.push(
+          `${prefix} (${under.length} ${under.length === 1 ? "file" : "files"}): ${describeSeams(found.externals, found.unknown)}.`,
+          ...shown.map((file) => {
+            const one = lookupSeams(index, [file]);
+            return `- ${file}: ${describeSeams(one.externals, one.unknown)}`;
+          }),
+          more(reaching.length, shown.length),
+        );
+      }
+      if (parsed.data.paths.length > 1 && all.size > 0) {
+        const found = lookupSeams(index, [...all]);
+        lines.push(
+          `Together: ${describeSeams(found.externals, found.unknown)}.`,
+        );
+      }
+      return {
+        content: capped(lines.filter((line) => line !== "").join("\n")),
+      };
+    },
+  };
+}
+
 /** The data model: an overview, or one entity with its relations and accessors. */
 export function dataModelTool(model: DataModel): AgentTool {
   const entities = new Map(
@@ -89,6 +219,7 @@ export function dataModelTool(model: DataModel): AgentTool {
   const enums = new Map(model.enums.map((value) => [value.name, value]));
   return {
     name: "data_model",
+    concurrent: true,
     description:
       "Read the repository's data model, from its schema and migrations. With entity null: the storage, every entity with its table and field count, and the accessor modules that read or write entities, which are where a database seam belongs. With an entity's name or table: its fields (type, nullability, default, keys, enum values), its relations both ways with their delete behaviour, and the modules that touch it.",
     inputSchema: {

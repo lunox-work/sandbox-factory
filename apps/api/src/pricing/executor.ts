@@ -44,9 +44,11 @@ import {
   resolveStepSettings,
   sameSpec,
   stepUp,
+  BOUNTY_RUN_MODEL_CALLS_MAX,
   BOUNTY_SPEC_HASH_VERSION,
   bountySpecHash,
   trimSpec,
+  type BountyRunModelCall,
   type BountyRunOutcome,
   type BountyRunPlannedIssue,
   type BountyRunProgress,
@@ -63,7 +65,9 @@ import {
   SizerError,
   type SizingRequestOptions,
   type SizingUsage,
+  type StructuredCall,
   type StructuredCaller,
+  type StructuredResult,
 } from "../sizing/caller.js";
 import { draftSpecTool } from "../sizing/tools/draft-spec.js";
 import {
@@ -201,11 +205,12 @@ export interface BountyExecutorOptions {
     userId: string,
   ) => Promise<void>;
   /**
-   * The outline of each of the workspace's repositories a bounty's work
-   * could touch, in name order, each from the built commit the bounty's
-   * GitHub context holds it at (else its newest build), so the outline and
-   * the documents are of one commit. A repository never built has none, so
-   * the draft cannot name it. Absent, no draft is shown any.
+   * The brief of each of the workspace's repositories a bounty's work
+   * could touch (its outline, until it has one), in name order, each from
+   * the built commit the bounty's GitHub context holds it at (else its
+   * newest build), so the brief and the documents are of one commit. A
+   * repository never built has none, so the draft cannot name it. Absent,
+   * neither the draft nor the size is shown any.
    */
   readonly outlinesFor?: (
     organizationId: string,
@@ -260,6 +265,8 @@ export interface RepositoryOutlineRead {
 
 export class BountyExecutor {
   readonly #options: BountyExecutorOptions;
+  /** The model calls each run in progress has made, by run id. */
+  readonly #calls = new Map<string, BountyRunModelCall[]>();
 
   constructor(options: BountyExecutorOptions) {
     this.#options = options;
@@ -280,6 +287,8 @@ export class BountyExecutor {
     if (queued === null || queued.status !== "queued") return;
     const run = await runs.claim(organizationId, runId, leaseToken, now());
     if (run === null) return;
+    const calls: BountyRunModelCall[] = [];
+    this.#calls.set(run.id, calls);
 
     const controller = new AbortController();
     const heartbeat = (this.#options.setInterval ?? setInterval)(() => {
@@ -314,6 +323,49 @@ export class BountyExecutor {
       throw error;
     } finally {
       (this.#options.clearInterval ?? clearInterval)(heartbeat);
+      this.#calls.delete(run.id);
+      // Written once the run has ended; a record of its waits, so a write
+      // that fails costs only that.
+      if (calls.length > 0)
+        await runs
+          .recordModelCalls(
+            organizationId,
+            run.id,
+            calls.sort((a, b) => a.at.localeCompare(b.at)),
+          )
+          .catch(() => false);
+    }
+  }
+
+  /** One model call, timed into its run's record of them. */
+  async #call<I, O>(
+    run: StoredBountyRun,
+    tool: StructuredCall<I, O>,
+    input: I,
+    options: SizingRequestOptions,
+  ): Promise<StructuredResult<O>> {
+    const now = this.#options.now ?? (() => new Date());
+    const started = now();
+    const record = (answer: StructuredResult<O> | null) => {
+      const calls = this.#calls.get(run.id);
+      if (calls === undefined || calls.length >= BOUNTY_RUN_MODEL_CALLS_MAX)
+        return;
+      calls.push({
+        tool: tool.name,
+        at: started.toISOString(),
+        ms: Math.max(0, now().getTime() - started.getTime()),
+        model: answer?.actualModel ?? null,
+        fellBack: answer?.fellBack === true,
+        ok: answer !== null,
+      });
+    };
+    try {
+      const answer = await this.#options.caller.call(tool, input, options);
+      record(answer);
+      return answer;
+    } catch (error) {
+      record(null);
+      throw error;
     }
   }
 
@@ -1054,7 +1106,8 @@ export class BountyExecutor {
       };
       try {
         if (request.mode === "expand") {
-          const answer = await this.#options.caller.call(
+          const answer = await this.#call(
+            run,
             expandSpecTool,
             { ...input, request },
             options,
@@ -1062,7 +1115,8 @@ export class BountyExecutor {
           next = expandSpec(current.draft, answer.result);
           model = answer;
         } else {
-          const answer = await this.#options.caller.call(
+          const answer = await this.#call(
+            run,
             answerSpecTool,
             { ...input, request },
             options,
@@ -1211,14 +1265,14 @@ export class BountyExecutor {
     // What its sources add, as synced: the draft and the size see it, and
     // the proposal records which versions they saw.
     const held = await this.#context(organizationId, bounty);
-    // Each repository under a label of its own, the same in its outline
-    // and its documents, which the draft names the ones it touches by:
-    // outlined at the commits its documents were read at.
+    // Each repository under a label of its own, the same in its brief and
+    // its documents, which the draft names the ones it touches by: briefed
+    // at the commits its documents were read at.
     const outlines = await outlinesOf(held.github);
     const labels = new Map(
       outlines.map(({ fullName }, index) => [fullName, repositoryLabel(index)]),
     );
-    const repositoryOutline = outlines
+    const repositoryBriefs = outlines
       .map(({ text }, index) => `=== ${repositoryLabel(index)} ===\n${text}`)
       .join("\n\n");
     const sourceContext = renderSourceContext(
@@ -1285,13 +1339,14 @@ export class BountyExecutor {
 
       const draftCall = (async () => {
         try {
-          const draft = await this.#options.caller.call(
+          const draft = await this.#call(
+            run,
             draftSpecTool,
             {
               summary: content.title,
               descriptionText: content.description,
               components: content.components,
-              ...(repositoryOutline === "" ? {} : { repositoryOutline }),
+              ...(repositoryBriefs === "" ? {} : { repositoryBriefs }),
               ...(sourceContext === "" ? {} : { sourceContext }),
             },
             request,
@@ -1321,11 +1376,13 @@ export class BountyExecutor {
 
       const sizeCall = (async (): Promise<BountySizingResult | undefined> => {
         try {
-          const sized = await this.#options.caller.call(
+          const sized = await this.#call(
+            run,
             sizeBountyTool,
             {
               summary: content.title,
               descriptionText: content.description,
+              ...(repositoryBriefs === "" ? {} : { repositoryBriefs }),
               ...(sourceContext === "" ? {} : { sourceContext }),
             },
             request,

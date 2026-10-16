@@ -21,6 +21,8 @@ test("a snapshot is built once its map succeeded and every context builder finis
   const done = [
     { tool: "graphify", status: "succeeded" },
     { tool: "abstractions", status: "failed" },
+    { tool: "documents", status: "succeeded" },
+    { tool: "brief", status: "succeeded" },
     { tool: "data_model", status: "succeeded" },
   ] as const;
   assert.equal(snapshotBuilt(done), true);
@@ -37,12 +39,12 @@ test("a snapshot is built once its map succeeded and every context builder finis
   // A builder still at work holds it back; so does a missing one.
   assert.equal(
     snapshotBuilt([
-      ...done.slice(0, 2),
+      ...done.slice(0, 4),
       { tool: "data_model", status: "running" },
     ]),
     false,
   );
-  assert.equal(snapshotBuilt(done.slice(0, 2)), false);
+  assert.equal(snapshotBuilt(done.slice(0, 4)), false);
   // Without a map there is nothing a slice or a scope could read.
   assert.equal(
     snapshotBuilt([{ tool: "graphify", status: "failed" }, ...done.slice(1)]),

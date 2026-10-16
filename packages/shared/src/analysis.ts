@@ -65,6 +65,15 @@ export const dataModelParamsSchema = z.strictObject({
   builder: z.literal("data_model"),
   graphRunId: z.string().min(1),
 });
+/** The documents builder reads the source alone; the brief, the other builders. */
+export const documentsParamsSchema = z.strictObject({
+  deadlineMinutes: z.number().int().min(1).max(120).default(30),
+  builder: z.literal("documents"),
+});
+export const briefParamsSchema = z.strictObject({
+  deadlineMinutes: z.number().int().min(1).max(120).default(30),
+  builder: z.literal("brief"),
+});
 
 /** A repository-relative path: no root, no `..`, no backslashes or NULs. */
 export const entryPointSchema = z
@@ -151,6 +160,17 @@ export const fixturesParamsSchema = z.strictObject({
   agent: z.literal("fixtures"),
   sliceRunId: z.string().min(1),
   dataModelRunId: z.string().min(1).optional(),
+  /**
+   * A sandbox's preparation: the run also writes the name table, checked
+   * against these names. Absent for a person's fixtures run.
+   */
+  pseudonyms: z
+    .strictObject({
+      vocabulary: z.array(z.string().min(1)),
+      title: z.string(),
+      summary: z.string(),
+    })
+    .optional(),
 });
 /**
  * `POST .../repositories/:id/scope` and `POST .../runs/:id/fixtures`. The
@@ -234,6 +254,8 @@ export const sandboxBuildParamsSchema = z.strictObject({
   vocabulary: z.array(z.string().min(1)).optional(),
   /** The data model the fixtures agent reads, when the build writes fixtures. */
   dataModelRunId: z.string().min(1).optional(),
+  /** A preparation run whose fixtures and name table the build tries first. */
+  preparedRunId: z.string().min(1).optional(),
 });
 /** Stored starter parameters: the version it writes, and the stack it follows. */
 export const starterParamsSchema = z.strictObject({
@@ -258,6 +280,16 @@ export const analysisRunDtoSchema = z.discriminatedUnion("tool", [
     ...runCommon,
     tool: z.literal("data_model"),
     params: dataModelParamsSchema,
+  }),
+  z.strictObject({
+    ...runCommon,
+    tool: z.literal("documents"),
+    params: documentsParamsSchema,
+  }),
+  z.strictObject({
+    ...runCommon,
+    tool: z.literal("brief"),
+    params: briefParamsSchema,
   }),
   z.strictObject({
     ...runCommon,
@@ -376,6 +408,39 @@ export const moduleSurfaceSchema = z.object({
     }),
   ),
 });
+/** One kept document, as a sync keeps it. */
+export const githubContextDocumentSchema = z.object({
+  path: z.string().min(1),
+  bytes: z.number().int().nonnegative(),
+  text: z.string(),
+  truncated: z.boolean(),
+});
+/** `documents.json`, as a sync and the brief read it back. */
+export const documentSetSchema = z.object({
+  schemaVersion: z.literal(1),
+  toolVersion: z.string(),
+  sourceSnapshotId: z.string(),
+  sourceCommitSha: z.string(),
+  documents: z.array(githubContextDocumentSchema),
+  omitted: z.number().int().nonnegative(),
+});
+/** What the `documents` artifact's `meta` carries for the console. */
+export const documentsSummarySchema = z.object({
+  documents: z.number().int().nonnegative(),
+  omitted: z.number().int().nonnegative(),
+  chars: z.number().int().nonnegative(),
+});
+/** What the `brief_md` artifact's `meta` carries for the console. */
+export const briefSummarySchema = z.object({
+  chars: z.number().int().nonnegative(),
+  lines: z.number().int().nonnegative(),
+  /** Which builders' runs it read; false for one with no succeeded run. */
+  read: z.object({
+    abstractions: z.boolean(),
+    dataModel: z.boolean(),
+    documents: z.boolean(),
+  }),
+});
 /** `abstractions.json`, as the agents read it back. */
 export const abstractionIndexSchema = z.object({
   schemaVersion: z.literal(1),
@@ -391,6 +456,27 @@ export const abstractionIndexSchema = z.object({
   modules: z.array(moduleSurfaceSchema),
   externals: z.array(z.string()),
   omissions: z.array(abstractionOmissionSchema),
+});
+/** `seams.json`, the abstractions run's seams index, as the scope agent reads it back. */
+export const seamsIndexSchema = z.object({
+  schemaVersion: z.literal(1),
+  toolVersion: z.string(),
+  sourceSnapshotId: z.string(),
+  sourceCommitSha: z.string(),
+  graphRunId: z.string(),
+  graphSha256: z.string(),
+  files: count,
+  modules: z.array(
+    z.object({
+      path: z.string(),
+      packages: z.array(
+        z.object({ specifier: z.string(), service: z.string() }),
+      ),
+      environment: z.array(z.string()),
+    }),
+  ),
+  partial: z.array(z.string()),
+  coveredThrough: z.string().nullable(),
 });
 /**
  * What the abstractions `manifest.json` artifact's `meta` carries for the

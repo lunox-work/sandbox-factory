@@ -316,6 +316,7 @@ function executorHarness(options: {
       finishes.push({ status, details });
       return Promise.resolve(null);
     },
+    recordModelCalls: () => Promise.resolve(true),
   } as unknown as BountyRunStore;
   const source = options.proposal ?? proposal();
   const proposals = {
@@ -520,6 +521,7 @@ const measuredProfile: StoredBountyProfile = {
   runErrorCode: null,
   scopeRunId: "arn_scope",
   sliceRunId: "arn_slice",
+  preparedRunId: null,
   profile: {
     version: COMPLEXITY_PROFILE_VERSION,
     slice: {

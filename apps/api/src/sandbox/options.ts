@@ -59,14 +59,22 @@ export interface SandboxRouteOptions {
   ) => Promise<LatestBountyContext>;
   /**
    * The sizing's profiles of a spec revision, whose slice a linked
-   * sandbox's version is cut from. Absent, nothing is sliced from here.
+   * sandbox's version is cut from, and the preparation each slice has.
+   * Absent, nothing is sliced from here.
    */
-  readonly profiles?: Pick<BountyProfileStore, "forRevision">;
+  readonly profiles?: Pick<BountyProfileStore, "forRevision"> &
+    Partial<Pick<BountyProfileStore, "preparationFor">>;
   /** Asks the profiler for a revision's profile it does not have yet. */
   readonly requestProfile?: (
     organizationId: string,
     input: NewBountyProfile,
   ) => Promise<void>;
+  /**
+   * Where a version asked for before its slice was ready is remembered, for
+   * the cutter to cut once it is (`cutter.ts`). Absent, such a request is
+   * answered with where the slice stands and nothing more.
+   */
+  readonly cuts?: Pick<SandboxStore, "requestCut" | "clearCut">;
   readonly ensureWorker: () => Promise<void>;
   readonly maxActive?: number;
   readonly onLaunchError?: () => void;

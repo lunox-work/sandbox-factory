@@ -1,16 +1,22 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { test } from "node:test";
+import { buildSeamsIndex, fileSeams } from "sandbox-factory";
 import {
   CONTEXT_TOOL_LIMITS,
   accessorHint,
   dataModelTool,
+  moduleSeamsTool,
   moduleSurfaceTool,
 } from "../src/agent/context-tools.js";
 import { REPO_TOOL_LIMITS } from "../src/agent/repo-tools.js";
 import { AnalysisError } from "../src/errors.js";
 import type { ToolInputs } from "../src/tools/adapter.js";
-import { loadAbstractions, loadDataModel } from "../src/tools/context-runs.js";
+import {
+  loadAbstractions,
+  loadDataModel,
+  loadSeams,
+} from "../src/tools/context-runs.js";
 import {
   contextIndex,
   contextModel,
@@ -235,4 +241,91 @@ test("the accessor hint points the scope agent at the modules that reach the sto
     accessorHint({ ...contextModel, entities: [] }),
     /found no entities/,
   );
+});
+
+const seamsSources: Record<string, string | null> = {
+  "src/db.ts": `import pg from "pg";\nexport const url = process.env.DATABASE_URL;`,
+  "src/pure.ts": "export const one = 1;",
+  "lib/a/x.ts": `import axios from "axios";`,
+  "lib/a/big.ts": null,
+};
+const seamsIndex = buildSeamsIndex({
+  files: Object.entries(seamsSources).map(([path, text]) =>
+    fileSeams(path, text),
+  ),
+  snapshotId: "rsn_1",
+  commitSha: "c",
+  graphRunId: "arn_graph",
+  graphSha256: "s",
+});
+
+test("the seams index is read back when the abstractions run wrote one, and is null when it did not", async () => {
+  const abstractions = contextRun("arn_abs", "abstractions", contextIndex);
+  assert.equal(
+    await loadSeams(servedBy(abstractions), "arn_abs", "rsn_1"),
+    null,
+  );
+  const bytes = Buffer.from(JSON.stringify(seamsIndex));
+  const seams = servedBy(abstractions, {
+    listArtifacts: async () => [
+      abstractions.artifact,
+      {
+        ...abstractions.artifact,
+        id: "art_seams",
+        kind: "seams_index",
+        path: "seams.json",
+        objectKey: "runs/arn_abs/seams.json",
+        sha256: createHash("sha256").update(bytes).digest("hex"),
+      },
+    ],
+    readArtifact: async (key) =>
+      key === "runs/arn_abs/seams.json" ? bytes : abstractions.bytes,
+  });
+  assert.deepEqual(await loadSeams(seams, "arn_abs", "rsn_1"), seamsIndex);
+  await assert.rejects(loadSeams(seams, "arn_abs", "rsn_other"), unavailable);
+});
+
+test("module_seams looks files and directories up, and says what it cannot answer", async () => {
+  const tool = moduleSeamsTool(seamsIndex, Object.keys(seamsSources).sort());
+  const one = await tool.run({ paths: ["src/db.ts"] }, signal);
+  assert.equal(
+    one.content,
+    "src/db.ts: services postgres (pg); environment DATABASE_URL.",
+  );
+  assert.equal(
+    tool.describe?.({ paths: ["src/db.ts"] }, one),
+    "Looked up where the code reaches out",
+  );
+  const several = await tool.run(
+    { paths: ["lib/a/", "src/pure.ts", "nowhere"] },
+    signal,
+  );
+  assert.deepEqual(several.content.split("\n"), [
+    "lib/a/ (2 files): services http (axios); not indexed, so only check_scope can tell: lib/a/big.ts.",
+    "- lib/a/x.ts: services http (axios)",
+    "src/pure.ts: no services or environment variables.",
+    "nowhere names no file in the structure analysis.",
+    "Together: services http (axios); not indexed, so only check_scope can tell: lib/a/big.ts.",
+  ]);
+  const invalid = await tool.run({ paths: [] }, signal);
+  assert.match(invalid.content, /Invalid input/);
+  assert.equal(tool.describe?.({ paths: [] }, invalid), null);
+  // A crowded directory lists its first files and says how many more.
+  const crowded = Array.from(
+    { length: CONTEXT_TOOL_LIMITS.seamFiles + 2 },
+    (_, n) => `many/f${String(n).padStart(2, "0")}.ts`,
+  );
+  const crowdedTool = moduleSeamsTool(
+    buildSeamsIndex({
+      files: crowded.map((path) => fileSeams(path, "process.env.X;")),
+      snapshotId: "rsn_1",
+      commitSha: "c",
+      graphRunId: "arn_graph",
+      graphSha256: "s",
+    }),
+    crowded,
+  );
+  const listed = (await crowdedTool.run({ paths: ["many"] }, signal)).content;
+  assert.match(listed, /^many\/ \(32 files\): environment X\./);
+  assert.match(listed, /\(2 more\.\)$/);
 });

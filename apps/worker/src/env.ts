@@ -21,6 +21,20 @@ const schema = z.object({
     (value) => (value === "" ? undefined : value),
     z.enum(["once", "poll"]).default("once"),
   ),
+  /**
+   * In `poll` mode, the minutes without a run after which the worker exits:
+   * a task launched for a burst stays warm for the next one, then goes.
+   * Unset, a polling worker runs until stopped, as Compose's does.
+   */
+  WORKER_IDLE_EXIT_MINUTES: z.preprocess(
+    blank,
+    z.coerce
+      .number()
+      .int()
+      .positive()
+      .max(24 * 60)
+      .optional(),
+  ),
   MAX_TARBALL_BYTES: z.preprocess(
     (value) => (value === "" ? undefined : value),
     z.coerce

@@ -12,7 +12,7 @@
  * generated, never both.
  */
 
-import { and, desc, eq, isNull, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, isNotNull, isNull, or, sql } from "drizzle-orm";
 import type {
   ContextVersions,
   AcceptanceTest,
@@ -386,6 +386,38 @@ export interface SandboxStore {
     organizationId: string,
     versionId: string,
   ): Promise<ReplayContext | null>;
+  /**
+   * Records that a version is wanted from a linked sandbox's next slice,
+   * for whoever cuts once that slice is ready. A newer request replaces an
+   * older one. False for a sandbox with no repository, or not the owner's.
+   */
+  requestCut(
+    organizationId: string,
+    sandboxId: string,
+    requestedBy: string,
+    now: Date,
+  ): Promise<boolean>;
+  /** The owner's sandboxes with a cut asked for, oldest request first. */
+  pendingCuts(organizationId: string): Promise<PendingCut[]>;
+  /** Privileged discovery, followed by `pendingCuts` per owner. */
+  organizationsWithPendingCuts(): Promise<string[]>;
+  /**
+   * Clears a request. With `requestedAt`, only that request: one made
+   * since it was read is left for its own turn.
+   */
+  clearCut(
+    organizationId: string,
+    sandboxId: string,
+    requestedAt?: string,
+  ): Promise<void>;
+}
+
+/** A version asked for before its slice was ready. */
+export interface PendingCut {
+  readonly sandboxId: string;
+  /** Null once the person who asked is removed. */
+  readonly requestedBy: string | null;
+  readonly requestedAt: string;
 }
 
 const toSandbox = (
@@ -502,6 +534,9 @@ export function createSandboxStore(db: Database): SandboxStore {
       .select({ sandbox, sourceRepoId: sandboxSource.sourceRepoId })
       .from(sandbox)
       .leftJoin(sandboxSource, eq(sandboxSource.sandboxId, sandbox.id));
+  /** A `sandbox_source` row of the owner's: the scope of a write to one. */
+  const ownedSource = (owner: string) =>
+    sql`exists (select 1 from ${sandbox} where ${sandbox.id} = ${sandboxSource.sandboxId} and ${sandbox.organizationId} = ${owner})`;
   const versions = (tx: Database = db) =>
     tx
       .select({
@@ -1244,6 +1279,64 @@ export function createSandboxStore(db: Database): SandboxStore {
                 artifactsPresent: Number(run.artifacts) > 0,
               },
       };
+    },
+    async requestCut(owner, sandboxId, requestedBy, now) {
+      const rows = await db
+        .update(sandboxSource)
+        .set({ cutRequestedBy: requestedBy, cutRequestedAt: now })
+        .where(and(eq(sandboxSource.sandboxId, sandboxId), ownedSource(owner)))
+        .returning({ sandboxId: sandboxSource.sandboxId });
+      return rows.length > 0;
+    },
+    async pendingCuts(owner) {
+      const rows = await db
+        .select({
+          sandboxId: sandboxSource.sandboxId,
+          requestedBy: sandboxSource.cutRequestedBy,
+          requestedAt: sandboxSource.cutRequestedAt,
+        })
+        .from(sandboxSource)
+        .innerJoin(sandbox, eq(sandbox.id, sandboxSource.sandboxId))
+        .where(
+          and(
+            eq(sandbox.organizationId, owner),
+            isNotNull(sandboxSource.cutRequestedAt),
+          ),
+        )
+        .orderBy(asc(sandboxSource.cutRequestedAt));
+      return rows.flatMap(({ sandboxId, requestedBy, requestedAt }) =>
+        requestedAt === null
+          ? []
+          : [
+              {
+                sandboxId,
+                requestedBy,
+                requestedAt: requestedAt.toISOString(),
+              },
+            ],
+      );
+    },
+    async organizationsWithPendingCuts() {
+      const rows = await db
+        .select({ organizationId: sandbox.organizationId })
+        .from(sandboxSource)
+        .innerJoin(sandbox, eq(sandbox.id, sandboxSource.sandboxId))
+        .where(isNotNull(sandboxSource.cutRequestedAt));
+      return [...new Set(rows.map((row) => row.organizationId))];
+    },
+    async clearCut(owner, sandboxId, requestedAt) {
+      await db
+        .update(sandboxSource)
+        .set({ cutRequestedBy: null, cutRequestedAt: null })
+        .where(
+          and(
+            eq(sandboxSource.sandboxId, sandboxId),
+            requestedAt === undefined
+              ? undefined
+              : eq(sandboxSource.cutRequestedAt, new Date(requestedAt)),
+            ownedSource(owner),
+          ),
+        );
     },
   };
 }

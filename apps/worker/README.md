@@ -56,12 +56,44 @@ and communities use neutral names. `manifest.json` records coverage, omissions,
 counts, confidence and the canonical graph SHA-256. Timing fields are diagnostic
 and do not participate in the graph digest.
 
+Every run that ends, succeeded or failed, also writes where its time went to
+`analysis_run.timing` (`src/timing.ts`): the fetch, extract, tool, upload and
+commit stages in milliseconds; for an agent, each turn's model call and tool
+calls; for a build or starter, each baseline's steps with the duration the
+evaluator reported. Durations only, never inputs or output. A released run
+writes none: it is claimed again, and the claim clears the last attempt's.
+
+### Source on disk
+
+A run that reads source checks it out of the worker's source cache
+(`src/source-cache.ts`), kept under the OS temp directory by
+`(repository, commit)`, so a commit's builders, scope, slice and build fetch
+and extract it once between them. The cache holds 4 GiB by default and
+evicts the least recently used entry no run is reading; a restarted worker
+on the same disk keeps the entries it finds complete. Runs read the tree and
+never write to it.
+
+On a miss the archive is read from the private bucket
+(`sources/<repoId>/<sha>.tar.gz`) before GitHub. One fetched from GitHub is
+written there once it has unpacked, so a fresh worker reads the bucket
+instead; the bucket expires them after 30 days, and removing the repository
+removes them. A cache hit records no `fetch` or `extract` stage in the run's
+timing.
+
+The local evaluation provider shares one npm cache across jobs, outside any
+job's directory, with `prefer-offline`, and keeps the lockfile it prepares
+for each set of dependencies, keyed by what `package.json` asks to install,
+so the next job with the same set starts from it. A baseline builds the
+project once and runs the walkthrough and the public tests with `node`
+directly; the `dev` and `test` scripts build first only for a developer's
+own runs.
+
 ### Context builders
 
-`abstractions` and `data_model` are the other context builders, queued
-like graphify from `POST .../repositories/:id/runs` with the builder's
-name as `tool`; their parameters are graphify's plus a `builder`
-discriminator and `graphRunId`. Each writes a `manifest.json` whose `meta`
+`abstractions`, `data_model`, `documents` and `brief` are the other
+context builders, queued like graphify from `POST .../repositories/:id/runs`
+with the builder's name as `tool`; their parameters are graphify's plus a
+`builder` discriminator, and for the two that read the map `graphRunId`. Each writes a `manifest.json` whose `meta`
 is the summary the console reads (`abstractionsSummarySchema` and
 `dataModelSummarySchema` in `packages/shared`).
 
@@ -110,6 +142,15 @@ most imported modules with their export counts, the first 25 omissions and
 8,000 characters; each cut is an omission. The same snapshot gives the same
 bytes.
 
+Beside them, `seams.json` (kind `seams_index`, `seamsIndexSchema`) lists
+per module the service imports and environment names the slice would list
+for it: every file of the graph read as the slice reads it and passed to the
+slice's own `detectExternals`, so a union of entries is what a slice of
+those files reports. Only modules that reach something are listed. A file
+that cannot be read, is over 1 MiB, or names more than 50 service imports
+or 100 environment names is `partial`; past 20,000 entries the index stops
+at `coveredThrough`. The index cannot answer for those files.
+
 **data_model** reads the entities, fields, enums and relations a
 repository stores, and the modules that touch them. A recognizer runs only
 on its evidence, never on folder names:
@@ -151,6 +192,46 @@ entities touched, then importers. Outputs: `data-model.json` (kind
 `manifest.json`; both JSON artifacts carry the summary
 (`dataModelSummarySchema`): storage, sources, counts and bounded lists of
 entities with their fields, enums, relations, accessors and omissions.
+
+**documents** keeps the repository's Markdown documents: every one a
+bounty's sync could read (`repositoryDocuments` in core: the README, the
+guides, the docs directories and module READMEs, boilerplate and vendored
+code passed over), at most 200, each cut to `CONTEXT_DOCUMENT_CHARS` as a
+sync keeps it. Output: `documents.json` (kind `documents`, a `DocumentSet`),
+whose `meta` counts them (`documentsSummarySchema`). A sync and a pin read
+it instead of GitHub, which they ask only for a document it did not keep.
+
+**brief** is one bounded document per snapshot (`renderBrief` in core, at
+most `BRIEF_MAX_CHARS`): the stack its manifests name and the layout and
+test layout from the file list, then the most imported modules with what
+they export, the entities and the modules that touch them, and the README's
+opening and the guides' names, most telling first, so a reader with less
+room keeps a prefix (`cutBrief`). It reads the newest succeeded
+`abstractions`, `data_model` and `documents` runs on its snapshot, and the
+queue holds it back until no other builder there is queued or running
+(`BUILDER_READERS`); one that failed, or cannot be read, is left out. No
+model. Output: `brief.md` (kind `brief_md`), whose `meta` says its size and
+what it read (`briefSummarySchema`). The draft and the size read every
+connected repository's brief, under one shared cap (`briefCharsEach`).
+
+A claimed `abstractions`, `data_model` or `documents` run shares its claim
+with the others queued on its snapshot (`documents` with a graphify run
+too): the worker claims them beside it (`claimBeside`) and runs them at
+once on the one cached checkout. Each keeps its own lease and heartbeat.
+
+A worker has slots by kind (`WORKER_SLOTS` in core): three for agent runs
+(`scope`, `fixtures`, `sandbox_build`, `sandbox_starter`), which spend
+their time waiting on a model, and one for builds (the context builders and
+`slice`), which spend it on the CPU. It claims into any free slot as soon
+as it can, beside the runs it already has, and once every slot of a kind
+is busy it claims only the other kinds (`claimNext(..., tools)`). A shared
+claim takes one build slot. A claim takes the oldest run of the
+organization with the fewest running first, so one workspace's burst does
+not hold another's behind it. At most two evaluation jobs run at once on a
+worker (`limitJobs`); a baseline past that waits for one to end. Within an
+agent's turn, reading calls (`list_files`, `read_file`, `search`,
+`graph_neighbours`, `module_surface`, `module_seams`, `data_model`) run
+together; checks, runs and submits run alone, in order.
 
 ### Slice
 
@@ -271,8 +352,8 @@ a unique lease and storage prefix, so a late worker cannot overwrite its
 successor. Completion inserts artifacts and changes status in one fenced
 transaction. A heartbeat runs every 15 seconds, the lease lasts 60 seconds, and
 the default deadline is 30 minutes. A watchdog retries lost workers twice;
-manual retries share that limit. SIGTERM stops new claims and allows the current
-run 60 seconds before cancellation and release.
+manual retries share that limit. SIGTERM stops new claims and allows the runs
+in its slots 60 seconds before cancellation and release.
 
 Sources are ephemeral. The fetcher sends the repository-scoped read token only
 to api.github.com and follows a validated codeload redirect without Authorization.
@@ -334,8 +415,13 @@ that succeeded. With them the agent also gets `module_surface(path)` (a module's
 what its stub declares if the slice cuts it) and `data_model(entity)` (the
 storage, entities and accessors, or one entity's fields, enum values,
 relations and accessors). The prompt lists the top accessors as where a
-`database` seam belongs. Neither is required, and `check_scope` still
-decides. A named run that is gone, unfinished, on another snapshot or
+`database` seam belongs. When the abstractions run has a seams index on the
+scope's graph run, the agent also gets `module_seams(paths)`, which looks up
+the services and environment names of files or directories without slicing,
+and `check_scope` takes a check's externals from the index when it covers
+every included file; `submit_scope` always slices from source. An
+abstractions run built before the index goes without. Neither is required,
+and `check_scope` still decides. A named run that is gone, unfinished, on another snapshot or
 altered fails the run `context_unavailable`.
 
 A `fixtures` run names a succeeded slice run, a proposal and a spec
@@ -350,6 +436,20 @@ compiles. With the snapshot's `data_model` run (`dataModelRunId`), the agent
 also has `data_model`, so a fixture standing in for a `database` seam keeps
 required fields, enum values and foreign keys across fixtures. Output: `fixture-set.json` (fixtures with reasons, the
 walkthrough, a summary and the token usage), also carried in `meta`.
+
+A sandbox's **preparation** is a `fixtures` run with `pseudonyms` in its
+parameters (the workspace's names, and the title and summary a cut would
+give the version), queued by the API once a bounty's profile is ready and
+its price approved. After the set, it has the pseudonyms agent write a name
+table (`writePreparedPseudonyms` in `tools/preparation.ts`), checked as far
+as it can be without a version: the rules hold and map back, and no file a
+contributor will read (the slice, its stubs, the spec, the fixtures, the
+walkthrough and the listing) names the workspace. Output, beside the set:
+`pseudonym-table.json` (kind `pseudonyms`). A table its agent could not
+settle leaves the set alone. A build given the run as `preparedRunId` takes
+its fixtures for a draft with none, and its table for a draft with none when
+the build's own check of the generated project passes it; otherwise the
+agents write them as below.
 
 A version copies a fixture set into its transform. A sliced build whose
 draft has none writes one first, with the same agent and check
@@ -417,8 +517,16 @@ API service group before registering worker revisions.
 Apply the worker ECR repository, egress-only security group, task role, task
 definition and API launcher settings. Then CD builds and pushes the worker,
 registers a revision, runs database migrations and updates the API. There is no
-worker service: the API launches Fargate batches using the latest ACTIVE family
-revision. Terraform ignores the worker's container definition after bootstrap,
+worker service: the API launches Fargate tasks using the latest ACTIVE family
+revision. A task polls (`WORKER_MODE=poll`), wakes on the queue's `NOTIFY`
+(`analysis_run_queued`, `analysis_run_ended`) rather than its five-second poll,
+and exits after `WORKER_IDLE_EXIT_MINUTES` (15) without a run, so a burst pays
+one cold start. Its connections carry `application_name`
+`sandbox-factory-worker:<id>`, which is how the launcher sees an idle task and
+does not start a second for nothing, and counts the tasks alive. It starts
+another beside them while the claimable and running runs of a kind outnumber
+their slots (`queueState().short`), at most two minutes apart and up to
+`WORKER_MAX_TASKS` (4). Terraform ignores the worker's container definition after bootstrap,
 so an unrelated apply cannot replace the latest worker image with bootstrap.
 Container environment or secret-list changes must be applied to the active
 revision through CD when that list changes.

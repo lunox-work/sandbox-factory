@@ -226,6 +226,33 @@ export function runtimePath(path: string): string {
   return path;
 }
 
+/**
+ * What `npm run dev` and `npm test` run once the project is built. The
+ * scripts build first, for a contributor's own runs; a baseline builds
+ * once and runs these itself, so it compiles the project once, not three
+ * times.
+ */
+export const SANDBOX_RUN_ARGV = {
+  dev: ["node", `--env-file=${ENV_FILE}`, runtimePath(RUN_PATH)],
+  test: [
+    "node",
+    `--env-file=${ENV_FILE}`,
+    "--test",
+    `${PUBLIC_TESTS_DIR}/**/*.test.js`,
+  ],
+} as const;
+
+/** One command line, a glob quoted so node expands it rather than a shell. */
+const commandLine = (argv: readonly string[]) =>
+  argv.map((arg) => (arg.includes("*") ? `"${arg}"` : arg)).join(" ");
+
+/** A generated project's `package.json` scripts, a slice's or a starter's. */
+export const SANDBOX_SCRIPTS = {
+  build: "tsc -p tsconfig.json",
+  dev: `npm run build && ${commandLine(SANDBOX_RUN_ARGV.dev)}`,
+  test: `npm run build && ${commandLine(SANDBOX_RUN_ARGV.test)}`,
+} as const;
+
 /** `x.ts`, `x.tsx` and `x.js` → `x.d.ts`; `x.mts` → `x.d.mts`; `x.cts` → `x.d.cts`. */
 export function declarationPath(path: string): string {
   if (/\.d\.[cm]?ts$/.test(path)) return path;
@@ -1132,11 +1159,7 @@ export function generateProject(input: ProjectInput): GeneratedProject {
         type: "module",
         engines: { node: toolchain.nodeRange },
         packageManager: `npm@${toolchain.npm}`,
-        scripts: {
-          build: "tsc -p tsconfig.json",
-          dev: `npm run build && node --env-file=${ENV_FILE} ${runtimePath(RUN_PATH)}`,
-          test: `npm run build && node --env-file=${ENV_FILE} --test "${PUBLIC_TESTS_DIR}/**/*.test.js"`,
-        },
+        scripts: SANDBOX_SCRIPTS,
         dependencies,
         devDependencies: { typescript: toolchain.typescript },
       },

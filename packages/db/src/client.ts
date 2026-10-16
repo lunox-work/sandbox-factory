@@ -16,10 +16,22 @@ export interface ConnectionOptions {
    * `max_connections`, which runs out first.
    */
   readonly max?: number;
+  /** Postgres' `application_name` for every connection the pool opens. */
+  readonly applicationName?: string;
 }
 
 export interface Connection {
   readonly db: Database;
+  /**
+   * Calls `onNotify` for each `NOTIFY` on `channel`, on a connection of its
+   * own that reconnects by itself. Resolves once listening, with the
+   * function that stops it. A notification lost to a reconnect is lost, so
+   * a listener keeps a timer as well.
+   */
+  listen(
+    channel: string,
+    onNotify: (payload: string) => void,
+  ): Promise<() => Promise<void>>;
   /** Drains the pool. Call on shutdown so the process can exit cleanly. */
   close(): Promise<void>;
 }
@@ -27,10 +39,20 @@ export interface Connection {
 export function createConnection({
   url,
   max = 10,
+  applicationName,
 }: ConnectionOptions): Connection {
-  const sql = postgres(url, { max });
+  const sql = postgres(url, {
+    max,
+    ...(applicationName === undefined
+      ? {}
+      : { connection: { application_name: applicationName } }),
+  });
   return {
     db: drizzle(sql),
+    async listen(channel, onNotify) {
+      const { unlisten } = await sql.listen(channel, onNotify);
+      return unlisten;
+    },
     async close() {
       await sql.end();
     },

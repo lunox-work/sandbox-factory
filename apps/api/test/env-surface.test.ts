@@ -74,6 +74,7 @@ test("the API reads exactly the documented environment variables", () => {
       "WORKER_CLUSTER",
       "WORKER_SUBNETS",
       "WORKER_SECURITY_GROUP",
+      "WORKER_MAX_TASKS",
       "MAX_ACTIVE_RUNS_PER_ORG",
       // Reporting only.
       "BUILD_VERSION",

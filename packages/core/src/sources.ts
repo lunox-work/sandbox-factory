@@ -272,6 +272,31 @@ export function contextDocuments(
 }
 
 /**
+ * The most documents a `documents` build keeps of one repository: far more
+ * than one sync reads, since a bounty's title can rank any of them first.
+ */
+export const REPOSITORY_DOCUMENTS_MAX = 200;
+
+/**
+ * Every document a sync could read in one repository's file list, in the
+ * order a title naming none of them would read them, at most
+ * `REPOSITORY_DOCUMENTS_MAX`: what a `documents` build keeps, so a sync
+ * reads storage instead of GitHub. `omitted` counts the rest.
+ */
+export function repositoryDocuments(files: readonly DocumentFile[]): {
+  readonly paths: string[];
+  readonly omitted: number;
+} {
+  const ordered = rankedDocuments(files, [])
+    .sort(
+      (a, b) => a.rank - b.rank || a.depth - b.depth || byPath(a.path, b.path),
+    )
+    .map(({ path }) => path);
+  const paths = ordered.slice(0, REPOSITORY_DOCUMENTS_MAX);
+  return { paths, omitted: ordered.length - paths.length };
+}
+
+/**
  * The documents worth reading across several repositories' file lists,
  * under one cap: ranked as `contextDocuments` ranks one repository's, so
  * every repository's README comes before any repository's guides, and a

@@ -53,6 +53,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { authClient } from "./auth";
 import { removeAvatar, uploadAvatar, type AvatarResult } from "./avatars";
 import { RateCardEditor } from "./Proposals";
+import { SandboxSettings } from "./features/settings/SandboxSettings";
 import { Connections } from "./Connections";
 import type { JiraBoard } from "./useJira";
 
@@ -441,6 +442,10 @@ export function Organization({
 
         <TabsContent value="settings" {...keptPanel("settings")}>
           <RateCardEditor
+            organizationId={organization.id}
+            role={organization.role}
+          />
+          <SandboxSettings
             organizationId={organization.id}
             role={organization.role}
           />

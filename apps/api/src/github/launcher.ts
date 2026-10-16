@@ -10,7 +10,18 @@ export interface WorkerLaunchConfig {
   readonly cluster: string;
   readonly subnets: readonly string[];
   readonly securityGroup: string;
+  /** The most worker tasks the launcher keeps alive at once; 4 by default. */
+  readonly maxWorkers?: number;
 }
+/** Between two launches while no worker is alive: a debounce and a backoff. */
+const FIRST_LAUNCH_MS = 30_000;
+/**
+ * Between two launches that add a worker beside live ones. A task takes
+ * about a minute to start and connect, and until it does the queue still
+ * looks short of slots.
+ */
+const SCALE_OUT_MS = 120_000;
+export const MAX_WORKERS_DEFAULT = 4;
 export class WorkerLauncher {
   #pending: Promise<void> | undefined;
   #lastLaunch = 0;
@@ -37,10 +48,16 @@ export class WorkerLauncher {
     if (config === undefined) return; // Compose's polling worker needs no ECS.
     const now = (this.options.now ?? (() => new Date()))();
     const state = await this.options.runs.queueState(now);
+    // One worker while none is alive; another beside them while the queue
+    // has more runs of a slot than the live ones can run at once.
+    const scaleOut = state.freshWorker;
     if (
       !state.queued ||
-      state.freshWorker ||
-      now.getTime() - this.#lastLaunch < 30_000
+      (scaleOut &&
+        (!state.short ||
+          state.workers >= (config.maxWorkers ?? MAX_WORKERS_DEFAULT))) ||
+      now.getTime() - this.#lastLaunch <
+        (scaleOut ? SCALE_OUT_MS : FIRST_LAUNCH_MS)
     )
       return;
     const input: RunTaskCommandInput = {
@@ -57,8 +74,8 @@ export class WorkerLauncher {
         },
       },
     };
-    // Stamped before the attempt, not after a success: the thirty seconds
-    // are a backoff as much as a debounce. A failing RunTask (no capacity,
+    // Stamped before the attempt, not after a success: the window is a
+    // backoff as much as a debounce. A failing RunTask (no capacity,
     // a bad task definition, throttling) would otherwise be retried on
     // every `ensureWorker()`, each one another ECS call that fails the same.
     this.#lastLaunch = now.getTime();

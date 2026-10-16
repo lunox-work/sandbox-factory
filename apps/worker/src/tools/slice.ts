@@ -34,6 +34,7 @@ import type {
   CompilationResult,
   IncludedFile,
   SliceBlocker,
+  SliceExternals,
   SliceGraph,
   SliceManifest,
   SliceParams,
@@ -268,6 +269,11 @@ export async function analyseSlice(input: {
   readonly run: { readonly snapshotId: string; readonly commitSha: string };
   readonly signal: AbortSignal;
   readonly log: (line: string) => void;
+  /**
+   * The externals of the included files when an index already has them
+   * all, as `detectExternals` would give them; null to read them here.
+   */
+  readonly externalsOf?: (included: readonly string[]) => SliceExternals | null;
 }): Promise<SliceAnalysis> {
   const { params, graph } = input;
   const graphRun = graph.run;
@@ -295,9 +301,11 @@ export async function analyseSlice(input: {
   const texts = new Map<string, string>();
   for (const [path, { bytes }] of included)
     texts.set(path, bytes.toString("utf8"));
-  const externals = detectExternals(
-    [...texts.entries()].map(([path, text]) => ({ path, text })),
-  );
+  const externals =
+    input.externalsOf?.(walk.included) ??
+    detectExternals(
+      [...texts.entries()].map(([path, text]) => ({ path, text })),
+    );
   const packageFiles = new Map<string, Set<string>>();
   // The source is read without its node_modules, so the graph cannot
   // tell an installed package from a missing one: every bare specifier

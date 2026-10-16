@@ -190,6 +190,24 @@ export interface BountyRunOutcome {
  * run shows the scenarios and the size as they land instead of a wait for
  * both. A field is absent until its call returns.
  */
+/**
+ * One model call a pricing run made, kept on the run so the wait for a
+ * price can be split into the calls behind it. `ms` covers every attempt
+ * and any fallback; `fellBack` is whether the fallback provider answered.
+ */
+export interface BountyRunModelCall {
+  readonly tool: string;
+  /** When the call started, as an ISO timestamp. */
+  readonly at: string;
+  readonly ms: number;
+  /** The model that answered; null when none did. */
+  readonly model: string | null;
+  readonly fellBack: boolean;
+  readonly ok: boolean;
+}
+/** A board's run can size hundreds of bounties; only the first calls are kept. */
+export const BOUNTY_RUN_MODEL_CALLS_MAX = 200;
+
 export interface BountyRunProgress {
   /** The drafted spec, or null when the draft failed. */
   readonly spec?: SpecDraft | null;

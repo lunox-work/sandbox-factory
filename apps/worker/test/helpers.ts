@@ -3,6 +3,7 @@ import type {
   AnalysisRunStore,
   ObjectStore,
 } from "@sandbox-factory/db";
+import type { AnalysisTiming } from "sandbox-factory";
 export const run: ClaimedAnalysisRun = {
   id: "arn_1",
   snapshotId: "rsn_1",
@@ -46,6 +47,7 @@ export function toolContext() {
 export function stores() {
   const bytes = new Map<string, Uint8Array>();
   const calls: string[] = [];
+  const timings: AnalysisTiming[] = [];
   const objects: ObjectStore = {
     put: async (key, body) => {
       bytes.set(key, body);
@@ -73,6 +75,10 @@ export function stores() {
       return true;
     },
     get: async () => ({ ...run, status: "failed" }),
+    recordTiming: async (_o: string, _id: string, timing: AnalysisTiming) => {
+      timings.push(timing);
+      return true;
+    },
   } as unknown as AnalysisRunStore;
-  return { bytes, calls, objects, runs };
+  return { bytes, calls, timings, objects, runs };
 }

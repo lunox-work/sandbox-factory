@@ -59,7 +59,10 @@ export class FallbackCaller implements StructuredCaller {
         throw new SizerError("sizing_cancelled", false);
       }
       if (error instanceof SizerError) this.#onFallback?.(error.code);
-      return await this.#fallback.call(tool, input, options);
+      return {
+        ...(await this.#fallback.call(tool, input, options)),
+        fellBack: true,
+      };
     }
   }
 }

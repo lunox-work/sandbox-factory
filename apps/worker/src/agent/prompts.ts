@@ -14,7 +14,11 @@ import {
   renderGherkin,
   renderSourceContext,
 } from "sandbox-factory";
-import type { ApprovedTaskContext, SpecDraft } from "sandbox-factory";
+import type {
+  AliasRule,
+  ApprovedTaskContext,
+  SpecDraft,
+} from "sandbox-factory";
 
 const SANDBOX_CONTEXT = `You help prepare a sandbox: a small, standalone TypeScript project cut out of a client's private repository, so that an outside developer can implement one ticket without seeing the rest of the code. The developer clones the sandbox, runs \`npm ci\`, \`npm run dev\` and \`npm test\` on their own machine, and changes the copied source.
 
@@ -28,7 +32,7 @@ Your job is to choose the slice for the ticket below.
 
 A good slice holds the code the ticket changes and the logic that code depends on for its behaviour, and cuts only at seams: modules that talk to the outside world, such as a database, an HTTP or RPC client, a third-party SDK, the file system, a queue, the clock or configuration. Mocking a seam keeps the sandbox honest; mocking pure logic the ticket's scenarios go through leaves the developer coding against placeholders. Keep the slice as small as that allows, and leave out frameworks, wiring and unrelated features. Only TypeScript is supported end to end: a JavaScript file in the slice blocks the sandbox.
 
-When they are offered, \`module_surface\` shows a module's exported surface, which is what its stub declares if the slice cuts it, and \`data_model\` lists the entities the repository stores and the accessor modules that read or write them. A \`database\` seam belongs at an accessor module: cut there, so the slice keeps the logic that uses the data and mocks only the module that reaches the store.
+When they are offered, \`module_surface\` shows a module's exported surface, which is what its stub declares if the slice cuts it, and \`data_model\` lists the entities the repository stores and the accessor modules that read or write them. A \`database\` seam belongs at an accessor module: cut there, so the slice keeps the logic that uses the data and mocks only the module that reaches the store. \`module_seams\` looks up, without slicing, the services and environment variables files or directories reach, exactly as a check would list them: use it to find where the code touches the outside world before you spend a check, and save checks for confirming a request.
 
 Use the repository tools to understand the code, and \`check_scope\` to see exactly what a request produces: the included files, the modules it cuts with the symbols used from each, the public surface, the services and environment variables it touches, and blockers such as unresolved imports, packages no package.json pins, or compile errors. Iterate until nothing blocks and every cut module is a seam you can defend. A depth of 0 with an explicit file list is often the clearest request once you know the files.
 
@@ -139,6 +143,11 @@ export function pseudonymsSection(input: {
   /** What the check says of the slice with no pseudonyms. */
   readonly unrenamed: readonly string[];
   readonly overview: string;
+  /** A table drafted before the fixtures, and what the check says of it now. */
+  readonly drafted?: {
+    readonly rules: readonly AliasRule[];
+    readonly problems: readonly string[];
+  };
 }): string {
   return [
     `The bounty's title: ${input.title}`,
@@ -152,6 +161,11 @@ export function pseudonymsSection(input: {
     input.unrenamed.length === 0
       ? "With no pseudonyms, the check finds none of those names in a public file; the slice may still name the workspace in other ways."
       : `With no pseudonyms, the check says:\n${input.unrenamed.map((problem) => `- ${problem}`).join("\n")}`,
+    ...(input.drafted === undefined
+      ? []
+      : [
+          `A table was drafted before the fixtures and the walkthrough were written. Start from it; against them, the check says:\n${input.drafted.problems.map((problem) => `- ${problem}`).join("\n")}\n\nThe drafted table:\n${input.drafted.rules.map((rule, index) => `${index + 1}. ${rule.kind} ${rule.before} -> ${rule.after}${rule.paths.length === 0 ? "" : ` (in ${rule.paths.join(", ")})`}`).join("\n")}`,
+        ]),
     `The slice:\n\n${input.overview}`,
   ].join("\n\n");
 }

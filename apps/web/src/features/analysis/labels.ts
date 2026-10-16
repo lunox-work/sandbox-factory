@@ -59,6 +59,8 @@ export const builderNames: Record<ContextBuilder, string> = {
   graphify: "Graphify",
   abstractions: "Abstractions",
   data_model: "Data model",
+  documents: "Documents",
+  brief: "Brief",
 };
 
 /** What a run in the history is, in the page's words. */
@@ -69,7 +71,11 @@ export function runLabel(run: AnalysisRunDto): string {
     case "scope":
       return "Scope suggestion";
     case "fixtures":
-      return "Fake data";
+      // A sandbox's preparation writes the name table too; a person's
+      // fixtures run does not.
+      return run.params.pseudonyms === undefined
+        ? "Fake data"
+        : "Sandbox preparation";
     case "sandbox_build":
       return "Sandbox build";
     case "sandbox_starter":
@@ -80,6 +86,10 @@ export function runLabel(run: AnalysisRunDto): string {
       return "Abstractions";
     case "data_model":
       return "Data model";
+    case "documents":
+      return "Documents";
+    case "brief":
+      return "Brief";
   }
 }
 

@@ -10,7 +10,11 @@ import {
 export type { PricingRouteOptions } from "./options.js";
 
 import { type BountyProposalStore } from "@sandbox-factory/db";
-import { JiraApiError, JiraAuthError } from "@sandbox-factory/jira";
+import {
+  JiraApiError,
+  JiraAuthError,
+  type JiraIssueSpec,
+} from "@sandbox-factory/jira";
 import type {
   JiraIssueDto,
   ProposalCategoriesDto,
@@ -43,6 +47,7 @@ import {
 } from "sandbox-factory";
 
 import { isAtLeastAdmin } from "../access.js";
+import { recentReads } from "../jira/recent.js";
 import { boundedLimit, rowCursor } from "../paging.js";
 import { REVISE_SPEC_PROMPT_VERSION } from "../sizing/tools/revise-spec.js";
 import { describesProposal } from "./delivery.js";
@@ -85,6 +90,8 @@ export function mountPricingRoutes<Env extends PricingAppEnv>(
 ): void {
   const supportedCurrencies =
     options.supportedCurrencies ?? new Set(Intl.supportedValuesOf("currency"));
+  // A proposal's page reads its issue at most once a minute, its poll too.
+  const recentIssues = recentReads<JiraIssueSpec>();
 
   /*
     A price is changed only while its bounty's scope stands approved: the
@@ -628,27 +635,25 @@ export function mountPricingRoutes<Env extends PricingAppEnv>(
         return c.json({ error: "Not found" }, 404);
       }
     }
-    const live = await freshProposal(
-      reviewOptions(options),
-      organizationId,
-      proposal,
-    );
+    // The stored reads do not wait on Jira's.
+    const [live, writebackOperations, activeRun] = await Promise.all([
+      freshProposal(
+        { ...reviewOptions(options), recent: recentIssues },
+        organizationId,
+        proposal,
+      ),
+      options.writebacks === undefined
+        ? []
+        : options.writebacks.listForProposal(organizationId, proposal.id),
+      options.runs.activeForProposal(organizationId, proposal.id),
+    ]);
     const { proposal: stored, liveSpec, ...freshness } = live;
     return c.json({
       proposal: stored,
       liveSpec: liveSpec ?? null,
       freshness,
-      writebackOperations:
-        options.writebacks === undefined
-          ? []
-          : await options.writebacks.listForProposal(
-              organizationId,
-              proposal.id,
-            ),
-      activeRun: await options.runs.activeForProposal(
-        organizationId,
-        proposal.id,
-      ),
+      writebackOperations,
+      activeRun,
     });
   });
 
@@ -767,6 +772,7 @@ export function mountPricingRoutes<Env extends PricingAppEnv>(
       actorId: c.get("user").id,
       expectedRevision: parsed.data.expectedRevision,
     });
+    if (result.kind === "success") options.onApproved?.();
     return c.json(
       result.body,
       result.kind === "not-found"

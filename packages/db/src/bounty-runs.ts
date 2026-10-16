@@ -1,5 +1,6 @@
 import type {
   BountyRunKind,
+  BountyRunModelCall,
   BountyRunOutcome,
   BountyRunPlannedIssue,
   BountyRunProgress,
@@ -146,6 +147,16 @@ export interface BountyRunStore {
     runId: string,
     leaseToken: string,
     progress: BountyRunProgress,
+  ): Promise<boolean>;
+  /**
+   * Writes the model calls an ended run made, in place of any it had.
+   * After `finish`, so it is guarded by the run having ended rather than
+   * by the lease. False for a run still queued or running.
+   */
+  recordModelCalls(
+    organizationId: string,
+    runId: string,
+    calls: readonly BountyRunModelCall[],
   ): Promise<boolean>;
   finish(
     organizationId: string,
@@ -634,6 +645,21 @@ export function createBountyRunStore(db: Database): BountyRunStore {
             eq(bountyRun.status, "running"),
             eq(bountyRun.leaseToken, leaseToken),
             gt(bountyRun.leaseExpiresAt, now),
+          ),
+        )
+        .returning({ id: bountyRun.id })) as { id: string }[];
+      return rows.length > 0;
+    },
+
+    async recordModelCalls(organizationId, runId, calls) {
+      const rows = (await db
+        .update(bountyRun)
+        .set({ modelCalls: [...calls] })
+        .where(
+          and(
+            eq(bountyRun.organizationId, organizationId),
+            eq(bountyRun.id, runId),
+            notInArray(bountyRun.status, ["queued", "running"]),
           ),
         )
         .returning({ id: bountyRun.id })) as { id: string }[];

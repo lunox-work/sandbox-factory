@@ -14,6 +14,7 @@
 
 import { act, fireEvent, render, screen, waitFor, within } from "./render";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { CONTEXT_BUILDERS } from "sandbox-factory";
 
 import { GithubConnections } from "../src/Github";
 
@@ -339,9 +340,7 @@ beforeEach(() => {
         server.runReads += 1;
         if (server.neverStarts === true)
           return json({
-            runs: ["graphify", "abstractions", "data_model"].map((tool) =>
-              builderRun(tool, "queued"),
-            ),
+            runs: CONTEXT_BUILDERS.map((tool) => builderRun(tool, "queued")),
           });
         // Under way when first read; finished, or its map failed, after.
         const first = server.runReads === 1;
@@ -351,8 +350,8 @@ beforeEach(() => {
             builderRun("graphify", first ? "running" : finished),
             ...(server.graphFails === true
               ? []
-              : ["abstractions", "data_model"].map((tool) =>
-                  builderRun(tool, first ? "queued" : "succeeded"),
+              : CONTEXT_BUILDERS.filter((tool) => tool !== "graphify").map(
+                  (tool) => builderRun(tool, first ? "queued" : "succeeded"),
                 )),
           ],
         });
@@ -751,6 +750,14 @@ test("a repository is registered from what the installation can see, and built b
   expect(
     await within(dialog).findByText(/Every repository the App can see/),
   ).toBeDefined();
+  // GitHub's listing was read once, to open the dialog: registering marks
+  // it rather than reading it again.
+  expect(
+    calls.filter(
+      (call) =>
+        call === "GET /api/v1/orgs/org_1/github/connections/ghc_1/repositories",
+    ),
+  ).toHaveLength(1);
 
   // Its first build runs here, and holds the dialog open until it is done.
   const build = await within(dialog).findByTestId("repository-build");

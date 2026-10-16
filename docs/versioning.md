@@ -148,9 +148,15 @@ SeaweedFS hostname; AWS leaves it unset.
 The analysis API additionally reads `WORKER_TASK_DEFINITION`, `WORKER_CLUSTER`,
 `WORKER_SUBNETS`, and `WORKER_SECURITY_GROUP` to launch the private source worker.
 They must be set together; omitted, Compose's worker polls the database.
-`MAX_ACTIVE_RUNS_PER_ORG` bounds queued and running analyses (default 3).
+`WORKER_MAX_TASKS` caps the worker tasks the launcher keeps alive at once
+(default 4): it adds one beside those alive while the queue holds more runs of
+a kind than their slots run at once.
+`MAX_ACTIVE_RUNS_PER_ORG` bounds queued and running analyses (default 3),
+agent runs and builds counted apart.
 The worker reads storage and GitHub App credentials plus `WORKER_MODE`,
-`MAX_TARBALL_BYTES` (default 200 MiB) and `MAX_FILES` (default 20,000).
+`WORKER_IDLE_EXIT_MINUTES` (in `poll` mode, exit after that long without a
+run; unset, never), `MAX_TARBALL_BYTES` (default 200 MiB) and `MAX_FILES`
+(default 20,000).
 These limits change accepted workload size. Parser subprocesses receive none of
 the platform credentials. Analysis logs contain fixed lifecycle messages and
 public error codes, never raw subprocess output.

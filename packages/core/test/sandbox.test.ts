@@ -27,6 +27,7 @@ import {
   runtimeKindOf,
   runtimePath,
   SANDBOX_BUILD_RUN_VERSION,
+  SANDBOX_RUN_ARGV,
   SANDBOX_TOOLCHAIN,
   toolOfParams,
   toolVersionOf,
@@ -1040,6 +1041,19 @@ test("the generated project is standalone: rewritten imports, stubs beside mocks
   assert.equal(pkg.engines.node, SANDBOX_TOOLCHAIN.nodeRange);
   assert.match(pkg.scripts["test"] ?? "", /tests\/public/);
   assert.doesNotMatch(pkg.scripts["test"] ?? "", /private/);
+  // A project's bytes are hashed into its version: the scripts are what
+  // they were, and each builds, then runs what a baseline runs directly.
+  assert.deepEqual(pkg.scripts, {
+    build: "tsc -p tsconfig.json",
+    dev: "npm run build && node --env-file=sandbox.env sandbox/run.js",
+    test: 'npm run build && node --env-file=sandbox.env --test "tests/public/**/*.test.js"',
+  });
+  assert.deepEqual(SANDBOX_RUN_ARGV.test, [
+    "node",
+    "--env-file=sandbox.env",
+    "--test",
+    "tests/public/**/*.test.js",
+  ]);
   const tsconfig = JSON.parse(byPath.get("tsconfig.json")?.text ?? "{}") as {
     compilerOptions: Record<string, unknown>;
   };

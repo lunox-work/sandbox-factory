@@ -146,6 +146,9 @@ export * from "./build-info.js";
 /** Bounty pricing, sizing, run and proposal contracts. */
 export * from "./pricing.js";
 
+/** A workspace's own settings. */
+export * from "./settings.js";
+
 /** Bounties: the organization's own work items, which proposals price. */
 export * from "./bounty.js";
 export * from "./context.js";

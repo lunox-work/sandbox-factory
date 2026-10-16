@@ -42,6 +42,7 @@ import {
   sliceRequestOf,
   type AnalysisErrorCode,
   type ProfileErrorCode,
+  type RunSlot,
 } from "sandbox-factory";
 
 /** How often in-flight profiles are looked at. */
@@ -60,8 +61,9 @@ export interface BountyProfilerOptions {
   /** A re-queued run's previous log, to remove from the bucket. */
   readonly removeObject: (key: string) => Promise<void>;
   /**
-   * The organization's analysis cap. The profiler leaves one of its slots
-   * for a person whenever the cap has more than one.
+   * The organization's analysis cap, counted per slot (agent runs and
+   * builds apart). The profiler leaves one of each for a person whenever
+   * the cap has more than one.
    */
   readonly maxActive?: number;
   readonly intervalMs?: number;
@@ -80,13 +82,17 @@ export interface BountyProfilerOptions {
 /** What one step decided for a row. */
 type Step =
   | { readonly kind: "wait" }
-  /** The organization's analysis cap is reached: no more enqueues this sweep. */
-  | { readonly kind: "full" }
+  /**
+   * The organization's analysis cap is reached for one slot: no more
+   * enqueues of it this sweep. The other slot's still go, so one
+   * repository's builds do not hold another's scope back.
+   */
+  | { readonly kind: "full"; readonly slot: RunSlot }
   | { readonly kind: "moved" };
 
 const WAIT: Step = { kind: "wait" };
-const FULL: Step = { kind: "full" };
 const MOVED: Step = { kind: "moved" };
+const full = (slot: RunSlot): Step => ({ kind: "full", slot });
 
 export class BountyProfiler {
   readonly #options: BountyProfilerOptions;
@@ -184,27 +190,35 @@ export class BountyProfiler {
   }
 
   async #sweepOrganization(owner: string): Promise<void> {
-    let full = false;
+    const filled = new Set<RunSlot>();
     for (const profile of await this.#options.profiles.pending(owner)) {
       let step: Step;
       try {
-        step = await this.#step(owner, profile, full);
+        step = await this.#step(owner, profile, filled);
       } catch (error) {
         // One row's trouble (a database blip, an artifact that would not
         // list) is retried on the next sweep; the rest still move.
         this.#options.onError?.("bounty_profile_step_failed", error);
         continue;
       }
-      if (step.kind === "full") full = true;
+      if (step.kind === "full") filled.add(step.slot);
     }
   }
 
-  #step(owner: string, profile: StoredBountyProfile, full: boolean) {
+  #step(
+    owner: string,
+    profile: StoredBountyProfile,
+    filled: ReadonlySet<RunSlot>,
+  ) {
     switch (profile.status) {
       case "queued":
-        return full ? Promise.resolve(FULL) : this.#scope(owner, profile);
+        // Its builders may all be built already, so only both slots full
+        // keeps it from asking.
+        return filled.has("build") && filled.has("agent")
+          ? Promise.resolve(WAIT)
+          : this.#scope(owner, profile);
       case "scoping":
-        return this.#slice(owner, profile, full);
+        return this.#slice(owner, profile, filled.has("build"));
       case "slicing":
         return this.#build(owner, profile);
       default:
@@ -226,7 +240,7 @@ export class BountyProfiler {
       tool: "graphify",
       params: { deadlineMinutes: GRAPH_DEADLINE_MINUTES },
     });
-    if (graph === "full") return FULL;
+    if (graph === "full") return full("build");
     if (graph === null) return this.#fail(owner, profile, "source_unavailable");
     if (graph.status === "failed")
       return this.#fail(owner, profile, "scope_failed", graph.errorCode);
@@ -241,11 +255,20 @@ export class BountyProfiler {
           graphRunId: graph.id,
         },
       });
-      if (run === "full") return FULL;
+      if (run === "full") return full("build");
       if (run === null || run.status === "failed") continue;
       if (run.status !== "succeeded") building = true;
       else if (builder === "abstractions") context.abstractionsRunId = run.id;
       else context.dataModelRunId = run.id;
+    }
+    // The rest of "Build all", which the scope does not wait for: without
+    // them the snapshot is never built, and the price never reads it.
+    for (const builder of ["documents", "brief"] as const) {
+      const run = await this.#enqueue(owner, profile.snapshotId, {
+        tool: builder,
+        params: { deadlineMinutes: GRAPH_DEADLINE_MINUTES, builder },
+      });
+      if (run === "full") return full("build");
     }
     if (building) return WAIT;
     const scope = await this.#enqueue(owner, profile.snapshotId, {
@@ -260,7 +283,7 @@ export class BountyProfiler {
         ...context,
       },
     });
-    if (scope === "full") return FULL;
+    if (scope === "full") return full("agent");
     if (scope === null) return this.#fail(owner, profile, "source_unavailable");
     if (scope.status === "failed")
       return this.#fail(owner, profile, "scope_failed", scope.errorCode);
@@ -274,7 +297,7 @@ export class BountyProfiler {
   async #slice(
     owner: string,
     profile: StoredBountyProfile,
-    full: boolean,
+    buildFull: boolean,
   ): Promise<Step> {
     const run = await this.#run(owner, profile.scopeRunId);
     // A scope run always reads a snapshot; one without is not a scope run.
@@ -283,7 +306,7 @@ export class BountyProfiler {
     if (run.status === "failed")
       return this.#fail(owner, profile, "scope_failed", run.errorCode);
     if (run.status !== "succeeded") return WAIT;
-    if (full) return FULL;
+    if (buildFull) return WAIT;
     const scope = await this.#scopeProposal(owner, run.id);
     if (scope === null) return this.#fail(owner, profile, "output_invalid");
     const slice = await this.#enqueue(owner, run.snapshotId, {
@@ -294,7 +317,7 @@ export class BountyProfiler {
         ...sliceRequestOf(scope),
       },
     });
-    if (slice === "full") return FULL;
+    if (slice === "full") return full("build");
     if (slice === null) return this.#fail(owner, profile, "source_unavailable");
     if (slice.status === "failed")
       return this.#fail(owner, profile, "slice_failed", slice.errorCode);

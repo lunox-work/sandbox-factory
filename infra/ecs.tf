@@ -186,7 +186,10 @@ resource "aws_ecs_task_definition" "worker" {
       { name = "NODE_ENV", value = "production" },
       { name = "S3_BUCKET", value = aws_s3_bucket.private.bucket },
       { name = "S3_REGION", value = var.region },
-      { name = "WORKER_MODE", value = "once" },
+      # Launched for a burst, a task polls and stays warm for the next one
+      # until fifteen minutes pass with no run. CD sets both on each revision.
+      { name = "WORKER_MODE", value = "poll" },
+      { name = "WORKER_IDLE_EXIT_MINUTES", value = "15" },
       { name = "MAX_TARBALL_BYTES", value = "209715200" },
       { name = "MAX_FILES", value = "20000" },
       # The scope and fixtures agents; the key is sizing's. CD carries both

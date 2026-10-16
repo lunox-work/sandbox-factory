@@ -439,6 +439,9 @@ fingerprints a bounty's title and description, and `packages/jira`'s
 Jira's text and one priced from the stored copy compare. A proposal is
 current while its bounty still hashes to what it was priced from: read live
 from Jira while the bounty follows an issue, and as stored otherwise. A
+proposal's page, and its poll while a Jira update is on its way, read the
+issue at most once a minute per bounty (`apps/api/src/jira/recent.ts`);
+approving a price or changing its scenarios reads Jira every time. A
 bounty's row keeps no issue type, priority or labels. A board's run reads
 them to choose which issues it sizes, and they reach the model only as
 context a person synced (below).
@@ -449,10 +452,14 @@ adds context beyond its text, read only when a person asks: `POST
 (`JiraClient.issueContext`: type, status, priority, labels, components,
 releases, due date, story points found by the site's own field name,
 estimates, demand and links; never a person or a comment) and takes its
-text as a run's read does. Repositories are not synced but pinned: `GET
+text as a run's read does. The site's field list is kept for an hour per
+site, so an import reads it once rather than per issue; where the context
+stands against Jira is kept a minute per issue, so reading it again, or a
+pin's answer, does not ask Jira again. Repositories are not synced but pinned: `GET
 .../context/github/commits` lists each connected repository's built
 commits (`RepoSnapshotStore.built`: snapshots whose graphify run succeeded
-and whose other builders have all finished, `snapshotBuilt` in core) with
+and whose other builders have all finished, `snapshotBuilt` in core, which
+the run store records as `repo_snapshot.built_at` as the last of them ends) with
 the commit the scope holds it at, read from
 the latest version's revision, and `PUT .../context/github/commits` with
 `{ commits: { repoId: snapshotId } }` reads the Markdown of every
@@ -696,7 +703,12 @@ ready, it cuts a draft as `POST .../versions` does, its listing taken from
 the bounty (title, description, the repository's and bounty's stack) and its
 task from the approved proposal, queues its build and answers 201 with the
 draft and the run. A draft whose scope has blockers is cut without a build
-(`run: null`), for them to be read. A sandbox whose publication is live is
+(`run: null`), for them to be read. A 202 also remembers the request on the
+sandbox's source (`sandbox_source.cut_requested_by`, `cut_requested_at`):
+once the profiler settles a profile, `apps/api/src/sandbox/cutter.ts` makes
+it again as the person who asked, so the draft is cut and built with no
+second click; a cut clears it, as does any refusal but the analysis cap.
+`POST .../sandboxes/start` remembers it the same way. A sandbox whose publication is live is
 not sliced (`published`, 409): contributors work in it, so it is unpublished
 first. The newest unfrozen draft cut from the
 same slice run is built again rather than cut twice. A sliced draft starts
@@ -1077,15 +1089,19 @@ Both connect flows sign their `state` with the same secret, so the state
 carries a `purpose` (`apps/api/src/connect-state.ts`) and each callback
 refuses the other's.
 
-**Analysis runs are private and cached.** Three _context builders_ describe a
+**Analysis runs are private and cached.** Five _context builders_ describe a
 snapshot on their own, started from a repository's page
 (`/o/:slug/repositories/:repoId`) by an owner or admin and read by any
 member: a `graphify` run maps a snapshot's structure in a Fargate worker;
 an `abstractions` run lists every module's exported surface
-with its signatures, typed, syntactic or names only; and a `data_model` run
+with its signatures, typed, syntactic or names only; a `data_model` run
 reads the entities, enums and relations the repository's Prisma schema,
-Drizzle tables or SQL migrations declare, with the modules that touch them.
-The last two read graphify's map and are what the agents read. A repository
+Drizzle tables or SQL migrations declare, with the modules that touch them;
+a `documents` run keeps its Markdown documents, which a bounty's sync reads
+instead of GitHub; and a `brief` run sums the others up in one bounded
+document, which the price reads for every connected repository. The
+abstractions and data model read graphify's map and are what the agents
+read; the brief waits for the rest of its snapshot's builders. A repository
 has one context: every builder at one commit, the snapshot
 `github_repo.context_snapshot_id` names. A repository is built where it
 is registered: the repositories dialog, in settings and onboarding alike,
@@ -1127,7 +1143,14 @@ or `data_model` runs, the scope run names them (so they join its cache key)
 and the agent can read a module's surface and the data model, whose
 accessor modules are where a `database` seam belongs; the fixtures agent
 reads the data model too. Neither decides anything. The proposal fills the slice picker; a person
-starts the slice. A `fixtures` run, for a succeeded slice, writes default
+starts the slice. Once a bounty's profile is ready and its price approved,
+the API prepares its sandbox (`apps/api/src/sandbox/preparer.ts`): a
+`fixtures` run that also writes the name table, named on the profile
+(`bounty_profile.prepared_run_id`), so the Sandbox click cuts the draft with
+those fixtures and its build takes the table when its own check passes it.
+A workspace turns it off with `workspace_setting.prepare_sandboxes`
+(`GET`/`PATCH .../settings`, owners and admins to change). Preparation runs
+are kept from members as builds are. A `fixtures` run, for a succeeded slice, writes default
 behaviour for mocked calls and the `npm run dev` walkthrough, type-checked
 against the slice's own stubs; a version copies them into its transform,
 and the build aliases them and runs the walkthrough in its baseline. The
@@ -1146,8 +1169,10 @@ wakes the profiler: a later sweep discovers committed intent without it. The
 unique proposal/revision/snapshot constraint makes requests idempotent. Snapshot-less
 or disabled profiling retains the existing behavior; respec does not implicitly
 request profiles, and historical rows are not backfilled.
-`apps/api/src/pricing/profiler.ts` sweeps the rows in flight every 30
-seconds, since the worker reports a finished run only to the database: it
+`apps/api/src/pricing/profiler.ts` moves the rows in flight when a run
+ends: the run store sends `NOTIFY analysis_run_ended` in the same write, and
+the API listens. A sweep every 30 seconds stays, for a notification missed
+across a reconnect or a restart. Each pass: it
 enqueues the snapshot's graph and a `scope` run for the spec (no person
 behind either, so `requested_by` is null), then slices exactly the request
 the scope recorded, then builds the profile with `buildComplexityProfile`
@@ -1160,9 +1185,21 @@ the pattern to follow, which the worker checks is a real file. A step that
 meets the organization's analysis cap waits for the next sweep, so a large
 backlog queues behind the cap rather than failing; the profiler meets it a
 slot early, so a person's own analysis is not refused while the backlog
-drains. A failed run fails the
+drains. The cap counts agent runs and builds apart, as a worker runs them
+apart: builds at the cap hold back only builds, so another repository's
+scope still goes in the same sweep. A failed run fails the
 profile for that revision; a re-price drafts a new revision and asks again.
 The whole chain needs what analysis needs, plus the agent's key.
+
+**Waits are measured from the rows.** A pricing run writes each model call
+it made once it ends (`bounty_run.model_calls`: tool, start, duration, the
+model that answered and whether the fallback did), a profile appends each
+status it moves to (`bounty_profile.transitions`), and the worker writes an
+analysis run's own timing (see the [worker contract](../apps/worker/README.md#output-contract)).
+The `flow_wait_sample` and `flow_wait` views (`packages/db/src/schema/flows.ts`)
+read them, with the rows' own timestamps, into click → price, click → rubric,
+sandbox draft → built, and each tool's queue and run time, as percentiles per
+week. They read across organizations: an operator's SQL prompt, not a route.
 
 **Sandbox versions pin their provenance.** A version is cut from a succeeded
 slice. Its private source row records the slice's manifest and contract

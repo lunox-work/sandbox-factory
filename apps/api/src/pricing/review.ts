@@ -7,13 +7,18 @@ import {
   type StoredBounty,
   type BountyStore,
 } from "@sandbox-factory/db";
-import { JiraApiError, JiraAuthError } from "@sandbox-factory/jira";
+import {
+  JiraApiError,
+  JiraAuthError,
+  type JiraIssueSpec,
+} from "@sandbox-factory/jira";
 import type {
   ProposalFreshnessDto,
   ProposalLiveSpecDto,
 } from "@sandbox-factory/shared";
 import { BOUNTY_SPEC_HASH_VERSION, bountySpecHash } from "sandbox-factory";
 
+import { issueKey, type RecentReads } from "../jira/recent.js";
 import type { RunClientResult } from "./executor.js";
 
 export type FreshProposal = ProposalFreshnessDto & {
@@ -37,6 +42,13 @@ export interface ProposalReviewOptions {
     connectionId: string,
   ) => Promise<RunClientResult>;
   readonly now?: () => Date;
+  /**
+   * Issues read in the last minute. Given, an issue read that recently is
+   * not read again: a proposal's page, and its poll while a Jira update is
+   * on its way, read Jira at most once a minute per bounty. Absent, as for
+   * an approval, Jira is read every time.
+   */
+  readonly recent?: RecentReads<JiraIssueSpec>;
 }
 
 /**
@@ -63,13 +75,26 @@ export async function freshProposal(
       organizationId,
       bounty.jira.boardId,
     );
+    const key =
+      registered === null
+        ? null
+        : issueKey(
+            organizationId,
+            registered.connectionId,
+            bounty.jira.externalId,
+          );
+    const kept = key === null ? undefined : options.recent?.get(key);
+    // Read in the last minute: answered as it was then, without asking for
+    // a client, which may itself go to Atlassian to refresh its token.
+    if (kept !== undefined && registered !== null)
+      return live(proposal, checkedAt, registered.siteUrl, kept);
     const ready: RunClientResult =
       registered === null
         ? { ok: false, reason: "not-found" }
         : options.clientFor === undefined
           ? { ok: false, reason: "reconnect" }
           : await options.clientFor(organizationId, registered.connectionId);
-    if (!ready.ok || registered === null) {
+    if (!ready.ok || registered === null || key === null) {
       return {
         proposal,
         freshness: "unknown",
@@ -81,6 +106,7 @@ export async function freshProposal(
     }
     try {
       const spec = await ready.client.issueSpec(bounty.jira.externalId);
+      options.recent?.set(key, spec);
       await options.bounties
         .refreshFromJira(organizationId, bounty.id, {
           title: spec.summary,
@@ -91,14 +117,7 @@ export async function freshProposal(
         // The review answers with what Jira said; keeping a copy is not
         // what it is for, and the next read writes it again.
         .catch(() => false);
-      const liveUrl = `${registered.siteUrl}/browse/${encodeURIComponent(spec.key)}`;
-      return compared(proposal, checkedAt, spec.pricingSpecHash, {
-        summary: spec.summary,
-        descriptionText: spec.descriptionText,
-        key: spec.key,
-        url: liveUrl,
-        inputTruncated: spec.inputTruncated,
-      });
+      return live(proposal, checkedAt, registered.siteUrl, spec);
     } catch (error) {
       if (!(error instanceof JiraApiError && error.isNotFound)) {
         return {
@@ -116,6 +135,22 @@ export async function freshProposal(
     }
   }
   return storedFreshness(proposal, checkedAt, bounty);
+}
+
+/** The proposal against its issue as Jira said it. */
+function live(
+  proposal: StoredBountyProposal,
+  checkedAt: string,
+  siteUrl: string,
+  spec: JiraIssueSpec,
+): FreshProposal {
+  return compared(proposal, checkedAt, spec.pricingSpecHash, {
+    summary: spec.summary,
+    descriptionText: spec.descriptionText,
+    key: spec.key,
+    url: `${siteUrl}/browse/${encodeURIComponent(spec.key)}`,
+    inputTruncated: spec.inputTruncated,
+  });
 }
 
 async function storedFreshness(

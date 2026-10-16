@@ -434,8 +434,10 @@ try {
       return true;
     },
     release: async () => false,
+    recordTiming: async () => true,
   };
   const objects = {
+    get: async (k) => bytes.get(k),
     put: async (k, b) => bytes.set(k, b),
     putStream: async (k, stream) => {
       const chunks = [];

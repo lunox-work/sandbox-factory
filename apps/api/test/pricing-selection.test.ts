@@ -454,6 +454,42 @@ test("a page with nothing fitting asks the proposal store nothing", async () => 
   assert.equal(asked, 0);
 });
 
+test("with no cap, the pages after the first are asked for together and read in order", async () => {
+  const page = (from: number) =>
+    Array.from({ length: 100 }, (_, index) => carried(String(from + index)));
+  const calls: number[] = [];
+  let thirdAsked = false;
+  let secondBeforeThird = false;
+  const client: BacklogPageReader = {
+    boardIssueSignals: async (_boardId, { startAt }) => {
+      calls.push(startAt);
+      if (startAt === 200) thirdAsked = true;
+      if (startAt === 100) {
+        // Answers only once the page after it has been asked for: read one
+        // after another, the third would wait on it.
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        secondBeforeThird = !thirdAsked;
+      }
+      return { issues: page(startAt), total: 300 };
+    },
+  };
+  const result = await select(client);
+  assert.deepEqual(calls, [0, 100, 200]);
+  assert.equal(secondBeforeThird, false);
+  assert.equal(result.issues.length, 300);
+  assert.equal(result.issues[100]?.id, "100");
+
+  // A short page ends the scan, and drops whatever was read past it.
+  const short = await select(
+    reader([
+      { issues: page(0), total: 300 },
+      { issues: page(100).slice(0, 50), total: 300 },
+      { issues: page(150), total: 300 },
+    ]),
+  );
+  assert.equal(short.issues.length, 150);
+});
+
 test("a ticket cap, when a board sets one, stops the selection there", async () => {
   const capped = board({ selection: { ticketCap: 2 } });
   const many = Array.from({ length: 100 }, (_, index) =>

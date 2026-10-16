@@ -1,8 +1,24 @@
 import { createHash } from "node:crypto";
-import { and, desc, eq, gt, isNull, lte, ne, or, sql } from "drizzle-orm";
+import {
+  and,
+  desc,
+  eq,
+  gt,
+  inArray,
+  isNull,
+  lte,
+  ne,
+  or,
+  sql,
+} from "drizzle-orm";
+import type { SQL } from "drizzle-orm";
 import {
   ANALYSIS_TOOLS,
+  BUILDER_READERS,
+  CONTEXT_BUILDERS,
   GRAPH_READERS,
+  RUN_SLOTS,
+  WORKER_SLOTS,
   canonicalJson,
   isAbstractionsParams,
   isDataModelParams,
@@ -10,7 +26,9 @@ import {
   isScopeParams,
   isSliceParams,
   readsSource,
+  slotOf,
   toolOfParams,
+  toolsOfSlot,
   toolVersionOf,
 } from "sandbox-factory";
 import type {
@@ -18,10 +36,12 @@ import type {
   AnalysisProgress,
   AnalysisStatus,
   AnalysisErrorCode,
+  AnalysisTiming,
   AnalysisTool,
   ArtifactKind,
+  RunSlot,
 } from "sandbox-factory";
-import type { Database } from "./errors.js";
+import type { Database, QueryExecutor } from "./errors.js";
 import { generateId } from "./mapping.js";
 import {
   analysisRun,
@@ -32,6 +52,72 @@ import {
   repoSnapshot,
 } from "./schema.js";
 import type { AnalysisRunRow } from "./schema.js";
+
+/**
+ * What the queue announces, with Postgres `NOTIFY`. A notification is sent
+ * inside the write's transaction, so it arrives once the write is visible.
+ * Its payload is the run's id, a hint only: a listener reads the queue
+ * again, and keeps its own timer for a notification it never received.
+ */
+export const RUN_QUEUED_CHANNEL = "analysis_run_queued";
+/** A run succeeded or failed, so whatever waited on it can move. */
+export const RUN_ENDED_CHANNEL = "analysis_run_ended";
+/**
+ * The `application_name` a worker's connections carry, so the launcher can
+ * see a worker that is alive but idle, which has no run to heartbeat. Each
+ * worker adds its own suffix (`workerApplicationName`), so the launcher can
+ * count them.
+ */
+export const WORKER_APPLICATION_NAME = "sandbox-factory-worker";
+export function workerApplicationName(workerId: string): string {
+  return `${WORKER_APPLICATION_NAME}:${workerId}`;
+}
+
+async function announce(tx: QueryExecutor, channel: string, runId: string) {
+  await tx.execute(sql`select pg_notify(${channel}, ${runId})`);
+}
+
+const isBuilder = (tool: string) =>
+  CONTEXT_BUILDERS.some((builder) => builder === tool);
+
+/**
+ * Marks the snapshots of context builder runs that have just ended as built
+ * once `snapshotBuilt` holds for them: a graphify run succeeded and every
+ * builder has ended. Inside the transaction that ended them, after locking
+ * the snapshots, so two builders ending together cannot each miss the
+ * other: the second waits for the first to commit, then reads its run.
+ */
+async function markBuilt(
+  tx: QueryExecutor,
+  snapshotIds: readonly (string | null)[],
+  now: Date,
+) {
+  const ids = [
+    ...new Set(snapshotIds.filter((id): id is string => id !== null)),
+  ];
+  if (ids.length === 0) return;
+  await tx
+    .select({ id: repoSnapshot.id })
+    .from(repoSnapshot)
+    .where(and(inArray(repoSnapshot.id, ids), isNull(repoSnapshot.builtAt)))
+    .orderBy(repoSnapshot.id)
+    .for("update");
+  const ended = (tool: string, statuses: readonly AnalysisStatus[]) =>
+    sql`exists (select 1 from ${analysisRun} where ${analysisRun.snapshotId} = ${repoSnapshot.id} and ${analysisRun.tool} = ${tool} and ${inArray(analysisRun.status, [...statuses])})`;
+  await tx
+    .update(repoSnapshot)
+    .set({ builtAt: now })
+    .where(
+      and(
+        inArray(repoSnapshot.id, ids),
+        isNull(repoSnapshot.builtAt),
+        ended("graphify", ["succeeded"]),
+        ...CONTEXT_BUILDERS.map((builder) =>
+          ended(builder, ["succeeded", "failed"]),
+        ),
+      ),
+    );
+}
 
 export interface StoredAnalysisRun {
   readonly id: string;
@@ -72,6 +158,19 @@ export interface NewArtifact {
   readonly sha256: string;
   readonly meta: Record<string, unknown> | null;
 }
+export interface QueueState {
+  /** A run is queued that a worker could claim now. */
+  readonly queued: boolean;
+  readonly freshWorker: boolean;
+  /** Workers connected, at least one while a run heartbeats. */
+  readonly workers: number;
+  /**
+   * The claimable and running runs of some slot outnumber what the workers
+   * connected can run at once (`WORKER_SLOTS`): another worker would start
+   * one at once.
+   */
+  readonly short: boolean;
+}
 export type EnqueueAnalysisResult =
   | {
       ok: true;
@@ -95,6 +194,9 @@ export interface AnalysisRunStore {
    * same snapshot, so it needs no wait. A sandbox build names a succeeded
    * slice run; the API checks that before enqueueing. A starter reads no
    * snapshot: `snapshotId` is null, and its cache is the organization's.
+   * `maxActive` caps the organization's queued and running runs of the
+   * tool's slot (`slotOf`): agent runs and builds are counted apart, as a
+   * worker runs them apart.
    */
   enqueue(
     organizationId: string,
@@ -128,8 +230,31 @@ export interface AnalysisRunStore {
     limit?: number,
     snapshotId?: string,
   ): Promise<StoredAnalysisRun[]>;
-  /** Privileged worker queue discovery. Ownership is returned with the lease. */
-  claimNext(leaseToken: string, now: Date): Promise<ClaimedAnalysisRun | null>;
+  /**
+   * Privileged worker queue discovery. Ownership is returned with the lease.
+   * With `tools`, only a run of one of them: what a worker with only some
+   * slots free can take. The oldest claimable run goes first, except that
+   * an organization with fewer runs already running goes before one with
+   * more, so one workspace's burst does not hold another's behind it.
+   */
+  claimNext(
+    leaseToken: string,
+    now: Date,
+    tools?: readonly AnalysisTool[],
+  ): Promise<ClaimedAnalysisRun | null>;
+  /**
+   * The oldest claimable run of one of `tools` on one snapshot, claimed as
+   * `claimNext` would: what a worker runs beside a run it has just claimed,
+   * since both read the one checkout. Null when there is none.
+   */
+  claimBeside(
+    leaseToken: string,
+    now: Date,
+    beside: {
+      readonly snapshotId: string;
+      readonly tools: readonly AnalysisTool[];
+    },
+  ): Promise<ClaimedAnalysisRun | null>;
   heartbeat(
     organizationId: string,
     runId: string,
@@ -169,11 +294,24 @@ export interface AnalysisRunStore {
     leaseToken: string,
     now: Date,
   ): Promise<boolean>;
+  /**
+   * Writes where an ended run's time went. After `finish` or `fail`, so
+   * the commit itself can be timed; the lease is gone by then, so it is
+   * guarded by the run having ended instead. False for a run that has not.
+   */
+  recordTiming(
+    organizationId: string,
+    runId: string,
+    timing: AnalysisTiming,
+  ): Promise<boolean>;
   failExpired(organizationId: string, now: Date): Promise<number>;
   /** Privileged watchdog discovery, followed by owner-scoped updates. */
   organizationsWithExpiredRuns(now: Date): Promise<string[]>;
-  /** Privileged queue health, used to launch the trusted worker. */
-  queueState(now: Date): Promise<{ queued: boolean; freshWorker: boolean }>;
+  /**
+   * Privileged queue health, used to launch the trusted worker. A worker is
+   * fresh while it heartbeats a run, or while it is connected and idle.
+   */
+  queueState(now: Date): Promise<QueueState>;
   logKey(organizationId: string, runId: string): Promise<string | null>;
 }
 /**
@@ -191,6 +329,32 @@ const KNOWN_TOOLS_SQL = sql.raw(
 const GRAPH_READERS_SQL = sql.raw(
   GRAPH_READERS.map((name) => `'${name}'`).join(", "),
 );
+/** The tools that wait for their snapshot's other builders; see `BUILDER_READERS`. */
+const BUILDER_READERS_SQL = sql.raw(
+  BUILDER_READERS.map((name) => `'${name}'`).join(", "),
+);
+const CONTEXT_BUILDERS_SQL = sql.raw(
+  CONTEXT_BUILDERS.map((name) => `'${name}'`).join(", "),
+);
+/**
+ * Whether queued run `a` may be claimed: a graph reader (a slice, a scope
+ * or a builder that reads the map) once the graphify run it reads has
+ * finished either way, and the worker then fails it cleanly if that run
+ * did not succeed; a builder reader once no other builder on its snapshot
+ * is queued or running.
+ */
+const CLAIMABLE = sql`a.status = 'queued' and a.tool in (${KNOWN_TOOLS_SQL}) and (a.tool not in (${GRAPH_READERS_SQL}) or not exists (select 1 from analysis_run g where g.id = a.params->>'graphRunId' and g.status in ('queued', 'running'))) and (a.tool not in (${BUILDER_READERS_SQL}) or not exists (select 1 from analysis_run b where b.snapshot_id = a.snapshot_id and b.id <> a.id and b.tool in (${CONTEXT_BUILDERS_SQL}) and b.tool not in (${BUILDER_READERS_SQL}) and b.status in ('queued', 'running')))`;
+/**
+ * How many runs the organization of queued run `a` has running: a claim
+ * takes the run of the organization with the fewest first, so workspaces
+ * share the workers rather than queue behind each other.
+ */
+const RUNNING_BESIDE = sql`(select count(*) from analysis_run r where r.organization_id = a.organization_id and r.status = 'running')`;
+const toolList = (tools: readonly AnalysisTool[]) =>
+  sql.join(
+    tools.map((tool) => sql`${tool}`),
+    sql`, `,
+  );
 function toRun(row: AnalysisRunRow, repoId: string | null): StoredAnalysisRun {
   const tool = knownTool(row.tool);
   if (tool === undefined)
@@ -236,6 +400,66 @@ export function createAnalysisRunStore(db: Database): AnalysisRunStore {
       .select({ run: analysisRun, repoId: repoSnapshot.repoId })
       .from(analysisRun)
       .leftJoin(repoSnapshot, eq(repoSnapshot.id, analysisRun.snapshotId));
+  /** Claims the oldest claimable queued run that `filter` (on `a`) admits. */
+  async function claim(
+    token: string,
+    now: Date,
+    filter: SQL,
+  ): Promise<ClaimedAnalysisRun | null> {
+    const rows = await db
+      .update(analysisRun)
+      .set({
+        status: "running",
+        leaseToken: token,
+        leaseExpiresAt: new Date(now.getTime() + 60_000),
+        heartbeatAt: now,
+        startedAt: now,
+        deadlineAt: sql`${now.toISOString()}::timestamptz + ((${analysisRun.params}->>'deadlineMinutes')::int * interval '1 minute')`,
+        finishedAt: null,
+        // A retry starts its steps and its clock again.
+        progress: null,
+        timing: null,
+      })
+      .where(
+        sql`${analysisRun.id} = (select a.id from analysis_run a where ${CLAIMABLE} and ${filter} order by ${RUNNING_BESIDE}, a.created_at, a.id for update of a skip locked limit 1)`,
+      )
+      .returning();
+    const run = rows[0];
+    if (run === undefined) return null;
+    if (run.snapshotId === null)
+      return {
+        ...toRun(run, null),
+        organizationId: run.organizationId,
+        commitSha: null,
+        repoFullName: null,
+        externalRepoId: null,
+        installationId: null,
+        sizeKb: null,
+        leaseToken: token,
+      };
+    const context = (
+      await db
+        .select({
+          repoId: githubRepo.id,
+          organizationId: githubRepo.organizationId,
+          commitSha: repoSnapshot.commitSha,
+          repoFullName: githubRepo.fullName,
+          externalRepoId: githubRepo.externalId,
+          sizeKb: githubRepo.sizeKb,
+          installationId: githubConnection.installationId,
+        })
+        .from(repoSnapshot)
+        .innerJoin(githubRepo, eq(githubRepo.id, repoSnapshot.repoId))
+        .innerJoin(
+          githubConnection,
+          eq(githubConnection.id, githubRepo.connectionId),
+        )
+        .where(eq(repoSnapshot.id, run.snapshotId))
+    )[0];
+    return context === undefined
+      ? null
+      : { ...toRun(run, context.repoId), ...context, leaseToken: token };
+  }
   return {
     async enqueue(owner, snapshotId, input) {
       return db.transaction(async (transaction) => {
@@ -345,6 +569,7 @@ export function createAnalysisRunStore(db: Database): AnalysisRunStore {
           .where(
             and(
               owned(owner),
+              inArray(analysisRun.tool, toolsOfSlot(slotOf(tool))),
               or(
                 eq(analysisRun.status, "queued"),
                 eq(analysisRun.status, "running"),
@@ -384,6 +609,7 @@ export function createAnalysisRunStore(db: Database): AnalysisRunStore {
         const row = rows[0] as AnalysisRunRow | undefined;
         if (row === undefined)
           throw new Error("Analysis enqueue did not return a row.");
+        await announce(tx, RUN_QUEUED_CHANNEL, row.id);
         return {
           ok: true,
           run: toRun(row, repoId),
@@ -436,62 +662,18 @@ export function createAnalysisRunStore(db: Database): AnalysisRunStore {
         .filter((row) => knownTool(row.run.tool) !== undefined)
         .map((row) => toRun(row.run, row.repoId));
     },
-    async claimNext(token, now) {
-      const rows = await db
-        .update(analysisRun)
-        .set({
-          status: "running",
-          leaseToken: token,
-          leaseExpiresAt: new Date(now.getTime() + 60_000),
-          heartbeatAt: now,
-          startedAt: now,
-          deadlineAt: sql`${now.toISOString()}::timestamptz + ((${analysisRun.params}->>'deadlineMinutes')::int * interval '1 minute')`,
-          finishedAt: null,
-          // A retry starts its steps again.
-          progress: null,
-        })
-        .where(
-          // A graph reader (a slice, a scope or a builder that reads the
-          // map) waits for the graphify run it reads to finish either way;
-          // the worker then fails it cleanly if that run did not succeed.
-          sql`${analysisRun.id} = (select a.id from analysis_run a where a.status = 'queued' and a.tool in (${KNOWN_TOOLS_SQL}) and (a.tool not in (${GRAPH_READERS_SQL}) or not exists (select 1 from analysis_run g where g.id = a.params->>'graphRunId' and g.status in ('queued', 'running'))) order by a.created_at, a.id for update of a skip locked limit 1)`,
-        )
-        .returning();
-      const run = rows[0];
-      if (run === undefined) return null;
-      if (run.snapshotId === null)
-        return {
-          ...toRun(run, null),
-          organizationId: run.organizationId,
-          commitSha: null,
-          repoFullName: null,
-          externalRepoId: null,
-          installationId: null,
-          sizeKb: null,
-          leaseToken: token,
-        };
-      const context = (
-        await db
-          .select({
-            repoId: githubRepo.id,
-            organizationId: githubRepo.organizationId,
-            commitSha: repoSnapshot.commitSha,
-            repoFullName: githubRepo.fullName,
-            externalRepoId: githubRepo.externalId,
-            sizeKb: githubRepo.sizeKb,
-            installationId: githubConnection.installationId,
-          })
-          .from(repoSnapshot)
-          .innerJoin(githubRepo, eq(githubRepo.id, repoSnapshot.repoId))
-          .innerJoin(
-            githubConnection,
-            eq(githubConnection.id, githubRepo.connectionId),
-          )
-          .where(eq(repoSnapshot.id, run.snapshotId))
-      )[0];
-      return context === undefined
-        ? null
-        : { ...toRun(run, context.repoId), ...context, leaseToken: token };
+    async claimNext(token, now, tools) {
+      if (tools === undefined) return claim(token, now, sql`true`);
+      if (tools.length === 0) return null;
+      return claim(token, now, sql`a.tool in (${toolList(tools)})`);
+    },
+    async claimBeside(token, now, beside) {
+      if (beside.tools.length === 0) return null;
+      return claim(
+        token,
+        now,
+        sql`a.snapshot_id = ${beside.snapshotId} and a.tool in (${toolList(beside.tools)})`,
+      );
     },
     async heartbeat(owner, id, token, now) {
       const rows = await db
@@ -533,30 +715,59 @@ export function createAnalysisRunStore(db: Database): AnalysisRunStore {
           .where(
             and(fence(owner, id, token, now), gt(analysisRun.deadlineAt, now)),
           )
-          .returning({ id: analysisRun.id });
+          .returning({
+            id: analysisRun.id,
+            snapshotId: analysisRun.snapshotId,
+            tool: analysisRun.tool,
+          });
         if (rows.length === 0) return false;
-        for (const item of artifacts)
-          await tx
-            .insert(artifact)
-            .values({ id: generateId("art"), runId: id, ...item });
+        // One statement for them all: a graph writes dozens.
+        if (artifacts.length > 0)
+          await tx.insert(artifact).values(
+            artifacts.map((item) => ({
+              id: generateId("art"),
+              runId: id,
+              ...item,
+            })),
+          );
+        await markBuilt(
+          tx,
+          rows.flatMap((row) => (isBuilder(row.tool) ? [row.snapshotId] : [])),
+          now,
+        );
+        await announce(tx, RUN_ENDED_CHANNEL, id);
         return true;
       });
     },
     async fail(owner, id, token, code, logKey, now) {
-      const rows = await db
-        .update(analysisRun)
-        .set({
-          status: "failed",
-          errorCode: code,
-          errorDetail: null,
-          logKey,
-          finishedAt: now,
-          leaseToken: null,
-          leaseExpiresAt: null,
-        })
-        .where(fence(owner, id, token, now))
-        .returning({ id: analysisRun.id });
-      return rows.length > 0;
+      return db.transaction(async (transaction) => {
+        const tx = transaction;
+        const rows = await tx
+          .update(analysisRun)
+          .set({
+            status: "failed",
+            errorCode: code,
+            errorDetail: null,
+            logKey,
+            finishedAt: now,
+            leaseToken: null,
+            leaseExpiresAt: null,
+          })
+          .where(fence(owner, id, token, now))
+          .returning({
+            id: analysisRun.id,
+            snapshotId: analysisRun.snapshotId,
+            tool: analysisRun.tool,
+          });
+        if (rows.length === 0) return false;
+        await markBuilt(
+          tx,
+          rows.flatMap((row) => (isBuilder(row.tool) ? [row.snapshotId] : [])),
+          now,
+        );
+        await announce(tx, RUN_ENDED_CHANNEL, id);
+        return true;
+      });
     },
     async release(owner, id, token, now) {
       const rows = await db
@@ -569,24 +780,65 @@ export function createAnalysisRunStore(db: Database): AnalysisRunStore {
         })
         .where(fence(owner, id, token, now))
         .returning({ id: analysisRun.id });
+      if (rows.length === 0) return false;
+      await announce(db, RUN_QUEUED_CHANNEL, id);
+      return true;
+    },
+    async recordTiming(owner, id, timing) {
+      const rows = await db
+        .update(analysisRun)
+        .set({ timing })
+        .where(
+          and(
+            owned(owner),
+            eq(analysisRun.id, id),
+            inArray(analysisRun.status, ["succeeded", "failed"]),
+          ),
+        )
+        .returning({ id: analysisRun.id });
       return rows.length > 0;
     },
     async failExpired(owner, now) {
-      const rows = await db
-        .update(analysisRun)
-        .set({
-          status: sql`case when ${analysisRun.attempt} < ${analysisRun.maxAttempts} then 'queued' else 'failed' end`,
-          attempt: sql`least(${analysisRun.attempt} + 1, ${analysisRun.maxAttempts})`,
-          errorCode: "worker_lost",
-          errorDetail: null,
-          finishedAt: sql`case when ${analysisRun.attempt} < ${analysisRun.maxAttempts} then null else ${now.toISOString()}::timestamptz end`,
-          leaseToken: null,
-          leaseExpiresAt: null,
-          heartbeatAt: null,
-        })
-        .where(and(owned(owner), expired(now)))
-        .returning({ id: analysisRun.id });
-      return rows.length;
+      return db.transaction(async (transaction) => {
+        const tx = transaction;
+        const rows = await tx
+          .update(analysisRun)
+          .set({
+            status: sql`case when ${analysisRun.attempt} < ${analysisRun.maxAttempts} then 'queued' else 'failed' end`,
+            attempt: sql`least(${analysisRun.attempt} + 1, ${analysisRun.maxAttempts})`,
+            errorCode: "worker_lost",
+            errorDetail: null,
+            finishedAt: sql`case when ${analysisRun.attempt} < ${analysisRun.maxAttempts} then null else ${now.toISOString()}::timestamptz end`,
+            leaseToken: null,
+            leaseExpiresAt: null,
+            heartbeatAt: null,
+          })
+          .where(and(owned(owner), expired(now)))
+          .returning({
+            id: analysisRun.id,
+            status: analysisRun.status,
+            snapshotId: analysisRun.snapshotId,
+            tool: analysisRun.tool,
+          });
+        await markBuilt(
+          tx,
+          rows.flatMap((row) =>
+            row.status === "failed" && isBuilder(row.tool)
+              ? [row.snapshotId]
+              : [],
+          ),
+          now,
+        );
+        // A run that has attempts left is queued again; one that has not has
+        // ended, and whatever waited on it fails with it.
+        for (const row of rows)
+          await announce(
+            tx,
+            row.status === "queued" ? RUN_QUEUED_CHANNEL : RUN_ENDED_CHANNEL,
+            row.id,
+          );
+        return rows.length;
+      });
     },
     async organizationsWithExpiredRuns(now) {
       const rows = await db
@@ -596,23 +848,59 @@ export function createAnalysisRunStore(db: Database): AnalysisRunStore {
       return [...new Set(rows.map((row) => row.organizationId))];
     },
     async queueState(now) {
-      const queued = await db
-        .select({ id: analysisRun.id })
-        .from(analysisRun)
-        .where(eq(analysisRun.status, "queued"))
-        .limit(1);
-      const fresh = await db
-        .select({ id: analysisRun.id })
+      // What could be claimed now, and what runs with a live heartbeat, by
+      // tool: the slots a worker would give them.
+      const rows = await db
+        .select({
+          tool: analysisRun.tool,
+          status: analysisRun.status,
+          count: sql<number>`count(*)::int`,
+        })
         .from(analysisRun)
         .where(
-          and(
-            eq(analysisRun.status, "running"),
-            gt(analysisRun.heartbeatAt, new Date(now.getTime() - 60_000)),
-            gt(analysisRun.deadlineAt, now),
+          or(
+            sql`${analysisRun.id} in (select a.id from analysis_run a where ${CLAIMABLE})`,
+            and(
+              eq(analysisRun.status, "running"),
+              gt(analysisRun.heartbeatAt, new Date(now.getTime() - 60_000)),
+              gt(analysisRun.deadlineAt, now),
+            ),
           ),
         )
-        .limit(1);
-      return { queued: queued.length > 0, freshWorker: fresh.length > 0 };
+        .groupBy(analysisRun.tool, analysisRun.status);
+      // A polling worker between runs heartbeats nothing, but it holds a
+      // connection to wait for the next enqueue on, named for it.
+      const connected = await db
+        .select({
+          workers: sql<number>`count(distinct application_name)::int`,
+        })
+        .from(sql`pg_stat_activity`)
+        .where(
+          sql`(application_name = ${WORKER_APPLICATION_NAME} or application_name like ${`${WORKER_APPLICATION_NAME}:%`}) and datname = current_database()`,
+        );
+      const demand = { agent: 0, build: 0 } satisfies Record<RunSlot, number>;
+      let queued = false;
+      let running = false;
+      for (const row of rows) {
+        const tool = knownTool(row.tool);
+        if (tool === undefined) continue;
+        const count = Number(row.count);
+        if (row.status === "queued") queued ||= count > 0;
+        else running ||= count > 0;
+        demand[slotOf(tool)] += count;
+      }
+      const workers = Math.max(
+        Number(connected[0]?.workers ?? 0),
+        running ? 1 : 0,
+      );
+      return {
+        queued,
+        freshWorker: workers > 0,
+        workers,
+        short: RUN_SLOTS.some(
+          (slot) => demand[slot] > workers * WORKER_SLOTS[slot],
+        ),
+      };
     },
     async logKey(owner, id) {
       const row = (

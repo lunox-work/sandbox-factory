@@ -19,7 +19,9 @@ import {
   boundarySummary,
   canonicalJson,
   isScopeParams,
+  lookupSeams,
   scopeProblems,
+  seamsFiles,
   sliceRequestOf,
 } from "sandbox-factory";
 import type {
@@ -42,6 +44,7 @@ import { SCOPE_SYSTEM_PROMPT, bountySection } from "../agent/prompts.js";
 import {
   accessorHint,
   dataModelTool,
+  moduleSeamsTool,
   moduleSurfaceTool,
 } from "../agent/context-tools.js";
 import {
@@ -52,7 +55,7 @@ import {
   repositoryTools,
 } from "../agent/repo-tools.js";
 import { snapshotOf } from "./adapter.js";
-import { loadAbstractions, loadDataModel } from "./context-runs.js";
+import { loadAbstractions, loadDataModel, loadSeams } from "./context-runs.js";
 import type { ArtifactFile, ToolAdapter, ToolRunInput } from "./adapter.js";
 import { analyseSlice, loadGraph } from "./slice.js";
 import type { LoadedGraph, SliceAnalysis } from "./slice.js";
@@ -184,6 +187,17 @@ export function createScopeAdapter(settings: AgentSettings): ToolAdapter {
               params.abstractionsRunId,
               snapshot.snapshotId,
             );
+      // The seams index of the same graph, when the abstractions run has one.
+      const seams =
+        params.abstractionsRunId === undefined
+          ? null
+          : await loadSeams(
+              input.inputs,
+              params.abstractionsRunId,
+              snapshot.snapshotId,
+            ).then((index) =>
+              index?.graphRunId === graph.run.id ? index : null,
+            );
       const dataModel =
         params.dataModelRunId === undefined
           ? null
@@ -193,12 +207,15 @@ export function createScopeAdapter(settings: AgentSettings): ToolAdapter {
               snapshot.snapshotId,
             );
       const index = await indexRepository(input.sourceDir, input.signal);
-      const slice = (request: {
-        entryPoints: readonly string[];
-        maxFiles: number;
-        maxDepth: number;
-        includeInferred: boolean;
-      }) => {
+      const slice = (
+        request: {
+          entryPoints: readonly string[];
+          maxFiles: number;
+          maxDepth: number;
+          includeInferred: boolean;
+        },
+        indexed = false,
+      ) => {
         const sliceParams: SliceParams = {
           deadlineMinutes: params.deadlineMinutes,
           graphRunId: graph.run.id,
@@ -213,6 +230,16 @@ export function createScopeAdapter(settings: AgentSettings): ToolAdapter {
           run: snapshot,
           signal: input.signal,
           log: () => {},
+          // A check reads its externals from the index when it has every
+          // included file; a submission is always read from the source.
+          ...(indexed && seams !== null
+            ? {
+                externalsOf: (included: readonly string[]) => {
+                  const found = lookupSeams(seams, included);
+                  return found.unknown.length === 0 ? found.externals : null;
+                },
+              }
+            : {}),
         });
       };
       let checks = 0;
@@ -245,7 +272,7 @@ export function createScopeAdapter(settings: AgentSettings): ToolAdapter {
             };
           checks += 1;
           try {
-            return { content: checkReport(await slice(parsed.data)) };
+            return { content: checkReport(await slice(parsed.data, true)) };
           } catch (error) {
             if (input.signal.aborted) throw error;
             return { content: failureDetail(error), isError: true };
@@ -392,6 +419,7 @@ export function createScopeAdapter(settings: AgentSettings): ToolAdapter {
       const outcome = await runAgent({
         model: settings.model,
         step: input.step,
+        onTurn: input.timing?.turn,
         system: SCOPE_SYSTEM_PROMPT,
         prompt: [
           bountySection(task.issueKey, task.draft),
@@ -402,12 +430,20 @@ export function createScopeAdapter(settings: AgentSettings): ToolAdapter {
             : [
                 `The abstractions index describes ${abstractions.modules.length} modules; \`module_surface\` shows what a stub for any of them declares.`,
               ]),
+          ...(seams === null
+            ? []
+            : [
+                `The seams index lists ${seams.modules.length} of ${seams.files} files as reaching a service or an environment variable; \`module_seams\` looks any of them up without spending a check.`,
+              ]),
           ...(dataModel === null ? [] : [accessorHint(dataModel)]),
         ].join("\n\n"),
         tools: [
           ...repositoryTools(index),
           graphNeighboursTool(graph.graph),
           ...(abstractions === null ? [] : [moduleSurfaceTool(abstractions)]),
+          ...(seams === null
+            ? []
+            : [moduleSeamsTool(seams, seamsFiles(graph.graph))]),
           ...(dataModel === null ? [] : [dataModelTool(dataModel)]),
           checkScope,
           submitScope,

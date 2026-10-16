@@ -848,21 +848,16 @@ test("registering a repository schedules its first snapshot", async () => {
   await snapshotter.idle();
 
   assert.equal(snapshots.rows.size, before + 1);
-  // Listing is discovery, installation-wide and metadata only; the head
-  // and the tree are read with the repository's own token.
-  assert.deepEqual(fetch.mints[0], {
-    installationId: "9",
-    permissions: { metadata: "read" },
-  });
+  // Nothing installation-wide: the repository is checked, and its head
+  // and tree read, with a token narrowed to it.
+  assert.ok(fetch.mints.length > 0);
   assert.ok(
-    fetch.mints
-      .slice(1)
-      .every(
-        (mint) =>
-          mint.repositoryIds?.length === 1 &&
-          mint.repositoryIds[0] === 1296269 &&
-          mint.permissions?.["contents"] === "read",
-      ),
+    fetch.mints.every(
+      (mint) =>
+        mint.repositoryIds?.length === 1 &&
+        mint.repositoryIds[0] === 1296269 &&
+        mint.permissions?.["contents"] === "read",
+    ),
   );
 });
 

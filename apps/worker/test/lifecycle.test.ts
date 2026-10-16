@@ -1,19 +1,22 @@
 import assert from "node:assert/strict";
 import { generateKeyPairSync } from "node:crypto";
 import { renameSync, writeFileSync } from "node:fs";
-import { mkdtemp, writeFile, rm, stat } from "node:fs/promises";
+import { mkdir, mkdtemp, writeFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { test } from "node:test";
 import { repositoryToken } from "../src/credentials.js";
 import { executeRun } from "../src/run.js";
-import { workerLoop } from "../src/loop.js";
+import { createSourceCache } from "../src/source-cache.js";
+import type { fetchSource as fetchSourceImpl } from "../src/fetch-source.js";
+import { sourceArchiveKey } from "@sandbox-factory/db";
+import { wakeableWait, workerLoop } from "../src/loop.js";
 import { parseWorkerEnv } from "../src/env.js";
 import { uploadArtifacts } from "../src/upload.js";
 import { AnalysisError } from "../src/errors.js";
 import { run, stores } from "./helpers.js";
-import type { StoredArtifact } from "@sandbox-factory/db";
+import type { ClaimedAnalysisRun, StoredArtifact } from "@sandbox-factory/db";
 import type { ToolAdapter, ArtifactFile } from "../src/tools/adapter.js";
 const source = { maxBytes: 5000, maxFiles: 5, token: async () => "token" };
 const tool: ToolAdapter = {
@@ -51,6 +54,153 @@ test("success uploads attempt-scoped artifacts, commits, and removes source", as
   assert.equal(state.bytes.size, 2);
   assert.ok(state.bytes.has("runs/arn_1/lease_1/graph.json"));
   await assert.rejects(stat(directory));
+});
+test("runs of one commit read the source the cache kept, and release it", async () => {
+  const state = stores();
+  const directory = await mkdtemp(join(tmpdir(), "lifecycle-cache-"));
+  try {
+    const cache = await createSourceCache({ root: directory });
+    const fetched: string[] = [];
+    const reading: ToolAdapter = {
+      ...tool,
+      run: async (input) => {
+        // The tree the cache holds, not a copy in the run's directory.
+        assert.ok(input.sourceDir.startsWith(directory));
+        const path = join(input.outDir, "graph.json");
+        await mkdir(input.outDir, { recursive: true });
+        await writeFile(path, "{}");
+        return [
+          {
+            path: "graph.json",
+            absolutePath: path,
+            kind: "graph_json",
+            contentType: "application/json",
+            meta: null,
+          },
+        ];
+      },
+    };
+    const options = {
+      ...state,
+      tool: reading,
+      source,
+      sourceCache: cache,
+      fetchSource: async (_r: typeof run, into: string) => {
+        fetched.push(into);
+        await writeFile(join(into, "source.tar.gz"), "archive");
+        await mkdir(join(into, "source"));
+        return join(into, "source");
+      },
+    };
+    await executeRun(run, options);
+    await executeRun({ ...run, id: "arn_2" }, options);
+    assert.equal(fetched.length, 1);
+    // Only the tree is kept; the archive is the bucket's to keep.
+    await assert.rejects(stat(join(fetched[0] ?? "", "source.tar.gz")));
+    assert.deepEqual(state.calls, ["finish", "finish"]);
+    // Another organization's repository at the same commit is its own.
+    await executeRun({ ...run, id: "arn_3", repoId: "ghr_2" }, options);
+    assert.equal(fetched.length, 2);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+test("the bucket's copy of a commit's archive is offered to the fetch", async () => {
+  const state = stores();
+  let archive: Parameters<typeof fetchSourceImpl>[2]["archive"];
+  await executeRun(run, {
+    ...state,
+    tool,
+    source,
+    fetchSource: async (r, d, options) => {
+      archive = options.archive;
+      return fetchSource(r, d);
+    },
+  });
+  const key = sourceArchiveKey("ghr_1", "a".repeat(40));
+  assert.equal(await archive?.read(), undefined);
+  const file = join(await mkdtemp(join(tmpdir(), "archive-")), "a.tar.gz");
+  await writeFile(file, "bytes");
+  await archive?.write(file, 5);
+  assert.equal(Buffer.from(state.bytes.get(key) ?? []).toString(), "bytes");
+  assert.equal(Buffer.from((await archive?.read()) ?? []).toString(), "bytes");
+  // A run with no repository is offered none.
+  let offered: unknown = "unset";
+  await executeRun(
+    { ...run, repoId: null },
+    {
+      ...stores(),
+      tool,
+      source,
+      fetchSource: async (r, d, options) => {
+        offered = options.archive;
+        return fetchSource(r, d);
+      },
+    },
+  );
+  assert.equal(offered, undefined);
+});
+test("a run that ends keeps where its time went, stage by stage", async () => {
+  const state = stores();
+  let ticks = 0;
+  await executeRun(run, {
+    ...state,
+    source,
+    // Every reading of the clock is 10 ms after the last.
+    clock: () => (ticks += 10),
+    fetchSource: async (r, d, options) => {
+      options.onStage?.("fetch", 70);
+      options.onStage?.("extract", 30);
+      return fetchSource(r, d);
+    },
+    tool: {
+      ...tool,
+      run: async (input) => {
+        input.timing?.turn({ modelMs: 5000.4, toolMs: 12.6 });
+        input.timing?.baseline([
+          {
+            name: "install",
+            argv: ["npm", "ci"],
+            exitCode: 0,
+            timedOut: false,
+            ok: true,
+            path: null,
+            durationMs: 8000,
+          },
+          {
+            name: "build",
+            argv: ["npm", "run", "build"],
+            exitCode: 2,
+            timedOut: false,
+            ok: false,
+            path: null,
+          },
+        ]);
+        return tool.run(input);
+      },
+    },
+  });
+  assert.deepEqual(state.calls, ["finish"]);
+  assert.deepEqual(state.timings, [
+    {
+      stages: { fetch: 70, extract: 30, tool: 10, upload: 10, commit: 10 },
+      turns: [{ modelMs: 5000, toolMs: 13 }],
+      baselines: [
+        [
+          { name: "install", durationMs: 8000, ok: true },
+          { name: "build", durationMs: 0, ok: false },
+        ],
+      ],
+    },
+  ]);
+});
+test("a timing that cannot be written does not change the run's outcome", async () => {
+  const state = stores();
+  state.runs.recordTiming = async () => {
+    throw new Error("database down");
+  };
+  await executeRun(run, { ...state, tool, source, fetchSource });
+  assert.deepEqual(state.calls, ["finish"]);
 });
 test("a starter run reads no source, and a run that needs source has to have it", async () => {
   const state = stores();
@@ -344,6 +494,16 @@ test("failed sources, tool errors and upload errors are classified without sensi
     ]);
     for (const bytes of state.bytes.values())
       assert.doesNotMatch(Buffer.from(bytes).toString(), /sensitive/);
+    // Timed up to the stage that failed, and no further.
+    const stages = Object.keys(state.timings[0]?.stages ?? {});
+    assert.deepEqual(
+      stages.sort(),
+      stage === "source"
+        ? []
+        : stage === "tool"
+          ? ["tool"]
+          : ["tool", "upload"],
+    );
   }
 });
 test("shutdown releases the lease; deadline and lost heartbeat stop a running parser", async () => {
@@ -392,6 +552,9 @@ test("shutdown releases the lease; deadline and lost heartbeat stop a running pa
           ? "tool_timeout"
           : "worker_lost",
     ]);
+    // A released run is claimed again and starts over; one that failed
+    // has ended, and its time is kept.
+    assert.equal(state.timings.length, mode === "shutdown" ? 0 : 1);
   }
 });
 test("ambiguous commit preserves winning bytes and never overwrites its success log", async () => {
@@ -542,7 +705,9 @@ test("once drains the queue, poll waits, and stop prevents further claims", asyn
       executions++;
     },
   });
-  assert.equal(claims, 2);
+  // The run, an empty claim for the slots still free beside it, and an
+  // empty one once it has ended.
+  assert.equal(claims, 3);
   assert.equal(executions, 1);
   await workerLoop({
     runs: { claimNext: async () => null },
@@ -567,6 +732,195 @@ test("once drains the queue, poll waits, and stop prevents further claims", asyn
     /offline/,
   );
 });
+test("a claimed builder shares its claim with the ones beside it, which run at once", async () => {
+  const builder = (id: string, tool: ClaimedAnalysisRun["tool"]) => ({
+    ...run,
+    id,
+    tool,
+    snapshotId: "snapshot",
+  });
+  const asked: { snapshotId: string; tools: readonly string[] }[] = [];
+  const beside = [builder("arn_d", "documents"), null];
+  let running = 0;
+  let together = 0;
+  let claims = 0;
+  await workerLoop({
+    runs: {
+      claimNext: async () =>
+        ++claims === 1 ? builder("arn_a", "abstractions") : null,
+      claimBeside: async (_token, _now, input) => {
+        asked.push(input);
+        return beside.shift() ?? null;
+      },
+    },
+    mode: "once",
+    signal: new AbortController().signal,
+    beside: (claimed) =>
+      claimed.tool === "abstractions"
+        ? {
+            snapshotId: "snapshot",
+            tools: ["abstractions", "data_model", "documents"],
+          }
+        : null,
+    execute: async () => {
+      running += 1;
+      together = Math.max(together, running);
+      await delay(5);
+      running -= 1;
+    },
+  });
+  // Its own tool is never asked for, and one claimed is not asked again.
+  assert.deepEqual(asked, [
+    { snapshotId: "snapshot", tools: ["data_model", "documents"] },
+    { snapshotId: "snapshot", tools: ["data_model"] },
+  ]);
+  assert.equal(together, 2);
+  // A store with no shared claims runs each alone.
+  let executions = 0;
+  claims = 0;
+  await workerLoop({
+    runs: {
+      claimNext: async () =>
+        ++claims === 1 ? builder("arn_a", "abstractions") : null,
+    },
+    mode: "once",
+    signal: new AbortController().signal,
+    beside: () => ({ snapshotId: "snapshot", tools: ["documents"] }),
+    execute: async () => {
+      executions += 1;
+    },
+  });
+  assert.equal(executions, 1);
+});
+test("a polling worker stays warm for its idle minutes after a run, then returns", async () => {
+  let clock = 0;
+  let claims = 0;
+  const waits: number[] = [];
+  await workerLoop({
+    runs: { claimNext: async () => (++claims === 2 ? run : null) },
+    mode: "poll",
+    signal: new AbortController().signal,
+    execute: async () => {},
+    wait: async () => {
+      waits.push(clock);
+      clock += 4_000;
+    },
+    idleExitMs: 10_000,
+    now: () => clock,
+  });
+  // Idle 0 s; a run claimed at 4 s, beside which the loop waits for a run
+  // of a free slot (the clock's 4 s more); idle from 8 s until 18 s.
+  assert.deepEqual(waits, [0, 4_000, 8_000, 12_000, 16_000]);
+  assert.equal(claims, 7);
+});
+test("a worker runs agent runs beside a build, and claims only the slots it has free", async () => {
+  const of = (id: string, tool: ClaimedAnalysisRun["tool"]) => ({
+    ...run,
+    id,
+    tool,
+  });
+  const queue = [
+    of("arn_graph", "graphify"),
+    of("arn_scope", "scope"),
+    of("arn_fixtures", "fixtures"),
+    of("arn_build", "sandbox_build"),
+    of("arn_slice", "slice"),
+  ];
+  const asked: (readonly string[] | undefined)[] = [];
+  const release = new Map<string, () => void>();
+  const started: string[] = [];
+  const done = workerLoop({
+    runs: {
+      claimNext: async (_token, _now, tools) => {
+        asked.push(tools);
+        const index = queue.findIndex(
+          (item) => tools === undefined || tools.includes(item.tool),
+        );
+        return index < 0 ? null : (queue.splice(index, 1)[0] ?? null);
+      },
+    },
+    mode: "once",
+    signal: new AbortController().signal,
+    execute: (claimed) => {
+      started.push(claimed.id);
+      return new Promise<void>((resolve) => release.set(claimed.id, resolve));
+    },
+  });
+  await delay(5);
+  // One build and three agent runs at once; the slice waits for the build.
+  assert.deepEqual(started, [
+    "arn_graph",
+    "arn_scope",
+    "arn_fixtures",
+    "arn_build",
+  ]);
+  assert.equal(asked[0], undefined);
+  assert.ok(asked[1]?.includes("scope") && !asked[1].includes("slice"));
+  // Every slot busy: nothing is claimed until a run ends.
+  const claimsWhileFull = asked.length;
+  await delay(5);
+  assert.equal(asked.length, claimsWhileFull);
+  release.get("arn_graph")?.();
+  await delay(5);
+  assert.deepEqual(started.slice(4), ["arn_slice"]);
+  for (const id of ["arn_scope", "arn_fixtures", "arn_build", "arn_slice"])
+    release.get(id)?.();
+  await done;
+});
+test("a run that throws ends the loop once the others beside it have ended", async () => {
+  let claims = 0;
+  let otherEnded = false;
+  await assert.rejects(
+    workerLoop({
+      runs: {
+        claimNext: async () =>
+          ++claims === 1
+            ? { ...run, id: "arn_scope", tool: "scope" }
+            : claims === 2
+              ? { ...run, id: "arn_graph", tool: "graphify" }
+              : null,
+      },
+      mode: "poll",
+      signal: new AbortController().signal,
+      wait: (cancel) =>
+        new Promise((resolve) =>
+          cancel?.addEventListener("abort", () => resolve()),
+        ),
+      execute: async (claimed) => {
+        if (claimed.tool === "scope") throw new Error("broken");
+        await delay(10);
+        otherEnded = true;
+      },
+    }),
+    /broken/,
+  );
+  assert.equal(otherEnded, true);
+});
+test("the poll's wait ends early on a wake, keeps one that came first, and ends on stop", async () => {
+  const stop = new AbortController();
+  const idle = wakeableWait(60_000, stop.signal);
+  const started = Date.now();
+  const waiting = idle.wait();
+  idle.wake();
+  await waiting;
+  // Woken before the wait: it does not wait at all, once.
+  idle.wake();
+  await idle.wait();
+  assert.ok(Date.now() - started < 1_000);
+  const stopped = idle.wait();
+  stop.abort();
+  await assert.rejects(stopped);
+  // A wait its caller cancels keeps a wake that comes after for the next.
+  const second = wakeableWait(60_000, new AbortController().signal);
+  const cancel = new AbortController();
+  const cancelled = second.wait(cancel.signal);
+  cancel.abort();
+  await assert.rejects(cancelled);
+  second.wake();
+  const kept = Date.now();
+  await second.wait();
+  assert.ok(Date.now() - kept < 1_000);
+});
 test("worker validates credentials, modes, and bounded limits", () => {
   const privateKey = generateKeyPairSync("rsa", { modulusLength: 2048 })
     .privateKey.export({ type: "pkcs8", format: "pem" })
@@ -578,6 +932,15 @@ test("worker validates credentials, modes, and bounded limits", () => {
     GITHUB_APP_PRIVATE_KEY: privateKey,
   };
   assert.equal(parseWorkerEnv(env).WORKER_MODE, "once");
+  assert.equal(parseWorkerEnv(env).WORKER_IDLE_EXIT_MINUTES, undefined);
+  assert.equal(
+    parseWorkerEnv({ ...env, WORKER_IDLE_EXIT_MINUTES: "15" })
+      .WORKER_IDLE_EXIT_MINUTES,
+    15,
+  );
+  assert.throws(() =>
+    parseWorkerEnv({ ...env, WORKER_IDLE_EXIT_MINUTES: "0" }),
+  );
   assert.equal(
     parseWorkerEnv({
       ...env,

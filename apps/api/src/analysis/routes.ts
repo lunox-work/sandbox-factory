@@ -16,6 +16,7 @@ import type {
 } from "@sandbox-factory/shared";
 import {
   CONTEXT_BUILDERS,
+  isFixturesParams,
   readsGraph,
   type AnalysisParams,
   type AnalysisTool,
@@ -67,7 +68,8 @@ const REPOSITORY_PROPOSALS_PAGE = 50;
 const publicArtifact = ({ objectKey: _key, ...dto }: StoredArtifact) => dto;
 /**
  * Runs whose artifacts are a version's private sandbox: a build's hidden
- * tests and the table its names were changed by are among them. They are
+ * tests and the table its names were changed by are among them, as is a
+ * sandbox's preparation. They are
  * read through the sandbox routes, owners and admins only, so here a member
  * is not shown them, and asking for one by id is answered as for any run
  * that is not there.
@@ -77,20 +79,25 @@ const SANDBOX_TOOLS: ReadonlySet<AnalysisTool> = new Set([
   "sandbox_starter",
 ]);
 const hiddenFrom = (role: string, run: StoredAnalysisRun) =>
-  SANDBOX_TOOLS.has(run.tool) && !isAtLeastAdmin(role);
+  (SANDBOX_TOOLS.has(run.tool) || preparation(run)) && !isAtLeastAdmin(role);
+/** A sandbox's preparation writes a name table too, so it is one of them. */
+const preparation = (run: StoredAnalysisRun) =>
+  isFixturesParams(run.params) && run.params.pseudonyms !== undefined;
 /**
- * A context builder's stored parameters: graphify's, plus, for a map
- * reader, its own name and the graph run it reads. Each keeps the graph
- * runs' deadline, which is part of the cache key the profiler's graph runs
- * share.
+ * A context builder's stored parameters: graphify's, plus, for any other,
+ * its own name, and for a map reader the graph run it reads. Each keeps
+ * the graph runs' deadline, which is part of the cache key the profiler's
+ * graph runs share.
  */
-function builderParams(
+export function builderParams(
   tool: ContextBuilder,
   asked: number | undefined,
   graphRunId: string | undefined,
 ): AnalysisParams {
   const deadlineMinutes = asked ?? GRAPH_DEADLINE_MINUTES;
   if (tool === "graphify") return { deadlineMinutes };
+  if (tool === "documents" || tool === "brief")
+    return { deadlineMinutes, builder: tool };
   if (graphRunId === undefined)
     throw new Error(`The ${tool} builder needs a graph run.`);
   return { deadlineMinutes, builder: tool, graphRunId };

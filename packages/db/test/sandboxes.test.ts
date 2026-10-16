@@ -1222,3 +1222,54 @@ test("unpublishing takes a sandbox back to a draft with no published version", a
     null,
   );
 });
+test("a cut is asked for on a linked sandbox, read back oldest first, and cleared only as read", async () => {
+  const asked = createFakeDb([{ sandboxId: "sbx_1" }]);
+  const store = createSandboxStore(asked.db);
+  assert.equal(await store.requestCut("owner", "sbx_1", "user", now), true);
+  assert.deepEqual(asked.calls[0]?.values, {
+    cutRequestedBy: "user",
+    cutRequestedAt: now,
+  });
+  assert.ok(asked.calls[0]?.filtered);
+  // No source row: a sandbox with no repository, or another owner's.
+  assert.equal(
+    await createSandboxStore(createFakeDb([]).db).requestCut(
+      "owner",
+      "sbx_1",
+      "user",
+      now,
+    ),
+    false,
+  );
+
+  const pending = createFakeDb([
+    { sandboxId: "sbx_1", requestedBy: "user", requestedAt: now },
+    { sandboxId: "sbx_2", requestedBy: null, requestedAt: null },
+  ]);
+  assert.deepEqual(await createSandboxStore(pending.db).pendingCuts("owner"), [
+    { sandboxId: "sbx_1", requestedBy: "user", requestedAt: now.toISOString() },
+  ]);
+  assert.ok(pending.calls[0]?.filtered && pending.calls[0]?.ordered);
+
+  assert.deepEqual(
+    await createSandboxStore(
+      createFakeDb([{ organizationId: "a" }, { organizationId: "a" }]).db,
+    ).organizationsWithPendingCuts(),
+    ["a"],
+  );
+
+  const cleared = createFakeDb([]);
+  await createSandboxStore(cleared.db).clearCut(
+    "owner",
+    "sbx_1",
+    now.toISOString(),
+  );
+  assert.deepEqual(cleared.calls[0]?.values, {
+    cutRequestedBy: null,
+    cutRequestedAt: null,
+  });
+  assert.ok(cleared.calls[0]?.filtered);
+  // Without a time, whatever request there is.
+  await createSandboxStore(cleared.db).clearCut("owner", "sbx_1");
+  assert.equal(cleared.calls.length, 2);
+});

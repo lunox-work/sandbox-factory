@@ -43,8 +43,9 @@ import {
   type RepoSnapshotStore,
   createSandboxStore,
   RepositoryInUseError,
+  sourceArchiveKey,
 } from "../src/index.js";
-import { treeFacts } from "sandbox-factory";
+import { toolOfParams, treeFacts, type AnalysisParams } from "sandbox-factory";
 import { runMigrations } from "../src/migrate.js";
 
 const ADMIN_URL =
@@ -606,6 +607,122 @@ describe("GitHub pointers in Postgres", { skip }, () => {
     ]);
   });
 
+  test("a snapshot is marked built as its last context builder ends, and not before", async () => {
+    const { repo } = await repoUnder("o_a", "961");
+    const snapshot = await snapshots.create("o_a", snapshotOf(repo.id, "7"));
+    if (snapshot.status !== "created") throw new Error("snapshot missing");
+    const id = snapshot.snapshot.id;
+    const runs = createAnalysisRunStore(connection.db);
+    const now = new Date();
+    const later = new Date(now.getTime() + 60 * 60_000);
+    // Leased directly: what the builders read is not what this is about.
+    for (const tool of [
+      "graphify",
+      "abstractions",
+      "documents",
+      "brief",
+      "data_model",
+    ])
+      await sql`insert into analysis_run (id, organization_id, snapshot_id, tool, tool_version, params, params_hash, status, lease_token, lease_expires_at, deadline_at) values (${`arn_built_${tool}`}, 'o_a', ${id}, ${tool}, 'v', ${sql.json({})}, ${tool}, 'running', 'lease', ${later}, ${later})`;
+    const built = async () =>
+      (await snapshots.built("o_a", repo.id)).map((each) => each.id);
+
+    assert.equal(
+      await runs.finish("o_a", "arn_built_graphify", "lease", [], "l", now),
+      true,
+    );
+    assert.deepEqual(await built(), []);
+    // A builder that failed has still ended.
+    assert.equal(
+      await runs.fail(
+        "o_a",
+        "arn_built_abstractions",
+        "lease",
+        "tool_failed",
+        null,
+        now,
+      ),
+      true,
+    );
+    assert.deepEqual(await built(), []);
+    for (const tool of ["documents", "brief"])
+      assert.equal(
+        await runs.finish("o_a", `arn_built_${tool}`, "lease", [], "l", now),
+        true,
+      );
+    assert.deepEqual(await built(), []);
+    assert.equal(
+      await runs.finish("o_a", "arn_built_data_model", "lease", [], "l", now),
+      true,
+    );
+    assert.deepEqual(await built(), [id]);
+    // Another organization sees none of it.
+    assert.deepEqual(await snapshots.built("o_b", repo.id), []);
+  });
+
+  test("a brief waits for its snapshot's other builders, and builders share a claim", async () => {
+    const { repo } = await repoUnder("o_a", "962");
+    const snapshot = await snapshots.create("o_a", snapshotOf(repo.id, "6"));
+    if (snapshot.status !== "created") throw new Error("snapshot missing");
+    const id = snapshot.snapshot.id;
+    const runs = createAnalysisRunStore(connection.db);
+    const enqueue = async (params: AnalysisParams) => {
+      const queued = await runs.enqueue("o_a", id, {
+        tool: toolOfParams(params),
+        params,
+        requestedBy: null,
+        maxActive: 10,
+      });
+      if (!queued.ok) throw new Error("run missing");
+      return queued.run;
+    };
+    const graph = await enqueue({ deadlineMinutes: 30 });
+    const brief = await enqueue({ deadlineMinutes: 30, builder: "brief" });
+    const documents = await enqueue({
+      deadlineMinutes: 30,
+      builder: "documents",
+    });
+    const model = await enqueue({
+      deadlineMinutes: 30,
+      builder: "data_model",
+      graphRunId: graph.id,
+    });
+    const now = new Date();
+    // The graph first; the brief, queued before the documents, waits.
+    assert.equal((await runs.claimNext("lease-g", now))?.id, graph.id);
+    // Beside the graph, only what waits on nothing it has not: the
+    // documents, not the data model reading the graph still running.
+    const beside = await runs.claimBeside("lease-d", now, {
+      snapshotId: id,
+      tools: ["documents", "data_model", "brief"],
+    });
+    assert.equal(beside?.id, documents.id);
+    assert.equal(
+      await runs.claimBeside("lease-x", now, {
+        snapshotId: id,
+        tools: ["data_model", "brief"],
+      }),
+      null,
+    );
+    assert.equal(await runs.claimNext("lease-n", now), null);
+    assert.equal(
+      await runs.finish("o_a", graph.id, "lease-g", [], "l", now),
+      true,
+    );
+    assert.equal((await runs.claimNext("lease-m", now))?.id, model.id);
+    assert.equal(await runs.claimNext("lease-n", now), null);
+    for (const [run, lease] of [
+      [documents.id, "lease-d"],
+      [model.id, "lease-m"],
+    ] as const)
+      assert.equal(await runs.finish("o_a", run, lease, [], "l", now), true);
+    assert.equal((await runs.claimNext("lease-b", now))?.id, brief.id);
+    assert.equal(
+      await runs.finish("o_a", brief.id, "lease-b", [], "l", now),
+      true,
+    );
+  });
+
   test("analysis claims are exclusive, writes are fenced, artifacts are private and runs prevent pruning", async () => {
     const { repo } = await repoUnder("o_a", "960");
     const snapshot = await snapshots.create("o_a", {
@@ -689,6 +806,7 @@ describe("GitHub pointers in Postgres", { skip }, () => {
       removed.objectKeys.sort(),
       [
         "trees/analysis.json.gz",
+        sourceArchiveKey(repo.id, "9".repeat(40)),
         "runs/analysis/graph.json",
         "logs/analysis.log",
       ].sort(),

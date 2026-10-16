@@ -112,6 +112,13 @@ function queuedRun(tool: AnalysisRunDto["tool"]): AnalysisRunDto {
         tool,
         params: { deadlineMinutes: 30, builder: tool, graphRunId: graphRun.id },
       } as AnalysisRunDto;
+    case "documents":
+    case "brief":
+      return {
+        ...base,
+        tool,
+        params: { deadlineMinutes: 30, builder: tool },
+      } as AnalysisRunDto;
     default:
       return { ...base, tool: "graphify", params: { deadlineMinutes: 30 } };
   }
@@ -363,7 +370,13 @@ test("the page names the repository, and owners see a card per builder", async (
       .getByRole("link", { name: "github.com/acme/widgets" })
       .getAttribute("href"),
   ).toBe("https://github.com/acme/widgets");
-  const names = ["Graphify", "Abstractions", "Data model"];
+  const names = [
+    "Graphify",
+    "Abstractions",
+    "Data model",
+    "Documents",
+    "Brief",
+  ];
   const cards = screen.getAllByRole("region", { name: / builder$/ });
   expect(cards.map((card) => card.getAttribute("aria-label"))).toEqual(
     names.map((name) => `${name} builder`),
@@ -393,7 +406,13 @@ test("Build all posts the snapshot once, and every card follows its run", async 
   renderPage();
   await screen.findByText(/10 files/);
   fireEvent.click(buildAll());
-  for (const name of ["Graphify", "Abstractions", "Data model"])
+  for (const name of [
+    "Graphify",
+    "Abstractions",
+    "Data model",
+    "Documents",
+    "Brief",
+  ])
     await within(builderCard(name)).findByText("Queued");
   expect(f.posts).toEqual([{ snapshotId: "rsn_1" }]);
   expect(f.calls.filter((c) => c.startsWith("POST"))).toHaveLength(1);
@@ -468,7 +487,13 @@ test("the context stays at its commit until Build all moves it to the chosen one
     "Every builder reads one commit: eeeeeee.",
   );
   expect(block.textContent).not.toContain("The chosen snapshot is");
-  for (const name of ["Graphify", "Abstractions", "Data model"])
+  for (const name of [
+    "Graphify",
+    "Abstractions",
+    "Data model",
+    "Documents",
+    "Brief",
+  ])
     expect(within(builderCard(name)).getByText("Queued")).toBeTruthy();
 });
 
@@ -879,9 +904,12 @@ test("a failed run with retries left is built again by Build all, and says why i
 });
 
 test("a graph out of retries leaves nothing for its readers to build", async () => {
+  // The documents and the brief read no map, so they are built regardless.
   server({
     runs: [
       { ...graphRun, status: "failed", attempt: 2, errorCode: "too_large" },
+      { ...queuedRun("documents"), status: "succeeded" },
+      { ...queuedRun("brief"), status: "succeeded" },
     ],
   });
   renderPage();
@@ -978,6 +1006,141 @@ test("each built row carries the headline figures of its own build", async () =>
   expect(figure("Graphify", "edges")).toBe("55");
   // A builder not built has none.
   expect(within(builderCard("Data model")).queryByText("entities")).toBe(null);
+});
+
+test("the documents and brief rows count what they kept and wrote", async () => {
+  const documents: AnalysisRunDto = {
+    ...queuedRun("documents"),
+    status: "succeeded",
+    startedAt: stamp,
+    finishedAt: stamp,
+  };
+  const brief: AnalysisRunDto = {
+    ...queuedRun("brief"),
+    status: "succeeded",
+    startedAt: stamp,
+    finishedAt: stamp,
+  };
+  server({
+    runs: [brief, documents, graphRun],
+    artifacts: {
+      [documents.id]: [
+        artifact(documents.id, "documents.json", "documents", {
+          documents: 7,
+          omitted: 2,
+          chars: 12_400,
+        }),
+      ],
+      [brief.id]: [
+        artifact(brief.id, "brief.md", "brief_md", {
+          chars: 5_120,
+          lines: 96,
+          read: { abstractions: false, dataModel: false, documents: true },
+        }),
+      ],
+    },
+  });
+  renderPage();
+  await screen.findByText(/10 files/);
+  const figure = (name: string, label: string) =>
+    within(builderCard(name)).getByText(label).previousElementSibling
+      ?.textContent;
+  await within(builderCard("Documents")).findByText("documents");
+  expect(figure("Documents", "documents")).toBe("7");
+  expect(figure("Documents", "omitted")).toBe("2");
+  expect(figure("Documents", "characters")).toBe((12_400).toLocaleString());
+  await within(builderCard("Brief")).findByText("lines");
+  expect(figure("Brief", "characters")).toBe((5_120).toLocaleString());
+  expect(figure("Brief", "lines")).toBe("96");
+});
+
+test("the context opens on the brief, and the documents read as a list", async () => {
+  const documents: AnalysisRunDto = {
+    ...queuedRun("documents"),
+    status: "succeeded",
+    startedAt: stamp,
+    finishedAt: stamp,
+  };
+  const brief: AnalysisRunDto = {
+    ...queuedRun("brief"),
+    status: "succeeded",
+    startedAt: stamp,
+    finishedAt: stamp,
+  };
+  server({
+    runs: [brief, documents, graphRun],
+    artifacts: {
+      arn_1: [artifact("arn_1", "GRAPH_REPORT.md", "report_md")],
+      [documents.id]: [artifact(documents.id, "documents.json", "documents")],
+      [brief.id]: [artifact(brief.id, "brief.md", "brief_md")],
+    },
+    contents: {
+      art_GRAPH_REPORT_md: "# Report",
+      art_brief_md: "# acme/widgets\n\nA widget shop.",
+      art_documents_json: JSON.stringify({
+        schemaVersion: 1,
+        toolVersion: "documents@1",
+        sourceSnapshotId: snapshot.id,
+        sourceCommitSha: snapshot.commitSha,
+        documents: [
+          {
+            path: "README.md",
+            bytes: 300,
+            text: "# Widgets\n\nSee [the guide](docs/guide.md).",
+            truncated: false,
+          },
+          {
+            path: "docs/guide.md",
+            bytes: 90_000,
+            text: "# Guide",
+            truncated: true,
+          },
+        ],
+        omitted: 3,
+      }),
+    },
+  });
+  renderPage("member");
+  await screen.findByText(/10 files/);
+  await waitFor(() => expect(viewAll().disabled).toBe(false));
+  fireEvent.click(viewAll());
+  const dialog = await screen.findByRole("dialog");
+  const files = within(dialog).getByRole("navigation", { name: "Files" });
+  // The brief opens first, ahead of the graph's report.
+  expect(
+    await within(dialog).findByRole("heading", { name: "acme/widgets" }),
+  ).toBeTruthy();
+  expect(
+    within(files)
+      .getByRole("button", { name: "brief.md" })
+      .getAttribute("aria-current"),
+  ).toBe("true");
+  // The documents builder's set lists what it kept, and what it left out.
+  fireEvent.click(
+    within(files).getByRole("button", { name: "documents.json" }),
+  );
+  const kept = await within(dialog).findByRole("list", {
+    name: "Kept documents",
+  });
+  expect(
+    within(dialog).getByText(/2 documents kept · 3 more left out/),
+  ).toBeTruthy();
+  expect(within(kept).getAllByRole("button")).toHaveLength(2);
+  expect(within(kept).getByText("cut short")).toBeTruthy();
+  // One opens as a document; its links to another kept one are followed.
+  fireEvent.click(within(kept).getByRole("button", { name: /README\.md/ }));
+  await within(dialog).findByRole("heading", { name: "Widgets" });
+  fireEvent.click(within(dialog).getByRole("link", { name: "the guide" }));
+  await within(dialog).findByRole("heading", { name: "Guide" });
+  fireEvent.click(
+    within(dialog).getByRole("button", { name: "All documents" }),
+  );
+  await within(dialog).findByRole("list", { name: "Kept documents" });
+  // The file as written is a toggle away.
+  fireEvent.click(within(dialog).getByRole("button", { name: "List" }));
+  expect(within(dialog).getByTestId("file-source").textContent).toContain(
+    '"omitted"',
+  );
 });
 
 test("runs a bounty made are listed with the rest in the logs, with nothing here that would make one", async () => {

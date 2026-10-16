@@ -18,6 +18,7 @@ import {
 
 import type {
   AnalysisErrorCode,
+  BountyRunModelCall,
   BountyRunOutcome,
   BountyRunProgress,
   BountyRunPlannedIssue,
@@ -25,6 +26,7 @@ import type {
   ComplexityProfile,
   ProfileErrorCode,
   ProfileStatus,
+  ProfileTransitionTime,
   RateCardSnapshot,
   PricedComplexity,
   RespecRequest,
@@ -127,6 +129,15 @@ export const bountyRun = pgTable(
      * returns, and on a board's runs, which write none.
      */
     progress: jsonb("progress").$type<BountyRunProgress>(),
+    /**
+     * Every model call the run made, in the order they started, written
+     * once when it ends: how long each took and whether it fell back.
+     * Empty for a run that made none, or ended before this was kept.
+     */
+    modelCalls: jsonb("model_calls")
+      .$type<BountyRunModelCall[]>()
+      .notNull()
+      .default([]),
     candidatesScanned: integer("candidates_scanned").notNull().default(0),
     skippedLive: integer("skipped_live").notNull().default(0),
     scanLimitReached: boolean("scan_limit_reached").notNull().default(false),
@@ -470,7 +481,19 @@ export const bountyProfile = pgTable(
     sliceRunId: text("slice_run_id").references(() => analysisRun.id, {
       onDelete: "set null",
     }),
+    // The sandbox's preparation: a fixtures run on the slice that also
+    // writes the name table, queued once the profile is ready and its price
+    // approved, so a Sandbox click finds both written.
+    preparedRunId: text("prepared_run_id").references(() => analysisRun.id, {
+      onDelete: "set null",
+    }),
     profile: jsonb("profile").$type<ComplexityProfile>(),
+    // Each status the row has moved to, with when, oldest first. `queued`
+    // is `created_at`; empty for a row that moved before this was kept.
+    transitions: jsonb("transitions")
+      .$type<ProfileTransitionTime[]>()
+      .notNull()
+      .default([]),
     createdAt: ts("created_at").notNull().defaultNow(),
     updatedAt: ts("updated_at").notNull().defaultNow(),
   },
@@ -503,6 +526,23 @@ export const bountyProfile = pgTable(
     check("bounty_profile_revision_check", sql`${table.specRevision} > 0`),
   ],
 );
+
+/**
+ * A workspace's settings, one row per organization, written the first time
+ * one is changed: an organization with none has every default.
+ */
+export const workspaceSetting = pgTable("workspace_setting", {
+  organizationId: text("organization_id")
+    .primaryKey()
+    .references(() => organization.id, { onDelete: "cascade" }),
+  // Whether an approved bounty's sandbox is prepared before anyone asks
+  // for it: model spend for a shorter wait.
+  prepareSandboxes: boolean("prepare_sandboxes").notNull().default(true),
+  updatedBy: text("updated_by").references(() => user.id, {
+    onDelete: "set null",
+  }),
+  updatedAt: ts("updated_at").notNull().defaultNow(),
+});
 
 export interface BountyWritebackPayload {
   readonly complexity: PricedComplexity;
@@ -573,4 +613,5 @@ export type NewBountySpecRow = typeof bountySpec.$inferInsert;
 export type BountyWritebackRow = typeof bountyWriteback.$inferSelect;
 export type NewBountyWritebackRow = typeof bountyWriteback.$inferInsert;
 export type BountyProfileRow = typeof bountyProfile.$inferSelect;
+export type WorkspaceSettingRow = typeof workspaceSetting.$inferSelect;
 export type NewBountyProfileRow = typeof bountyProfile.$inferInsert;

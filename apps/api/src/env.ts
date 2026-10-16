@@ -29,6 +29,11 @@ const envSchema = z.object({
     unsetSecret,
     z.string().min(1).optional(),
   ),
+  /** How many worker tasks the launcher keeps alive at once, at most. */
+  WORKER_MAX_TASKS: z.preprocess(
+    unsetSecret,
+    z.coerce.number().int().min(1).max(20).default(4),
+  ),
   MAX_ACTIVE_RUNS_PER_ORG: z.preprocess(
     unsetSecret,
     z.coerce.number().int().min(1).max(50).default(3),
@@ -472,5 +477,6 @@ export function workerLaunchConfig(env: ReturnType<typeof parseEnv>) {
     cluster: env.WORKER_CLUSTER,
     subnets,
     securityGroup: env.WORKER_SECURITY_GROUP,
+    maxWorkers: env.WORKER_MAX_TASKS,
   };
 }

@@ -68,6 +68,11 @@ export const IMPORT_LIMIT = 100;
 
 /** Issues read from Jira at once. */
 const IMPORT_CONCURRENCY = 4;
+/**
+ * Boards imported at once. Each already reads `IMPORT_CONCURRENCY` tickets
+ * at a time, from what is often one site, so this stays small.
+ */
+const BOARD_CONCURRENCY = 3;
 
 export type ImportResult =
   | {
@@ -319,7 +324,7 @@ export async function importBoardIssue(
 }
 
 /**
- * Imports every board named, one after another, for a sync that has just
+ * Imports every board named, a few at a time, for a sync that has just
  * registered or refreshed them. Run in the background: a failure is the
  * board's to show when its import is asked for again, never the sync's.
  */
@@ -328,13 +333,13 @@ export async function importBoards(
   organizationId: string,
   boardIds: readonly string[],
 ): Promise<void> {
-  for (const boardId of boardIds) {
+  await mapConcurrent(boardIds, BOARD_CONCURRENCY, async (boardId) => {
     try {
       await importBoard(options, organizationId, boardId);
     } catch {
       // The next sync, or a person's import, tries again.
     }
-  }
+  });
 }
 
 interface BountyImportAppEnv {

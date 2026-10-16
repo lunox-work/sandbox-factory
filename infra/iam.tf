@@ -74,6 +74,14 @@ data "aws_iam_policy_document" "task_objects" {
     resources = ["${aws_s3_bucket.private.arn}/runs/*", "${aws_s3_bucket.private.arn}/logs/*"]
   }
 
+  # The source archives a worker kept (`sources/<repoId>/<sha>.tar.gz`), which
+  # go with their repository.
+  statement {
+    sid       = "SourceArchives"
+    actions   = ["s3:DeleteObject"]
+    resources = ["${aws_s3_bucket.private.arn}/sources/*"]
+  }
+
   statement {
     sid       = "MissingKeyIs404"
     actions   = ["s3:ListBucket"]
@@ -101,6 +109,12 @@ data "aws_iam_policy_document" "worker_objects" {
     # Read/delete permit hashing diagnostics and cleanup of fenced attempts.
     actions   = ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"]
     resources = ["${aws_s3_bucket.private.arn}/runs/*", "${aws_s3_bucket.private.arn}/logs/*"]
+  }
+  statement {
+    # A commit's source archive, kept once fetched from GitHub so the next
+    # worker without it on disk reads it here.
+    actions   = ["s3:GetObject", "s3:PutObject"]
+    resources = ["${aws_s3_bucket.private.arn}/sources/*"]
   }
   statement {
     actions   = ["s3:ListBucket"]

@@ -51,6 +51,11 @@ export const PROFILE_STATUSES = [
   "failed",
 ] as const;
 export type ProfileStatus = (typeof PROFILE_STATUSES)[number];
+/** One status a profile entered, and when, as an ISO timestamp. */
+export interface ProfileTransitionTime {
+  readonly status: ProfileStatus;
+  readonly at: string;
+}
 
 /**
  * Why a profile failed. A run's own error code, when a run is what failed,

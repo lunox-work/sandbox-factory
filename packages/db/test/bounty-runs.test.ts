@@ -39,6 +39,7 @@ function row(overrides: Partial<BountyRunRow> = {}): BountyRunRow {
     planned: [],
     outcomes: [],
     progress: null,
+    modelCalls: [],
     candidatesScanned: 0,
     skippedLive: 0,
     scanLimitReached: false,
@@ -554,4 +555,34 @@ test("legacy snapshot reads add XS without changing historical rates", async () 
   assert.equal(record?.rateCard.xsMinor, 100);
   assert.equal(record?.rateCard.sMinor, 100);
   assert.equal(record?.rateCard.revision, 1);
+});
+
+test("model calls are written only once a run has ended", async () => {
+  const calls = [
+    {
+      tool: "size_bounty",
+      at: "2026-09-22T00:00:00.000Z",
+      ms: 20_300,
+      model: "sizing-model",
+      fellBack: false,
+      ok: true,
+    },
+  ];
+  const fake = createFakeDb([{ id: "brn_1" }]);
+  const store = createBountyRunStore(fake.db);
+  assert.equal(await store.recordModelCalls("org_1", "brn_1", calls), true);
+  const write = fake.calls.find((call) => call.kind === "update");
+  assert.deepEqual(write?.values, { modelCalls: calls });
+  assert.equal(write?.filtered, true);
+
+  // One still running, or another organization's, is not written.
+  const missed = createFakeDb([]);
+  assert.equal(
+    await createBountyRunStore(missed.db).recordModelCalls(
+      "org_1",
+      "brn_1",
+      calls,
+    ),
+    false,
+  );
 });

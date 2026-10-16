@@ -4,7 +4,15 @@ import type { NewArtifact, ObjectStore } from "@sandbox-factory/db";
 import type { ArtifactFile } from "./tools/adapter.js";
 import { AnalysisError } from "./errors.js";
 
-/** Attempt keys prevent a late, fenced worker from overwriting the winner. */
+/** Files uploaded at once: a graph's artifacts number in the dozens. */
+const UPLOAD_CONCURRENCY = 8;
+
+/**
+ * Attempt keys prevent a late, fenced worker from overwriting the winner.
+ * Uploaded a few at a time, in the files' order; after a failure no other
+ * starts, and the ones in flight finish before it is thrown, so every key
+ * that may have been written is in `uploaded` for the cleanup.
+ */
 export async function uploadArtifacts(
   store: ObjectStore,
   runId: string,
@@ -13,9 +21,11 @@ export async function uploadArtifacts(
   signal: AbortSignal,
   uploaded: string[],
 ): Promise<NewArtifact[]> {
-  const artifacts: NewArtifact[] = [];
+  const artifacts = new Array<NewArtifact>(files.length);
   let total = 0;
-  for (const file of files) {
+  let next = 0;
+  let failure: { error: unknown } | undefined;
+  const one = async (file: ArtifactFile): Promise<NewArtifact> => {
     signal.throwIfAborted();
     if (
       file.path.startsWith("/") ||
@@ -58,7 +68,7 @@ export async function uploadArtifacts(
           signal,
         });
       }
-      artifacts.push({
+      return {
         kind: file.kind,
         path: file.path,
         objectKey,
@@ -66,10 +76,26 @@ export async function uploadArtifacts(
         sizeBytes: size,
         sha256: hash.digest("hex"),
         meta: file.meta,
-      });
+      };
     } finally {
       await handle.close();
     }
-  }
+  };
+  const worker = async () => {
+    while (failure === undefined) {
+      const index = next++;
+      const file = files[index];
+      if (file === undefined) return;
+      try {
+        artifacts[index] = await one(file);
+      } catch (error) {
+        failure ??= { error };
+      }
+    }
+  };
+  await Promise.all(
+    Array.from({ length: Math.min(UPLOAD_CONCURRENCY, files.length) }, worker),
+  );
+  if (failure !== undefined) throw failure.error;
   return artifacts;
 }

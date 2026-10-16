@@ -52,6 +52,8 @@ export interface StructuredResult<O> {
   readonly actualModel: string;
   /** Every attempt that reached the model, not only the one that answered. */
   readonly usage: SizingUsage;
+  /** True when a fallback provider answered for the primary. */
+  readonly fellBack?: boolean;
 }
 
 export interface SizingRequestOptions {

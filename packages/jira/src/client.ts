@@ -114,6 +114,56 @@ export interface JiraClientOptions {
   timeoutMs?: number;
   /** Injectable for tests, so a retry does not really wait. */
   sleep?: (ms: number) => Promise<void>;
+  /**
+   * Where a site's story points fields are kept between issues, so a board
+   * import reads the site's field list once rather than once per issue.
+   */
+  fieldCache?: FieldListCache;
+}
+
+/**
+ * A site's story points fields, found from its field list, by the REST root
+ * the credential addresses (which names the site).
+ */
+export interface FieldListCache {
+  get(site: string): readonly string[] | undefined;
+  set(site: string, fields: readonly string[]): void;
+}
+
+/**
+ * Keeps each site's fields for an hour by default: a field an admin adds is
+ * picked up within that, and nothing else about the list is read.
+ */
+export function createFieldListCache(
+  options: { ttlMs?: number; now?: () => number; maxSites?: number } = {},
+): FieldListCache {
+  const ttlMs = options.ttlMs ?? 60 * 60_000;
+  const now = options.now ?? Date.now;
+  const maxSites = options.maxSites ?? 500;
+  const kept = new Map<
+    string,
+    { readonly fields: readonly string[]; readonly at: number }
+  >();
+  return {
+    get(site) {
+      const entry = kept.get(site);
+      if (entry === undefined) return undefined;
+      if (now() - entry.at >= ttlMs) {
+        kept.delete(site);
+        return undefined;
+      }
+      return entry.fields;
+    },
+    set(site, fields) {
+      kept.delete(site);
+      // The oldest site goes first: a Map iterates in insertion order.
+      if (kept.size >= maxSites) {
+        const oldest = kept.keys().next();
+        if (oldest.done !== true) kept.delete(oldest.value);
+      }
+      kept.set(site, { fields: [...fields], at: now() });
+    },
+  };
 }
 
 export interface JiraComment {
@@ -136,6 +186,7 @@ export class JiraClient {
   readonly #maxRetries: number;
   readonly #sleep: ((ms: number) => Promise<void>) | undefined;
   readonly #timeoutMs: number | undefined;
+  readonly #fieldCache: FieldListCache | undefined;
 
   constructor(options: JiraClientOptions) {
     this.#credential = options.credential;
@@ -144,6 +195,7 @@ export class JiraClient {
     this.#maxRetries = options.maxRetries ?? 2;
     this.#sleep = options.sleep;
     this.#timeoutMs = options.timeoutMs;
+    this.#fieldCache = options.fieldCache;
   }
 
   /** Every board the credential can see, following pagination to the end. */
@@ -362,23 +414,29 @@ export class JiraClient {
   /**
    * One issue's **context**: what it says about its bounty beyond its text
    * (`toJiraContext`), with its story points when the site keeps them. The
-   * site's story points fields are found by name from its field list; a
-   * site whose list cannot be read is read without them, as a site with
-   * none is. Nothing it returns names a person.
+   * site's story points fields are found by name from its field list, kept
+   * in the client's `fieldCache` when it has one; a site whose list cannot
+   * be read is read without them, as a site with none is, and is asked
+   * again next time. Nothing it returns names a person.
    */
   async issueContext(
     keyOrId: string,
     signal?: AbortSignal,
   ): Promise<JiraContextDto> {
-    let pointFields: string[] = [];
-    try {
-      pointFields = storyPointFields(
-        toFieldDefinitions(await this.#get("/rest/api/3/field", signal)),
-      );
-    } catch (error) {
-      // Only the points are lost; a credential that is refused here is
-      // refused by the issue read below too, which says so.
-      if (signal?.aborted === true) throw error;
+    const site = this.#credential.baseUrl();
+    let pointFields = this.#fieldCache?.get(site);
+    if (pointFields === undefined) {
+      try {
+        pointFields = storyPointFields(
+          toFieldDefinitions(await this.#get("/rest/api/3/field", signal)),
+        );
+        this.#fieldCache?.set(site, pointFields);
+      } catch (error) {
+        // Only the points are lost; a credential that is refused here is
+        // refused by the issue read below too, which says so.
+        if (signal?.aborted === true) throw error;
+        pointFields = [];
+      }
     }
     const query = new URLSearchParams({
       fields: [...CONTEXT_FIELDS, ...pointFields].join(","),

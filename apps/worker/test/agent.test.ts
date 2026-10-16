@@ -135,6 +135,36 @@ test("the loop runs tools until the submit tool accepts, and logs only fixed lin
   assert.ok(lines.every((line) => !line.includes('"a"')));
 });
 
+test("each turn says how long its model call and its tool calls took", async () => {
+  const model = scripted([
+    turn([{ type: "text", text: "thinking aloud" }], "end_turn"),
+    turn([call("echo", {}, "t1")]),
+    turn([], "refusal"),
+  ]);
+  const turns: unknown[] = [];
+  let ticks = 0;
+  const outcome = await runAgent({
+    model,
+    system: "s",
+    prompt: "p",
+    tools: [echo, submit(() => true)],
+    submitTool: "submit",
+    limits,
+    signal,
+    log: () => {},
+    onTurn: (timing) => turns.push(timing),
+    // Every reading of the clock is 1 ms after the last.
+    clock: () => (ticks += 1),
+  });
+  assert.equal(outcome.stopped, "refusal");
+  // A turn that calls no tool, or is refused, spends nothing on tools.
+  assert.deepEqual(turns, [
+    { modelMs: 1, toolMs: 0 },
+    { modelMs: 1, toolMs: 1 },
+    { modelMs: 1, toolMs: 0 },
+  ]);
+});
+
 test("a turn with no tool call is nudged twice before the loop gives up", async () => {
   const model = scripted([
     turn([{ type: "text", text: "thinking aloud" }], "end_turn"),
@@ -760,4 +790,71 @@ test("text-only replies cannot continue after exhausting the token budget", asyn
   assert.equal(model.requests.length, 1);
   assert.equal(result.stopped, "budget");
   assert.equal(result.usage.inputTokens, 10);
+});
+test("a turn's reading calls run together, and any other call runs alone in its order", async () => {
+  const events: string[] = [];
+  const reader = (name: string): AgentTool => ({
+    name,
+    description: "Read.",
+    inputSchema: { properties: {}, required: [], additionalProperties: false },
+    concurrent: true,
+    async run() {
+      events.push(`${name} start`);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      events.push(`${name} end`);
+      return { content: name };
+    },
+  });
+  const writer: AgentTool = {
+    name: "write",
+    description: "Write.",
+    inputSchema: { properties: {}, required: [], additionalProperties: false },
+    async run() {
+      events.push("write");
+      return { content: "written" };
+    },
+  };
+  const model = scripted([
+    turn([
+      call("read_a", {}, "a"),
+      call("read_b", {}, "b"),
+      call("write", {}, "w"),
+      call("read_c", {}, "c"),
+    ]),
+    turn([call("submit", {})]),
+  ]);
+  const outcome = await runAgent({
+    model,
+    system: "s",
+    prompt: "p",
+    tools: [
+      reader("read_a"),
+      reader("read_b"),
+      reader("read_c"),
+      writer,
+      submit(() => true),
+    ],
+    submitTool: "submit",
+    limits: { maxTurns: 5, maxTokens: 1_000_000 },
+    signal,
+    log: () => {},
+  });
+  assert.equal(outcome.stopped, "accepted");
+  assert.deepEqual(events, [
+    "read_a start",
+    "read_b start",
+    "read_a end",
+    "read_b end",
+    "write",
+    "read_c start",
+    "read_c end",
+  ]);
+  // The results go back in the order the calls were made.
+  const answered = model.requests[1]?.messages.at(-1) as {
+    content: { tool_use_id: string }[];
+  };
+  assert.deepEqual(
+    answered.content.map((block) => block.tool_use_id),
+    ["a", "b", "w", "c"],
+  );
 });

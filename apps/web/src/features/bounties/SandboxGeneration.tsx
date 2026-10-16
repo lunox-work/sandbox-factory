@@ -56,6 +56,8 @@ import { NoVersion, StepVersionCard } from "./BountySteps";
 
 /** How often a generation in progress is asked about. */
 export const GENERATION_POLL_MS = 3_000;
+/** How long a ready slice's version is waited for before it is left to a click. */
+const CUT_WAIT_MS = 30_000;
 
 /** Why a generation or a build stopped, as its run's error code says it. */
 function failureOf(run: AnalysisRunDto, sliced: boolean): string {
@@ -234,10 +236,17 @@ export function SandboxGeneration({
     "sandbox-versions",
     sandboxId,
   );
+  /*
+    A slice seen under way here and now ready: the API cuts the version
+    asked for from it and builds it, a moment after. The newest version id
+    then, read again until another is newest or a while has passed.
+  */
+  const [awaitingCut, setAwaitingCut] = useState<string | null>(null);
   const versions = useQuery({
     queryKey: versionsKey,
     queryFn: ({ signal }) =>
       clients.sandbox.sandboxVersions(organizationId, sandboxId, signal),
+    refetchInterval: awaitingCut === null ? false : GENERATION_POLL_MS,
   });
   const all = versions.data ?? [];
   const latest = all[0] ?? null;
@@ -331,6 +340,32 @@ export function SandboxGeneration({
     terminal: (value) => !sliceUnderWay(value),
     interval: GENERATION_POLL_MS,
   });
+  const sliceWatched = useRef(false);
+  if (slice.data !== undefined && sliceUnderWay(slice.data))
+    sliceWatched.current = true;
+  const sliceSettled =
+    slice.data !== undefined && !sliceUnderWay(slice.data)
+      ? slice.data.status
+      : null;
+  useEffect(() => {
+    if (sliceSettled === null || !sliceWatched.current) return;
+    sliceWatched.current = false;
+    if (sliceSettled === "ready") setAwaitingCut(latest?.id ?? "");
+    void queryClient.invalidateQueries({ queryKey: versionsKey });
+    // On the slice settling only: `latest` is read then, not followed, and
+    // the key is a new array each render.
+  }, [sliceSettled, queryClient]);
+  useEffect(() => {
+    if (awaitingCut === null) return;
+    if ((latest?.id ?? "") !== awaitingCut) {
+      setAwaitingCut(null);
+      setChosenId(null);
+      changed.current?.();
+      return;
+    }
+    const timer = setTimeout(() => setAwaitingCut(null), CUT_WAIT_MS);
+    return () => clearTimeout(timer);
+  }, [awaitingCut, latest?.id]);
   const scopeRun = useObservation({
     owner: organizationId,
     resource: "analysis-run",

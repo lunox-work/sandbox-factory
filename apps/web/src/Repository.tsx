@@ -22,7 +22,9 @@ import type {
 } from "@sandbox-factory/shared";
 import {
   abstractionsSummarySchema,
+  briefSummarySchema,
   dataModelSummarySchema,
+  documentsSummarySchema,
   graphifySummarySchema,
 } from "@sandbox-factory/shared";
 import {
@@ -945,6 +947,29 @@ function builderFigures(
             { label: "entities", value: summary.counts.entities },
             { label: "relations", value: summary.counts.relations },
             { label: "accessors", value: summary.counts.accessors },
+          ];
+    }
+    case "documents": {
+      const summary = summaryOf(
+        artifacts,
+        ["documents"],
+        documentsSummarySchema,
+      );
+      return summary === null
+        ? undefined
+        : [
+            { label: "documents", value: summary.documents },
+            { label: "omitted", value: summary.omitted },
+            { label: "characters", value: summary.chars },
+          ];
+    }
+    case "brief": {
+      const summary = summaryOf(artifacts, ["brief_md"], briefSummarySchema);
+      return summary === null
+        ? undefined
+        : [
+            { label: "characters", value: summary.chars },
+            { label: "lines", value: summary.lines },
           ];
     }
   }

@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import type {
   StoredAnalysisRun,
+  StoredArtifact,
   StoredVersionWithSource,
 } from "@sandbox-factory/db";
 import {
@@ -27,6 +28,11 @@ import type {
   AgentTurn,
 } from "../src/agent/loop.js";
 import { AnalysisError } from "../src/errors.js";
+import {
+  FIXTURES_SYSTEM_PROMPT,
+  HIDDEN_TESTS_SYSTEM_PROMPT,
+  PSEUDONYMS_SYSTEM_PROMPT,
+} from "../src/agent/prompts.js";
 import { HIDDEN_TEST_RUNS_MAX } from "../src/tools/hidden-tests.js";
 import {
   BUILD_TRANSFORM_PATH,
@@ -41,6 +47,7 @@ import { sha256 } from "../src/tools/slice/hash.js";
 import type { ToolInputs, ToolRunInput } from "../src/tools/adapter.js";
 import { contextModel, contextRun } from "./context-fixtures.js";
 import { fixture, slice, sliceRun, stamp } from "./fixture-slice.js";
+import { timingRecorder } from "../src/timing.js";
 
 /**
  * What the test runner reports for a hidden test that failed as one should:
@@ -52,6 +59,11 @@ const TAP_FAILED = {
     "TAP version 13\nnot ok 1 - fails\n  failureType: 'testCodeFailure'\n1..1\n# tests 1\n# pass 0\n# fail 1\n",
 };
 
+/** A hidden test's run: the public tests run without a TAP reporter. */
+const runsHiddenTest = (argv: readonly string[]) =>
+  argv.includes("--test-reporter=tap");
+/** The walkthrough, as the baseline runs it once the project is built. */
+const DEV = "node --env-file=sandbox.env sandbox/run.js";
 function fakeProvider(
   script: (
     argv: readonly string[],
@@ -260,6 +272,7 @@ async function runBuild(
   const outDir =
     options.outDir ?? (await mkdtemp(join(tmpdir(), "build-out-")));
   const messages: string[] = [];
+  const timing = timingRecorder();
   const inputs: ToolInputs = {
     getRun: async (id) =>
       id === sliceRun.id
@@ -302,6 +315,7 @@ async function runBuild(
     inputs,
     signal: new AbortController().signal,
     log: (line) => messages.push(line),
+    timing,
   };
   const adapter = createSandboxBuildAdapter({
     provider,
@@ -313,7 +327,16 @@ async function runBuild(
   const manifest = JSON.parse(
     await read("build-manifest.json"),
   ) as SandboxBuildManifest;
-  return { files, manifest, read, messages, outDir, adapter, version };
+  return {
+    files,
+    manifest,
+    read,
+    messages,
+    outDir,
+    adapter,
+    version,
+    timing: timing.value(),
+  };
 }
 
 let toolCalls = 0;
@@ -357,6 +380,38 @@ function scripted(turns: AgentTurn[]): AgentModel & {
   };
 }
 const limits = { maxTurns: 20, maxTokens: 1_000_000 };
+/** A model whose every turn waits until the run stops it. */
+function waiting(): AgentModel {
+  return {
+    model: "test-model",
+    turn: (_request, signal) =>
+      new Promise((_resolve, reject) => {
+        signal.addEventListener("abort", () => reject(signal.reason), {
+          once: true,
+        });
+      }),
+  };
+}
+/**
+ * One model for agents that run at once, each played its own turns by its
+ * system prompt; the prompts each was first sent, by the same key.
+ */
+function routed(turns: Record<string, AgentTurn[]>): AgentModel & {
+  prompts: Record<string, string[]>;
+} {
+  const prompts: Record<string, string[]> = {};
+  return {
+    model: "test-model",
+    prompts,
+    async turn(request) {
+      if (request.messages.length === 1)
+        (prompts[request.system] ??= []).push(
+          JSON.stringify(request.messages[0]?.content ?? ""),
+        );
+      return turns[request.system]?.shift() ?? turn([], "refusal");
+    },
+  };
+}
 /** How many evaluation jobs a provider's calls ran: one prepare each. */
 const jobsOf = (calls: readonly string[][]) =>
   calls.filter((argv) => argv.includes("--package-lock-only")).length;
@@ -377,10 +432,8 @@ const hiddenTest = {
 };
 
 test("a build produces a standalone project, hidden tests apart, a verified baseline and a bound manifest", async () => {
-  const fake = fakeProvider((argv) =>
-    argv.includes("--test") && !argv.includes("test") ? TAP_FAILED : {},
-  );
-  const { files, manifest, read } = await runBuild(fake.provider, {
+  const fake = fakeProvider((argv) => (runsHiddenTest(argv) ? TAP_FAILED : {}));
+  const { files, manifest, read, timing } = await runBuild(fake.provider, {
     version: await versionFor({
       aliasRules: [
         {
@@ -392,6 +445,14 @@ test("a build produces a standalone project, hidden tests apart, a verified base
       ],
     }),
   });
+  // The baseline's steps, each as long as the evaluator said it ran.
+  assert.equal(timing.baselines?.length, 1);
+  assert.deepEqual(
+    timing.baselines?.[0]?.map((step) => step.name),
+    manifest.baseline?.steps.map((step) => step.name),
+  );
+  assert.ok(timing.baselines?.[0]?.every((step) => step.durationMs === 1));
+  assert.ok(manifest.baseline?.steps.every((step) => step.durationMs === 1));
   assert.equal(
     manifest.ready,
     true,
@@ -483,8 +544,10 @@ test("a build produces a standalone project, hidden tests apart, a verified base
       "npm install --package-lock-only",
       "npm ci --ignore-scripts",
       "npm run build",
-      "npm run dev",
-      "npm test",
+      // Built once: the walkthrough and the public tests run what their
+      // scripts run after building.
+      "node --env-file=sandbox.env sandbox/run.js",
+      "node --env-file=sandbox.env --test",
       "node --env-file=sandbox.env --test",
     ],
   );
@@ -515,9 +578,7 @@ test("a build produces a standalone project, hidden tests apart, a verified base
   assert.notEqual(manifest.harnessSha256, manifest.publicProjectSha256);
   // Deterministic for the same inputs and clock.
   const again = await runBuild(
-    fakeProvider((argv) =>
-      argv.includes("--test") && !argv.includes("test") ? TAP_FAILED : {},
-    ).provider,
+    fakeProvider((argv) => (runsHiddenTest(argv) ? TAP_FAILED : {})).provider,
     {
       version: await versionFor({
         aliasRules: [
@@ -557,9 +618,7 @@ test("fixtures and the walkthrough are aliased with the version, generated, and 
     kind: "identifier",
     paths: [],
   };
-  const fake = fakeProvider((argv) =>
-    argv.includes("--test") && !argv.includes("test") ? TAP_FAILED : {},
-  );
+  const fake = fakeProvider((argv) => (runsHiddenTest(argv) ? TAP_FAILED : {}));
   const { manifest, read } = await runBuild(fake.provider, {
     version: await versionFor({ aliasRules: [rule], fixtures }),
   });
@@ -578,12 +637,12 @@ test("fixtures and the walkthrough are aliased with the version, generated, and 
     await read("project/README.md"),
     /1 mocked call has default behaviour/,
   );
-  assert.ok(fake.calls.some((argv) => argv.join(" ") === "npm run dev"));
+  assert.ok(fake.calls.some((argv) => argv.join(" ") === DEV));
   // A walkthrough that fails on the baseline fails the build.
   const failing = fakeProvider((argv) =>
-    argv.join(" ") === "npm run dev"
+    argv.join(" ") === DEV
       ? { exitCode: 1 }
-      : argv.includes("--test") && !argv.includes("test")
+      : runsHiddenTest(argv)
         ? TAP_FAILED
         : {},
   );
@@ -640,9 +699,7 @@ test("a sliced draft with no fixtures has an agent write them and the walkthroug
     kind: "identifier",
     paths: [],
   };
-  const fake = fakeProvider((argv) =>
-    argv.includes("--test") && !argv.includes("test") ? TAP_FAILED : {},
-  );
+  const fake = fakeProvider((argv) => (runsHiddenTest(argv) ? TAP_FAILED : {}));
   const version = await versionFor({ aliasRules: [rule] });
   const built = await runBuild(fake.provider, {
     version,
@@ -663,7 +720,7 @@ test("a sliced draft with no fixtures has an agent write them and the walkthroug
     await built.read("project/sandbox/run.ts"),
     /makeService answers with a fixture/,
   );
-  assert.ok(fake.calls.some((argv) => argv.join(" ") === "npm run dev"));
+  assert.ok(fake.calls.some((argv) => argv.join(" ") === DEV));
   // The set names the build that wrote it, and the transform covers it.
   const fixtures: VersionFixtures = {
     fixtureRunId: "arn_build",
@@ -751,9 +808,7 @@ test("a rule named like a key renames text, never the keys of the spec, contract
   // A quote is a word boundary, so aliasing them serialized renamed
   // `"name":` and `"kind":` too, and the project came out with mocks of
   // `undefined`.
-  const fake = fakeProvider((argv) =>
-    argv.includes("--test") && !argv.includes("test") ? TAP_FAILED : {},
-  );
+  const fake = fakeProvider((argv) => (runsHiddenTest(argv) ? TAP_FAILED : {}));
   const { manifest, files } = await runBuild(fake.provider, {
     version: await versionFor({
       aliasRules: [
@@ -930,7 +985,7 @@ test("alias collisions and scope blockers stop before any job runs; a failing ba
   assert.equal(failing.destroyed(), 1);
   // A hidden test that cannot run is an error, not a pass or a fail.
   const erroring = fakeProvider((argv) =>
-    argv[0] === "node" ? { exitCode: 2 } : {},
+    runsHiddenTest(argv) ? { exitCode: 2 } : {},
   );
   const errored = await runBuild(erroring.provider);
   assert.deepEqual(errored.manifest.baseline?.privateTests[0], {
@@ -941,7 +996,7 @@ test("alias collisions and scope blockers stop before any job runs; a failing ba
   });
   assert.equal(errored.manifest.ready, false);
   const timed = fakeProvider((argv) =>
-    argv[0] === "node" ? { exitCode: null, timedOut: true } : {},
+    runsHiddenTest(argv) ? { exitCode: null, timedOut: true } : {},
   );
   assert.equal(
     (await runBuild(timed.provider)).manifest.baseline?.privateTests[0]
@@ -1075,9 +1130,7 @@ test("after commit, a ready build records its harness and toolchain on the draft
     recordStarterOutput: async () => false,
   };
   const ready = await runBuild(
-    fakeProvider((argv) =>
-      argv.includes("--test") && !argv.includes("test") ? TAP_FAILED : {},
-    ).provider,
+    fakeProvider((argv) => (runsHiddenTest(argv) ? TAP_FAILED : {})).provider,
   );
   assert.equal(ready.manifest.ready, true);
   await adapter.committed?.({ runId: "arn_build", files: ready.files, inputs });
@@ -1273,9 +1326,7 @@ test("a hidden test that never ran is an error, not the failure it was expected 
 });
 
 test("a draft with no pseudonyms has an agent write them, checked as the build applies them, and they settle with the build", async () => {
-  const fake = fakeProvider((argv) =>
-    argv.includes("--test") && !argv.includes("test") ? TAP_FAILED : {},
-  );
+  const fake = fakeProvider((argv) => (runsHiddenTest(argv) ? TAP_FAILED : {}));
   const rules: AliasRule[] = [
     { before: "Widget", after: "Gadget", kind: "identifier", paths: [] },
     { before: "widget", after: "gadget", kind: "text", paths: [] },
@@ -1420,9 +1471,7 @@ test("a draft whose agent keeps no table, or that has no model, is built without
 });
 
 test("a draft with no hidden tests has an agent write them, and the build is the baseline they passed", async () => {
-  const fake = fakeProvider((argv) =>
-    argv.includes("--test") && !argv.includes("test") ? TAP_FAILED : {},
-  );
+  const fake = fakeProvider((argv) => (runsHiddenTest(argv) ? TAP_FAILED : {}));
   const model = scripted([
     turn([
       call("read_file", {
@@ -1561,9 +1610,7 @@ test("hidden tests are written only for a draft with none whose baseline fails f
   // A draft with hidden tests is built as it is.
   const untouched = scripted([]);
   const withTests = await runBuild(
-    fakeProvider((argv) =>
-      argv.includes("--test") && !argv.includes("test") ? TAP_FAILED : {},
-    ).provider,
+    fakeProvider((argv) => (runsHiddenTest(argv) ? TAP_FAILED : {})).provider,
     {
       version: await versionFor({ aliasRules: named, fixtures: given }),
       agent: { model: untouched, limits },
@@ -1571,8 +1618,9 @@ test("hidden tests are written only for a draft with none whose baseline fails f
   );
   assert.equal(withTests.manifest.ready, true);
   assert.deepEqual(untouched.prompts, []);
-  // A project that does not build is not the tests' to fix.
-  const broken = scripted([]);
+  // A project that does not build is not the tests' to fix: the agent,
+  // started beside the baseline, is stopped once it fails for that.
+  const broken = waiting();
   const failing = await runBuild(
     fakeProvider((argv) => (argv.includes("build") ? { exitCode: 2 } : {}))
       .provider,
@@ -1586,7 +1634,12 @@ test("hidden tests are written only for a draft with none whose baseline fails f
     },
   );
   assert.equal(failing.manifest.ready, false);
-  assert.deepEqual(broken.prompts, []);
+  assert.ok(
+    failing.messages.includes(
+      "Hidden-tests agent stopped: the baseline needs none.",
+    ),
+  );
+  assert.ok(!failing.messages.some((line) => /wrote \d+ hidden/.test(line)));
   // Without a model, the build says why it wrote none.
   const unconfigured = await runBuild(fakeProvider().provider, {
     version: await versionFor({
@@ -1601,5 +1654,329 @@ test("hidden tests are written only for a draft with none whose baseline fails f
     unconfigured.messages.includes(
       "No agent model is configured; no hidden tests are written.",
     ),
+  );
+});
+
+/** A sandbox's preparation of the slice, served as a fixtures run's two artifacts. */
+function preparationRun(
+  rules: readonly AliasRule[],
+  fixtures: VersionFixtures,
+) {
+  const run: StoredAnalysisRun = {
+    ...sliceRun,
+    id: "arn_prep",
+    tool: "fixtures",
+    toolVersion: "fixtures@2",
+    params: {
+      deadlineMinutes: 90,
+      agent: "fixtures",
+      proposalId: "bpr_1",
+      specRevision: 1,
+      specHash: "s".repeat(64),
+      sliceRunId: sliceRun.id,
+      pseudonyms: { vocabulary: ["Widget"], title: "t", summary: "s" },
+    },
+  };
+  const served = (
+    kind: StoredArtifact["kind"],
+    path: string,
+    document: unknown,
+  ) => {
+    const bytes = Buffer.from(JSON.stringify(document));
+    return {
+      run,
+      artifact: {
+        id: `art_${path}`,
+        runId: run.id,
+        kind,
+        path,
+        objectKey: `runs/${run.id}/${path}`,
+        contentType: "application/json",
+        sizeBytes: bytes.byteLength,
+        sha256: sha256(bytes),
+        meta: null,
+        createdAt: stamp,
+      } satisfies StoredArtifact,
+      bytes,
+    };
+  };
+  const usage = {
+    model: "test-model",
+    turns: 1,
+    inputTokens: 1,
+    outputTokens: 1,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+  };
+  return [
+    served("fixture_set", "fixture-set.json", {
+      schemaVersion: 1,
+      toolVersion: "fixtures@2",
+      sliceRunId: sliceRun.id,
+      sourceSnapshotId: "rsn_1",
+      sourceCommitSha: "a".repeat(40),
+      proposalId: "bpr_1",
+      specRevision: 1,
+      fixtures: fixtures.fixtures,
+      scenario: fixtures.scenario,
+      summary: "Shows a widget.",
+      usage,
+    }),
+    served("pseudonyms", "pseudonym-table.json", {
+      schemaVersion: 1,
+      toolVersion: "fixtures@2",
+      sliceRunId: sliceRun.id,
+      rules,
+      summary: "Renames the product.",
+      usage,
+    }),
+  ];
+}
+
+test("a draft with a preparation takes its fixtures, and its table when the build's check holds it", async () => {
+  const fixtures: VersionFixtures = {
+    fixtureRunId: "arn_prep",
+    fixtures: [],
+    scenario: 'console.log("a widget walkthrough");\n',
+  };
+  const rules: AliasRule[] = [
+    { before: "Widget", after: "Gadget", kind: "identifier", paths: [] },
+    { before: "widget", after: "gadget", kind: "text", paths: [] },
+  ];
+  const fake = fakeProvider((argv) => (runsHiddenTest(argv) ? TAP_FAILED : {}));
+  // No turns: an agent asked for anything would keep nothing.
+  const model = scripted([]);
+  const built = await runBuild(fake.provider, {
+    params: { vocabulary: ["Widget"], preparedRunId: "arn_prep" },
+    agent: { model, limits },
+    served: preparationRun(rules, fixtures),
+  });
+  assert.deepEqual(built.manifest.blockers, []);
+  assert.equal(built.manifest.ready, true);
+  assert.equal(model.prompts.length, 0);
+  assert.ok(
+    built.messages.includes("Fixtures taken from the sandbox's preparation."),
+  );
+  assert.ok(
+    built.messages.includes("Pseudonyms taken from the sandbox's preparation."),
+  );
+  assert.match(
+    await built.read("project/sandbox/run.ts"),
+    /a gadget walkthrough/,
+  );
+  const transform = JSON.parse(await built.read(BUILD_TRANSFORM_PATH)) as {
+    aliasRules: AliasRule[];
+    fixtures: VersionFixtures;
+    preparedRunId: string;
+  };
+  assert.deepEqual(transform.aliasRules, rules);
+  assert.deepEqual(transform.fixtures, fixtures);
+  assert.equal(transform.preparedRunId, "arn_prep");
+
+  // A table that does not hold against the project is passed over for an
+  // agent's; the fixtures are still taken.
+  const short = await runBuild(fakeProvider().provider, {
+    params: { vocabulary: ["Widget"], preparedRunId: "arn_prep" },
+    agent: { model: scripted([]), limits },
+    served: preparationRun([rules[0] as AliasRule], fixtures),
+  });
+  assert.ok(
+    short.messages.some((line) =>
+      /The prepared pseudonyms do not hold here/.test(line),
+    ),
+    short.messages.join("\n"),
+  );
+  assert.ok(short.messages.some((line) => /with no table kept/.test(line)));
+  assert.deepEqual(
+    short.manifest.blockers.map((blocker) => blocker.code),
+    ["vocabulary_leaked"],
+  );
+
+  // A preparation of another slice, or none at all, gives nothing.
+  const other = preparationRun(rules, fixtures).map((entry) => ({
+    ...entry,
+    run: {
+      ...entry.run,
+      params: { ...entry.run.params, sliceRunId: "arn_other" },
+    } as StoredAnalysisRun,
+  }));
+  const elsewhere = await runBuild(fakeProvider().provider, {
+    version: await versionFor({ fixtures: given }),
+    params: { vocabulary: ["Widget"], preparedRunId: "arn_prep" },
+    agent: { model: scripted([]), limits },
+    served: other,
+  });
+  assert.ok(
+    !elsewhere.messages.some((line) => /sandbox's preparation/.test(line)),
+  );
+});
+
+test("pseudonyms are drafted beside the fixtures agent, kept when they hold against its fixtures, and amended when they do not", async () => {
+  const fixture = {
+    module: "lib/helpers.ts",
+    symbol: "label",
+    member: null,
+    call: "call" as const,
+    implementation: '() => "fixture-label"',
+    reason: "a label the walkthrough can read",
+  };
+  const scenarioNaming = (name: string) =>
+    `import { run } from "../src/app.js";\n// The ${name} walkthrough.\nconsole.log(run({ name: "demo", retries: 1, nested: { enabled: true } }));\n`;
+  const rules: AliasRule[] = [
+    { before: "Widget", after: "Gadget", kind: "identifier", paths: [] },
+    { before: "widget", after: "gadget", kind: "text", paths: [] },
+  ];
+  const fixturesTurns = (scenario: string) => [
+    turn([
+      call("submit_fixtures", {
+        fixtures: [fixture],
+        scenario,
+        summary: "Runs the app.",
+      }),
+    ]),
+  ];
+  const submitRules = (aliases: readonly AliasRule[]) =>
+    turn([
+      call("submit_pseudonyms", {
+        aliases,
+        summary: "Renames the product.",
+      }),
+    ]);
+
+  // The walkthrough names the product, which the drafted table renames.
+  const held = routed({
+    [FIXTURES_SYSTEM_PROMPT]: fixturesTurns(scenarioNaming("widget")),
+    [PSEUDONYMS_SYSTEM_PROMPT]: [submitRules(rules)],
+  });
+  const kept = await runBuild(
+    fakeProvider((argv) => (runsHiddenTest(argv) ? TAP_FAILED : {})).provider,
+    {
+      params: { vocabulary: ["Widget"] },
+      agent: { model: held, limits },
+    },
+  );
+  assert.deepEqual(kept.manifest.blockers, []);
+  assert.equal(kept.manifest.ready, true);
+  assert.ok(
+    kept.messages.includes(
+      "The pseudonyms drafted beside the fixtures hold against them.",
+    ),
+  );
+  // One pseudonyms agent ran, beside the fixtures agent.
+  assert.equal(held.prompts[PSEUDONYMS_SYSTEM_PROMPT]?.length, 1);
+  assert.equal(held.prompts[FIXTURES_SYSTEM_PROMPT]?.length, 1);
+  assert.match(
+    await kept.read("project/sandbox/run.ts"),
+    /The gadget walkthrough/,
+  );
+  assert.deepEqual(
+    JSON.parse(await kept.read(BUILD_TRANSFORM_PATH)).aliasRules,
+    rules,
+  );
+
+  // The walkthrough names the workspace in a way the slice did not: the
+  // draft does not hold against it, and an agent amends it from the draft.
+  const acme: AliasRule = {
+    before: "Acme",
+    after: "Example",
+    kind: "text",
+    paths: [],
+  };
+  const amended = routed({
+    [FIXTURES_SYSTEM_PROMPT]: fixturesTurns(scenarioNaming("Acme")),
+    [PSEUDONYMS_SYSTEM_PROMPT]: [
+      submitRules(rules),
+      submitRules([...rules, acme]),
+    ],
+  });
+  const fixed = await runBuild(
+    fakeProvider((argv) => (runsHiddenTest(argv) ? TAP_FAILED : {})).provider,
+    {
+      params: { vocabulary: ["Widget", "Acme"] },
+      agent: { model: amended, limits },
+    },
+  );
+  assert.deepEqual(fixed.manifest.blockers, []);
+  assert.ok(
+    fixed.messages.some((line) =>
+      /drafted beside the fixtures do not hold against them/.test(line),
+    ),
+    fixed.messages.join("\n"),
+  );
+  const [draftPrompt, amendPrompt] =
+    amended.prompts[PSEUDONYMS_SYSTEM_PROMPT] ?? [];
+  assert.doesNotMatch(draftPrompt ?? "", /A table was drafted/);
+  assert.match(amendPrompt ?? "", /A table was drafted before the fixtures/);
+  assert.match(amendPrompt ?? "", /widget -> gadget/);
+  assert.match(
+    await fixed.read("project/sandbox/run.ts"),
+    /The Example walkthrough/,
+  );
+  const transform = JSON.parse(await fixed.read(BUILD_TRANSFORM_PATH)) as {
+    aliasRules: AliasRule[];
+    pseudonyms: { usage: { turns: number } };
+  };
+  assert.deepEqual(transform.aliasRules, [...rules, acme]);
+  // Both agents' turns are the table's spend.
+  assert.equal(transform.pseudonyms.usage.turns, 2);
+});
+
+test("the hidden-tests agent reads the project while the first baseline runs, and its tests are kept when that baseline lacks them", async () => {
+  let release = () => {};
+  const firstBaseline = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const events: string[] = [];
+  let jobs = 0;
+  const provider: EvaluationProvider = {
+    ...fakeProvider().provider,
+    async create(options) {
+      jobs += 1;
+      const job = await fakeProvider((argv) =>
+        runsHiddenTest(argv) ? TAP_FAILED : {},
+      ).provider.create(options);
+      const first = jobs === 1;
+      return {
+        ...job,
+        async exec(command) {
+          // The first baseline is held until the agent has had a turn.
+          if (first && command.argv.includes("--package-lock-only")) {
+            events.push("baseline started");
+            await firstBaseline;
+          }
+          return job.exec(command);
+        },
+      };
+    },
+  };
+  const model = routed({
+    [HIDDEN_TESTS_SYSTEM_PROMPT]: [
+      turn([
+        call("submit_hidden_tests", {
+          tests: [hiddenTest],
+          summary: "Checks the description.",
+        }),
+      ]),
+    ],
+  });
+  const asked = model.turn.bind(model);
+  model.turn = async (request, signal) => {
+    events.push("agent turn");
+    release();
+    return asked(request, signal);
+  };
+  const built = await runBuild(provider, {
+    version: await versionFor({
+      acceptance: false,
+      aliasRules: named,
+      fixtures: given,
+    }),
+    agent: { model, limits },
+  });
+  assert.equal(built.manifest.ready, true);
+  // The agent's first turn came while the first baseline was still running.
+  assert.deepEqual(events.slice(0, 2), ["baseline started", "agent turn"]);
+  assert.ok(
+    built.messages.includes("Hidden-tests agent wrote 1 hidden test(s)."),
   );
 });

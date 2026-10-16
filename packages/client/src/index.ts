@@ -459,3 +459,4 @@ export * from "./jira.js";
 export * from "./github.js";
 export * from "./pricing.js";
 export * from "./runs.js";
+export * from "./settings.js";

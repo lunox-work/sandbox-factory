@@ -107,6 +107,14 @@ export type {
   ProfileTransition,
   StoredBountyProfile,
 } from "./bounty-profiles.js";
+export {
+  createWorkspaceSettingsStore,
+  DEFAULT_WORKSPACE_SETTINGS,
+} from "./workspace-settings.js";
+export type {
+  WorkspaceSettings,
+  WorkspaceSettingsStore,
+} from "./workspace-settings.js";
 export { createBountySpecStore } from "./bounty-specs.js";
 export type {
   BountySpecStore,
@@ -173,7 +181,7 @@ export type {
   OrganizationSummary,
   PendingInvitation,
 } from "./organizations.js";
-export { createObjectStore, isNotFound } from "./objects.js";
+export { createObjectStore, isNotFound, sourceArchiveKey } from "./objects.js";
 export type { ObjectStore, ObjectStoreOptions, PutOptions } from "./objects.js";
 export {
   account,
@@ -202,13 +210,20 @@ export type {
 } from "./schema.js";
 export { NotFoundError, RepositoryInUseError } from "./errors.js";
 export type { Database } from "./errors.js";
-export { createAnalysisRunStore } from "./analysis-runs.js";
+export {
+  createAnalysisRunStore,
+  RUN_ENDED_CHANNEL,
+  RUN_QUEUED_CHANNEL,
+  WORKER_APPLICATION_NAME,
+  workerApplicationName,
+} from "./analysis-runs.js";
 export type {
   AnalysisRunStore,
   StoredAnalysisRun,
   ClaimedAnalysisRun,
   EnqueueAnalysisResult,
   NewArtifact,
+  QueueState,
 } from "./analysis-runs.js";
 export { createArtifactStore } from "./artifacts.js";
 export type { ArtifactStore, StoredArtifact } from "./artifacts.js";
@@ -220,6 +235,7 @@ export type {
   CreateVersionResult,
   LinkSourceResult,
   NewSandboxVersion,
+  PendingCut,
   NewSlicedSource,
   NewStarterSource,
   ReplayContext,

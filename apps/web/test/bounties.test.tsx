@@ -4265,6 +4265,40 @@ test("a slice its sizing is still cutting holds Slice, and shows the scope agent
   ).toBe(true);
 });
 
+test("a slice seen under way and then ready is followed to the version cut from it, with no second click", async () => {
+  let sliceReads = 0;
+  let readyReads = 0;
+  const state = slicingServer({
+    // The API cuts the version a moment after the slice is ready: the
+    // first read after it still has none.
+    versions: () => {
+      if (sliceReads > 1) readyReads++;
+      return readyReads > 1 ? [generatedVersion] : [];
+    },
+    slice: () =>
+      ++sliceReads > 1
+        ? sliceOf()
+        : sliceOf({ status: "slicing", sliceRunId: "arn_slice" }),
+    routes: [
+      ["GET", "/github/runs/arn_build", () => json({ run: buildRun() })],
+    ],
+  });
+  vi.stubGlobal("fetch", state.fetchMock);
+  const part = await sandboxPart();
+  expect(
+    await within(part).findByText("Cutting the slice from the repository"),
+  ).toBeDefined();
+  expect(
+    await within(part).findByText("Building", undefined, { timeout: 15_000 }),
+  ).toBeDefined();
+  // Nothing was clicked: the version is the one the API cut.
+  expect(
+    state.calls.some(
+      ({ method, url }) => method === "POST" && url.endsWith("/slice"),
+    ),
+  ).toBe(false);
+});
+
 test("with no slice yet, Slice asks its sizing for one and follows it", async () => {
   let asked = false;
   const state = slicingServer({

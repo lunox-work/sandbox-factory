@@ -44,10 +44,9 @@ test("the primary answers alone while it succeeds", async () => {
     fallback,
   });
 
-  assert.equal(
-    (await caller.call(sizeBountyTool, input)).actualModel,
-    "anthropic",
-  );
+  const answer = await caller.call(sizeBountyTool, input);
+  assert.equal(answer.actualModel, "anthropic");
+  assert.equal(answer.fellBack, undefined);
   assert.equal(fallback.calls.length, 0);
   // The reported model is the primary's; `actualModel` carries the truth.
   assert.equal(caller.model, "anthropic");
@@ -62,10 +61,10 @@ test("a provider failure hands the same bounty to the fallback", async () => {
     onFallback: (code) => handovers.push(code),
   });
 
-  assert.equal(
-    (await caller.call(sizeBountyTool, input)).actualModel,
-    "deepseek",
-  );
+  const answer = await caller.call(sizeBountyTool, input);
+  assert.equal(answer.actualModel, "deepseek");
+  // Said on the answer, so a run's record of its calls can tell.
+  assert.equal(answer.fellBack, true);
   assert.deepEqual(fallback.inputsFor("size_bounty"), [input]);
   assert.deepEqual(handovers, ["sizing_provider"]);
 });

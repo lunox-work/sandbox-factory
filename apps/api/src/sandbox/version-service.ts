@@ -88,6 +88,24 @@ function clip(text: string, max: number): string {
 /** What a version's listing may carry, as a sliced version's request bounds it. */
 const GENERATED_TITLE_MAX = 120;
 const GENERATED_SUMMARY_MAX = 4_000;
+
+/**
+ * The title and summary a sliced version is cut with: the bounty's own,
+ * clipped. What a sandbox's preparation checks its name table against.
+ */
+export function sliceListing(bounty: {
+  readonly title: string;
+  readonly description: string;
+}): { title: string; summary: string } {
+  const title = clip(
+    bounty.title.replace(/\s+/g, " ").trim(),
+    GENERATED_TITLE_MAX,
+  ).trim();
+  return {
+    title,
+    summary: clip(bounty.description.trim() || title, GENERATED_SUMMARY_MAX),
+  };
+}
 const GENERATED_TAGS_MAX = 10;
 const GENERATED_TAG_MAX = 32;
 /** What a generated version starts with, until its run settles the rest. */
@@ -275,6 +293,18 @@ export function versionService(options: SandboxRouteOptions) {
       ...((await options.organizationNames?.(owner)) ?? []),
       ...(repo?.fullName.split("/") ?? []),
     ]);
+  }
+
+  /** The succeeded preparation of the profile a slice was cut for, if any. */
+  async function preparedFor(
+    owner: string,
+    sliceRunId: string,
+  ): Promise<string | null> {
+    const runId =
+      (await options.profiles?.preparationFor?.(owner, sliceRunId)) ?? null;
+    if (runId === null) return null;
+    const run = await options.runs.get(owner, runId);
+    return run?.status === "succeeded" ? run.id : null;
   }
 
   /** The slice run's manifest and contract, verified against their recorded hashes. */
@@ -781,6 +811,12 @@ export function versionService(options: SandboxRouteOptions) {
       sourceSnapshotId,
       "data_model",
     );
+    // What the sandbox's preparation wrote for this slice, which the build
+    // tries before asking agents: named only while it is there to read.
+    const preparedRunId =
+      stored.source.fixtures !== null && stored.source.aliasRules.length > 0
+        ? null
+        : await preparedFor(owner, sliceRunId);
     const result = await options.runs.enqueue(owner, sourceSnapshotId, {
       tool: "sandbox_build",
       params: {
@@ -795,6 +831,7 @@ export function versionService(options: SandboxRouteOptions) {
         approvedTaskSha256: stored.source.approvedTaskSha256,
         vocabulary,
         ...(dataModel === null ? {} : { dataModelRunId: dataModel.id }),
+        ...(preparedRunId === null ? {} : { preparedRunId }),
       },
       requestedBy: actor,
       maxActive: options.maxActive ?? 3,
@@ -954,7 +991,9 @@ export function versionService(options: SandboxRouteOptions) {
    * proposal, and built when its scope has no blockers. The newest draft
    * cut from the same slice is built again rather than cut twice. A
    * sandbox whose publication is live is not sliced: contributors work in
-   * it, so it is unpublished first.
+   * it, so it is unpublished first. A request answered before the slice
+   * is ready is remembered as the actor's, and the cutter makes it again
+   * once it is; a draft cut clears it.
    */
   async function slice(
     owner: string,
@@ -968,12 +1007,10 @@ export function versionService(options: SandboxRouteOptions) {
         "conflict",
       );
     let state = await sliceState(owner, sandbox);
-    const pending = (current: SandboxSliceDto) => ({
-      ok: true as const,
-      slice: current,
-      result: null,
-      run: null,
-    });
+    const pending = async (current: SandboxSliceDto) => {
+      await options.cuts?.requestCut(owner, sandbox.id, actor, now);
+      return { ok: true as const, slice: current, result: null, run: null };
+    };
     if (state.slice.status === "unavailable")
       return failure(
         {
@@ -1044,17 +1081,20 @@ export function versionService(options: SandboxRouteOptions) {
       const repo = (await options.repos.list(owner)).find(
         ({ id }) => id === sandbox.sourceRepoId,
       );
-      const title = clip(
-        bounty.title.replace(/\s+/g, " ").trim(),
-        GENERATED_TITLE_MAX,
-      ).trim();
+      const listing = sliceListing(bounty);
+      // The preparation's fixtures, when it wrote them for this slice.
+      const preparedRunId = state.profile?.preparedRunId ?? null;
+      const prepared =
+        preparedRunId === null
+          ? null
+          : await options.runs.get(owner, preparedRunId);
       const input = createSandboxVersionSchema.safeParse({
         sliceRunId,
-        title,
-        specSummary: clip(
-          bounty.description.trim() || title,
-          GENERATED_SUMMARY_MAX,
-        ),
+        title: listing.title,
+        specSummary: listing.summary,
+        ...(prepared?.status === "succeeded"
+          ? { fixtureRunId: prepared.id }
+          : {}),
         complexity,
         tags: normalizeStack([...(repo?.stack ?? []), ...bounty.stack])
           .filter((name) => name.length <= GENERATED_TAG_MAX)
@@ -1070,10 +1110,18 @@ export function versionService(options: SandboxRouteOptions) {
           },
           "conflict",
         );
-      const created = await create(owner, actor, sandbox, input.data, now);
+      let created = await create(owner, actor, sandbox, input.data, now);
+      // Prepared fixtures that cannot be attached are left to the build to
+      // write, as they were before there was a preparation.
+      if (!created.ok && input.data.fixtureRunId !== undefined) {
+        const { fixtureRunId: _unused, ...without } = input.data;
+        created = await create(owner, actor, sandbox, without, now);
+      }
       if (!created.ok) return created;
       draft = created.result;
     }
+    // Cut, or found: whatever asked for it is answered.
+    await options.cuts?.clearCut(owner, sandbox.id);
     // A scope with blockers is cut, for its blockers to be read, but not
     // built: the build would only refuse it.
     if (draft.source.scope.blockers.length > 0)

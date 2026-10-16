@@ -60,6 +60,12 @@ const personal = {
 
 /** Every request the page made, so a test can assert what it asked for. */
 const calls: string[] = [];
+/** The workspace's settings as the fake server holds them. */
+let settings = { prepareSandboxes: true };
+/** What a change to the settings is answered with, when not the settings. */
+let settingsRefusal: { status: number; error: string } | null = null;
+/** The bodies of every change to the settings. */
+const settingsChanges: unknown[] = [];
 
 /** What the avatar route answers with after a team upload. */
 const TEAM_PICTURE =
@@ -77,8 +83,21 @@ function serverWith(
 ) {
   vi.stubGlobal(
     "fetch",
-    vi.fn(async (url: string, init?: { method?: string }) => {
+    vi.fn(async (url: string, init?: { method?: string; body?: string }) => {
       calls.push(`${init?.method ?? "GET"} ${String(url)}`);
+      if (String(url).endsWith("/org_1/settings")) {
+        if (init?.method === "PATCH") {
+          if (settingsRefusal !== null)
+            return new Response(
+              JSON.stringify({ error: settingsRefusal.error }),
+              { status: settingsRefusal.status },
+            );
+          const change = JSON.parse(String(init.body)) as object;
+          settingsChanges.push(change);
+          settings = { ...settings, ...change };
+        }
+        return new Response(JSON.stringify(settings));
+      }
       if (String(url).includes("/members")) {
         return new Response(JSON.stringify({ members }));
       }
@@ -117,6 +136,9 @@ const plainMember = {
 
 beforeEach(() => {
   calls.length = 0;
+  settings = { prepareSandboxes: true };
+  settingsRefusal = null;
+  settingsChanges.length = 0;
   update.mockReset().mockResolvedValue({ data: {}, error: null });
   create
     .mockReset()
@@ -280,6 +302,57 @@ test("only an owner is offered deletion", async () => {
   expect(
     screen.queryByRole("button", { name: /delete workspace/i }),
   ).toBeNull();
+});
+
+// ---- sandbox preparation --------------------------------------------------
+
+test("an owner turns off preparing sandboxes in advance", async () => {
+  showSettings();
+  await openTab("Settings");
+  const toggle = await screen.findByRole("switch", {
+    name: "Prepare sandboxes in advance",
+  });
+  // On by default.
+  expect(toggle.getAttribute("aria-checked")).toBe("true");
+  expect((toggle as HTMLButtonElement).disabled).toBe(false);
+  fireEvent.click(toggle);
+  await waitFor(() =>
+    expect(toggle.getAttribute("aria-checked")).toBe("false"),
+  );
+  expect(settingsChanges).toEqual([{ prepareSandboxes: false }]);
+  expect(calls).toContain("PATCH /api/v1/orgs/org_1/settings");
+});
+
+test("a member sees whether sandboxes are prepared, and cannot change it", async () => {
+  settings = { prepareSandboxes: false };
+  showSettings({ ...acme, role: "member" });
+  await openTab("Settings");
+  const toggle = await screen.findByRole("switch", {
+    name: "Prepare sandboxes in advance",
+  });
+  expect(toggle.getAttribute("aria-checked")).toBe("false");
+  expect((toggle as HTMLButtonElement).disabled).toBe(true);
+  expect(
+    screen.getByText("Only owners and admins can change this."),
+  ).toBeDefined();
+});
+
+test("a refused change is said, and the setting stays as it was", async () => {
+  settingsRefusal = {
+    status: 403,
+    error: "Only owners and admins can change the workspace's settings.",
+  };
+  showSettings({ ...acme, role: "admin" });
+  await openTab("Settings");
+  const toggle = await screen.findByRole("switch", {
+    name: "Prepare sandboxes in advance",
+  });
+  fireEvent.click(toggle);
+  await screen.findByText(
+    "Only owners and admins can change the workspace's settings.",
+  );
+  expect(toggle.getAttribute("aria-checked")).toBe("true");
+  expect((toggle as HTMLButtonElement).disabled).toBe(false);
 });
 
 // ---- members --------------------------------------------------------------

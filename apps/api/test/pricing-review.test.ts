@@ -2,9 +2,10 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import type { StoredBountyProposal, StoredBounty } from "@sandbox-factory/db";
-import { JiraApiError } from "@sandbox-factory/jira";
+import { JiraApiError, type JiraIssueSpec } from "@sandbox-factory/jira";
 import { bountySpecHash, type BountyContent } from "sandbox-factory";
 
+import { recentReads } from "../src/jira/recent.js";
 import type { RunClientResult } from "../src/pricing/executor.js";
 import { freshProposal, mapConcurrent } from "../src/pricing/review.js";
 
@@ -181,6 +182,57 @@ test("freshness compares all versioned sizing inputs", async () => {
     ).code,
     "hash_version",
   );
+});
+
+test("given recent reads, an issue read in the last minute is not read again", async () => {
+  let clock = 0;
+  const recent = recentReads<JiraIssueSpec>({ now: () => clock });
+  const reads = { client: 0, spec: 0 };
+  const state = options(jiraSpec);
+  const value = {
+    ...state.value,
+    recent,
+    clientFor: () => {
+      reads.client += 1;
+      return Promise.resolve({
+        ok: true as const,
+        client: {
+          issueSpec: () => {
+            reads.spec += 1;
+            return Promise.resolve(jiraSpec);
+          },
+        } as never,
+      });
+    },
+  };
+  const first = await freshProposal(value, "org_1", proposal());
+  const again = await freshProposal(value, "org_1", proposal());
+  assert.deepEqual(reads, { client: 1, spec: 1 });
+  assert.equal(again.freshness, "current");
+  assert.equal(again.liveUrl, first.liveUrl);
+  assert.deepEqual(again.liveSpec, first.liveSpec);
+  // Only the read the bounty took: an answer from memory writes nothing.
+  assert.equal(state.refreshed.length, 1);
+  // Another organization's bounty on the same issue id is its own read.
+  await freshProposal(value, "org_2", proposal());
+  assert.deepEqual(reads, { client: 2, spec: 2 });
+  clock = 60_000;
+  await freshProposal(value, "org_1", proposal());
+  assert.deepEqual(reads, { client: 3, spec: 3 });
+  // A read that failed is not kept.
+  const failing = recentReads<JiraIssueSpec>();
+  const broken = options(new Error("Jira down"));
+  for (let attempt = 0; attempt < 2; attempt += 1)
+    assert.equal(
+      (
+        await freshProposal(
+          { ...broken.value, recent: failing },
+          "org_1",
+          proposal(),
+        )
+      ).freshness,
+      "unknown",
+    );
 });
 
 test("a bounty gone from Jira keeps its text and is reviewed against it", async () => {

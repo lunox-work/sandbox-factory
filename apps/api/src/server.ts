@@ -8,6 +8,7 @@ import {
   createBountyRunStore,
   createAnalysisRunStore,
   createArtifactStore,
+  createWorkspaceSettingsStore,
   createBountyWritebackStore,
   createConnection,
   createBountyProfileStore,
@@ -29,6 +30,7 @@ import {
   createRateCardStore,
   createSandboxStore,
   createTokenCipher,
+  RUN_ENDED_CHANNEL,
   type NewBountyProfile,
 } from "@sandbox-factory/db";
 
@@ -61,6 +63,9 @@ import { GithubSnapshotter } from "./github/snapshot.js";
 import { resolveImageDigest } from "./image-digest.js";
 import { jiraClientFor, jiraClientsFor } from "./jira/credential.js";
 import { createApp } from "./routes.js";
+import { SandboxCutter } from "./sandbox/cutter.js";
+import { SandboxPreparer } from "./sandbox/preparer.js";
+import { versionService } from "./sandbox/version-service.js";
 import { syncGithub } from "./bounties/context.js";
 import {
   builtAt,
@@ -78,6 +83,8 @@ import {
   repositoryOutline,
   type StructuredCaller,
 } from "./sizing/index.js";
+import { readBrief, readDocumentSet } from "./sizing/brief.js";
+import { briefCharsEach, cutBrief } from "sandbox-factory";
 
 const env = parseEnv();
 
@@ -294,16 +301,38 @@ const bountyExecutor =
           const outlined = read.flatMap(({ repo, snapshot }) =>
             snapshot === null ? [] : [{ repo, snapshot }],
           );
+          // Each one's brief, or its outline until a build writes one; all
+          // of them share one cap, as the outlines always did.
           const maxLines = outlineLinesEach(outlined.length);
-          return outlined.map(({ repo, snapshot }) => ({
-            repoId: repo.id,
-            fullName: repo.fullName,
-            snapshotId: snapshot.id,
-            text: repositoryOutline(snapshot.facts, {
-              languages: snapshot.languages,
-              maxLines,
+          const maxChars = briefCharsEach(outlined.length);
+          return Promise.all(
+            outlined.map(async ({ repo, snapshot }) => {
+              const brief =
+                objects === undefined
+                  ? null
+                  : await readBrief(
+                      {
+                        runs: analysisRuns,
+                        artifacts: briefArtifacts,
+                        objects,
+                      },
+                      organizationId,
+                      snapshot.id,
+                    ).catch(() => null);
+              return {
+                repoId: repo.id,
+                fullName: repo.fullName,
+                snapshotId: snapshot.id,
+                text:
+                  brief === null
+                    ? repositoryOutline(snapshot.facts, {
+                        languages: snapshot.languages,
+                        maxLines,
+                      })
+                    : cutBrief(brief, maxChars),
+              };
             }),
-          }));
+          );
         },
         ...(bountyDelivery === undefined
           ? {}
@@ -424,6 +453,8 @@ const avatars =
   objects === undefined ? undefined : createAvatarService({ store: objects });
 
 const analysisRuns = createAnalysisRunStore(connection.db);
+/** What the price reads a repository's brief through. */
+const briefArtifacts = createArtifactStore(connection.db);
 const workerLauncher = new WorkerLauncher({
   runs: analysisRuns,
   config: workerLaunchConfig(env),
@@ -448,12 +479,14 @@ const analysis =
         specs: bountySpecs,
         boards: jiraBoards,
       };
+const sandboxStore = createSandboxStore(connection.db);
 /** Sandbox versions, on the same footing as analysis: object storage and a worker. */
 const sandbox =
   analysis === undefined
     ? undefined
     : {
-        sandboxes: createSandboxStore(connection.db),
+        sandboxes: sandboxStore,
+        cuts: sandboxStore,
         runs: analysisRuns,
         artifacts: analysis.artifacts,
         objects: analysis.objects,
@@ -500,8 +533,49 @@ const bountyProfiler =
         ensureWorker: () => workerLauncher.ensureWorker(),
         removeObject: (key) => analysis.objects.remove(key),
         maxActive: env.MAX_ACTIVE_RUNS_PER_ORG,
-        onSettled: (owner, profile) => rubricPricer.settled(owner, profile),
+        onSettled: async (owner, profile) => {
+          try {
+            await rubricPricer.settled(owner, profile);
+          } finally {
+            sandboxCutter?.kick();
+            sandboxPreparer?.kick();
+          }
+        },
         onError: (code, error) => console.error(code, error),
+      });
+/**
+ * The versions asked for before their slice was ready, cut once the
+ * profiler settles it (`sandbox/cutter.ts`).
+ */
+const sandboxCutter =
+  sandbox === undefined || bountyProfiler === undefined
+    ? undefined
+    : new SandboxCutter({
+        sandboxes: sandboxStore,
+        slice: versionService(sandbox).slice,
+        onError: (code, error) => console.error(code, describeError(error)),
+      });
+/**
+ * Approved bounties' sandboxes, prepared once their profile is ready
+ * (`sandbox/preparer.ts`), in workspaces that have not turned it off.
+ */
+const sandboxPreparer =
+  sandbox === undefined || bountyProfiler === undefined
+    ? undefined
+    : new SandboxPreparer({
+        profiles: bountyProfiles,
+        runs: analysisRuns,
+        proposals: bountyProposals,
+        bounties,
+        organizationNames: sandbox.organizationNames,
+        ensureWorker: () => workerLauncher.ensureWorker(),
+        removeObject: (key) => sandbox.objects.remove(key),
+        maxActive: env.MAX_ACTIVE_RUNS_PER_ORG,
+        onError: (code, error) =>
+          console.error(
+            code,
+            error === undefined ? undefined : describeError(error),
+          ),
       });
 const analysisWatchdog =
   analysis === undefined
@@ -513,9 +587,9 @@ const analysisWatchdog =
       });
 
 /**
- * A repository's documents, for a bounty's GitHub sync: read from its
- * newest snapshot's file list with a token narrowed to it, so it needs the
- * App and a bucket as snapshots do.
+ * A repository's documents, for a bounty's GitHub sync: what the snapshot's
+ * `documents` build kept, else read from its file list with a token
+ * narrowed to it, so it needs the App and a bucket as snapshots do.
  */
 const githubContext =
   github === undefined || githubSnapshotter === undefined
@@ -539,6 +613,16 @@ const githubContext =
                 repositoryId: repo.externalId,
               });
         },
+        ...(objects === undefined
+          ? {}
+          : {
+              documentsFor: (organizationId: string, snapshotId: string) =>
+                readDocumentSet(
+                  { runs: analysisRuns, artifacts: briefArtifacts, objects },
+                  organizationId,
+                  snapshotId,
+                ),
+            }),
       };
 
 const app = createApp({
@@ -580,6 +664,11 @@ const app = createApp({
           requestedModel: caller?.model,
           promptVersion: JIRA_SIZE_PROMPT_VERSION,
         }),
+    onApproved: () => sandboxPreparer?.kick(),
+  },
+  settings: {
+    settings: createWorkspaceSettingsStore(connection.db),
+    onChanged: () => sandboxPreparer?.kick(),
   },
   avatars,
   buildInfo: build,
@@ -594,7 +683,17 @@ const bountyWatchdog = new BountyWatchdog({
 bountyWatchdog.start();
 analysisWatchdog?.start();
 bountyProfiler?.start();
+sandboxCutter?.start();
+sandboxPreparer?.start();
 githubReconciler?.start();
+// The worker announces each run it ends; the profiler moves on it at once
+// rather than on its next sweep, which stays for a notification missed.
+if (bountyProfiler !== undefined)
+  connection
+    .listen(RUN_ENDED_CHANNEL, () => bountyProfiler.kick())
+    .catch((error: unknown) =>
+      console.error("analysis_run_listen_failed", describeError(error)),
+    );
 
 const server = serve({ fetch: app.fetch, port: env.PORT }, (info) => {
   // First log line names the build. Logs outlive the deployment, whereas
@@ -614,6 +713,8 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
       githubReconciler?.stop(),
       analysisWatchdog?.stop(),
       bountyProfiler?.stop(),
+      sandboxCutter?.stop(),
+      sandboxPreparer?.stop(),
       githubSnapshotter?.stop(),
     ]).then(() => {
       server.close(() => {
