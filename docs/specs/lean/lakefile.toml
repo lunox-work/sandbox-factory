@@ -1,0 +1,5 @@
+name = "sandbox-factory-proofs"
+defaultTargets = ["SandboxFactoryProofs"]
+
+[[lean_lib]]
+name = "SandboxFactoryProofs"

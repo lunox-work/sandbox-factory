@@ -91,3 +91,9 @@ test-results/
 # Installed by scripts/install-agent-tools.sh at a pinned upstream release.
 .agents/skills/archify/
 .agents/skills/diagram-design/
+
+# Lean build output (docs/specs/lean)
+.lake/
+
+# TLC scratch files (docs/specs); -cleanup empties it but leaves the folder
+docs/specs/states/
