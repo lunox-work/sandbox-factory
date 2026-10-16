@@ -9,7 +9,8 @@
  * anything else from the graph's own symbol nodes (`names-only`). A module
  * a tier could not read falls to the next, and an omission says why.
  * Nothing in the repository is executed, and the index is a pure function
- * of the graph and the source bytes.
+ * of the graph and the source bytes. Beside it, the seams index lists per
+ * module the services and environment names the slice would list.
  */
 
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -48,6 +49,7 @@ import { command } from "../command.js";
 import { AnalysisError } from "../errors.js";
 import { snapshotOf } from "./adapter.js";
 import type { ArtifactFile, ToolAdapter } from "./adapter.js";
+import { readSeamsIndex } from "./abstractions/seams.js";
 import { extractTypedSurfacesInThread } from "./abstractions/typescript.js";
 import type {
   RawReference,
@@ -405,6 +407,19 @@ export function createAbstractionsAdapter(
         graphRunId: graph.run.id,
         graphSha256: sha256(graph.bytes),
       });
+      // The seams index, from the same graph and checkout.
+      const seams = await readSeamsIndex({
+        sourceDir: input.sourceDir,
+        graph: graph.graph,
+        snapshotId: snapshot.snapshotId,
+        commitSha: snapshot.commitSha,
+        graphRunId: graph.run.id,
+        graphSha256: sha256(graph.bytes),
+        signal: input.signal,
+      });
+      input.log(
+        `Seams index read ${seams.files} files: ${seams.modules.length} reach a service or the environment.`,
+      );
       const summary = abstractionsSummary(index) as unknown as Record<
         string,
         unknown
@@ -437,6 +452,13 @@ export function createAbstractionsAdapter(
           kind: "manifest",
           contentType: "application/json",
           meta: summary,
+        },
+        {
+          path: "seams.json",
+          text: canonicalJson(seams),
+          kind: "seams_index",
+          contentType: "application/json",
+          meta: null,
         },
       ];
       const written: ArtifactFile[] = [];

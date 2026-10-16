@@ -21,6 +21,7 @@ import {
   BountyRunClient,
   GithubAnalysisClient,
   SandboxClient,
+  WorkspaceSettingsClient,
 } from "@sandbox-factory/client";
 
 const UserContext = createContext<string | null>(null);
@@ -96,6 +97,7 @@ export const clients = {
   runs: new BountyRunClient(options),
   analysis: new GithubAnalysisClient(options),
   sandbox: new SandboxClient(options),
+  settings: new WorkspaceSettingsClient(options),
 };
 export function useInvitationsQuery() {
   const userId = useUserId();

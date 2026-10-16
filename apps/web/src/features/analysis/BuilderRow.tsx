@@ -15,6 +15,8 @@
 
 import {
   Database,
+  FileText,
+  ScrollText,
   SquareFunction,
   Waypoints,
   type LucideIcon,
@@ -46,6 +48,15 @@ export const BUILDER_DETAILS: Record<
     description:
       "Reads the schema's entities and relations. Builds on Graphify's map.",
     icon: Database,
+  },
+  documents: {
+    description: "Keeps the repository's Markdown documents.",
+    icon: FileText,
+  },
+  brief: {
+    description:
+      "Sums up the other builders in one short document, which pricing reads.",
+    icon: ScrollText,
   },
 };
 
@@ -195,12 +206,14 @@ export function BuilderRow({
 /**
  * A running builder, and how long it has run. The orb follows what each
  * builds: a graph wires itself, abstractions take shape, the data model's
- * relations are plaited.
+ * relations are plaited, documents are looked for, the brief is written.
  */
 const RUNNING: Record<ContextBuilder, { line: string; orb: OrbState }> = {
   graphify: { line: "Building", orb: "connecting" },
   abstractions: { line: "Building", orb: "shaping" },
   data_model: { line: "Building", orb: "weaving" },
+  documents: { line: "Building", orb: "searching" },
+  brief: { line: "Building", orb: "composing" },
 };
 
 /** Where the run stands, in a word and a dot; while it runs, the orb. */

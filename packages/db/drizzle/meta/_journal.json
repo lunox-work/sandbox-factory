@@ -470,6 +470,13 @@
       "when": 1792119278197,
       "tag": "0066_snapshot_built_at",
       "breakpoints": true
+    },
+    {
+      "idx": 67,
+      "version": "7",
+      "when": 1792121781874,
+      "tag": "0067_sandbox_preparation",
+      "breakpoints": true
     }
   ]
 }

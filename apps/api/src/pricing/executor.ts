@@ -205,11 +205,12 @@ export interface BountyExecutorOptions {
     userId: string,
   ) => Promise<void>;
   /**
-   * The outline of each of the workspace's repositories a bounty's work
-   * could touch, in name order, each from the built commit the bounty's
-   * GitHub context holds it at (else its newest build), so the outline and
-   * the documents are of one commit. A repository never built has none, so
-   * the draft cannot name it. Absent, no draft is shown any.
+   * The brief of each of the workspace's repositories a bounty's work
+   * could touch (its outline, until it has one), in name order, each from
+   * the built commit the bounty's GitHub context holds it at (else its
+   * newest build), so the brief and the documents are of one commit. A
+   * repository never built has none, so the draft cannot name it. Absent,
+   * neither the draft nor the size is shown any.
    */
   readonly outlinesFor?: (
     organizationId: string,
@@ -1264,14 +1265,14 @@ export class BountyExecutor {
     // What its sources add, as synced: the draft and the size see it, and
     // the proposal records which versions they saw.
     const held = await this.#context(organizationId, bounty);
-    // Each repository under a label of its own, the same in its outline
-    // and its documents, which the draft names the ones it touches by:
-    // outlined at the commits its documents were read at.
+    // Each repository under a label of its own, the same in its brief and
+    // its documents, which the draft names the ones it touches by: briefed
+    // at the commits its documents were read at.
     const outlines = await outlinesOf(held.github);
     const labels = new Map(
       outlines.map(({ fullName }, index) => [fullName, repositoryLabel(index)]),
     );
-    const repositoryOutline = outlines
+    const repositoryBriefs = outlines
       .map(({ text }, index) => `=== ${repositoryLabel(index)} ===\n${text}`)
       .join("\n\n");
     const sourceContext = renderSourceContext(
@@ -1345,7 +1346,7 @@ export class BountyExecutor {
               summary: content.title,
               descriptionText: content.description,
               components: content.components,
-              ...(repositoryOutline === "" ? {} : { repositoryOutline }),
+              ...(repositoryBriefs === "" ? {} : { repositoryBriefs }),
               ...(sourceContext === "" ? {} : { sourceContext }),
             },
             request,
@@ -1381,6 +1382,7 @@ export class BountyExecutor {
             {
               summary: content.title,
               descriptionText: content.description,
+              ...(repositoryBriefs === "" ? {} : { repositoryBriefs }),
               ...(sourceContext === "" ? {} : { sourceContext }),
             },
             request,

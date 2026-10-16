@@ -247,6 +247,15 @@ export class BountyProfiler {
       else if (builder === "abstractions") context.abstractionsRunId = run.id;
       else context.dataModelRunId = run.id;
     }
+    // The rest of "Build all", which the scope does not wait for: without
+    // them the snapshot is never built, and the price never reads it.
+    for (const builder of ["documents", "brief"] as const) {
+      const run = await this.#enqueue(owner, profile.snapshotId, {
+        tool: builder,
+        params: { deadlineMinutes: GRAPH_DEADLINE_MINUTES, builder },
+      });
+      if (run === "full") return FULL;
+    }
     if (building) return WAIT;
     const scope = await this.#enqueue(owner, profile.snapshotId, {
       tool: "scope",

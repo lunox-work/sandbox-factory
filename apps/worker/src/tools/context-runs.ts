@@ -9,11 +9,15 @@
 import {
   abstractionIndexSchema,
   dataModelSchema,
+  documentSetSchema,
+  seamsIndexSchema,
 } from "@sandbox-factory/shared";
 import type {
   AbstractionIndex,
   ArtifactKind,
   DataModel,
+  DocumentSet,
+  SeamsIndex,
 } from "sandbox-factory";
 import type { z } from "zod";
 import { AnalysisError } from "../errors.js";
@@ -24,7 +28,7 @@ async function loadDocument<T>(
   inputs: ToolInputs,
   runId: string,
   snapshotId: string,
-  tool: "abstractions" | "data_model",
+  tool: "abstractions" | "data_model" | "documents",
   kind: ArtifactKind,
   schema: z.ZodType<T>,
 ): Promise<T> {
@@ -56,6 +60,21 @@ async function loadDocument<T>(
   return parsed.data;
 }
 
+export function loadDocumentSet(
+  inputs: ToolInputs,
+  runId: string,
+  snapshotId: string,
+): Promise<DocumentSet> {
+  return loadDocument(
+    inputs,
+    runId,
+    snapshotId,
+    "documents",
+    "documents",
+    documentSetSchema as unknown as z.ZodType<DocumentSet>,
+  );
+}
+
 export function loadAbstractions(
   inputs: ToolInputs,
   runId: string,
@@ -83,5 +102,27 @@ export function loadDataModel(
     "data_model",
     "data_model",
     dataModelSchema as unknown as z.ZodType<DataModel>,
+  );
+}
+
+/**
+ * The seams index an `abstractions` run wrote beside its surfaces; null for
+ * a run built before it had one.
+ */
+export async function loadSeams(
+  inputs: ToolInputs,
+  runId: string,
+  snapshotId: string,
+): Promise<SeamsIndex | null> {
+  const artifacts = await inputs.listArtifacts(runId);
+  if (!artifacts.some((artifact) => artifact.kind === "seams_index"))
+    return null;
+  return loadDocument(
+    inputs,
+    runId,
+    snapshotId,
+    "abstractions",
+    "seams_index",
+    seamsIndexSchema as unknown as z.ZodType<SeamsIndex>,
   );
 }

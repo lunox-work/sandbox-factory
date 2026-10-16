@@ -8,6 +8,7 @@ import {
   GithubManagementClient,
   PricingClient,
   BountyRunClient,
+  WorkspaceSettingsClient,
 } from "../src/index.js";
 const options = {
   baseUrl: "",
@@ -306,4 +307,34 @@ test("Jira writes and detail reads validate their envelopes", async () => {
   });
   assert.equal(await sizing.bountySizing("o /", "b /"), null);
   assert.equal(requested[0], "/api/v1/orgs/o%20%2F/bounties/b%20%2F/sizing");
+});
+
+test("a workspace's settings are read and changed at its own path", async () => {
+  const asked: { url: string; method: string; body: unknown }[] = [];
+  const client = new WorkspaceSettingsClient({
+    baseUrl: "",
+    fetch: (async (url: string, init?: RequestInit) => {
+      asked.push({
+        url,
+        method: init?.method ?? "GET",
+        body: init?.body ?? null,
+      });
+      return Response.json({ prepareSandboxes: false });
+    }) as typeof fetch,
+  });
+  assert.deepEqual(await client.settings("org /1"), {
+    prepareSandboxes: false,
+  });
+  assert.deepEqual(
+    await client.saveSettings("org_1", { prepareSandboxes: false }),
+    { prepareSandboxes: false },
+  );
+  assert.deepEqual(asked, [
+    { url: "/api/v1/orgs/org%20%2F1/settings", method: "GET", body: null },
+    {
+      url: "/api/v1/orgs/org_1/settings",
+      method: "PATCH",
+      body: '{"prepareSandboxes":false}',
+    },
+  ]);
 });

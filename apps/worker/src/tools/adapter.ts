@@ -35,6 +35,15 @@ export interface ArtifactFile {
  */
 export interface ToolInputs {
   getRun(runId: string): Promise<StoredAnalysisRun | null>;
+  /**
+   * The newest succeeded run of a tool on a snapshot, at the tool's
+   * current version: the builders' runs a brief reads. Absent outside the
+   * queue, as in a test, where a brief reads none.
+   */
+  latestSucceeded?(
+    snapshotId: string,
+    tool: AnalysisTool,
+  ): Promise<StoredAnalysisRun | null>;
   listArtifacts(runId: string): Promise<readonly StoredArtifact[]>;
   readArtifact(objectKey: string): Promise<Uint8Array | undefined>;
   /** A sandbox version with its private provenance, for a build. */

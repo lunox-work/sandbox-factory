@@ -107,6 +107,14 @@ export type {
   ProfileTransition,
   StoredBountyProfile,
 } from "./bounty-profiles.js";
+export {
+  createWorkspaceSettingsStore,
+  DEFAULT_WORKSPACE_SETTINGS,
+} from "./workspace-settings.js";
+export type {
+  WorkspaceSettings,
+  WorkspaceSettingsStore,
+} from "./workspace-settings.js";
 export { createBountySpecStore } from "./bounty-specs.js";
 export type {
   BountySpecStore,

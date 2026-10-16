@@ -4,10 +4,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import type { StoredArtifact } from "@sandbox-factory/db";
+import { parseSliceGraph } from "sandbox-factory";
 import type {
   FixtureSet,
   SandboxFixture,
   ScopeProposal,
+  SeamsIndex,
   SpecDraft,
 } from "sandbox-factory";
 import { AnalysisError } from "../src/errors.js";
@@ -24,6 +26,11 @@ import {
   createFixturesAdapter,
 } from "../src/tools/fixtures.js";
 import { SCOPE_CHECKS_MAX, createScopeAdapter } from "../src/tools/scope.js";
+import {
+  PREPARED_PSEUDONYMS_PATH,
+  preparationCheck,
+} from "../src/tools/preparation.js";
+import { readSeamsIndex } from "../src/tools/abstractions/seams.js";
 import { readIncludedSource } from "../src/tools/slice-run.js";
 import { contextIndex, contextModel, contextRun } from "./context-fixtures.js";
 import {
@@ -491,6 +498,107 @@ test("the fixtures agent records a set only once it compiles", async () => {
   assert.ok(lines.includes("Fixture set recorded: 1 fixtures."));
 });
 
+test("a sandbox's preparation writes the name table after the set, checked against the workspace's names", async () => {
+  const preparation = {
+    ...fixturesParams,
+    pseudonyms: {
+      vocabulary: ["Acmecorp"],
+      title: "Acmecorp labels",
+      summary: "Label things for Acmecorp.",
+    },
+  };
+  const table = [{ before: "Acmecorp", after: "Example", kind: "text" }];
+  const model = scripted([
+    turn([
+      call("submit_fixtures", {
+        fixtures: [passing],
+        scenario,
+        summary: "Shows run labelling a thing.",
+      }),
+    ]),
+    turn([
+      call("check_pseudonyms", {
+        aliases: [{ before: "label", after: "tag", kind: "identifier" }],
+      }),
+    ]),
+    turn([
+      call("submit_pseudonyms", {
+        aliases: table,
+        summary: "Renames the company.",
+      }),
+    ]),
+  ]);
+  const { files, texts, lines } = await runTool(
+    createFixturesAdapter({ model, limits }),
+    preparation,
+  );
+  assert.deepEqual(
+    files.map((file) => [file.path, file.kind]),
+    [
+      ["fixture-set.json", "fixture_set"],
+      [PREPARED_PSEUDONYMS_PATH, "pseudonyms"],
+    ],
+  );
+  // The listing a cut would give the version is checked with the rest.
+  assert.match(model.prompts[1] ?? "", /The bounty's title: Acmecorp labels/);
+  assert.match(
+    contentOf((model.results[0] ?? [])[0]).content,
+    /"acmecorp" names the workspace/,
+  );
+  const written = JSON.parse(texts[1] ?? "{}") as {
+    rules: unknown[];
+    sliceRunId: string;
+  };
+  assert.deepEqual(written.rules, [{ ...table[0], paths: [] }]);
+  assert.equal(written.sliceRunId, sliceRun.id);
+  assert.deepEqual(files[1]?.meta, { rules: 1 });
+  assert.ok(lines.includes("Pseudonyms agent wrote 1 pseudonym(s)."));
+
+  // A table its agent could not settle leaves the set alone.
+  const gaveUp = await runTool(
+    createFixturesAdapter({
+      model: scripted([
+        turn([
+          call("submit_fixtures", {
+            fixtures: [passing],
+            scenario,
+            summary: "Shows run labelling a thing.",
+          }),
+        ]),
+      ]),
+      limits,
+    }),
+    preparation,
+  );
+  assert.deepEqual(
+    gaveUp.files.map((file) => file.kind),
+    ["fixture_set"],
+  );
+});
+
+test("a preparation's check renames what contributors read and finds what it leaves", () => {
+  const check = preparationCheck({
+    files: [{ path: "src/acme.ts", text: "export const acmecorp = 1;" }],
+    spec: null,
+    fixtures: [],
+    scenario: "console.log('Acmecorp');",
+    listing: { title: "Acmecorp", summary: "For Acmecorp." },
+    vocabulary: ["acmecorp"],
+  });
+  assert.match(check([]).problems.join("\n"), /"acmecorp" names the workspace/);
+  const clean = check([
+    { before: "acmecorp", after: "example", kind: "identifier", paths: [] },
+    { before: "Acmecorp", after: "Example", kind: "text", paths: [] },
+  ]);
+  assert.deepEqual(clean.problems, []);
+  assert.deepEqual(clean.applied, [1, 3]);
+  const refused = check([
+    { before: "Acmecorp", after: "Example", kind: "text", paths: [] },
+    { before: "acmecorp", after: "example", kind: "text", paths: [] },
+  ]);
+  assert.match(refused.problems.join("\n"), /casing_variant/);
+});
+
 test("the fixtures agent runs out of checks and refuses a missing model, task or slice", async () => {
   const greedy = scripted([
     turn(
@@ -605,6 +713,119 @@ test("with the context builders, the scope agent names an accessor module as a d
     [["lib/service.ts", "database"]],
   );
   assert.ok(proposal.check.outboundModules >= 1);
+});
+
+/** Context inputs whose abstractions run also wrote this seams index. */
+async function seamsInputs(index: SeamsIndex): Promise<ToolInputs> {
+  const base = await contextInputs();
+  const bytes = Buffer.from(JSON.stringify(index));
+  const artifact: StoredArtifact = {
+    id: "art_seams",
+    runId: "arn_abstractions",
+    kind: "seams_index",
+    path: "seams.json",
+    objectKey: "runs/arn_abstractions/seams.json",
+    contentType: "application/json",
+    sizeBytes: bytes.byteLength,
+    sha256: sha(bytes),
+    meta: null,
+    createdAt: stamp,
+  };
+  return {
+    ...base,
+    listArtifacts: async (id) => [
+      ...(await base.listArtifacts(id)),
+      ...(id === "arn_abstractions" ? [artifact] : []),
+    ],
+    readArtifact: async (key) =>
+      key === artifact.objectKey ? bytes : base.readArtifact(key),
+  };
+}
+
+test("with a seams index, the scope agent looks seams up, and check_scope reads its externals from the index", async () => {
+  const index = await readSeamsIndex({
+    sourceDir: fixture,
+    graph: parseSliceGraph(graph()),
+    snapshotId: "rsn_1",
+    commitSha: "a".repeat(40),
+    graphRunId: graphRun.id,
+    graphSha256: sha(graphBytes),
+    signal: new AbortController().signal,
+  });
+  const request = {
+    entryPoints: ["src/app.ts"],
+    maxFiles: 5,
+    maxDepth: 0,
+    includeInferred: false,
+  };
+  const run = async (toolInputs: ToolInputs, lookup: boolean) => {
+    const model = scripted([
+      turn([
+        ...(lookup
+          ? [call("module_seams", { paths: ["src/app.ts", "lib"] })]
+          : []),
+        call("check_scope", request),
+      ]),
+      turn([call("submit_scope", submission)]),
+    ]);
+    const { texts } = await runTool(
+      createScopeAdapter({ model, limits }),
+      { ...scopeParams, abstractionsRunId: "arn_abstractions" },
+      toolInputs,
+    );
+    return {
+      prompt: model.prompts[0] ?? "",
+      results: (model.results[0] ?? []).map(contentOf),
+      proposal: JSON.parse(texts[0] ?? "{}") as ScopeProposal,
+    };
+  };
+  const indexed = await run(await seamsInputs(index), true);
+  assert.match(
+    indexed.prompt,
+    /The seams index lists 1 of 10 files as reaching a service or an environment variable; `module_seams`/,
+  );
+  const [lookup, check] = indexed.results;
+  assert.equal(
+    lookup?.content.split("\n")[0],
+    "src/app.ts: services postgres (pg); environment DATABASE_URL.",
+  );
+  assert.match(
+    lookup?.content ?? "",
+    /^lib\/ \(7 files\): no services or environment variables\.$/m,
+  );
+  // The index agrees with the slice: the same report as reading the source.
+  const plain = await run(await contextInputs(), false);
+  assert.doesNotMatch(plain.prompt, /seams index/);
+  assert.equal(check?.content, plain.results[0]?.content);
+  assert.deepEqual(
+    (
+      JSON.parse(check?.content ?? "{}") as {
+        externals: { environment: string[] };
+      }
+    ).externals.environment,
+    ["DATABASE_URL"],
+  );
+  assert.deepEqual(indexed.proposal.check, plain.proposal.check);
+  // A check reads the index; the submission is still sliced from source.
+  const doctored = await run(
+    await seamsInputs({
+      ...index,
+      modules: index.modules.map((module) => ({
+        ...module,
+        environment: ["FROM_INDEX"],
+      })),
+    }),
+    false,
+  );
+  assert.match(doctored.results[0]?.content ?? "", /FROM_INDEX/);
+  assert.deepEqual(doctored.proposal.check, plain.proposal.check);
+  // An index of another graph run is not used.
+  const stale = await run(
+    await seamsInputs({ ...index, graphRunId: "arn_other" }),
+    false,
+  );
+  assert.doesNotMatch(stale.prompt, /seams index/);
+  assert.equal(stale.results[0]?.content, plain.results[0]?.content);
 });
 
 test("a scope or fixtures run fails cleanly when a context run it names is gone", async () => {

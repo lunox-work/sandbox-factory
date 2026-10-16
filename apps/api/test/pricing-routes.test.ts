@@ -519,6 +519,7 @@ function reviewHarness(
 ) {
   let current = reviewProposal(overrides);
   let specReads = 0;
+  let approvals = 0;
   const proposals = {
     get: () => Promise.resolve(current),
     list: () =>
@@ -616,6 +617,9 @@ function reviewHarness(
             },
           } as never,
         }),
+      onApproved: () => {
+        approvals += 1;
+      },
       ...extra,
     },
   });
@@ -624,6 +628,7 @@ function reviewHarness(
     proposals,
     current: () => current,
     specReads: () => specReads,
+    approvals: () => approvals,
   };
 }
 
@@ -1180,6 +1185,14 @@ test("approval rechecks Jira; resize, unapprove and remove do not", async () => 
   );
   assert.equal(approved.status, 200);
   assert.equal(approve.specReads(), 1);
+  // An approval prompts its sandbox's preparation; a refused one does not.
+  assert.equal(approve.approvals(), 1);
+  const stale = await approve.app.request(
+    "/api/v1/orgs/org_1/proposals/bpr_1/approve",
+    { method: "POST", headers, body: JSON.stringify({ expectedRevision: 9 }) },
+  );
+  assert.equal(stale.status, 409);
+  assert.equal(approve.approvals(), 1);
 
   const resize = reviewHarness();
   const resized = await resize.app.request(

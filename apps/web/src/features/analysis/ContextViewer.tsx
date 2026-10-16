@@ -8,11 +8,13 @@
  * are. What can be seen opens shown, with a toggle back to the text as
  * written: Markdown as a document, its Mermaid fences drawn; Mermaid and
  * Graphviz files as diagrams to pan and zoom; a web page, Graphify's graph,
- * running in a frame apart from this page; an SVG as a picture; JSON laid
+ * running in a frame apart from this page; an SVG as a picture; the
+ * documents builder's set as a list of the documents it kept; JSON laid
  * out. Anything else too large or not text opens through its signed URL.
  */
 
 import type { AnalysisRunDto, ArtifactDto } from "@sandbox-factory/shared";
+import { documentSetSchema } from "@sandbox-factory/shared";
 import { useQuery } from "@tanstack/react-query";
 import {
   AppWindow,
@@ -22,11 +24,12 @@ import {
   ExternalLink,
   Files,
   Image,
+  List,
   Workflow,
   type LucideIcon,
 } from "lucide-react";
 import { useMemo, useState } from "react";
-import type { ContextBuilder } from "sandbox-factory";
+import type { ContextBuilder, DocumentSet } from "sandbox-factory";
 
 import { ErrorBanner, LoadingLine, RetryButton } from "@/components/Message";
 import { Button } from "@/components/ui/button";
@@ -132,12 +135,15 @@ function Workbench({
   }, [builds]);
   const keys = useMemo(() => [...entries.keys()], [entries]);
   /*
-    The first document opens, if there is one: it reads as written for
-    people, where a graph's JSON is for tools.
+    The brief opens, or else the first document, if there is one: each
+    reads as written for people, where a graph's JSON is for tools.
   */
   const [chosen, setChosen] = useState<string | null>(null);
   const selected =
-    chosen ?? keys.find((key) => languageOf(key).id === "markdown") ?? null;
+    chosen ??
+    keys.find((key) => entries.get(key)?.artifact.kind === "brief_md") ??
+    keys.find((key) => languageOf(key).id === "markdown") ??
+    null;
   const entry = selected === null ? undefined : entries.get(selected);
   const reading = builds.some(
     (build) => build.artifacts === undefined && build.failed !== true,
@@ -474,6 +480,13 @@ function Viewer({
       ? undefined
       : laidOut;
   }, [language, text]);
+  const documents = useMemo(
+    () =>
+      artifact.kind === "documents" && text !== null
+        ? documentSetOf(text)
+        : null,
+    [artifact.kind, text],
+  );
   const extension = extensionOf(artifact.path);
   const diagram = diagramKind(extension);
   const page =
@@ -522,14 +535,21 @@ function Viewer({
                   />
                 ),
               }
-            : formatted !== undefined
+            : documents !== null
               ? {
-                  label: "Format JSON",
-                  icon: Braces,
-                  title: "Formatted for reading.",
-                  view: <Source text={formatted} language={language} />,
+                  label: "List",
+                  icon: List,
+                  title: "Listed as documents.",
+                  view: <DocumentList set={documents} />,
                 }
-              : undefined;
+              : formatted !== undefined
+                ? {
+                    label: "Format JSON",
+                    icon: Braces,
+                    title: "Formatted for reading.",
+                    view: <Source text={formatted} language={language} />,
+                  }
+                : undefined;
   const [asWritten, setAsWritten] = useState(false);
   // A page too large to read as text is shown, with nothing to toggle to.
   const showRendered = rendering !== undefined && (!asWritten || text === null);
@@ -637,5 +657,100 @@ function Viewer({
       </div>
       {body}
     </section>
+  );
+}
+
+/** `documents.json` read back, or null when it is not one. */
+function documentSetOf(text: string): DocumentSet | null {
+  try {
+    const parsed = documentSetSchema.safeParse(JSON.parse(text));
+    return parsed.success ? parsed.data : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The documents builder's set: each document it kept, by path and size,
+ * opened in place as a document; those left out are counted.
+ */
+function DocumentList({ set }: { set: DocumentSet }) {
+  const [open, setOpen] = useState<string | null>(null);
+  const paths = useMemo(
+    () => set.documents.map((document) => document.path),
+    [set],
+  );
+  const chosen = set.documents.find((document) => document.path === open);
+  if (chosen !== undefined)
+    return (
+      <div className="flex min-h-0 flex-1 flex-col">
+        <div className="flex h-[22px] shrink-0 items-center gap-2 px-3 text-xs text-(--wb-muted)">
+          <button
+            type="button"
+            className="shrink-0 text-(--wb-accent) hover:underline"
+            onClick={() => setOpen(null)}
+          >
+            All documents
+          </button>
+          <span className="min-w-0 truncate font-(family-name:--wb-font-code)">
+            {chosen.path}
+          </span>
+          {chosen.truncated && <span className="shrink-0">· cut short</span>}
+        </div>
+        <MarkdownDocument
+          key={chosen.path}
+          text={chosen.text}
+          path={chosen.path}
+          paths={paths}
+          href={(target) => `#${target}`}
+          onOpen={(target) => (event) => {
+            event.preventDefault();
+            setOpen(target);
+          }}
+        />
+      </div>
+    );
+  const count = set.documents.length;
+  return (
+    <div className="min-h-0 flex-1 overflow-auto">
+      <div className="max-w-[52rem] px-8 pt-5 pb-8 text-[13px] text-(--wb-foreground)">
+        <p className="mb-3 text-(--wb-muted)">
+          {count === 0
+            ? "No documents kept"
+            : `${count.toLocaleString()} ${count === 1 ? "document" : "documents"} kept`}
+          {set.omitted > 0 &&
+            ` · ${set.omitted.toLocaleString()} more left out`}
+        </p>
+        {count > 0 && (
+          <ul
+            aria-label="Kept documents"
+            className="divide-y divide-(--wb-border)"
+          >
+            {set.documents.map((document) => (
+              <li key={document.path}>
+                <button
+                  type="button"
+                  className="flex h-[26px] w-full items-center gap-2 px-1 text-left hover:bg-(--wb-hover) focus-visible:outline-1 focus-visible:-outline-offset-1 focus-visible:outline-(--wb-accent)"
+                  onClick={() => setOpen(document.path)}
+                >
+                  <TypeIcon name={fileIconName(document.path)} />
+                  <span className="min-w-0 flex-1 truncate font-(family-name:--wb-font-code)">
+                    {document.path}
+                  </span>
+                  {document.truncated && (
+                    <span className="shrink-0 text-xs text-(--wb-muted)">
+                      cut short
+                    </span>
+                  )}
+                  <span className="shrink-0 text-xs text-(--wb-muted) tabular-nums">
+                    {sizeLabel(document.bytes)}
+                  </span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </div>
   );
 }

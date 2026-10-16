@@ -521,6 +521,7 @@ const measuredProfile: StoredBountyProfile = {
   runErrorCode: null,
   scopeRunId: "arn_scope",
   sliceRunId: "arn_slice",
+  preparedRunId: null,
   profile: {
     version: COMPLEXITY_PROFILE_VERSION,
     slice: {

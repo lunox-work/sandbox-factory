@@ -772,6 +772,7 @@ export function mountPricingRoutes<Env extends PricingAppEnv>(
       actorId: c.get("user").id,
       expectedRevision: parsed.data.expectedRevision,
     });
+    if (result.kind === "success") options.onApproved?.();
     return c.json(
       result.body,
       result.kind === "not-found"

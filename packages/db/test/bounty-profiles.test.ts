@@ -23,6 +23,7 @@ function row(overrides: Partial<BountyProfileRow> = {}): BountyProfileRow {
     runErrorCode: null,
     scopeRunId: null,
     sliceRunId: null,
+    preparedRunId: null,
     profile: null,
     transitions: [],
     createdAt: new Date("2026-10-03T00:00:00Z"),
@@ -335,5 +336,73 @@ test("advance moves a row only from the status it was read in, and sets what the
       },
     ),
     false,
+  );
+});
+
+test("unprepared lists ready rows with no preparation, oldest first, within a page", async () => {
+  const fake = createFakeDb([
+    named({ status: "ready", sliceRunId: "arn_s" }),
+    named({ id: "bpf_2", status: "ready", sliceRunId: "arn_t" }, null),
+  ]);
+  const store = createBountyProfileStore(fake.db);
+  const rows = await store.unprepared("org_1");
+  assert.deepEqual(
+    rows.map((profile) => [profile.id, profile.repository, profile.sliceRunId]),
+    [
+      ["bpf_1", "acme/api", "arn_s"],
+      ["bpf_2", null, "arn_t"],
+    ],
+  );
+  assert.equal(fake.calls[0]?.filtered, true);
+  assert.equal(fake.calls[0]?.ordered, true);
+  assert.equal(fake.calls[0]?.limited, 50);
+  await store.unprepared("org_1", 10_000);
+  assert.equal(fake.calls[1]?.limited, 200);
+  await store.unprepared("org_1", 0);
+  assert.equal(fake.calls[2]?.limited, 1);
+});
+
+test("the preparer discovers each organization with unprepared rows once", async () => {
+  const fake = createFakeDb([
+    { organizationId: "org_2" },
+    { organizationId: "org_1" },
+    { organizationId: "org_2" },
+  ]);
+  assert.deepEqual(
+    await createBountyProfileStore(fake.db).organizationsWithUnprepared(),
+    ["org_2", "org_1"],
+  );
+});
+
+test("a preparation is named once, and only on a ready row", async () => {
+  const fake = createFakeDb([{ id: "bpf_1" }]);
+  const store = createBountyProfileStore(fake.db);
+  assert.equal(await store.recordPrepared("org_1", "bpf_1", "arn_p"), true);
+  assert.deepEqual(fake.calls[0]?.values, { preparedRunId: "arn_p" });
+  assert.equal(fake.calls[0]?.filtered, true);
+  const taken = createFakeDb([]);
+  assert.equal(
+    await createBountyProfileStore(taken.db).recordPrepared(
+      "org_1",
+      "bpf_1",
+      "arn_q",
+    ),
+    false,
+  );
+});
+
+test("a slice's preparation is its newest profile's, or none", async () => {
+  const fake = createFakeDb([{ preparedRunId: "arn_p" }]);
+  assert.equal(
+    await createBountyProfileStore(fake.db).preparationFor("org_1", "arn_s"),
+    "arn_p",
+  );
+  assert.equal(fake.calls[0]?.limited, 1);
+  assert.equal(
+    await createBountyProfileStore(createFakeDb([]).db).preparationFor(
+      "org_1",
+      "arn_s",
+    ),
+    null,
   );
 });

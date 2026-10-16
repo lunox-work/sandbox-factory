@@ -61,6 +61,11 @@ export interface PricingRouteOptions {
     organizationId: string,
     connectionId: string,
   ) => Promise<RunClientResult>;
+  /**
+   * Called once a proposal is approved, so its sandbox's preparation is
+   * queued without waiting for the preparer's timer. Must not throw.
+   */
+  readonly onApproved?: () => void;
   readonly requestedModel?: string;
   readonly promptVersion?: string;
   readonly supportedCurrencies?: ReadonlySet<string>;

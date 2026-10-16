@@ -109,6 +109,7 @@ export {
   bountySpec,
   bountyWriteback,
   rateCard,
+  workspaceSetting,
 } from "./schema/pricing.js";
 export type {
   BountyProfileRow,
@@ -126,6 +127,7 @@ export type {
   NewRateCardRow,
   ProposalRepository,
   RateCardRow,
+  WorkspaceSettingRow,
 } from "./schema/pricing.js";
 
 export {

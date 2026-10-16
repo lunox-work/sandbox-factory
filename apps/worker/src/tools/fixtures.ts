@@ -9,7 +9,9 @@
  * included source, under the generated project's own compiler settings.
  * The set is recorded for a person to attach to a sandbox version, and a
  * sliced build whose draft has none writes one itself (`writeFixtures`);
- * the build then aliases it with the version and runs the walkthrough.
+ * the build then aliases it with the version and runs the walkthrough. A
+ * sandbox's preparation is a run of this tool that writes the name table
+ * after the set (`preparation.ts`).
  */
 
 import { mkdir, writeFile } from "node:fs/promises";
@@ -19,6 +21,7 @@ import {
   FIXTURE_SET_SCHEMA_VERSION,
   canonicalJson,
   isFixturesParams,
+  workspaceVocabulary,
 } from "sandbox-factory";
 import type {
   AgentUsage,
@@ -48,6 +51,7 @@ import { loadDataModel } from "./context-runs.js";
 import type { ArtifactFile, ToolAdapter, ToolRunInput } from "./adapter.js";
 import { checkFixtures } from "./fixtures-check.js";
 import { nearestCompilerOptions } from "./compiler-config.js";
+import { packageVocabulary, writePreparedPseudonyms } from "./preparation.js";
 import { loadSliceRun, readIncludedSource } from "./slice-run.js";
 import type { LoadedSliceRun } from "./slice-run.js";
 import type { RunTiming } from "../timing.js";
@@ -292,6 +296,10 @@ export function createFixturesAdapter(settings: AgentSettings): ToolAdapter {
         params.sliceRunId,
         snapshot.snapshotId,
       );
+      const included = await readIncludedSource(
+        input.sourceDir,
+        slice.manifest,
+      );
       const written = await writeFixtures({
         model: settings.model,
         limits: settings.limits,
@@ -299,7 +307,7 @@ export function createFixturesAdapter(settings: AgentSettings): ToolAdapter {
         sourceDir: input.sourceDir,
         commitSha: snapshot.commitSha,
         slice,
-        included: await readIncludedSource(input.sourceDir, slice.manifest),
+        included,
         dataModel:
           params.dataModelRunId === undefined
             ? null
@@ -330,7 +338,7 @@ export function createFixturesAdapter(settings: AgentSettings): ToolAdapter {
       const absolutePath = join(input.outDir, "fixture-set.json");
       await writeFile(absolutePath, canonicalJson(set), "utf8");
       input.log(`Fixture set recorded: ${set.fixtures.length} fixtures.`);
-      return [
+      const files: ArtifactFile[] = [
         {
           path: "fixture-set.json",
           absolutePath,
@@ -339,6 +347,39 @@ export function createFixturesAdapter(settings: AgentSettings): ToolAdapter {
           meta: JSON.parse(canonicalJson(set)) as Record<string, unknown>,
         },
       ];
+      // A sandbox's preparation writes the name table too. One its agent
+      // could not settle leaves the build to write it, as it would have.
+      if (params.pseudonyms !== undefined) {
+        const table = await writePreparedPseudonyms({
+          settings,
+          outDir: input.outDir,
+          sliceRunId: slice.run.id,
+          listing: {
+            title: params.pseudonyms.title,
+            summary: params.pseudonyms.summary,
+          },
+          spec: task.draft,
+          files: [
+            ...included,
+            ...slice.stubs.map((stub) => ({
+              path: stub.module,
+              text: stub.text,
+            })),
+          ],
+          fixtures: set.fixtures,
+          scenario: set.scenario,
+          vocabulary: workspaceVocabulary([
+            ...params.pseudonyms.vocabulary,
+            ...(await packageVocabulary(input.sourceDir)),
+          ]),
+          signal: input.signal,
+          log: input.log,
+          step: input.step,
+          timing: input.timing,
+        });
+        if (table !== null) files.push(table);
+      }
+      return files;
     },
   };
 }

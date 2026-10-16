@@ -331,6 +331,7 @@ const readyProfile: StoredBountyProfile = {
   runErrorCode: null,
   scopeRunId: "arn_scope",
   sliceRunId: "arn_slice",
+  preparedRunId: null,
   profile: null,
   createdAt: stamp,
   updatedAt: stamp,
@@ -821,6 +822,12 @@ function fixture(
               revision !== 2
                 ? []
                 : [{ ...readyProfile, ...overrides.profile }],
+            preparationFor: async (owner: string, sliceRunId: string) =>
+              owner === "org_1" &&
+              sliceRunId ===
+                (overrides.profile?.sliceRunId ?? readyProfile.sliceRunId)
+                ? (overrides.profile?.preparedRunId ?? null)
+                : null,
           },
           requestProfile: async (owner: string, input: unknown) => {
             requested.push({ owner, input });
@@ -2609,6 +2616,58 @@ test("a ready slice is cut into a draft from the bounty and built", async () => 
   assert.equal(
     ((await mismatch.json()) as { code: string }).code,
     "slice_mismatch",
+  );
+});
+
+test("a slice with a preparation is cut with its fixtures, and built naming it", async () => {
+  const f = fixture("owner", {
+    profile: { preparedRunId: "arn_fixtures" },
+    bounty: true,
+    noVersions: true,
+    seam: true,
+  });
+  const response = await f.request("POST", "/sbx_1/slice");
+  assert.equal(response.status, 201);
+  const input = f.created[0] as {
+    source: { fixtures: { fixtureRunId: string } | null };
+  };
+  assert.equal(input.source.fixtures?.fixtureRunId, "arn_fixtures");
+  const build = f.enqueued[0] as {
+    tool: string;
+    params: { preparedRunId?: string };
+  };
+  assert.equal(build.tool, "sandbox_build");
+  assert.equal(build.params.preparedRunId, "arn_fixtures");
+
+  // Prepared fixtures that do not fit the slice are left to the build.
+  const misfit = fixture("owner", {
+    profile: { preparedRunId: "arn_fixtures" },
+    bounty: true,
+    noVersions: true,
+  });
+  assert.equal((await misfit.request("POST", "/sbx_1/slice")).status, 201);
+  assert.equal(misfit.created.length, 1);
+  assert.equal(
+    (misfit.created[0] as { source: { fixtures: unknown } }).source.fixtures,
+    null,
+  );
+
+  // One not yet done is neither attached nor named.
+  const running = fixture("owner", {
+    profile: { preparedRunId: "arn_fixtures_running" },
+    bounty: true,
+    noVersions: true,
+    seam: true,
+  });
+  assert.equal((await running.request("POST", "/sbx_1/slice")).status, 201);
+  assert.equal(
+    (running.created[0] as { source: { fixtures: unknown } }).source.fixtures,
+    null,
+  );
+  assert.equal(
+    (running.enqueued[0] as { params: { preparedRunId?: string } }).params
+      .preparedRunId,
+    undefined,
   );
 });
 

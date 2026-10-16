@@ -1089,15 +1089,19 @@ Both connect flows sign their `state` with the same secret, so the state
 carries a `purpose` (`apps/api/src/connect-state.ts`) and each callback
 refuses the other's.
 
-**Analysis runs are private and cached.** Three _context builders_ describe a
+**Analysis runs are private and cached.** Five _context builders_ describe a
 snapshot on their own, started from a repository's page
 (`/o/:slug/repositories/:repoId`) by an owner or admin and read by any
 member: a `graphify` run maps a snapshot's structure in a Fargate worker;
 an `abstractions` run lists every module's exported surface
-with its signatures, typed, syntactic or names only; and a `data_model` run
+with its signatures, typed, syntactic or names only; a `data_model` run
 reads the entities, enums and relations the repository's Prisma schema,
-Drizzle tables or SQL migrations declare, with the modules that touch them.
-The last two read graphify's map and are what the agents read. A repository
+Drizzle tables or SQL migrations declare, with the modules that touch them;
+a `documents` run keeps its Markdown documents, which a bounty's sync reads
+instead of GitHub; and a `brief` run sums the others up in one bounded
+document, which the price reads for every connected repository. The
+abstractions and data model read graphify's map and are what the agents
+read; the brief waits for the rest of its snapshot's builders. A repository
 has one context: every builder at one commit, the snapshot
 `github_repo.context_snapshot_id` names. A repository is built where it
 is registered: the repositories dialog, in settings and onboarding alike,
@@ -1139,7 +1143,14 @@ or `data_model` runs, the scope run names them (so they join its cache key)
 and the agent can read a module's surface and the data model, whose
 accessor modules are where a `database` seam belongs; the fixtures agent
 reads the data model too. Neither decides anything. The proposal fills the slice picker; a person
-starts the slice. A `fixtures` run, for a succeeded slice, writes default
+starts the slice. Once a bounty's profile is ready and its price approved,
+the API prepares its sandbox (`apps/api/src/sandbox/preparer.ts`): a
+`fixtures` run that also writes the name table, named on the profile
+(`bounty_profile.prepared_run_id`), so the Sandbox click cuts the draft with
+those fixtures and its build takes the table when its own check passes it.
+A workspace turns it off with `workspace_setting.prepare_sandboxes`
+(`GET`/`PATCH .../settings`, owners and admins to change). Preparation runs
+are kept from members as builds are. A `fixtures` run, for a succeeded slice, writes default
 behaviour for mocked calls and the `npm run dev` walkthrough, type-checked
 against the slice's own stubs; a version copies them into its transform,
 and the build aliases them and runs the walkthrough in its baseline. The

@@ -1,6 +1,13 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -9,10 +16,16 @@ import type { StoredAnalysisRun, StoredArtifact } from "@sandbox-factory/db";
 import {
   ABSTRACTIONS_TOOL_VERSION,
   ABSTRACTION_LIMITS,
+  SEAMS_LIMITS,
+  detectExternals,
+  lookupSeams,
   parseSliceGraph,
 } from "sandbox-factory";
 import type { AbstractionIndex } from "sandbox-factory";
-import { abstractionsSummarySchema } from "@sandbox-factory/shared";
+import {
+  abstractionsSummarySchema,
+  seamsIndexSchema,
+} from "@sandbox-factory/shared";
 import { AnalysisError } from "../src/errors.js";
 import {
   assembleIndex,
@@ -20,6 +33,7 @@ import {
   surfaceModules,
 } from "../src/tools/abstractions.js";
 import type { SyntacticOutput } from "../src/tools/abstractions.js";
+import { readSeamsIndex } from "../src/tools/abstractions/seams.js";
 import {
   extractTypedSurfaces,
   extractTypedSurfacesInThread,
@@ -643,7 +657,28 @@ test("the adapter writes the index, the readable view and the summary, the same 
       ["abstractions.json", "abstraction_index"],
       ["abstractions.md", "other"],
       ["manifest.json", "manifest"],
+      ["seams.json", "seams_index"],
     ],
+  );
+  assert.equal(first.texts.get("seams.json"), second.texts.get("seams.json"));
+  const seams = seamsIndexSchema.parse(
+    JSON.parse(first.texts.get("seams.json") ?? ""),
+  );
+  assert.equal(seams.toolVersion, ABSTRACTIONS_TOOL_VERSION);
+  assert.equal(seams.graphRunId, graphRun.id);
+  assert.equal(seams.graphSha256, sha(graphBytes));
+  assert.equal(seams.files, 12);
+  assert.deepEqual(seams.modules, []);
+  // The graph names files the checkout does not have.
+  assert.deepEqual(seams.partial, [
+    "src/README.md",
+    "src/script.lua",
+    "src/types.go",
+  ]);
+  assert.ok(
+    first.lines.includes(
+      "Seams index read 12 files: 0 reach a service or the environment.",
+    ),
   );
   assert.equal(calls[0]?.[0], "/script.py");
   assert.equal(calls[0]?.[1], fixture);
@@ -813,6 +848,84 @@ test("a barrel's names each read as their own re-export, not the whole statement
         ["T", 'export type { T } from "./model";'],
         ["U", 'export type { U } from "./model";'],
       ],
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("the seams index reads files as the slice does, and leaves out what the slice could not read", async () => {
+  const root = await mkdtemp(join(tmpdir(), "seams-"));
+  try {
+    const texts: Record<string, string> = {
+      "src/db.ts": `import pg from "pg";\nexport const url = process.env.DATABASE_URL;`,
+      "src/mail.ts": `import nodemailer from "nodemailer";\nimport.meta.env.SMTP_HOST;`,
+      "src/pure.ts": "export const one = 1;",
+    };
+    await mkdir(join(root, "src", "dir.ts"), { recursive: true });
+    for (const [path, text] of Object.entries(texts))
+      await writeFile(join(root, path), text);
+    await writeFile(
+      join(root, "src/huge.ts"),
+      "x".repeat(SEAMS_LIMITS.fileBytes + 1),
+    );
+    await symlink(join(root, "src/db.ts"), join(root, "src/link.ts"));
+    const paths = [
+      ...Object.keys(texts),
+      "src/dir.ts",
+      "src/huge.ts",
+      "src/link.ts",
+      "src/missing.ts",
+      "../outside.ts",
+    ];
+    const graph = parseSliceGraph({
+      nodes: paths.map((path) => ({
+        id: `file:${path}`,
+        label: path,
+        source_file: path,
+      })),
+      links: [],
+    });
+    const index = await readSeamsIndex({
+      sourceDir: root,
+      graph,
+      snapshotId: "rsn_1",
+      commitSha: "c",
+      graphRunId: "arn_graph",
+      graphSha256: "s",
+      signal: new AbortController().signal,
+    });
+    assert.equal(index.files, paths.length);
+    assert.deepEqual(
+      index.modules.map((module) => module.path),
+      ["src/db.ts", "src/mail.ts"],
+    );
+    assert.deepEqual(index.partial, [
+      "../outside.ts",
+      "src/dir.ts",
+      "src/huge.ts",
+      "src/link.ts",
+      "src/missing.ts",
+    ]);
+    const files = Object.keys(texts);
+    const found = lookupSeams(index, files);
+    assert.deepEqual(found.unknown, []);
+    assert.deepEqual(
+      found.externals,
+      detectExternals(files.map((path) => ({ path, text: texts[path] ?? "" }))),
+    );
+    const aborted = new AbortController();
+    aborted.abort();
+    await assert.rejects(
+      readSeamsIndex({
+        sourceDir: root,
+        graph,
+        snapshotId: "rsn_1",
+        commitSha: "c",
+        graphRunId: "arn_graph",
+        graphSha256: "s",
+        signal: aborted.signal,
+      }),
     );
   } finally {
     await rm(root, { recursive: true, force: true });

@@ -83,6 +83,8 @@ export async function executeRun(
   const listedKeys = new Set<string>();
   const inputs: ToolInputs = {
     getRun: (id) => options.runs.get(run.organizationId, id),
+    latestSucceeded: (snapshotId, tool) =>
+      options.runs.latestSucceeded(run.organizationId, snapshotId, tool),
     listArtifacts: async (id) => {
       if (options.artifacts === undefined) return [];
       const listed = await options.artifacts.list(run.organizationId, id);

@@ -39,6 +39,10 @@ import {
 } from "./pricing/routes.js";
 import { mountGithubRoutes, type GithubRouteOptions } from "./github/routes.js";
 import {
+  mountSettingsRoutes,
+  type SettingsRouteOptions,
+} from "./settings/routes.js";
+import {
   mountGithubWebhook,
   type GithubWebhookOptions,
 } from "./github/webhook.js";
@@ -104,6 +108,8 @@ export interface AppOptions {
    * `analysis` is; without it the routes answer 503 behind the guard.
    */
   sandbox?: SandboxRouteOptions | undefined;
+  /** A workspace's settings; not mounted without a database, as in a test. */
+  settings?: SettingsRouteOptions | undefined;
   /**
    * Uploaded avatars. Optional for the same reason as `jira`: without object
    * storage configured the upload routes are not mounted and answer 404,
@@ -138,6 +144,7 @@ export function createApp({
   pricing,
   analysis,
   sandbox,
+  settings,
   avatars,
   buildInfo = unknownBuildInfo,
   originVerify,
@@ -614,6 +621,7 @@ export function createApp({
           (await organizations.listForUser(userId)).map(({ id }) => id),
       });
     }
+    if (settings !== undefined) mountSettingsRoutes(app, settings);
     if (sandbox !== undefined) mountSandboxRoutes(app, sandbox);
     else
       app.all("/api/v1/orgs/:orgId/sandboxes/*", (c) =>

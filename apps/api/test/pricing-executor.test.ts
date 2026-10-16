@@ -1021,7 +1021,7 @@ test("a run drafts the spec first and stores it with the proposal", async () => 
     draft,
     origin: "draft",
     actualModel: "drafting-model",
-    promptVersion: "draft-v7",
+    promptVersion: "draft-v8",
   });
 });
 
@@ -1041,7 +1041,7 @@ const outlines: RepositoryOutlineRead[] = [
   },
 ];
 
-test("the workspace's repositories are outlined once for the run, each under its label", async () => {
+test("the workspace's repositories are briefed once for the run, each under its label", async () => {
   const asked: string[] = [];
   const state = harness({
     outlinesFor: (organizationId) => {
@@ -1057,20 +1057,24 @@ test("the workspace's repositories are outlined once for the run, each under its
   assert.deepEqual(asked, ["org_1"]);
   const drafts = state.caller.calls.filter(
     ({ tool }) => tool === "draft_spec",
-  ) as { input: { repositoryOutline?: string } }[];
+  ) as { input: { repositoryBriefs?: string } }[];
   assert.equal(drafts.length, 2);
   for (const call of drafts) {
     assert.equal(
-      call.input.repositoryOutline,
+      call.input.repositoryBriefs,
       "=== Repository 1 ===\n- src: 3 files\n\n=== Repository 2 ===\n- web: 2 files",
     );
   }
-  // The size is asked exactly as before: it is never shown the outline.
-  for (const call of state.caller.calls.filter(
+  // The size is shown the same briefs, so it sees the code's shape too.
+  const sizes = state.caller.calls.filter(
     ({ tool }) => tool === "size_bounty",
-  )) {
-    assert.equal("repositoryOutline" in (call.input as object), false);
-  }
+  ) as { input: { repositoryBriefs?: string } }[];
+  assert.equal(sizes.length, 2);
+  for (const call of sizes)
+    assert.equal(
+      call.input.repositoryBriefs,
+      drafts[0]?.input.repositoryBriefs,
+    );
   // Only the repository the draft named, at the snapshot it was outlined at.
   for (const input of state.proposalInputs) {
     assert.deepEqual((input as { repositories: unknown }).repositories, [
@@ -1272,7 +1276,7 @@ test("no repository with a snapshot, or no reader: drafts as before", async () =
     const state = harness({ ...options, touched: ["Repository 1"] });
     await state.executor.execute("org_1", "brn_1");
     const draft = state.caller.calls.find(({ tool }) => tool === "draft_spec");
-    assert.equal("repositoryOutline" in (draft?.input as object), false);
+    assert.equal("repositoryBriefs" in (draft?.input as object), false);
     assert.deepEqual(
       (state.proposalInputs[0] as { repositories: unknown }).repositories,
       [],
@@ -1290,7 +1294,7 @@ test("outlines that cannot be read are reported and the run drafts without them"
 
   assert.deepEqual(reported, ["bounty_outline_unavailable"]);
   const draft = state.caller.calls.find(({ tool }) => tool === "draft_spec");
-  assert.equal("repositoryOutline" in (draft?.input as object), false);
+  assert.equal("repositoryBriefs" in (draft?.input as object), false);
   assert.equal(state.finishes[0]?.status, "succeeded");
 });
 
@@ -2278,7 +2282,7 @@ test("a bounty written here is drafted beside the workspace's repositories", asy
 
   const draft = state.caller.calls.find(({ tool }) => tool === "draft_spec");
   assert.equal(
-    (draft?.input as { repositoryOutline?: string }).repositoryOutline,
+    (draft?.input as { repositoryBriefs?: string }).repositoryBriefs,
     "=== Repository 1 ===\n- src: 3 files",
   );
   assert.deepEqual(

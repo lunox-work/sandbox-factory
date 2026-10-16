@@ -782,6 +782,61 @@ test("picking a commit reads the documents there, title's words first", async ()
   assert.equal(state.rows[0]?.refId, WORKSPACE_REPOSITORIES);
 });
 
+test("a commit whose build kept its documents is read from storage, and GitHub only for the rest", async () => {
+  const stored = (state: ReturnType<typeof harness>) => {
+    const asked: string[] = [];
+    Object.assign(state.options.githubContext ?? {}, {
+      documentsFor: (_org: string, snapshot: string) => {
+        asked.push(snapshot);
+        return Promise.resolve({
+          schemaVersion: 1,
+          toolVersion: "documents@1",
+          sourceSnapshotId: snapshot,
+          sourceCommitSha: "c2",
+          documents: [
+            {
+              path: "README.md",
+              bytes: 40_000,
+              text: "Stored readme.",
+              truncated: true,
+            },
+          ],
+          omitted: 0,
+        });
+      },
+    });
+    return asked;
+  };
+  const state = harness();
+  const asked = stored(state);
+  assert.equal((await state.pin()).status, 200);
+  assert.deepEqual(asked, [snapshotId("c2")]);
+  const latest = (await state.context()).github.latest;
+  assert.ok(latest?.source === "github" && "repositories" in latest.content);
+  const [app] = latest.content.repositories;
+  // Kept whole here, yet cut by the build that kept it.
+  assert.deepEqual(app?.documents[0], {
+    path: "README.md",
+    bytes: 40_000,
+    text: "Stored readme.",
+    truncated: true,
+  });
+  assert.equal(app?.documents[1]?.text, "text of s2");
+  assert.deepEqual(state.blobs, ["acme/app:s2"]);
+
+  // With no reader, what storage kept is still read; the rest is not.
+  const offline = harness({ reader: null });
+  stored(offline);
+  assert.equal((await offline.pin()).status, 200);
+  const read = (await offline.context()).github.latest;
+  assert.ok(read?.source === "github" && "repositories" in read.content);
+  assert.deepEqual(
+    read.content.repositories[0]?.documents.map(({ path }) => path),
+    ["README.md"],
+  );
+  assert.deepEqual(offline.blobs, []);
+});
+
 test("an approved scope's context is held: no sync, no commit picked, still read", async () => {
   const state = harness({
     bounty: {

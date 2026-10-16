@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import type {
   StoredAnalysisRun,
+  StoredArtifact,
   StoredVersionWithSource,
 } from "@sandbox-factory/db";
 import {
@@ -1610,5 +1611,159 @@ test("hidden tests are written only for a draft with none whose baseline fails f
     unconfigured.messages.includes(
       "No agent model is configured; no hidden tests are written.",
     ),
+  );
+});
+
+/** A sandbox's preparation of the slice, served as a fixtures run's two artifacts. */
+function preparationRun(
+  rules: readonly AliasRule[],
+  fixtures: VersionFixtures,
+) {
+  const run: StoredAnalysisRun = {
+    ...sliceRun,
+    id: "arn_prep",
+    tool: "fixtures",
+    toolVersion: "fixtures@2",
+    params: {
+      deadlineMinutes: 90,
+      agent: "fixtures",
+      proposalId: "bpr_1",
+      specRevision: 1,
+      specHash: "s".repeat(64),
+      sliceRunId: sliceRun.id,
+      pseudonyms: { vocabulary: ["Widget"], title: "t", summary: "s" },
+    },
+  };
+  const served = (
+    kind: StoredArtifact["kind"],
+    path: string,
+    document: unknown,
+  ) => {
+    const bytes = Buffer.from(JSON.stringify(document));
+    return {
+      run,
+      artifact: {
+        id: `art_${path}`,
+        runId: run.id,
+        kind,
+        path,
+        objectKey: `runs/${run.id}/${path}`,
+        contentType: "application/json",
+        sizeBytes: bytes.byteLength,
+        sha256: sha256(bytes),
+        meta: null,
+        createdAt: stamp,
+      } satisfies StoredArtifact,
+      bytes,
+    };
+  };
+  const usage = {
+    model: "test-model",
+    turns: 1,
+    inputTokens: 1,
+    outputTokens: 1,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+  };
+  return [
+    served("fixture_set", "fixture-set.json", {
+      schemaVersion: 1,
+      toolVersion: "fixtures@2",
+      sliceRunId: sliceRun.id,
+      sourceSnapshotId: "rsn_1",
+      sourceCommitSha: "a".repeat(40),
+      proposalId: "bpr_1",
+      specRevision: 1,
+      fixtures: fixtures.fixtures,
+      scenario: fixtures.scenario,
+      summary: "Shows a widget.",
+      usage,
+    }),
+    served("pseudonyms", "pseudonym-table.json", {
+      schemaVersion: 1,
+      toolVersion: "fixtures@2",
+      sliceRunId: sliceRun.id,
+      rules,
+      summary: "Renames the product.",
+      usage,
+    }),
+  ];
+}
+
+test("a draft with a preparation takes its fixtures, and its table when the build's check holds it", async () => {
+  const fixtures: VersionFixtures = {
+    fixtureRunId: "arn_prep",
+    fixtures: [],
+    scenario: 'console.log("a widget walkthrough");\n',
+  };
+  const rules: AliasRule[] = [
+    { before: "Widget", after: "Gadget", kind: "identifier", paths: [] },
+    { before: "widget", after: "gadget", kind: "text", paths: [] },
+  ];
+  const fake = fakeProvider((argv) => (runsHiddenTest(argv) ? TAP_FAILED : {}));
+  // No turns: an agent asked for anything would keep nothing.
+  const model = scripted([]);
+  const built = await runBuild(fake.provider, {
+    params: { vocabulary: ["Widget"], preparedRunId: "arn_prep" },
+    agent: { model, limits },
+    served: preparationRun(rules, fixtures),
+  });
+  assert.deepEqual(built.manifest.blockers, []);
+  assert.equal(built.manifest.ready, true);
+  assert.equal(model.prompts.length, 0);
+  assert.ok(
+    built.messages.includes("Fixtures taken from the sandbox's preparation."),
+  );
+  assert.ok(
+    built.messages.includes("Pseudonyms taken from the sandbox's preparation."),
+  );
+  assert.match(
+    await built.read("project/sandbox/run.ts"),
+    /a gadget walkthrough/,
+  );
+  const transform = JSON.parse(await built.read(BUILD_TRANSFORM_PATH)) as {
+    aliasRules: AliasRule[];
+    fixtures: VersionFixtures;
+    preparedRunId: string;
+  };
+  assert.deepEqual(transform.aliasRules, rules);
+  assert.deepEqual(transform.fixtures, fixtures);
+  assert.equal(transform.preparedRunId, "arn_prep");
+
+  // A table that does not hold against the project is passed over for an
+  // agent's; the fixtures are still taken.
+  const short = await runBuild(fakeProvider().provider, {
+    params: { vocabulary: ["Widget"], preparedRunId: "arn_prep" },
+    agent: { model: scripted([]), limits },
+    served: preparationRun([rules[0] as AliasRule], fixtures),
+  });
+  assert.ok(
+    short.messages.some((line) =>
+      /The prepared pseudonyms do not hold here/.test(line),
+    ),
+    short.messages.join("\n"),
+  );
+  assert.ok(short.messages.some((line) => /with no table kept/.test(line)));
+  assert.deepEqual(
+    short.manifest.blockers.map((blocker) => blocker.code),
+    ["vocabulary_leaked"],
+  );
+
+  // A preparation of another slice, or none at all, gives nothing.
+  const other = preparationRun(rules, fixtures).map((entry) => ({
+    ...entry,
+    run: {
+      ...entry.run,
+      params: { ...entry.run.params, sliceRunId: "arn_other" },
+    } as StoredAnalysisRun,
+  }));
+  const elsewhere = await runBuild(fakeProvider().provider, {
+    version: await versionFor({ fixtures: given }),
+    params: { vocabulary: ["Widget"], preparedRunId: "arn_prep" },
+    agent: { model: scripted([]), limits },
+    served: other,
+  });
+  assert.ok(
+    !elsewhere.messages.some((line) => /sandbox's preparation/.test(line)),
   );
 });

@@ -8,6 +8,7 @@ import {
   isSandboxBuildParams,
   isScopeParams,
   isSliceParams,
+  readsBuilders,
   readsGraph,
   readsSource,
   CONTEXT_BUILDERS,
@@ -59,7 +60,9 @@ test("slices, scopes and the map-reading builders read a graph", () => {
     "slice",
     "scope",
   ]);
-  assert.deepEqual(ANALYSIS_TOOLS.filter(readsSource).length, 7);
+  assert.deepEqual(ANALYSIS_TOOLS.filter(readsSource).length, 9);
+  // The brief waits on its snapshot's other builders instead.
+  assert.deepEqual(ANALYSIS_TOOLS.filter(readsBuilders), ["brief"]);
   assert.equal(readsSource("graphify"), true);
   assert.equal(readsSource("sandbox_starter"), false);
   for (const builder of CONTEXT_BUILDERS)
@@ -68,7 +71,7 @@ test("slices, scopes and the map-reading builders read a graph", () => {
 
 test("every tool has a version", () => {
   for (const tool of ANALYSIS_TOOLS) assert.match(toolVersionOf(tool), /@/);
-  assert.equal(toolVersionOf("scope"), "scope@3");
+  assert.equal(toolVersionOf("scope"), "scope@4");
   assert.equal(toolVersionOf("fixtures"), "fixtures@2");
 });
 

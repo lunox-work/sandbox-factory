@@ -11,8 +11,10 @@ import {
   or,
   sql,
 } from "drizzle-orm";
+import type { SQL } from "drizzle-orm";
 import {
   ANALYSIS_TOOLS,
+  BUILDER_READERS,
   CONTEXT_BUILDERS,
   GRAPH_READERS,
   canonicalJson,
@@ -204,6 +206,19 @@ export interface AnalysisRunStore {
   ): Promise<StoredAnalysisRun[]>;
   /** Privileged worker queue discovery. Ownership is returned with the lease. */
   claimNext(leaseToken: string, now: Date): Promise<ClaimedAnalysisRun | null>;
+  /**
+   * The oldest claimable run of one of `tools` on one snapshot, claimed as
+   * `claimNext` would: what a worker runs beside a run it has just claimed,
+   * since both read the one checkout. Null when there is none.
+   */
+  claimBeside(
+    leaseToken: string,
+    now: Date,
+    beside: {
+      readonly snapshotId: string;
+      readonly tools: readonly AnalysisTool[];
+    },
+  ): Promise<ClaimedAnalysisRun | null>;
   heartbeat(
     organizationId: string,
     runId: string,
@@ -278,6 +293,21 @@ const KNOWN_TOOLS_SQL = sql.raw(
 const GRAPH_READERS_SQL = sql.raw(
   GRAPH_READERS.map((name) => `'${name}'`).join(", "),
 );
+/** The tools that wait for their snapshot's other builders; see `BUILDER_READERS`. */
+const BUILDER_READERS_SQL = sql.raw(
+  BUILDER_READERS.map((name) => `'${name}'`).join(", "),
+);
+const CONTEXT_BUILDERS_SQL = sql.raw(
+  CONTEXT_BUILDERS.map((name) => `'${name}'`).join(", "),
+);
+/**
+ * Whether queued run `a` may be claimed: a graph reader (a slice, a scope
+ * or a builder that reads the map) once the graphify run it reads has
+ * finished either way, and the worker then fails it cleanly if that run
+ * did not succeed; a builder reader once no other builder on its snapshot
+ * is queued or running.
+ */
+const CLAIMABLE = sql`a.status = 'queued' and a.tool in (${KNOWN_TOOLS_SQL}) and (a.tool not in (${GRAPH_READERS_SQL}) or not exists (select 1 from analysis_run g where g.id = a.params->>'graphRunId' and g.status in ('queued', 'running'))) and (a.tool not in (${BUILDER_READERS_SQL}) or not exists (select 1 from analysis_run b where b.snapshot_id = a.snapshot_id and b.id <> a.id and b.tool in (${CONTEXT_BUILDERS_SQL}) and b.tool not in (${BUILDER_READERS_SQL}) and b.status in ('queued', 'running')))`;
 function toRun(row: AnalysisRunRow, repoId: string | null): StoredAnalysisRun {
   const tool = knownTool(row.tool);
   if (tool === undefined)
@@ -323,6 +353,66 @@ export function createAnalysisRunStore(db: Database): AnalysisRunStore {
       .select({ run: analysisRun, repoId: repoSnapshot.repoId })
       .from(analysisRun)
       .leftJoin(repoSnapshot, eq(repoSnapshot.id, analysisRun.snapshotId));
+  /** Claims the oldest claimable queued run that `filter` (on `a`) admits. */
+  async function claim(
+    token: string,
+    now: Date,
+    filter: SQL,
+  ): Promise<ClaimedAnalysisRun | null> {
+    const rows = await db
+      .update(analysisRun)
+      .set({
+        status: "running",
+        leaseToken: token,
+        leaseExpiresAt: new Date(now.getTime() + 60_000),
+        heartbeatAt: now,
+        startedAt: now,
+        deadlineAt: sql`${now.toISOString()}::timestamptz + ((${analysisRun.params}->>'deadlineMinutes')::int * interval '1 minute')`,
+        finishedAt: null,
+        // A retry starts its steps and its clock again.
+        progress: null,
+        timing: null,
+      })
+      .where(
+        sql`${analysisRun.id} = (select a.id from analysis_run a where ${CLAIMABLE} and ${filter} order by a.created_at, a.id for update of a skip locked limit 1)`,
+      )
+      .returning();
+    const run = rows[0];
+    if (run === undefined) return null;
+    if (run.snapshotId === null)
+      return {
+        ...toRun(run, null),
+        organizationId: run.organizationId,
+        commitSha: null,
+        repoFullName: null,
+        externalRepoId: null,
+        installationId: null,
+        sizeKb: null,
+        leaseToken: token,
+      };
+    const context = (
+      await db
+        .select({
+          repoId: githubRepo.id,
+          organizationId: githubRepo.organizationId,
+          commitSha: repoSnapshot.commitSha,
+          repoFullName: githubRepo.fullName,
+          externalRepoId: githubRepo.externalId,
+          sizeKb: githubRepo.sizeKb,
+          installationId: githubConnection.installationId,
+        })
+        .from(repoSnapshot)
+        .innerJoin(githubRepo, eq(githubRepo.id, repoSnapshot.repoId))
+        .innerJoin(
+          githubConnection,
+          eq(githubConnection.id, githubRepo.connectionId),
+        )
+        .where(eq(repoSnapshot.id, run.snapshotId))
+    )[0];
+    return context === undefined
+      ? null
+      : { ...toRun(run, context.repoId), ...context, leaseToken: token };
+  }
   return {
     async enqueue(owner, snapshotId, input) {
       return db.transaction(async (transaction) => {
@@ -525,62 +615,18 @@ export function createAnalysisRunStore(db: Database): AnalysisRunStore {
         .map((row) => toRun(row.run, row.repoId));
     },
     async claimNext(token, now) {
-      const rows = await db
-        .update(analysisRun)
-        .set({
-          status: "running",
-          leaseToken: token,
-          leaseExpiresAt: new Date(now.getTime() + 60_000),
-          heartbeatAt: now,
-          startedAt: now,
-          deadlineAt: sql`${now.toISOString()}::timestamptz + ((${analysisRun.params}->>'deadlineMinutes')::int * interval '1 minute')`,
-          finishedAt: null,
-          // A retry starts its steps and its clock again.
-          progress: null,
-          timing: null,
-        })
-        .where(
-          // A graph reader (a slice, a scope or a builder that reads the
-          // map) waits for the graphify run it reads to finish either way;
-          // the worker then fails it cleanly if that run did not succeed.
-          sql`${analysisRun.id} = (select a.id from analysis_run a where a.status = 'queued' and a.tool in (${KNOWN_TOOLS_SQL}) and (a.tool not in (${GRAPH_READERS_SQL}) or not exists (select 1 from analysis_run g where g.id = a.params->>'graphRunId' and g.status in ('queued', 'running'))) order by a.created_at, a.id for update of a skip locked limit 1)`,
-        )
-        .returning();
-      const run = rows[0];
-      if (run === undefined) return null;
-      if (run.snapshotId === null)
-        return {
-          ...toRun(run, null),
-          organizationId: run.organizationId,
-          commitSha: null,
-          repoFullName: null,
-          externalRepoId: null,
-          installationId: null,
-          sizeKb: null,
-          leaseToken: token,
-        };
-      const context = (
-        await db
-          .select({
-            repoId: githubRepo.id,
-            organizationId: githubRepo.organizationId,
-            commitSha: repoSnapshot.commitSha,
-            repoFullName: githubRepo.fullName,
-            externalRepoId: githubRepo.externalId,
-            sizeKb: githubRepo.sizeKb,
-            installationId: githubConnection.installationId,
-          })
-          .from(repoSnapshot)
-          .innerJoin(githubRepo, eq(githubRepo.id, repoSnapshot.repoId))
-          .innerJoin(
-            githubConnection,
-            eq(githubConnection.id, githubRepo.connectionId),
-          )
-          .where(eq(repoSnapshot.id, run.snapshotId))
-      )[0];
-      return context === undefined
-        ? null
-        : { ...toRun(run, context.repoId), ...context, leaseToken: token };
+      return claim(token, now, sql`true`);
+    },
+    async claimBeside(token, now, beside) {
+      if (beside.tools.length === 0) return null;
+      return claim(
+        token,
+        now,
+        sql`a.snapshot_id = ${beside.snapshotId} and a.tool in (${sql.join(
+          beside.tools.map((tool) => sql`${tool}`),
+          sql`, `,
+        )})`,
+      );
     },
     async heartbeat(owner, id, token, now) {
       const rows = await db

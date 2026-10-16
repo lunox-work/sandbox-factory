@@ -568,15 +568,17 @@ test("Build all queues the whole set once the cap admits its first run", async (
   const { runs } = (await response.json()) as { runs: StoredAnalysisRun[] };
   assert.deepEqual(
     runs.map((each) => each.tool),
-    ["graphify", "abstractions", "data_model"],
+    ["graphify", "abstractions", "data_model", "documents", "brief"],
   );
-  // The map readers read the graph run the set queued first.
+  // The map readers read the graph run the set queued first; the
+  // documents and the brief name none.
   assert.deepEqual(runs[2]?.params, {
     deadlineMinutes: 30,
     builder: "data_model",
     graphRunId: "arn_graphify",
   });
-  assert.deepEqual(caps, [3, 6, 6]);
+  assert.deepEqual(runs[4]?.params, { deadlineMinutes: 30, builder: "brief" });
+  assert.deepEqual(caps, [3, 8, 8, 8, 8]);
   assert.equal(f.launches(), 1);
   // The set's snapshot is now the repository's context.
   assert.deepEqual(f.contexts, ["org_1/ghr_1@rsn_1"]);
@@ -612,13 +614,18 @@ test("Build all answers built runs as is, with each builder's parameters", async
         graphRunId: run.id,
       },
     },
+    {
+      tool: "documents",
+      params: { deadlineMinutes: 30, builder: "documents" },
+    },
+    { tool: "brief", params: { deadlineMinutes: 30, builder: "brief" } },
   ]);
   // Nothing new was queued, so no worker is woken; the built set still
   // becomes the repository's context, as moving back to it does.
   assert.equal(f.launches(), 0);
   assert.deepEqual(f.contexts, ["org_1/ghr_1@rsn_1"]);
 });
-test("Build all skips the map readers when the graph is out of retries", async () => {
+test("Build all skips the map readers when the graph is out of retries, not the rest", async () => {
   const f = fixture();
   const tools: string[] = [];
   f.options.runs.enqueue = async (_owner, _snapshot, input) => {
@@ -634,8 +641,8 @@ test("Build all skips the map readers when the graph is out of retries", async (
   };
   const response = await f.request("repositories/ghr_1/builds", {});
   assert.equal(response.status, 202);
-  assert.deepEqual(tools, ["graphify"]);
-  assert.equal(((await response.json()) as { runs: unknown[] }).runs.length, 1);
+  assert.deepEqual(tools, ["graphify", "documents", "brief"]);
+  assert.equal(((await response.json()) as { runs: unknown[] }).runs.length, 3);
 });
 test("Build all is refused for members, bad input, and other repositories", async () => {
   const f = fixture();
@@ -756,6 +763,41 @@ test("a sandbox build's run and artifacts are not a member's to read", async () 
     // fixture's parameters are a graph run's, not a build's.)
     const admin = fixture("admin", tool);
     assert.equal((await admin.request("artifacts/art_1/url")).status, 200);
+  }
+});
+test("a sandbox's preparation is kept from members, as a build is; a person's fixtures run is not", async () => {
+  const fixturesRun = (pseudonyms: boolean): StoredAnalysisRun => ({
+    ...run,
+    tool: "fixtures",
+    params: {
+      deadlineMinutes: 90,
+      agent: "fixtures",
+      proposalId: "bpr_1",
+      specRevision: 1,
+      specHash: "h",
+      sliceRunId: "arn_slice",
+      ...(pseudonyms
+        ? { pseudonyms: { vocabulary: [], title: "t", summary: "s" } }
+        : {}),
+    },
+  });
+  for (const [pseudonyms, shown] of [
+    [true, 0],
+    [false, 1],
+  ] as const) {
+    const member = fixture("member");
+    const own = fixturesRun(pseudonyms);
+    member.options.runs.list = async () => [own];
+    member.options.runs.get = async (owner: string, id: string) =>
+      owner === "org_1" && id === run.id ? own : null;
+    const listed = (await (
+      await member.request("repositories/ghr_1/runs")
+    ).json()) as { runs: unknown[] };
+    assert.equal(listed.runs.length, shown);
+    assert.equal(
+      (await member.request("runs/arn_1")).status,
+      shown === 0 ? 404 : 200,
+    );
   }
 });
 test("members read an artifact as text, unless it is binary or too large", async () => {

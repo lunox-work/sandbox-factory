@@ -59,7 +59,9 @@ import {
   contextKeywords,
   keptDocumentsAligned,
   scopeApproved,
+  type DocumentSet,
   type GithubContext,
+  type GithubContextDocument,
   type GithubRepositoryContext,
   type JiraContext,
 } from "sandbox-factory";
@@ -99,6 +101,15 @@ export interface GithubContextSource {
     organizationId: string,
     repo: GithubRepoSummary,
   ) => Promise<DocumentReader | null>;
+  /**
+   * The documents a `documents` build kept of a snapshot, read from
+   * storage; null for a snapshot built before it, which is read from
+   * GitHub. Absent, every repository is read from GitHub.
+   */
+  readonly documentsFor?: (
+    organizationId: string,
+    snapshotId: string,
+  ) => Promise<DocumentSet | null>;
 }
 
 export interface BountyContextOptions extends BountyRouteOptions {
@@ -502,7 +513,10 @@ type Readable =
       readonly commitSha: string;
       readonly branch: string;
       readonly blobs: readonly { path: string; size: number; sha: string }[];
-      readonly reader: DocumentReader;
+      /** What its `documents` build kept, by path; empty with none. */
+      readonly stored: ReadonlyMap<string, GithubContextDocument>;
+      /** GitHub, for a document the build did not keep; asked once. */
+      readonly reader: () => Promise<DocumentReader | null>;
     }
   | {
       readonly ok: false;
@@ -575,11 +589,16 @@ export async function syncGithub(
   const readable: Readable[] = await Promise.all(
     at.map(async ({ repo, snapshot }): Promise<Readable> => {
       if (snapshot === null) return { ok: false, repo, commitSha: null };
-      const [tree, reader] = await Promise.all([
+      // A snapshot whose build kept its documents is read from storage,
+      // and GitHub only for a document the build did not keep.
+      const [tree, documents] = await Promise.all([
         source.tree(snapshot.treeKey),
-        source.readerFor(organizationId, repo),
+        source.documentsFor?.(organizationId, snapshot.id).catch(() => null) ??
+          null,
       ]);
-      if (tree === null || reader === null)
+      let asked: Promise<DocumentReader | null> | undefined;
+      const reader = () => (asked ??= source.readerFor(organizationId, repo));
+      if (tree === null || (documents === null && (await reader()) === null))
         return { ok: false, repo, commitSha: snapshot.commitSha };
       return {
         ok: true,
@@ -587,6 +606,12 @@ export async function syncGithub(
         commitSha: snapshot.commitSha,
         branch: snapshot.ref.replace(/^refs\/heads\//, ""),
         blobs: tree.entries.filter((entry) => entry.type === "blob"),
+        stored: new Map(
+          (documents?.documents ?? []).map((document) => [
+            document.path,
+            document,
+          ]),
+        ),
         reader,
       };
     }),
@@ -614,7 +639,14 @@ export async function syncGithub(
   const byPath = reading.map(
     ({ blobs }) => new Map(blobs.map((entry) => [entry.path, entry])),
   );
-  let read: { repository: number; path: string; bytes: number; text: string }[];
+  let read: {
+    repository: number;
+    path: string;
+    bytes: number;
+    text: string;
+    /** Cut by the build that kept it, before the caps below. */
+    cut: boolean;
+  }[];
   try {
     read = await mapConcurrent(
       chosen.chosen,
@@ -622,14 +654,28 @@ export async function syncGithub(
       async ({ repository, path }) => {
         const from = reading[repository];
         const entry = byPath[repository]?.get(path);
+        const stored = from?.stored.get(path);
+        if (stored !== undefined)
+          return {
+            repository,
+            path,
+            bytes: stored.bytes,
+            text: stored.text,
+            cut: stored.truncated,
+          };
+        const reader =
+          from === undefined || entry === undefined
+            ? null
+            : await from.reader();
         return {
           repository,
           path,
           bytes: entry?.size ?? 0,
           text:
-            from === undefined || entry === undefined
+            from === undefined || entry === undefined || reader === null
               ? ""
-              : await from.reader.blobText(from.repo.fullName, entry.sha),
+              : await reader.blobText(from.repo.fullName, entry.sha),
+          cut: false,
         };
       },
     );
@@ -642,7 +688,15 @@ export async function syncGithub(
         )
       : refused(502, "github_failed", "GitHub could not be read.");
   }
-  const kept = keptDocumentsAligned(read);
+  // A document the build cut is cut still, though the caps here keep all
+  // that was stored of it.
+  const kept = keptDocumentsAligned(read).map((document, index) =>
+    document === null ||
+    read[index]?.cut !== true ||
+    document.text.length !== read[index]?.text.length
+      ? document
+      : { ...document, truncated: true },
+  );
   const repositories: GithubRepositoryContext[] = reading.map(
     ({ repo, branch, commitSha }, repository) => {
       const own = read.flatMap((document, index) => {

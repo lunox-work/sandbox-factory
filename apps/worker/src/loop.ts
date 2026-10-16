@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import type { AnalysisRunStore, ClaimedAnalysisRun } from "@sandbox-factory/db";
+import type { AnalysisTool } from "sandbox-factory";
 
 /**
  * How long a polling worker waits between empty claims when nothing wakes
@@ -9,10 +10,20 @@ import type { AnalysisRunStore, ClaimedAnalysisRun } from "@sandbox-factory/db";
 export const IDLE_POLL_MS = 5_000;
 
 export async function workerLoop(options: {
-  runs: Pick<AnalysisRunStore, "claimNext">;
+  /** `claimBeside` is read only with `beside`. */
+  runs: Pick<AnalysisRunStore, "claimNext"> &
+    Partial<Pick<AnalysisRunStore, "claimBeside">>;
   mode: "once" | "poll";
   signal: AbortSignal;
   execute: (run: ClaimedAnalysisRun) => Promise<void>;
+  /**
+   * The runs a claimed run may share its claim with: other tools on its
+   * snapshot that read the one checkout, claimed beside it and run at the
+   * same time. Null, or absent, for a run that runs alone.
+   */
+  beside?: (
+    run: ClaimedAnalysisRun,
+  ) => { snapshotId: string; tools: readonly AnalysisTool[] } | null;
   wait?: () => Promise<void>;
   /**
    * In `poll` mode, how long the loop may go without a run before it
@@ -27,7 +38,8 @@ export async function workerLoop(options: {
   while (!options.signal.aborted) {
     const run = await options.runs.claimNext(randomUUID(), new Date());
     if (run !== null) {
-      await options.execute(run);
+      const together = [run, ...(await claimBeside(options, run))];
+      await Promise.all(together.map((each) => options.execute(each)));
       lastRun = now();
     } else if (options.mode === "once") return;
     else if (
@@ -43,6 +55,32 @@ export async function workerLoop(options: {
         if (!options.signal.aborted) throw error;
       });
   }
+}
+
+/**
+ * The runs claimed beside `run`, one per tool `beside` names at most: each
+ * claimed as the queue would hand it out, so one still waiting on another
+ * run stays queued.
+ */
+async function claimBeside(
+  options: Parameters<typeof workerLoop>[0],
+  run: ClaimedAnalysisRun,
+): Promise<ClaimedAnalysisRun[]> {
+  const beside = options.beside?.(run) ?? null;
+  const claim = options.runs.claimBeside;
+  if (beside === null || claim === undefined) return [];
+  const claimed: ClaimedAnalysisRun[] = [];
+  let tools = beside.tools.filter((tool) => tool !== run.tool);
+  while (tools.length > 0 && !options.signal.aborted) {
+    const next = await claim(randomUUID(), new Date(), {
+      snapshotId: beside.snapshotId,
+      tools,
+    });
+    if (next === null) break;
+    claimed.push(next);
+    tools = tools.filter((tool) => tool !== next.tool);
+  }
+  return claimed;
 }
 
 /**

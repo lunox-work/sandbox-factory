@@ -13,6 +13,7 @@ import {
   WORKER_APPLICATION_NAME,
 } from "@sandbox-factory/db";
 import type { ClaimedAnalysisRun } from "@sandbox-factory/db";
+import type { AnalysisTool } from "sandbox-factory";
 import { InstallationTokens } from "@sandbox-factory/github";
 import { repositoryToken } from "./credentials.js";
 import { parseWorkerEnv } from "./env.js";
@@ -24,8 +25,10 @@ import type { AgentSettings } from "./agent/loop.js";
 import { createLocalProcessProvider } from "./evaluation/local-process.js";
 import { createTaskReader } from "./tasks.js";
 import { createAbstractionsAdapter } from "./tools/abstractions.js";
+import { createBriefAdapter } from "./tools/brief.js";
 import type { ToolAdapter } from "./tools/adapter.js";
 import { createDataModelAdapter } from "./tools/data-model.js";
+import { createDocumentsAdapter } from "./tools/documents.js";
 import { createFixturesAdapter } from "./tools/fixtures.js";
 import { createGraphifyAdapter } from "./tools/graphify.js";
 import { createSandboxBuildAdapter } from "./tools/sandbox-build.js";
@@ -98,6 +101,10 @@ function adapterFor(run: ClaimedAnalysisRun): ToolAdapter {
       return createAbstractionsAdapter();
     case "data_model":
       return createDataModelAdapter();
+    case "documents":
+      return createDocumentsAdapter();
+    case "brief":
+      return createBriefAdapter();
     case "slice":
       return createSliceAdapter();
     case "sandbox_build":
@@ -110,6 +117,17 @@ function adapterFor(run: ClaimedAnalysisRun): ToolAdapter {
       return createStarterAdapter({ agent, provider: evaluation });
   }
 }
+/**
+ * The builders a claimed run shares its claim with: those that read the
+ * same checkout and wait on nothing it has not already waited on.
+ * `documents` reads no graph, so it runs beside graphify's map too.
+ */
+const SHARED_CLAIM: Partial<Record<AnalysisTool, readonly AnalysisTool[]>> = {
+  graphify: ["documents"],
+  abstractions: ["data_model", "documents"],
+  data_model: ["abstractions", "documents"],
+  documents: ["abstractions", "data_model"],
+};
 const stopClaiming = new AbortController();
 const stopCurrent = new AbortController();
 let grace: ReturnType<typeof setTimeout> | undefined;
@@ -133,6 +151,14 @@ try {
     mode: env.WORKER_MODE,
     signal: stopClaiming.signal,
     wait: () => idle.wait(),
+    // A commit's lighter builders read the one checkout and wait on the
+    // same graph, so they share a claim rather than queue behind each other.
+    beside: (run) => {
+      const tools = SHARED_CLAIM[run.tool];
+      return run.snapshotId === null || tools === undefined
+        ? null
+        : { snapshotId: run.snapshotId, tools };
+    },
     ...(env.WORKER_IDLE_EXIT_MINUTES === undefined
       ? {}
       : { idleExitMs: env.WORKER_IDLE_EXIT_MINUTES * 60_000 }),

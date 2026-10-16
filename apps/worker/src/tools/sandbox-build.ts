@@ -83,6 +83,8 @@ import { loadDataModel } from "./context-runs.js";
 import { writeFixtures } from "./fixtures.js";
 import type { WrittenFixtures } from "./fixtures.js";
 import { writeHiddenTests } from "./hidden-tests.js";
+import { loadPreparation, packageVocabulary } from "./preparation.js";
+import type { Preparation } from "./preparation.js";
 import { writePseudonyms } from "./pseudonyms.js";
 import type { WrittenPseudonyms } from "./pseudonyms.js";
 import { loadSliceRun, readIncludedSource } from "./slice-run.js";
@@ -208,39 +210,7 @@ export function privateTestOutcome(
 /** Where a build writes the table its public files were renamed by. */
 export const PSEUDONYMS_PATH = `private/${PSEUDONYMS_FILE}`;
 
-/**
- * The names the repository's root `package.json` gives its owner: the
- * scope of its package name, or the whole name unscoped, and its author.
- * None when it has no readable manifest.
- */
-export async function packageVocabulary(sourceDir: string): Promise<string[]> {
-  let manifest: unknown;
-  try {
-    manifest = JSON.parse(
-      await readFile(join(sourceDir, "package.json"), "utf8"),
-    );
-  } catch {
-    return [];
-  }
-  if (typeof manifest !== "object" || manifest === null) return [];
-  const { name, author } = manifest as { name?: unknown; author?: unknown };
-  const names: string[] = [];
-  if (typeof name === "string")
-    names.push(
-      name.startsWith("@") ? (name.slice(1).split("/")[0] ?? "") : name,
-    );
-  // `Name <email> (url)`, or `{ name }`.
-  const authorName =
-    typeof author === "string"
-      ? author.replace(/[<(].*$/, "").trim()
-      : typeof author === "object" &&
-          author !== null &&
-          typeof (author as { name?: unknown }).name === "string"
-        ? (author as { name: string }).name
-        : "";
-  if (authorName.length > 0) names.push(authorName);
-  return names.filter((entry) => entry.length > 0);
-}
+export { packageVocabulary } from "./preparation.js";
 
 export function buildArtifactKind(path: string): ArtifactFile["kind"] {
   if (path === "build-manifest.json") return "build_manifest";
@@ -726,10 +696,26 @@ export function createSandboxBuildAdapter(
           : nearestCompilerOptions(input.sourceDir, first);
       const spec: SpecDraft | null = source.approvedTask.spec?.draft ?? null;
       const model = options.agent?.model ?? null;
+      // What the sandbox's preparation wrote for this slice, if it ran: the
+      // fixtures and the name table it would otherwise ask agents for.
+      const preparation: Preparation =
+        params.preparedRunId === undefined ||
+        (source.fixtures !== null && source.aliasRules.length > 0)
+          ? { fixtures: null, pseudonyms: null }
+          : await loadPreparation(
+              input.inputs,
+              params.preparedRunId,
+              params.sliceRunId,
+              snapshot.snapshotId,
+            );
       // Fixtures and a walkthrough, for a draft with none: written in the
       // workspace's own names, before the pseudonyms that rename them.
       let fixtureSet: WrittenFixtures | null = null;
-      if (source.fixtures === null && spec !== null) {
+      const preparedFixtures =
+        source.fixtures === null ? preparation.fixtures : null;
+      if (preparedFixtures !== null)
+        input.log("Fixtures taken from the sandbox's preparation.");
+      else if (source.fixtures === null && spec !== null) {
         if (model === null || options.agent === undefined)
           input.log("No agent model is configured; no fixtures are written.");
         else
@@ -756,13 +742,14 @@ export function createSandboxBuildAdapter(
           });
       }
       const versionFixtures: VersionFixtures | null =
-        fixtureSet === null
+        preparedFixtures ??
+        (fixtureSet === null
           ? source.fixtures
           : {
               fixtureRunId: input.runId ?? null,
               fixtures: fixtureSet.fixtures,
               scenario: fixtureSet.scenario,
-            };
+            });
       // Aliasing, with the inverse proof. The spec rides along unscoped.
       const fixtures = versionFixtures?.fixtures ?? [];
       const scenario = versionFixtures?.scenario ?? null;
@@ -945,9 +932,35 @@ export function createSandboxBuildAdapter(
           generated.filter((file) => file.public),
           vocabulary,
         );
-      // Pseudonyms, for a draft with none.
+      // The build's own check of a name table, as the agent is shown it.
+      const checkTable = (rules: readonly AliasRule[]) => {
+        const candidate = prepare(rules);
+        const project = candidate.generate?.(source.acceptanceTests);
+        return {
+          problems: [
+            ...candidate.blockers,
+            ...(project?.blockers ?? []),
+            ...vocabularyBlockers(leaksOf(project?.files ?? [])),
+          ].map(
+            (blocker) => `${blocker.file ?? blocker.code}: ${blocker.detail}`,
+          ),
+          applied: candidate.aliased.applied,
+        };
+      };
+      // Pseudonyms, for a draft with none: the preparation's table when it
+      // holds against this project, else an agent's.
       let pseudonyms: WrittenPseudonyms | null = null;
-      if (source.aliasRules.length === 0) {
+      if (source.aliasRules.length === 0 && preparation.pseudonyms !== null) {
+        const problems = checkTable(preparation.pseudonyms.rules).problems;
+        if (problems.length === 0) {
+          pseudonyms = preparation.pseudonyms;
+          input.log("Pseudonyms taken from the sandbox's preparation.");
+        } else
+          input.log(
+            `The prepared pseudonyms do not hold here (${problems.length} problem(s)); an agent writes the table.`,
+          );
+      }
+      if (source.aliasRules.length === 0 && pseudonyms === null) {
         if (model === null || options.agent === undefined)
           input.log("No agent model is configured; no pseudonyms are written.");
         else
@@ -961,21 +974,7 @@ export function createSandboxBuildAdapter(
             },
             files: [...included, ...stubFiles],
             vocabulary,
-            check: (rules) => {
-              const candidate = prepare(rules);
-              const project = candidate.generate?.(source.acceptanceTests);
-              return {
-                problems: [
-                  ...candidate.blockers,
-                  ...(project?.blockers ?? []),
-                  ...vocabularyBlockers(leaksOf(project?.files ?? [])),
-                ].map(
-                  (blocker) =>
-                    `${blocker.file ?? blocker.code}: ${blocker.detail}`,
-                ),
-                applied: candidate.aliased.applied,
-              };
-            },
+            check: checkTable,
             signal: input.signal,
             log: input.log,
             step: input.step,
@@ -1085,7 +1084,10 @@ export function createSandboxBuildAdapter(
       // What the draft's transform becomes once what the build wrote
       // settles on it.
       const wrote =
-        hidden !== null || pseudonyms !== null || fixtureSet !== null;
+        hidden !== null ||
+        pseudonyms !== null ||
+        fixtureSet !== null ||
+        preparedFixtures !== null;
       const transformConfigSha256 = !wrote
         ? source.transformConfigSha256
         : sha256(
@@ -1152,6 +1154,14 @@ export function createSandboxBuildAdapter(
                     usage: fixtureSet.usage,
                   },
                 }),
+            ...(preparedFixtures === null
+              ? {}
+              : { fixtures: preparedFixtures }),
+            ...(params.preparedRunId === undefined ||
+            (preparedFixtures === null &&
+              (pseudonyms === null || pseudonyms !== preparation.pseudonyms))
+              ? {}
+              : { preparedRunId: params.preparedRunId }),
           }),
           "utf8",
         );
@@ -1163,7 +1173,7 @@ export function createSandboxBuildAdapter(
           meta: {
             hiddenTests: hidden?.tests.length ?? 0,
             pseudonyms: pseudonyms?.rules.length ?? 0,
-            fixtures: fixtureSet?.fixtures.length ?? 0,
+            fixtures: (fixtureSet ?? preparedFixtures)?.fixtures.length ?? 0,
           },
         });
         written.sort((a, b) => compare(a.path, b.path));

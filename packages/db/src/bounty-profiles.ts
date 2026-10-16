@@ -5,7 +5,17 @@ import type {
   ProfileStatus,
   ProfileTransitionTime,
 } from "sandbox-factory";
-import { and, asc, desc, eq, inArray, sql, type SQL } from "drizzle-orm";
+import {
+  and,
+  asc,
+  desc,
+  eq,
+  inArray,
+  isNotNull,
+  isNull,
+  sql,
+  type SQL,
+} from "drizzle-orm";
 
 import { snapshotForWrite } from "./snapshot-write.js";
 import type { Database } from "./errors.js";
@@ -15,6 +25,7 @@ import {
   bountyProposal,
   githubRepo,
   repoSnapshot,
+  workspaceSetting,
 } from "./schema.js";
 import type { BountyProfileRow } from "./schema.js";
 
@@ -24,6 +35,20 @@ export const PENDING_PROFILE_STATUSES: readonly ProfileStatus[] = [
   "scoping",
   "slicing",
 ];
+
+/**
+ * A ready profile with no preparation, of an approved proposal's current
+ * spec revision, in a workspace that has not turned preparation off: what
+ * `unprepared` lists. Joined to `bounty_proposal`.
+ */
+const UNPREPARED = and(
+  eq(bountyProfile.status, "ready"),
+  isNull(bountyProfile.preparedRunId),
+  isNotNull(bountyProfile.sliceRunId),
+  eq(bountyProposal.status, "approved"),
+  eq(bountyProposal.specRevision, bountyProfile.specRevision),
+  sql`not exists (select 1 from ${workspaceSetting} where ${workspaceSetting.organizationId} = ${bountyProfile.organizationId} and not ${workspaceSetting.prepareSandboxes})`,
+);
 
 export interface StoredBountyProfile {
   readonly id: string;
@@ -42,6 +67,8 @@ export interface StoredBountyProfile {
   readonly runErrorCode: AnalysisErrorCode | null;
   readonly scopeRunId: string | null;
   readonly sliceRunId: string | null;
+  /** The sandbox's preparation run, once one is queued. */
+  readonly preparedRunId: string | null;
   readonly profile: ComplexityProfile | null;
   readonly createdAt: string;
   readonly updatedAt: string;
@@ -110,6 +137,31 @@ export interface BountyProfileStore {
     from: ProfileStatus,
     to: ProfileTransition,
   ): Promise<boolean>;
+  /**
+   * Ready profiles with no preparation yet, of an approved proposal's
+   * current spec revision, in a workspace that prepares its sandboxes,
+   * least recently moved first.
+   */
+  unprepared(
+    organizationId: string,
+    limit?: number,
+  ): Promise<StoredBountyProfile[]>;
+  /** Privileged discovery for `unprepared`, followed by owner-scoped reads. */
+  organizationsWithUnprepared(): Promise<string[]>;
+  /**
+   * Names a ready profile's preparation run. False when it has one, or is
+   * not ready, so two passes cannot both queue one.
+   */
+  recordPrepared(
+    organizationId: string,
+    profileId: string,
+    runId: string,
+  ): Promise<boolean>;
+  /** The preparation run of the profile a slice run was cut for, if any. */
+  preparationFor(
+    organizationId: string,
+    sliceRunId: string,
+  ): Promise<string | null>;
 }
 
 function toStored(
@@ -129,6 +181,7 @@ function toStored(
     runErrorCode: row.runErrorCode,
     scopeRunId: row.scopeRunId,
     sliceRunId: row.sliceRunId,
+    preparedRunId: row.preparedRunId,
     profile: row.profile,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
@@ -255,6 +308,65 @@ export function createBountyProfileStore(db: Database): BountyProfileStore {
           inArray(bountyProfile.status, [...PENDING_PROFILE_STATUSES]),
         )) as { organizationId: string }[];
       return [...new Set(rows.map((row) => row.organizationId))];
+    },
+    async unprepared(owner, limit = 50) {
+      const rows = (await db
+        .select({ row: bountyProfile, repository: githubRepo.fullName })
+        .from(bountyProfile)
+        .innerJoin(
+          bountyProposal,
+          eq(bountyProposal.id, bountyProfile.proposalId),
+        )
+        .leftJoin(repoSnapshot, eq(repoSnapshot.id, bountyProfile.snapshotId))
+        .leftJoin(githubRepo, eq(githubRepo.id, repoSnapshot.repoId))
+        .where(and(eq(bountyProfile.organizationId, owner), UNPREPARED))
+        .orderBy(asc(bountyProfile.updatedAt), asc(bountyProfile.id))
+        .limit(Math.min(200, Math.max(1, limit)))) as {
+        row: BountyProfileRow;
+        repository: string | null;
+      }[];
+      return rows.map(({ row, repository }) => toStored(row, repository));
+    },
+    async organizationsWithUnprepared() {
+      const rows = (await db
+        .select({ organizationId: bountyProfile.organizationId })
+        .from(bountyProfile)
+        .innerJoin(
+          bountyProposal,
+          eq(bountyProposal.id, bountyProfile.proposalId),
+        )
+        .where(UNPREPARED)) as { organizationId: string }[];
+      return [...new Set(rows.map((row) => row.organizationId))];
+    },
+    async recordPrepared(owner, profileId, runId) {
+      const rows = await db
+        .update(bountyProfile)
+        .set({ preparedRunId: runId })
+        .where(
+          and(
+            eq(bountyProfile.organizationId, owner),
+            eq(bountyProfile.id, profileId),
+            eq(bountyProfile.status, "ready"),
+            isNull(bountyProfile.preparedRunId),
+          ),
+        )
+        .returning({ id: bountyProfile.id });
+      return rows.length > 0;
+    },
+    async preparationFor(owner, sliceRunId) {
+      const rows = (await db
+        .select({ preparedRunId: bountyProfile.preparedRunId })
+        .from(bountyProfile)
+        .where(
+          and(
+            eq(bountyProfile.organizationId, owner),
+            eq(bountyProfile.sliceRunId, sliceRunId),
+            isNotNull(bountyProfile.preparedRunId),
+          ),
+        )
+        .orderBy(desc(bountyProfile.specRevision), desc(bountyProfile.id))
+        .limit(1)) as { preparedRunId: string | null }[];
+      return rows[0]?.preparedRunId ?? null;
     },
     async advance(owner, profileId, from, to) {
       const now = new Date();

@@ -16,7 +16,7 @@ import { parseWorkerEnv } from "../src/env.js";
 import { uploadArtifacts } from "../src/upload.js";
 import { AnalysisError } from "../src/errors.js";
 import { run, stores } from "./helpers.js";
-import type { StoredArtifact } from "@sandbox-factory/db";
+import type { ClaimedAnalysisRun, StoredArtifact } from "@sandbox-factory/db";
 import type { ToolAdapter, ArtifactFile } from "../src/tools/adapter.js";
 const source = { maxBytes: 5000, maxFiles: 5, token: async () => "token" };
 const tool: ToolAdapter = {
@@ -729,6 +729,66 @@ test("once drains the queue, poll waits, and stop prevents further claims", asyn
     }),
     /offline/,
   );
+});
+test("a claimed builder shares its claim with the ones beside it, which run at once", async () => {
+  const builder = (id: string, tool: ClaimedAnalysisRun["tool"]) => ({
+    ...run,
+    id,
+    tool,
+    snapshotId: "snapshot",
+  });
+  const asked: { snapshotId: string; tools: readonly string[] }[] = [];
+  const beside = [builder("arn_d", "documents"), null];
+  let running = 0;
+  let together = 0;
+  let claims = 0;
+  await workerLoop({
+    runs: {
+      claimNext: async () =>
+        ++claims === 1 ? builder("arn_a", "abstractions") : null,
+      claimBeside: async (_token, _now, input) => {
+        asked.push(input);
+        return beside.shift() ?? null;
+      },
+    },
+    mode: "once",
+    signal: new AbortController().signal,
+    beside: (claimed) =>
+      claimed.tool === "abstractions"
+        ? {
+            snapshotId: "snapshot",
+            tools: ["abstractions", "data_model", "documents"],
+          }
+        : null,
+    execute: async () => {
+      running += 1;
+      together = Math.max(together, running);
+      await delay(5);
+      running -= 1;
+    },
+  });
+  // Its own tool is never asked for, and one claimed is not asked again.
+  assert.deepEqual(asked, [
+    { snapshotId: "snapshot", tools: ["data_model", "documents"] },
+    { snapshotId: "snapshot", tools: ["data_model"] },
+  ]);
+  assert.equal(together, 2);
+  // A store with no shared claims runs each alone.
+  let executions = 0;
+  claims = 0;
+  await workerLoop({
+    runs: {
+      claimNext: async () =>
+        ++claims === 1 ? builder("arn_a", "abstractions") : null,
+    },
+    mode: "once",
+    signal: new AbortController().signal,
+    beside: () => ({ snapshotId: "snapshot", tools: ["documents"] }),
+    execute: async () => {
+      executions += 1;
+    },
+  });
+  assert.equal(executions, 1);
 });
 test("a polling worker stays warm for its idle minutes after a run, then returns", async () => {
   let clock = 0;
