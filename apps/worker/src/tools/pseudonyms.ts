@@ -37,6 +37,7 @@ import {
   repositoryOverview,
   repositoryTools,
 } from "../agent/repo-tools.js";
+import type { RunTiming } from "../timing.js";
 
 /** What the build says of a table: why it cannot be applied, if it cannot. */
 export interface PseudonymCheck {
@@ -142,6 +143,7 @@ export async function writePseudonyms(input: {
   readonly signal: AbortSignal;
   readonly log: (line: string) => void;
   readonly step?: ((text: string) => void) | undefined;
+  readonly timing?: RunTiming | undefined;
 }): Promise<WrittenPseudonyms | null> {
   // The slice, for the repository tools to read.
   const root = await mkdtemp(join(tmpdir(), "pseudonyms-"));
@@ -216,6 +218,7 @@ export async function writePseudonyms(input: {
     const outcome = await runAgent({
       model: input.model,
       step: input.step,
+      onTurn: input.timing?.turn,
       system: PSEUDONYMS_SYSTEM_PROMPT,
       prompt: pseudonymsSection({
         title: input.task.title,

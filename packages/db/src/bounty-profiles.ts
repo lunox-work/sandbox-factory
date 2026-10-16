@@ -3,8 +3,9 @@ import type {
   ComplexityProfile,
   ProfileErrorCode,
   ProfileStatus,
+  ProfileTransitionTime,
 } from "sandbox-factory";
-import { and, asc, desc, eq, inArray, type SQL } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, sql, type SQL } from "drizzle-orm";
 
 import { snapshotForWrite } from "./snapshot-write.js";
 import type { Database } from "./errors.js";
@@ -256,6 +257,11 @@ export function createBountyProfileStore(db: Database): BountyProfileStore {
       return [...new Set(rows.map((row) => row.organizationId))];
     },
     async advance(owner, profileId, from, to) {
+      const now = new Date();
+      const moved: ProfileTransitionTime = {
+        status: to.status,
+        at: now.toISOString(),
+      };
       const rows = await db
         .update(bountyProfile)
         .set({
@@ -266,7 +272,8 @@ export function createBountyProfileStore(db: Database): BountyProfileStore {
           ...(to.status === "failed"
             ? { errorCode: to.errorCode, runErrorCode: to.runErrorCode ?? null }
             : {}),
-          updatedAt: new Date(),
+          transitions: sql`${bountyProfile.transitions} || ${JSON.stringify([moved])}::jsonb`,
+          updatedAt: now,
         })
         .where(
           and(

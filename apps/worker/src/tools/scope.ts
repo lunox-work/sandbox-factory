@@ -392,6 +392,7 @@ export function createScopeAdapter(settings: AgentSettings): ToolAdapter {
       const outcome = await runAgent({
         model: settings.model,
         step: input.step,
+        onTurn: input.timing?.turn,
         system: SCOPE_SYSTEM_PROMPT,
         prompt: [
           bountySection(task.issueKey, task.draft),

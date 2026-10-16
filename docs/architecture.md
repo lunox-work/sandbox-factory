@@ -1164,6 +1164,16 @@ drains. A failed run fails the
 profile for that revision; a re-price drafts a new revision and asks again.
 The whole chain needs what analysis needs, plus the agent's key.
 
+**Waits are measured from the rows.** A pricing run writes each model call
+it made once it ends (`bounty_run.model_calls`: tool, start, duration, the
+model that answered and whether the fallback did), a profile appends each
+status it moves to (`bounty_profile.transitions`), and the worker writes an
+analysis run's own timing (see the [worker contract](../apps/worker/README.md#output-contract)).
+The `flow_wait_sample` and `flow_wait` views (`packages/db/src/schema/flows.ts`)
+read them, with the rows' own timestamps, into click → price, click → rubric,
+sandbox draft → built, and each tool's queue and run time, as percentiles per
+week. They read across organizations: an operator's SQL prompt, not a route.
+
 **Sandbox versions pin their provenance.** A version is cut from a succeeded
 slice. Its private source row records the slice's manifest and contract
 hashes, the transform (alias rules, dependency choices, hidden tests) and a

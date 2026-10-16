@@ -35,6 +35,7 @@ const row = (overrides: Partial<AnalysisRunRow> = {}): AnalysisRunRow => ({
   errorCode: null,
   errorDetail: null,
   progress: null,
+  timing: null,
   logKey: null,
   startedAt: null,
   finishedAt: null,
@@ -531,6 +532,10 @@ test("lease mutations refuse stale writes; finish inserts artifacts only after a
       present,
     );
     assert.equal(await store.release("owner", "run", "lease", now), present);
+    assert.equal(
+      await store.recordTiming("owner", "run", { stages: { tool: 5 } }),
+      present,
+    );
     assert.equal(await store.failExpired("owner", now), present ? 1 : 0);
     assert.ok(
       fake.calls
@@ -594,4 +599,22 @@ test("artifacts are owner-scoped and never convert dates or expose an absent row
     await createArtifactStore(createFakeDb([]).db).get("other", "artifact"),
     null,
   );
+});
+
+test("timing is written only for an ended run, and a claim clears it", async () => {
+  const fake = createFakeDb([{ id: "run" }]);
+  const store = createAnalysisRunStore(fake.db);
+  const timing = {
+    stages: { fetch: 120, extract: 30, tool: 900, upload: 40, commit: 8 },
+    turns: [{ modelMs: 5000, toolMs: 20 }],
+  };
+  assert.equal(await store.recordTiming("owner", "run", timing), true);
+  const write = fake.calls.find((call) => call.kind === "update");
+  assert.deepEqual(write?.values, { timing });
+  assert.equal(write?.filtered, true);
+
+  const claims = createFakeDb([row({ status: "running", snapshotId: null })]);
+  await createAnalysisRunStore(claims.db).claimNext("lease", now);
+  const claim = claims.calls.find((call) => call.kind === "update");
+  assert.equal(claim?.values?.["timing"], null);
 });

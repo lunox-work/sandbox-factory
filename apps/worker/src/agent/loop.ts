@@ -11,7 +11,7 @@
  */
 
 import type Anthropic from "@anthropic-ai/sdk";
-import type { AgentUsage } from "sandbox-factory";
+import type { AgentUsage, AnalysisTurnTiming } from "sandbox-factory";
 import { AnalysisError } from "../errors.js";
 
 type MessageParam = Anthropic.Beta.Messages.BetaMessageParam;
@@ -121,8 +121,12 @@ export async function runAgent(input: {
   readonly log: (line: string) => void;
   /** Told what each call did, for the page following the run. */
   readonly step?: ((text: string) => void) | undefined;
+  /** Told how long each turn's model call and tool calls took. */
+  readonly onTurn?: ((timing: AnalysisTurnTiming) => void) | undefined;
+  readonly clock?: () => number;
 }): Promise<AgentOutcome> {
   const { limits, signal, submitTool } = input;
+  const clock = input.clock ?? (() => performance.now());
   const byName = new Map(input.tools.map((tool) => [tool.name, tool]));
   const definitions = input.tools.map(
     ({ name, description, inputSchema, strict }) => ({
@@ -161,10 +165,12 @@ export async function runAgent(input: {
       stopped = "turns";
       break;
     }
+    const asked = clock();
     const reply = await input.model.turn(
       { system: input.system, tools: definitions, messages },
       signal,
     );
+    const modelMs = clock() - asked;
     usage.turns += 1;
     usage.inputTokens += reply.usage.inputTokens;
     usage.outputTokens += reply.usage.outputTokens;
@@ -173,6 +179,7 @@ export async function runAgent(input: {
     // The assistant turn goes back unchanged: thinking blocks included.
     messages.push({ role: "assistant", content: [...reply.content] });
     if (reply.stopReason === "refusal") {
+      input.onTurn?.({ modelMs, toolMs: 0 });
       stopped = "refusal";
       break;
     }
@@ -181,6 +188,7 @@ export async function runAgent(input: {
         block.type === "tool_use",
     );
     if (calls.length === 0) {
+      input.onTurn?.({ modelMs, toolMs: 0 });
       if (nudges >= NUDGES_MAX) {
         stopped = "no_answer";
         break;
@@ -200,6 +208,7 @@ export async function runAgent(input: {
     const results: ToolResultBlock[] = [];
     const counts = new Map<string, number>();
     let accepted = false;
+    const calling = clock();
     for (const call of calls) {
       counts.set(call.name, (counts.get(call.name) ?? 0) + 1);
       const tool = byName.get(call.name);
@@ -241,6 +250,7 @@ export async function runAgent(input: {
         ...(result.isError === true ? { is_error: true } : {}),
       });
     }
+    input.onTurn?.({ modelMs, toolMs: clock() - calling });
     input.log(
       `Turn ${usage.turns}: ${[...counts.entries()]
         .map(([name, count]) => `${name} x${count}`)

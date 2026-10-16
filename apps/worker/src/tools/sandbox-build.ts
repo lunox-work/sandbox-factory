@@ -88,6 +88,7 @@ import { loadSliceRun, readIncludedSource } from "./slice-run.js";
 import { sha256 } from "./slice/hash.js";
 import { packageModules, packageUses } from "./slice/fixture.js";
 import { NODE_BUILTINS, isNodeBuiltin } from "./slice/typescript.js";
+import type { RunTiming } from "../timing.js";
 
 export interface SandboxBuildOptions {
   /**
@@ -322,6 +323,7 @@ async function runBaseline(
         timedOut: result.timedOut,
         ok: !result.timedOut && result.exitCode === 0,
         path,
+        durationMs: result.durationMs,
       };
       steps.push(step);
       // A harness step's failure is only a code without what it printed. A
@@ -562,9 +564,11 @@ export async function baselineOf(
     readonly now: () => Date;
     /** Each step's output, for an agent fixing its own project; never logged. */
     readonly onStep?: StepObserver;
+    readonly timing?: RunTiming | undefined;
   },
 ): Promise<{ baseline: BaselineReport; evaluator: EvaluationEnvironment }> {
   const result = await runBaseline(provider, input);
+  input.timing?.baseline(result.baseline.steps);
   if (result.lockfile !== null)
     input.files.push({
       path: "package-lock.json",
@@ -745,6 +749,7 @@ export function createSandboxBuildAdapter(
             signal: input.signal,
             log: input.log,
             step: input.step,
+            timing: input.timing,
           });
       }
       const versionFixtures: VersionFixtures | null =
@@ -971,6 +976,7 @@ export function createSandboxBuildAdapter(
             signal: input.signal,
             log: input.log,
             step: input.step,
+            timing: input.timing,
           });
       }
       const aliasRules = pseudonyms?.rules ?? source.aliasRules;
@@ -1020,6 +1026,7 @@ export function createSandboxBuildAdapter(
           signal: input.signal,
           log: input.log,
           now,
+          timing: input.timing,
         });
         baseline = result.baseline;
         evaluator = result.evaluator;
@@ -1057,10 +1064,12 @@ export function createSandboxBuildAdapter(
                 signal: input.signal,
                 log: input.log,
                 now,
+                timing: input.timing,
               }),
             signal: input.signal,
             log: input.log,
             step: input.step,
+            timing: input.timing,
           });
           if (hidden !== null) {
             files = hidden.files;

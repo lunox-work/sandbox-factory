@@ -273,6 +273,7 @@ export function createStarterAdapter(options: {
             signal: input.signal,
             log: input.log,
             now,
+            timing: input.timing,
           },
         );
         return { files, blockers, baseline, evaluator, hiddenTests, report };
@@ -406,6 +407,7 @@ export function createStarterAdapter(options: {
       const outcome = await runAgent({
         model,
         step: input.step,
+        onTurn: input.timing?.turn,
         system: STARTER_SYSTEM_PROMPT,
         prompt: starterBountySection({
           title: task.title,

@@ -12,6 +12,7 @@ import type {
   StoredVersionWithSource,
 } from "@sandbox-factory/db";
 import { AnalysisError } from "../errors.js";
+import type { RunTiming } from "../timing.js";
 
 /** The ticket an agent run works for: one revision of a proposal's spec. */
 export interface AgentTask {
@@ -81,6 +82,8 @@ export interface ToolRunInput {
    * run (`progress.ts`). Absent where nothing follows it.
    */
   readonly step?: (text: string) => void;
+  /** Where the tool's own time went: agent turns and baselines. */
+  readonly timing?: RunTiming;
 }
 export interface ToolCommittedInput {
   readonly runId: string;

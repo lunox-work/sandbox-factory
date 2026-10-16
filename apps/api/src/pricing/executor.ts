@@ -44,9 +44,11 @@ import {
   resolveStepSettings,
   sameSpec,
   stepUp,
+  BOUNTY_RUN_MODEL_CALLS_MAX,
   BOUNTY_SPEC_HASH_VERSION,
   bountySpecHash,
   trimSpec,
+  type BountyRunModelCall,
   type BountyRunOutcome,
   type BountyRunPlannedIssue,
   type BountyRunProgress,
@@ -63,7 +65,9 @@ import {
   SizerError,
   type SizingRequestOptions,
   type SizingUsage,
+  type StructuredCall,
   type StructuredCaller,
+  type StructuredResult,
 } from "../sizing/caller.js";
 import { draftSpecTool } from "../sizing/tools/draft-spec.js";
 import {
@@ -260,6 +264,8 @@ export interface RepositoryOutlineRead {
 
 export class BountyExecutor {
   readonly #options: BountyExecutorOptions;
+  /** The model calls each run in progress has made, by run id. */
+  readonly #calls = new Map<string, BountyRunModelCall[]>();
 
   constructor(options: BountyExecutorOptions) {
     this.#options = options;
@@ -280,6 +286,8 @@ export class BountyExecutor {
     if (queued === null || queued.status !== "queued") return;
     const run = await runs.claim(organizationId, runId, leaseToken, now());
     if (run === null) return;
+    const calls: BountyRunModelCall[] = [];
+    this.#calls.set(run.id, calls);
 
     const controller = new AbortController();
     const heartbeat = (this.#options.setInterval ?? setInterval)(() => {
@@ -314,6 +322,49 @@ export class BountyExecutor {
       throw error;
     } finally {
       (this.#options.clearInterval ?? clearInterval)(heartbeat);
+      this.#calls.delete(run.id);
+      // Written once the run has ended; a record of its waits, so a write
+      // that fails costs only that.
+      if (calls.length > 0)
+        await runs
+          .recordModelCalls(
+            organizationId,
+            run.id,
+            calls.sort((a, b) => a.at.localeCompare(b.at)),
+          )
+          .catch(() => false);
+    }
+  }
+
+  /** One model call, timed into its run's record of them. */
+  async #call<I, O>(
+    run: StoredBountyRun,
+    tool: StructuredCall<I, O>,
+    input: I,
+    options: SizingRequestOptions,
+  ): Promise<StructuredResult<O>> {
+    const now = this.#options.now ?? (() => new Date());
+    const started = now();
+    const record = (answer: StructuredResult<O> | null) => {
+      const calls = this.#calls.get(run.id);
+      if (calls === undefined || calls.length >= BOUNTY_RUN_MODEL_CALLS_MAX)
+        return;
+      calls.push({
+        tool: tool.name,
+        at: started.toISOString(),
+        ms: Math.max(0, now().getTime() - started.getTime()),
+        model: answer?.actualModel ?? null,
+        fellBack: answer?.fellBack === true,
+        ok: answer !== null,
+      });
+    };
+    try {
+      const answer = await this.#options.caller.call(tool, input, options);
+      record(answer);
+      return answer;
+    } catch (error) {
+      record(null);
+      throw error;
     }
   }
 
@@ -1054,7 +1105,8 @@ export class BountyExecutor {
       };
       try {
         if (request.mode === "expand") {
-          const answer = await this.#options.caller.call(
+          const answer = await this.#call(
+            run,
             expandSpecTool,
             { ...input, request },
             options,
@@ -1062,7 +1114,8 @@ export class BountyExecutor {
           next = expandSpec(current.draft, answer.result);
           model = answer;
         } else {
-          const answer = await this.#options.caller.call(
+          const answer = await this.#call(
+            run,
             answerSpecTool,
             { ...input, request },
             options,
@@ -1285,7 +1338,8 @@ export class BountyExecutor {
 
       const draftCall = (async () => {
         try {
-          const draft = await this.#options.caller.call(
+          const draft = await this.#call(
+            run,
             draftSpecTool,
             {
               summary: content.title,
@@ -1321,7 +1375,8 @@ export class BountyExecutor {
 
       const sizeCall = (async (): Promise<BountySizingResult | undefined> => {
         try {
-          const sized = await this.#options.caller.call(
+          const sized = await this.#call(
+            run,
             sizeBountyTool,
             {
               summary: content.title,

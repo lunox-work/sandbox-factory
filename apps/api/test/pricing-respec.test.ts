@@ -316,6 +316,7 @@ function executorHarness(options: {
       finishes.push({ status, details });
       return Promise.resolve(null);
     },
+    recordModelCalls: () => Promise.resolve(true),
   } as unknown as BountyRunStore;
   const source = options.proposal ?? proposal();
   const proposals = {

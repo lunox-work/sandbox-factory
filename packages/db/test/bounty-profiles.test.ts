@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
+import type { SQL } from "drizzle-orm";
+
 import {
   createBountyProfileStore,
   PENDING_PROFILE_STATUSES,
@@ -22,6 +24,7 @@ function row(overrides: Partial<BountyProfileRow> = {}): BountyProfileRow {
     scopeRunId: null,
     sliceRunId: null,
     profile: null,
+    transitions: [],
     createdAt: new Date("2026-10-03T00:00:00Z"),
     updatedAt: new Date("2026-10-03T00:01:00Z"),
     ...overrides,
@@ -290,10 +293,21 @@ test("advance moves a row only from the status it was read in, and sets what the
     status: "failed",
     errorCode: "source_unavailable",
   });
+  const appended: unknown[] = [];
   const sets = fake.calls.map((call) => {
-    const { updatedAt, ...rest } = call.values ?? {};
+    const { updatedAt, transitions, ...rest } = call.values ?? {};
     assert.ok(updatedAt instanceof Date);
     assert.equal(call.filtered, true);
+    // Each step is appended to the row's own list, stamped as it is taken.
+    const moved = (transitions as SQL).queryChunks.find(
+      (chunk) => typeof chunk === "string",
+    );
+    assert.equal(typeof moved, "string");
+    appended.push(...(JSON.parse(moved as string) as unknown[]));
+    assert.deepEqual(appended.at(-1), {
+      status: rest["status"],
+      at: (updatedAt as Date).toISOString(),
+    });
     return rest;
   });
   assert.deepEqual(sets, [

@@ -29,6 +29,7 @@ import type {
   AnalysisParams,
   AnalysisProgress,
   AnalysisStatus,
+  AnalysisTiming,
   AnalysisErrorCode,
   ArtifactKind,
 } from "sandbox-factory";
@@ -123,6 +124,12 @@ export const analysisRun = pgTable(
      * Cleared when a run is claimed again; null for runs that write none.
      */
     progress: jsonb("progress").$type<AnalysisProgress>(),
+    /**
+     * Where the run's time went, written by the worker once it has ended.
+     * Cleared when a run is claimed again; null for a run still going and
+     * for one that ended before this was kept.
+     */
+    timing: jsonb("timing").$type<AnalysisTiming>(),
     logKey: text("log_key"),
     startedAt: ts("started_at"),
     finishedAt: ts("finished_at"),

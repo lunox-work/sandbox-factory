@@ -42,6 +42,45 @@ export interface AnalysisProgressStep {
 export const ANALYSIS_PROGRESS_STEPS_MAX = 20;
 /** The longest a step's line may be; a longer one is cut with an ellipsis. */
 export const ANALYSIS_PROGRESS_TEXT_MAX = 160;
+/**
+ * Where a run's time went, written once when it ends, so the waits a person
+ * sees can be measured against the work behind them. Milliseconds
+ * throughout. A stage the run never reached is absent, as are the lists a
+ * tool of its kind does not make.
+ */
+export interface AnalysisTiming {
+  readonly stages: Partial<Record<AnalysisTimingStage, number>>;
+  /** An agent run's turns, oldest first, at most `ANALYSIS_TIMING_TURNS_MAX`. */
+  readonly turns?: readonly AnalysisTurnTiming[];
+  /** A run's baselines in the order they ran, at most `ANALYSIS_TIMING_BASELINES_MAX`. */
+  readonly baselines?: readonly (readonly AnalysisBaselineStepTiming[])[];
+}
+/**
+ * `fetch` is the archive's download, `extract` its unpacking, `tool` the
+ * tool's own work, `upload` its artifacts' and `commit` the database write
+ * that makes them visible.
+ */
+export const ANALYSIS_TIMING_STAGES = [
+  "fetch",
+  "extract",
+  "tool",
+  "upload",
+  "commit",
+] as const;
+export type AnalysisTimingStage = (typeof ANALYSIS_TIMING_STAGES)[number];
+export interface AnalysisTurnTiming {
+  /** The model call. */
+  readonly modelMs: number;
+  /** The turn's tool calls, end to end. */
+  readonly toolMs: number;
+}
+export interface AnalysisBaselineStepTiming {
+  readonly name: string;
+  readonly durationMs: number;
+  readonly ok: boolean;
+}
+export const ANALYSIS_TIMING_TURNS_MAX = 100;
+export const ANALYSIS_TIMING_BASELINES_MAX = 20;
 export const ARTIFACT_KINDS = [
   "graph_json",
   "graph_html",

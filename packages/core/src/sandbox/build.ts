@@ -144,6 +144,8 @@ export interface BaselineStep {
   readonly ok: boolean;
   /** Which private test, for `private-test` steps. */
   readonly path: string | null;
+  /** How long it ran; absent from reports written before this was kept. */
+  readonly durationMs?: number;
 }
 
 export interface PrivateTestOutcome {

@@ -56,6 +56,13 @@ and communities use neutral names. `manifest.json` records coverage, omissions,
 counts, confidence and the canonical graph SHA-256. Timing fields are diagnostic
 and do not participate in the graph digest.
 
+Every run that ends, succeeded or failed, also writes where its time went to
+`analysis_run.timing` (`src/timing.ts`): the fetch, extract, tool, upload and
+commit stages in milliseconds; for an agent, each turn's model call and tool
+calls; for a build or starter, each baseline's steps with the duration the
+evaluator reported. Durations only, never inputs or output. A released run
+writes none: it is claimed again, and the claim clears the last attempt's.
+
 ### Context builders
 
 `abstractions` and `data_model` are the other context builders, queued

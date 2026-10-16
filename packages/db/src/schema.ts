@@ -25,6 +25,8 @@
  * - `schema/analysis.ts` — what is known about a repository at one commit.
  * - `schema/sandbox.ts` — a bounty's sandbox: its versions, the private
  *   provenance behind each, and the submissions judged by them.
+ * - `schema/flows.ts` — views of how long people wait, read from the rows
+ *   above; no tables.
  *
  * `auth.ts` and `organizations.ts` import each other; see the note in
  * `organizations.ts` for why the foreign-key thunks make that safe.
@@ -141,3 +143,5 @@ export type {
   SandboxVersionSourceRow,
   SubmissionRow,
 } from "./schema/sandbox.js";
+
+export { flowWait, flowWaitSample } from "./schema/flows.js";

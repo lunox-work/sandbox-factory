@@ -50,6 +50,7 @@ import { checkFixtures } from "./fixtures-check.js";
 import { nearestCompilerOptions } from "./compiler-config.js";
 import { loadSliceRun, readIncludedSource } from "./slice-run.js";
 import type { LoadedSliceRun } from "./slice-run.js";
+import type { RunTiming } from "../timing.js";
 
 /** Candidate sets one run may check before it must submit. */
 export const FIXTURE_CHECKS_MAX = 8;
@@ -129,6 +130,7 @@ export async function writeFixtures(input: {
   readonly signal: AbortSignal;
   readonly log: (line: string) => void;
   readonly step?: ((text: string) => void) | undefined;
+  readonly timing?: RunTiming | undefined;
 }): Promise<WrittenFixtures | null> {
   const { slice } = input;
   input.log("Fixtures agent started.");
@@ -230,6 +232,7 @@ export async function writeFixtures(input: {
   const outcome = await runAgent({
     model: input.model,
     step: input.step,
+    onTurn: input.timing?.turn,
     system: FIXTURES_SYSTEM_PROMPT,
     prompt: [
       bountySection(input.task.issueKey, input.task.draft),
@@ -308,6 +311,7 @@ export function createFixturesAdapter(settings: AgentSettings): ToolAdapter {
         signal: input.signal,
         log: input.log,
         step: input.step,
+        timing: input.timing,
       });
       if (written === null) throw new AnalysisError("agent_incomplete");
       const { usage, ...answer } = written;

@@ -44,6 +44,7 @@ import {
   repositoryOverview,
   repositoryTools,
 } from "../agent/repo-tools.js";
+import type { RunTiming } from "../timing.js";
 
 /** Candidate sets one build may run, the submission's run among them. */
 export const HIDDEN_TEST_RUNS_MAX = 5;
@@ -135,6 +136,7 @@ export async function writeHiddenTests(input: {
   readonly signal: AbortSignal;
   readonly log: (line: string) => void;
   readonly step?: ((text: string) => void) | undefined;
+  readonly timing?: RunTiming | undefined;
 }): Promise<WrittenHiddenTests | null> {
   // The developer's project, for the repository tools to read.
   const root = await mkdtemp(join(tmpdir(), "hidden-tests-"));
@@ -252,6 +254,7 @@ export async function writeHiddenTests(input: {
     const outcome = await runAgent({
       model: input.model,
       step: input.step,
+      onTurn: input.timing?.turn,
       system: HIDDEN_TESTS_SYSTEM_PROMPT,
       prompt: hiddenTestsSection({
         title: input.task.title,

@@ -16,6 +16,9 @@ export interface FetchSourceOptions {
   readonly fetch?: typeof globalThis.fetch;
   readonly execute?: typeof command;
   readonly python?: string;
+  /** Told how long the download and the unpacking each took. */
+  readonly onStage?: (stage: "fetch" | "extract", ms: number) => void;
+  readonly clock?: () => number;
 }
 export async function fetchSource(
   run: ClaimedAnalysisRun,
@@ -32,7 +35,9 @@ export async function fetchSource(
   )
     throw new AnalysisError("source_unavailable");
   const fetchImpl = options.fetch ?? globalThis.fetch;
+  const clock = options.clock ?? (() => performance.now());
   options.signal.throwIfAborted();
+  const fetching = clock();
   const token = await options.token();
   const redirect = await fetchImpl(
     `https://api.github.com/repos/${run.repoFullName}/tarball/${run.commitSha}`,
@@ -92,7 +97,9 @@ export async function fetchSource(
   await pipeline(Readable.from(chunks()), createWriteStream(path), {
     signal: options.signal,
   });
+  options.onStage?.("fetch", clock() - fetching);
   const source = join(directory, "source");
+  const extracting = clock();
   try {
     await (options.execute ?? command)(
       options.python ?? "python3",
@@ -115,6 +122,8 @@ export async function fetchSource(
             : "source_unavailable",
       );
     throw error;
+  } finally {
+    options.onStage?.("extract", clock() - extracting);
   }
   return source;
 }

@@ -52,6 +52,68 @@ test("success uploads attempt-scoped artifacts, commits, and removes source", as
   assert.ok(state.bytes.has("runs/arn_1/lease_1/graph.json"));
   await assert.rejects(stat(directory));
 });
+test("a run that ends keeps where its time went, stage by stage", async () => {
+  const state = stores();
+  let ticks = 0;
+  await executeRun(run, {
+    ...state,
+    source,
+    // Every reading of the clock is 10 ms after the last.
+    clock: () => (ticks += 10),
+    fetchSource: async (r, d, options) => {
+      options.onStage?.("fetch", 70);
+      options.onStage?.("extract", 30);
+      return fetchSource(r, d);
+    },
+    tool: {
+      ...tool,
+      run: async (input) => {
+        input.timing?.turn({ modelMs: 5000.4, toolMs: 12.6 });
+        input.timing?.baseline([
+          {
+            name: "install",
+            argv: ["npm", "ci"],
+            exitCode: 0,
+            timedOut: false,
+            ok: true,
+            path: null,
+            durationMs: 8000,
+          },
+          {
+            name: "build",
+            argv: ["npm", "run", "build"],
+            exitCode: 2,
+            timedOut: false,
+            ok: false,
+            path: null,
+          },
+        ]);
+        return tool.run(input);
+      },
+    },
+  });
+  assert.deepEqual(state.calls, ["finish"]);
+  assert.deepEqual(state.timings, [
+    {
+      stages: { fetch: 70, extract: 30, tool: 10, upload: 10, commit: 10 },
+      turns: [{ modelMs: 5000, toolMs: 13 }],
+      baselines: [
+        [
+          { name: "install", durationMs: 8000, ok: true },
+          { name: "build", durationMs: 0, ok: false },
+        ],
+      ],
+    },
+  ]);
+});
+test("a timing that cannot be written does not change the run's outcome", async () => {
+  const state = stores();
+  state.runs.recordTiming = async () => {
+    throw new Error("database down");
+  };
+  await executeRun(run, { ...state, tool, source, fetchSource });
+  assert.deepEqual(state.calls, ["finish"]);
+});
 test("a starter run reads no source, and a run that needs source has to have it", async () => {
   const state = stores();
   let fetched = false;
@@ -344,6 +406,16 @@ test("failed sources, tool errors and upload errors are classified without sensi
     ]);
     for (const bytes of state.bytes.values())
       assert.doesNotMatch(Buffer.from(bytes).toString(), /sensitive/);
+    // Timed up to the stage that failed, and no further.
+    const stages = Object.keys(state.timings[0]?.stages ?? {});
+    assert.deepEqual(
+      stages.sort(),
+      stage === "source"
+        ? []
+        : stage === "tool"
+          ? ["tool"]
+          : ["tool", "upload"],
+    );
   }
 });
 test("shutdown releases the lease; deadline and lost heartbeat stop a running parser", async () => {
@@ -392,6 +464,9 @@ test("shutdown releases the lease; deadline and lost heartbeat stop a running pa
           ? "tool_timeout"
           : "worker_lost",
     ]);
+    // A released run is claimed again and starts over; one that failed
+    // has ended, and its time is kept.
+    assert.equal(state.timings.length, mode === "shutdown" ? 0 : 1);
   }
 });
 test("ambiguous commit preserves winning bytes and never overwrites its success log", async () => {

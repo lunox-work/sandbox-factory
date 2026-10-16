@@ -19,6 +19,7 @@ import type {
 import {
   BOUNTY_SPEC_HASH_VERSION,
   bountySpecHash,
+  type BountyRunModelCall,
   type BountySizingResult,
   type RubricAssessment,
   type SpecDraft,
@@ -282,12 +283,15 @@ function harness(options: {
   outcomeError?: Error;
   /** Recording a preview fails with this, as a database fault would. */
   progressError?: Error;
+  /** Recording the model calls fails with this, as a database fault would. */
+  modelCallsError?: Error;
 }) {
   const current = run(options.runOverrides);
   const plans: unknown[] = [];
   const categorized: { bountyId: string; categories: string[] }[] = [];
   const outcomes: unknown[] = [];
   const progresses: unknown[] = [];
+  const modelCalls: BountyRunModelCall[][] = [];
   const finishes: { status: string; details: unknown }[] = [];
   const proposalInputs: unknown[] = [];
   const removed: string[] = [];
@@ -358,6 +362,16 @@ function harness(options: {
       if (options.progressError !== undefined)
         return Promise.reject(options.progressError);
       progresses.push(progress);
+      return Promise.resolve(true);
+    },
+    recordModelCalls: (
+      _org: string,
+      _id: string,
+      calls: readonly BountyRunModelCall[],
+    ) => {
+      if (options.modelCallsError !== undefined)
+        return Promise.reject(options.modelCallsError);
+      modelCalls.push([...calls]);
       return Promise.resolve(true);
     },
     finish: (
@@ -605,6 +619,7 @@ function harness(options: {
     categorized,
     outcomes,
     progresses,
+    modelCalls,
     finishes,
     proposalInputs,
     removed,
@@ -1791,6 +1806,69 @@ test("a size cancelled under the run ends it as a lost worker", async () => {
   assert.equal(state.proposalInputs.length, 0);
 });
 
+test("a run records each model call it made once it has ended", async () => {
+  const state = harness({
+    caller: sizing([
+      {
+        result: { complexity: "S", confidence: "high", rationale: "Small." },
+        actualModel: "fallback-model",
+        usage: { inputTokens: 1, outputTokens: 1 },
+        fellBack: true,
+      },
+    ]),
+  });
+  await state.executor.execute("org_1", "brn_1");
+
+  assert.equal(state.finishes[0]?.status, "succeeded");
+  assert.equal(state.modelCalls.length, 1);
+  const calls = state.modelCalls[0] ?? [];
+  assert.deepEqual(
+    calls
+      .map(({ tool, model, fellBack, ok }) => ({ tool, model, fellBack, ok }))
+      .sort((a, b) => a.tool.localeCompare(b.tool)),
+    [
+      {
+        tool: "draft_spec",
+        model: "drafting-model",
+        fellBack: false,
+        ok: true,
+      },
+      {
+        tool: "size_bounty",
+        model: "fallback-model",
+        fellBack: true,
+        ok: true,
+      },
+    ],
+  );
+  assert.equal(calls.length, 2);
+  for (const call of calls) {
+    assert.equal(call.at, "2026-09-22T00:00:00.000Z");
+    assert.equal(call.ms, 0);
+  }
+});
+
+test("a model call that fails is recorded as failed, with no model", async () => {
+  const state = harness({
+    caller: sizing([new Error("private")], [new Error("private")]),
+  });
+  await state.executor.execute("org_1", "brn_1");
+
+  const calls = state.modelCalls[0] ?? [];
+  assert.equal(calls.length, 2);
+  assert.ok(
+    calls.every((call) => !call.ok && call.model === null && !call.fellBack),
+  );
+});
+
+test("model calls that cannot be written do not change the run's outcome", async () => {
+  const state = harness({ modelCallsError: new Error("database down") });
+  await state.executor.execute("org_1", "brn_1");
+
+  assert.equal(state.finishes[0]?.status, "succeeded");
+  assert.equal(state.modelCalls.length, 0);
+});
+
 test("short and truncated specs become unsized without model calls", async () => {
   const caller = sizing([]);
   const state = harness({
@@ -1808,6 +1886,7 @@ test("short and truncated specs become unsized without model calls", async () =>
 
   // Neither a size nor a draft: there is nothing safe to draft from.
   assert.equal(caller.calls.length, 0);
+  assert.equal(state.modelCalls.length, 0);
   assert.deepEqual(
     state.proposalInputs.map(
       (value) =>

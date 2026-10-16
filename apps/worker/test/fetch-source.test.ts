@@ -176,3 +176,34 @@ test("extractor errors retain bounded public error codes", async () => {
     await rm(directory, { recursive: true, force: true });
   }
 });
+test("the download and the unpacking are timed apart, a failed unpacking too", async () => {
+  const directory = await fixture();
+  try {
+    for (const fails of [false, true]) {
+      const stages: [string, number][] = [];
+      let ticks = 0;
+      const fetched = fetchSource(run, directory, {
+        maxBytes: 5000,
+        maxFiles: 5,
+        signal,
+        token: async () => "x",
+        fetch: fetcher(new Response("archive")).fetch,
+        execute: async () => {
+          if (fails) throw new CommandError(4);
+          return "";
+        },
+        // Every reading of the clock is 5 ms after the last.
+        clock: () => (ticks += 5),
+        onStage: (stage, ms) => stages.push([stage, ms]),
+      });
+      if (fails) await assert.rejects(fetched, code("source_unavailable"));
+      else await fetched;
+      assert.deepEqual(stages, [
+        ["fetch", 5],
+        ["extract", 5],
+      ]);
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});

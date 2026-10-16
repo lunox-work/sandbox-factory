@@ -18,6 +18,7 @@ import {
 
 import type {
   AnalysisErrorCode,
+  BountyRunModelCall,
   BountyRunOutcome,
   BountyRunProgress,
   BountyRunPlannedIssue,
@@ -25,6 +26,7 @@ import type {
   ComplexityProfile,
   ProfileErrorCode,
   ProfileStatus,
+  ProfileTransitionTime,
   RateCardSnapshot,
   PricedComplexity,
   RespecRequest,
@@ -127,6 +129,15 @@ export const bountyRun = pgTable(
      * returns, and on a board's runs, which write none.
      */
     progress: jsonb("progress").$type<BountyRunProgress>(),
+    /**
+     * Every model call the run made, in the order they started, written
+     * once when it ends: how long each took and whether it fell back.
+     * Empty for a run that made none, or ended before this was kept.
+     */
+    modelCalls: jsonb("model_calls")
+      .$type<BountyRunModelCall[]>()
+      .notNull()
+      .default([]),
     candidatesScanned: integer("candidates_scanned").notNull().default(0),
     skippedLive: integer("skipped_live").notNull().default(0),
     scanLimitReached: boolean("scan_limit_reached").notNull().default(false),
@@ -471,6 +482,12 @@ export const bountyProfile = pgTable(
       onDelete: "set null",
     }),
     profile: jsonb("profile").$type<ComplexityProfile>(),
+    // Each status the row has moved to, with when, oldest first. `queued`
+    // is `created_at`; empty for a row that moved before this was kept.
+    transitions: jsonb("transitions")
+      .$type<ProfileTransitionTime[]>()
+      .notNull()
+      .default([]),
     createdAt: ts("created_at").notNull().defaultNow(),
     updatedAt: ts("updated_at").notNull().defaultNow(),
   },

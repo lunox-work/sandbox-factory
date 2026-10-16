@@ -11,6 +11,7 @@ import type {
 import { readsSource } from "sandbox-factory";
 import { fetchSource } from "./fetch-source.js";
 import { progressRecorder } from "./progress.js";
+import { timingRecorder } from "./timing.js";
 import { AnalysisError } from "./errors.js";
 import { uploadArtifacts } from "./upload.js";
 import type {
@@ -44,6 +45,8 @@ export interface RunOptions {
   readonly now?: () => Date;
   readonly shutdown?: AbortSignal;
   readonly heartbeatMs?: number;
+  /** A monotonic clock in milliseconds, for the run's timing. */
+  readonly clock?: () => number;
 }
 export async function executeRun(
   run: ClaimedAnalysisRun,
@@ -55,7 +58,9 @@ export async function executeRun(
   const uploaded: string[] = [];
   const lines: string[] = ["Source analysis claimed."];
   const logKey = `logs/${run.id}/${run.leaseToken}.log`;
+  const timing = timingRecorder(options.clock);
   let committed = false;
+  let failed = false;
   let commitUncertain = false;
   let heartbeat: Promise<void> | undefined;
   let logRetained = false;
@@ -140,6 +145,8 @@ export async function executeRun(
       source = await (options.fetchSource ?? fetchSource)(run, directory, {
         ...options.source,
         signal: abort.signal,
+        onStage: timing.stage,
+        ...(options.clock === undefined ? {} : { clock: options.clock }),
       });
       lines.push("Source archive fetched and validated.");
     } else {
@@ -158,30 +165,35 @@ export async function executeRun(
         ),
       now,
     );
-    const files = await options.tool.run({
-      runId: run.id,
-      sourceDir: source,
-      outDir: join(directory, "out"),
-      params: run.params,
-      run: snapshot,
-      inputs,
-      signal: abort.signal,
-      log: (line) => {
-        if (lines.length < 100) lines.push(line);
-      },
-      step: progress.step,
-    });
+    const files = await timing.time("tool", () =>
+      options.tool.run({
+        runId: run.id,
+        sourceDir: source,
+        outDir: join(directory, "out"),
+        params: run.params,
+        run: snapshot,
+        inputs,
+        signal: abort.signal,
+        log: (line) => {
+          if (lines.length < 100) lines.push(line);
+        },
+        step: progress.step,
+        timing,
+      }),
+    );
     // The last steps land before the run says it is done.
     await progress.settled();
     let artifacts;
     try {
-      artifacts = await uploadArtifacts(
-        options.objects,
-        run.id,
-        run.leaseToken,
-        files,
-        abort.signal,
-        uploaded,
+      artifacts = await timing.time("upload", () =>
+        uploadArtifacts(
+          options.objects,
+          run.id,
+          run.leaseToken,
+          files,
+          abort.signal,
+          uploaded,
+        ),
       );
     } catch (error) {
       if (error instanceof AnalysisError || abort.signal.aborted) throw error;
@@ -195,13 +207,15 @@ export async function executeRun(
     // A transport error may follow a successful DB commit. Preserve objects
     // until an owner-scoped read confirms whether the attempt became visible.
     commitUncertain = true;
-    committed = await options.runs.finish(
-      run.organizationId,
-      run.id,
-      run.leaseToken,
-      artifacts,
-      logKey,
-      now(),
+    committed = await timing.time("commit", () =>
+      options.runs.finish(
+        run.organizationId,
+        run.id,
+        run.leaseToken,
+        artifacts,
+        logKey,
+        now(),
+      ),
     );
     commitUncertain = false;
     logRetained = committed;
@@ -247,7 +261,7 @@ export async function executeRun(
           .release(run.organizationId, run.id, run.leaseToken, now())
           .catch(() => false);
       else
-        logRetained = await options.runs
+        failed = logRetained = await options.runs
           .fail(
             run.organizationId,
             run.id,
@@ -263,6 +277,11 @@ export async function executeRun(
     clearTimeout(deadline);
     options.shutdown?.removeEventListener("abort", shutdown);
     await heartbeat;
+    // Once it has ended: a released run is claimed again, and starts over.
+    if (committed || failed)
+      await options.runs
+        .recordTiming(run.organizationId, run.id, timing.value())
+        .catch(() => false);
     if (!committed && !commitUncertain)
       await Promise.allSettled(
         uploaded.map((key) => options.objects.remove(key)),

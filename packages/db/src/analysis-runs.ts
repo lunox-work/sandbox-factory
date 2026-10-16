@@ -1,5 +1,16 @@
 import { createHash } from "node:crypto";
-import { and, desc, eq, gt, isNull, lte, ne, or, sql } from "drizzle-orm";
+import {
+  and,
+  desc,
+  eq,
+  gt,
+  inArray,
+  isNull,
+  lte,
+  ne,
+  or,
+  sql,
+} from "drizzle-orm";
 import {
   ANALYSIS_TOOLS,
   GRAPH_READERS,
@@ -18,6 +29,7 @@ import type {
   AnalysisProgress,
   AnalysisStatus,
   AnalysisErrorCode,
+  AnalysisTiming,
   AnalysisTool,
   ArtifactKind,
 } from "sandbox-factory";
@@ -168,6 +180,16 @@ export interface AnalysisRunStore {
     runId: string,
     leaseToken: string,
     now: Date,
+  ): Promise<boolean>;
+  /**
+   * Writes where an ended run's time went. After `finish` or `fail`, so
+   * the commit itself can be timed; the lease is gone by then, so it is
+   * guarded by the run having ended instead. False for a run that has not.
+   */
+  recordTiming(
+    organizationId: string,
+    runId: string,
+    timing: AnalysisTiming,
   ): Promise<boolean>;
   failExpired(organizationId: string, now: Date): Promise<number>;
   /** Privileged watchdog discovery, followed by owner-scoped updates. */
@@ -447,8 +469,9 @@ export function createAnalysisRunStore(db: Database): AnalysisRunStore {
           startedAt: now,
           deadlineAt: sql`${now.toISOString()}::timestamptz + ((${analysisRun.params}->>'deadlineMinutes')::int * interval '1 minute')`,
           finishedAt: null,
-          // A retry starts its steps again.
+          // A retry starts its steps and its clock again.
           progress: null,
+          timing: null,
         })
         .where(
           // A graph reader (a slice, a scope or a builder that reads the
@@ -568,6 +591,20 @@ export function createAnalysisRunStore(db: Database): AnalysisRunStore {
           heartbeatAt: null,
         })
         .where(fence(owner, id, token, now))
+        .returning({ id: analysisRun.id });
+      return rows.length > 0;
+    },
+    async recordTiming(owner, id, timing) {
+      const rows = await db
+        .update(analysisRun)
+        .set({ timing })
+        .where(
+          and(
+            owned(owner),
+            eq(analysisRun.id, id),
+            inArray(analysisRun.status, ["succeeded", "failed"]),
+          ),
+        )
         .returning({ id: analysisRun.id });
       return rows.length > 0;
     },

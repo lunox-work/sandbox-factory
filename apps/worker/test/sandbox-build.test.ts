@@ -41,6 +41,7 @@ import { sha256 } from "../src/tools/slice/hash.js";
 import type { ToolInputs, ToolRunInput } from "../src/tools/adapter.js";
 import { contextModel, contextRun } from "./context-fixtures.js";
 import { fixture, slice, sliceRun, stamp } from "./fixture-slice.js";
+import { timingRecorder } from "../src/timing.js";
 
 /**
  * What the test runner reports for a hidden test that failed as one should:
@@ -260,6 +261,7 @@ async function runBuild(
   const outDir =
     options.outDir ?? (await mkdtemp(join(tmpdir(), "build-out-")));
   const messages: string[] = [];
+  const timing = timingRecorder();
   const inputs: ToolInputs = {
     getRun: async (id) =>
       id === sliceRun.id
@@ -302,6 +304,7 @@ async function runBuild(
     inputs,
     signal: new AbortController().signal,
     log: (line) => messages.push(line),
+    timing,
   };
   const adapter = createSandboxBuildAdapter({
     provider,
@@ -313,7 +316,16 @@ async function runBuild(
   const manifest = JSON.parse(
     await read("build-manifest.json"),
   ) as SandboxBuildManifest;
-  return { files, manifest, read, messages, outDir, adapter, version };
+  return {
+    files,
+    manifest,
+    read,
+    messages,
+    outDir,
+    adapter,
+    version,
+    timing: timing.value(),
+  };
 }
 
 let toolCalls = 0;
@@ -380,7 +392,7 @@ test("a build produces a standalone project, hidden tests apart, a verified base
   const fake = fakeProvider((argv) =>
     argv.includes("--test") && !argv.includes("test") ? TAP_FAILED : {},
   );
-  const { files, manifest, read } = await runBuild(fake.provider, {
+  const { files, manifest, read, timing } = await runBuild(fake.provider, {
     version: await versionFor({
       aliasRules: [
         {
@@ -392,6 +404,14 @@ test("a build produces a standalone project, hidden tests apart, a verified base
       ],
     }),
   });
+  // The baseline's steps, each as long as the evaluator said it ran.
+  assert.equal(timing.baselines?.length, 1);
+  assert.deepEqual(
+    timing.baselines?.[0]?.map((step) => step.name),
+    manifest.baseline?.steps.map((step) => step.name),
+  );
+  assert.ok(timing.baselines?.[0]?.every((step) => step.durationMs === 1));
+  assert.ok(manifest.baseline?.steps.every((step) => step.durationMs === 1));
   assert.equal(
     manifest.ready,
     true,

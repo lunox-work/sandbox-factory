@@ -135,6 +135,36 @@ test("the loop runs tools until the submit tool accepts, and logs only fixed lin
   assert.ok(lines.every((line) => !line.includes('"a"')));
 });
 
+test("each turn says how long its model call and its tool calls took", async () => {
+  const model = scripted([
+    turn([{ type: "text", text: "thinking aloud" }], "end_turn"),
+    turn([call("echo", {}, "t1")]),
+    turn([], "refusal"),
+  ]);
+  const turns: unknown[] = [];
+  let ticks = 0;
+  const outcome = await runAgent({
+    model,
+    system: "s",
+    prompt: "p",
+    tools: [echo, submit(() => true)],
+    submitTool: "submit",
+    limits,
+    signal,
+    log: () => {},
+    onTurn: (timing) => turns.push(timing),
+    // Every reading of the clock is 1 ms after the last.
+    clock: () => (ticks += 1),
+  });
+  assert.equal(outcome.stopped, "refusal");
+  // A turn that calls no tool, or is refused, spends nothing on tools.
+  assert.deepEqual(turns, [
+    { modelMs: 1, toolMs: 0 },
+    { modelMs: 1, toolMs: 1 },
+    { modelMs: 1, toolMs: 0 },
+  ]);
+});
+
 test("a turn with no tool call is nudged twice before the loop gives up", async () => {
   const model = scripted([
     turn([{ type: "text", text: "thinking aloud" }], "end_turn"),
