@@ -100,13 +100,14 @@ export interface BoardScope {
 /**
  * What narrows the list: a category (or `uncategorized`), where the
  * bounties came from — one board, or `lunox` for those written in Lunox —
- * and how far they have got.
+ * how far they have got, and one workspace's, by its handle.
  */
 export interface BountyListScope {
   category?: string | undefined;
   board?: BoardScope | undefined;
   source?: "lunox" | undefined;
   status?: BountyStatus | undefined;
+  workspace?: string | undefined;
 }
 
 const CATEGORY_PATTERN = /^[a-z0-9]+(-[a-z0-9]+)*$/;
@@ -118,10 +119,12 @@ export function listScopeForSearch(search: string): BountyListScope {
   const board = params.get("board");
   const source = params.get("source");
   const status = BOUNTY_STATUSES.find((name) => name === params.get("status"));
+  const own = params.get("workspace");
   const [workspace, boardId, ...rest] = (board ?? "")
     .replace(/\/+$/, "")
     .split("/");
   return {
+    ...(own !== null && own !== "" ? { workspace: own } : {}),
     ...(category !== null && CATEGORY_PATTERN.test(category)
       ? { category }
       : {}),
@@ -147,6 +150,9 @@ export function bountiesUrl(
 ): string {
   // Built by hand: `URLSearchParams` would write the slashes as `%2F`.
   const parts = [
+    ...(scope.workspace === undefined
+      ? []
+      : [`workspace=${encodeURIComponent(scope.workspace)}`]),
     ...(scope.board === undefined
       ? []
       : [
@@ -316,14 +322,12 @@ export function canonicalUrl(
   return undefined;
 }
 
-/** The query the bounties page read before `?peek=`; see `legacyBountiesUrl`. */
-const LEGACY_BOUNTY_PARAMS = [
-  "bounty",
-  "ticket",
-  "workspace",
-  "proposal",
-  "tab",
-];
+/**
+ * The query the bounties page read before `?peek=`; see `legacyBountiesUrl`.
+ * `?workspace=` is not among them: alone, it is the list narrowed to that
+ * workspace, which the page still writes.
+ */
+const LEGACY_BOUNTY_PARAMS = ["bounty", "ticket", "proposal", "tab"];
 
 /**
  * The bounties page for a query from before `?peek=`: the open bounty as
@@ -334,8 +338,9 @@ const LEGACY_BOUNTY_PARAMS = [
  *
  * A proposal named with no bounty, from when proposals had a list of their
  * own, keeps its workspace and stays in the query: the page reads it for the
- * bounty it belongs to. Anything naming no workspace names nothing that can
- * be opened, and is dropped. Undefined when there is nothing to rewrite.
+ * bounty it belongs to. A bounty or a tab naming no workspace names nothing
+ * that can be opened, and is dropped; a workspace on its own is kept, as
+ * the list narrowed to it. Undefined when there is nothing to rewrite.
  */
 function legacyBountiesUrl(
   search: string,
@@ -353,7 +358,9 @@ function legacyBountiesUrl(
         : bountiesUrl({ workspace, id })
       : workspace !== null && proposal !== null
         ? `${BOUNTIES_PATH}?${new URLSearchParams({ workspace, proposal }).toString()}`
-        : BOUNTIES_PATH;
+        : workspace !== null && slug === undefined
+          ? bountiesUrl(null, { workspace })
+          : BOUNTIES_PATH;
   // Already as it should be: rewriting it would be a no-op on every load.
   return url === BOUNTIES_PATH + search ? undefined : url;
 }

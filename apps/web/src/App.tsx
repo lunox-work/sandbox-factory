@@ -652,11 +652,30 @@ function Signed({
           <Home
             name={name}
             organization={organizations.active}
+            organizations={organizations.organizations}
+            viewer={{ id: userId, image }}
+            // Each way in from a card selects its workspace first: the
+            // pages under it read the one in the rail. The slug is passed
+            // because `select` has not re-rendered yet — see `navigate`.
             onOpenSettings={(organization, tab) => {
               organizations.select(organization.id);
               navigate("org-settings", organization.slug, undefined, tab);
             }}
-            onWriteBounty={(prefill) => visit(newBountyUrl(prefill))}
+            onOpenMembers={(organization) => {
+              organizations.select(organization.id);
+              visit(
+                `${pathForScreen("org-settings", organization.slug)}?tab=members`,
+              );
+            }}
+            // The list is every workspace's, narrowed to this one's by its
+            // handle; it needs no selection.
+            onOpenBounties={(organization) =>
+              visit(bountiesUrl(null, { workspace: organization.slug }))
+            }
+            onOpenOnboarding={(organization) => {
+              organizations.select(organization.id);
+              navigate("onboarding", organization.slug);
+            }}
           />
         )}
       </div>

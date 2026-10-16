@@ -19,7 +19,7 @@ import { userEvent } from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 
 import { completeBountyFixture } from "./api-fixtures";
-import { render, screen, waitFor, within } from "./render";
+import { fireEvent, render, screen, waitFor, within } from "./render";
 
 import { Home, firstName, greeting } from "../src/Home";
 import { Onboarding } from "../src/Onboarding";
@@ -399,15 +399,80 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-function show(role: "owner" | "member" = "owner") {
+/** What the workspace list says of a workspace with nothing connected. */
+function bare() {
+  return {
+    jira: { available: true, connected: 0, broken: 0, boards: 0 },
+    github: { available: true, connected: 0, repositories: 0 },
+    proposals: 0,
+    bounties: 0,
+    members: 1,
+  };
+}
+
+/** Acme as the list says it: set up, with work in it and a site to mend. */
+const acmeListed = {
+  jira: { available: true, connected: 1, broken: 1, boards: 2 },
+  github: { available: true, connected: 1, repositories: 3 },
+  proposals: 4,
+  bounties: 12,
+  members: 5,
+};
+
+/** Set up — one site, one repository, one proposal — with nothing to mend. */
+const personal = {
+  id: "org_me",
+  name: "Ada Example",
+  slug: "ada",
+  kind: "personal" as const,
+  role: "owner" as const,
+  setup: {
+    jira: { available: true, connected: 1, broken: 0, boards: 1 },
+    github: { available: true, connected: 1, repositories: 1 },
+    bounties: 2,
+    proposals: 1,
+    members: 1,
+  },
+};
+
+/** A second team, not set up yet. */
+const globex = {
+  id: "org_2",
+  name: "Globex",
+  slug: "globex",
+  kind: "team" as const,
+  role: "member" as const,
+  setup: { ...bare(), members: 3 },
+};
+
+function show(
+  role: "owner" | "member" = "owner",
+  organizations?: Parameters<typeof Home>[0]["organizations"],
+) {
   const handlers = {
     onOpenSettings: vi.fn(),
-    onWriteBounty: vi.fn(),
+    onOpenMembers: vi.fn(),
+    onOpenBounties: vi.fn(),
+    onOpenOnboarding: vi.fn(),
   };
+  const active = { ...owner, role, setup: acmeListed };
   const view = render(
-    <Home name="Ada Example" organization={{ ...owner, role }} {...handlers} />,
+    <Home
+      name="Ada Example"
+      organization={active}
+      organizations={organizations ?? [active, personal, globex]}
+      viewer={{ id: "user_1", image: null }}
+      {...handlers}
+    />,
   );
   return { ...view, ...handlers };
+}
+
+/** The card for one workspace, by the heading that names it. */
+function card(name: string) {
+  return screen
+    .getAllByTestId("workspace-card")
+    .find((element) => within(element).queryByText(name) !== null)!;
 }
 
 function showOnboarding(role: "owner" | "member" = "owner") {
@@ -431,19 +496,128 @@ function showOnboarding(role: "owner" | "member" = "owner") {
 /* Nothing connected                                                          */
 /* -------------------------------------------------------------------------- */
 
-test("home does not point back to onboarding, and offers writing a bounty", async () => {
+test("home does not point back to onboarding for a workspace that is set up", async () => {
   // Home is offered once setup is done: onboarding is not offered beside it.
-  const { onWriteBounty } = show();
+  show();
   await screen.findByTestId("home-promise");
   expect(screen.queryByRole("button", { name: /onboarding/i })).toBeNull();
-  await userEvent.click(
-    screen.getByRole("button", { name: /write a bounty/i }),
-  );
-  expect(onWriteBounty).toHaveBeenCalledWith();
+  expect(within(card("Acme")).queryByText(/setting up/i)).toBeNull();
+  expect(
+    within(card("Acme")).queryByRole("link", { name: /continue setup/i }),
+  ).toBeNull();
   // The ways in are onboarding's, not home's.
   expect(screen.queryByTestId("path-cards")).toBeNull();
   expect(screen.queryByTestId("category-showcase")).toBeNull();
   expect(screen.queryByTestId("setup-checklist")).toBeNull();
+});
+
+test("home lists every workspace, personal first, with its counts as ways in", async () => {
+  const { onOpenBounties, onOpenMembers, onOpenSettings } = show();
+  const list = await screen.findByRole("list", { name: "Your workspaces" });
+  const cards = within(list).getAllByTestId("workspace-card");
+  expect(
+    cards.map((entry) => within(entry).getByRole("heading").textContent),
+  ).toEqual(["Ada Example", "Acme", "Globex"]);
+  expect(within(cards[0]!).getByText("Personal")).toBeDefined();
+
+  const acme = card("Acme");
+  // The row opens the workspace; the counts open its parts.
+  expect(
+    within(acme).getByRole("link", { name: /Acme/ }).getAttribute("href"),
+  ).toBe("/o/acme/settings");
+  const bounties = within(acme).getByRole("link", { name: "12 bounties" });
+  expect(bounties.getAttribute("href")).toBe("/bounties?workspace=acme");
+  await userEvent.click(bounties);
+  expect(onOpenBounties).toHaveBeenCalledWith(
+    expect.objectContaining({ id: "org_1" }),
+  );
+  // A site needing reconnection is said with its boards, which lead to
+  // Jira's tab, where it is mended.
+  const boards = within(acme).getByRole("link", {
+    name: "2 boards, 1 site to reconnect",
+  });
+  expect(boards.getAttribute("href")).toBe("/o/acme/settings?connection=jira");
+  await userEvent.click(boards);
+  expect(onOpenSettings).toHaveBeenCalledWith(
+    expect.objectContaining({ id: "org_1" }),
+    "jira",
+  );
+  const repositories = within(acme).getByRole("link", {
+    name: "3 repositories",
+  });
+  expect(repositories.getAttribute("href")).toBe(
+    "/o/acme/settings?connection=github",
+  );
+  await userEvent.click(repositories);
+  expect(onOpenSettings).toHaveBeenLastCalledWith(
+    expect.objectContaining({ id: "org_1" }),
+    "github",
+  );
+  // Nothing else is counted: the counts are the ways in, not a report.
+  expect(within(acme).getAllByRole("listitem")).toHaveLength(4);
+  const members = within(acme).getByRole("link", { name: "5 members" });
+  expect(members.getAttribute("href")).toBe("/o/acme/settings?tab=members");
+  await userEvent.click(members);
+  expect(onOpenMembers).toHaveBeenCalledWith(
+    expect.objectContaining({ id: "org_1" }),
+  );
+  // A personal workspace has one member and no tab to count them on.
+  expect(
+    within(card("Ada Example")).queryByRole("link", { name: /members/ }),
+  ).toBeNull();
+  expect(within(card("Ada Example")).getAllByRole("listitem")).toHaveLength(3);
+  // Nothing to reconnect: the boards say only how many.
+  expect(
+    within(card("Ada Example")).getByRole("link", { name: "1 boards" }),
+  ).toBeDefined();
+  // A workspace is made from the workspaces page, not from home.
+  expect(screen.queryByRole("link", { name: "New workspace" })).toBeNull();
+});
+
+test("a workspace not set up yet says how far it has got and offers to carry on", async () => {
+  const { onOpenOnboarding } = show();
+  await screen.findByTestId("home-promise");
+  const globexCard = card("Globex");
+  expect(
+    within(globexCard).getByText("Setting up: 0 of 3 steps done."),
+  ).toBeDefined();
+  // Its counts are still there, and still ways in.
+  expect(
+    within(globexCard).getByRole("link", { name: "3 members" }),
+  ).toBeDefined();
+  const carryOn = within(globexCard).getByRole("link", {
+    name: /continue setup/i,
+  });
+  expect(carryOn.getAttribute("href")).toBe("/onboarding");
+  await userEvent.click(carryOn);
+  expect(onOpenOnboarding).toHaveBeenCalledWith(
+    expect.objectContaining({ id: "org_2" }),
+  );
+  // The one set up has nothing to carry on with.
+  expect(within(card("Acme")).queryByText(/setting up/i)).toBeNull();
+});
+
+test("a list that says nothing of a workspace shows it without counts", async () => {
+  show("owner", [{ ...owner, role: "owner" }]);
+  await screen.findByTestId("home-promise");
+  const acme = card("Acme");
+  expect(within(acme).queryByRole("list")).toBeNull();
+  expect(within(acme).getByRole("link", { name: /Acme/ })).toBeDefined();
+  // Not known to be unfinished: not sent to onboarding.
+  expect(within(acme).queryByText(/setting up/i)).toBeNull();
+});
+
+test("a middle click on a count is left to the browser", async () => {
+  const { onOpenBounties } = show();
+  await screen.findByTestId("home-promise");
+  const bounties = within(card("Acme")).getByRole("link", {
+    name: "12 bounties",
+  });
+  fireEvent.click(bounties, { button: 1 });
+  fireEvent.click(bounties, { metaKey: true });
+  expect(onOpenBounties).not.toHaveBeenCalled();
+  fireEvent.click(bounties);
+  expect(onOpenBounties).toHaveBeenCalledTimes(1);
 });
 
 test("with nothing connected, onboarding offers three ways in, Jira first", async () => {
@@ -619,7 +793,7 @@ test("with Jira connected, home's line does not send anyone to onboarding", asyn
   show();
 
   const promise = await screen.findByTestId("home-promise");
-  expect(promise.textContent).toMatch(/bounties already/);
+  expect(promise.textContent).toMatch(/workspaces/);
   expect(promise.textContent).not.toMatch(/onboarding/);
   expect(screen.queryByTestId("backlog-scan")).toBeNull();
   expect(screen.queryByRole("button", { name: /switch board/i })).toBeNull();

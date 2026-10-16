@@ -486,6 +486,57 @@ test("the caller's bounties list across their own organizations only", async () 
   );
 });
 
+test("the caller's bounties narrow to one of their workspaces, and to none they are not in", async () => {
+  const pages: unknown[] = [];
+  const counted: unknown[] = [];
+  const app = new Hono<{ Variables: AuthVariables }>();
+  app.use("*", async (c, next) => {
+    c.set("user", { id: "user_1" } as never);
+    await next();
+  });
+  mountCallerBountyRoutes(app, {
+    organizationsOf: () => Promise.resolve(["org_1", "org_2"]),
+    bounties: {
+      listAcross: (organizationIds, page) => {
+        pages.push({ organizationIds, ...page });
+        return Promise.resolve([]);
+      },
+      categoryCounts: (organizationIds) => {
+        counted.push(organizationIds);
+        return Promise.resolve({ total: 0, uncategorized: 0, categories: {} });
+      },
+      statusCounts: (organizationIds) => {
+        counted.push(organizationIds);
+        return Promise.resolve({
+          total: 0,
+          statuses: { new: 0, scoped: 0, priced: 0, live: 0 },
+        });
+      },
+    },
+  });
+
+  assert.equal(
+    (await app.request("/api/v1/me/bounties?workspace=org_2")).status,
+    200,
+  );
+  assert.deepEqual(pages.at(-1), { organizationIds: ["org_2"], limit: 25 });
+  // The counts narrow with the list.
+  await app.request("/api/v1/me/bounty-categories?workspace=org_2");
+  await app.request("/api/v1/me/bounty-statuses?workspace=org_2");
+  assert.deepEqual(counted, [["org_2"], ["org_2"]]);
+  // A workspace the caller is not in is read as none, not as theirs.
+  await app.request("/api/v1/me/bounties?workspace=org_elsewhere");
+  assert.deepEqual(pages.at(-1), { organizationIds: [], limit: 25 });
+  assert.equal(
+    (await app.request("/api/v1/me/bounties?workspace=")).status,
+    400,
+  );
+  assert.equal(
+    (await app.request("/api/v1/me/bounty-statuses?workspace=")).status,
+    400,
+  );
+});
+
 test("the caller's bounties narrow to a category, to none, and to a board", async () => {
   const pages: unknown[] = [];
   const counted: unknown[] = [];

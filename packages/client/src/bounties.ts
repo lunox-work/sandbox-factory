@@ -21,8 +21,8 @@ export const ownerPath = (owner: string) =>
 /**
  * A list page's query: its size, where the page before it ended, and what
  * it is narrowed to — a category's id (`uncategorized` for none), a
- * board's, `lunox` for the bounties written there, and how far the
- * bounties have got.
+ * board's, `lunox` for the bounties written there, how far the bounties
+ * have got and, across workspaces, one workspace's id.
  */
 export interface BountyListQuery {
   limit?: number;
@@ -31,6 +31,7 @@ export interface BountyListQuery {
   board?: string;
   source?: "lunox";
   status?: BountyListFilter["status"];
+  workspace?: string;
 }
 
 function pageParams(query: BountyListQuery) {
@@ -41,6 +42,7 @@ function pageParams(query: BountyListQuery) {
   if (query.board !== undefined) params.set("board", query.board);
   if (query.source !== undefined) params.set("source", query.source);
   if (query.status !== undefined) params.set("status", query.status);
+  if (query.workspace !== undefined) params.set("workspace", query.workspace);
   return params;
 }
 export class BountyClient extends ApiClient {
@@ -94,7 +96,10 @@ export class BountyClient extends ApiClient {
    * one board's when `board` names it, or to Lunox's own by `source`.
    */
   async myBountyCategories(
-    query: Pick<BountyListQuery, "board" | "source" | "status"> = {},
+    query: Pick<
+      BountyListQuery,
+      "board" | "source" | "status" | "workspace"
+    > = {},
     signal?: AbortSignal,
   ) {
     return bountyCategoryCountsSchema.parse(
@@ -108,7 +113,10 @@ export class BountyClient extends ApiClient {
    * the list is by everything but status.
    */
   async myBountyStatuses(
-    query: Pick<BountyListQuery, "category" | "board" | "source"> = {},
+    query: Pick<
+      BountyListQuery,
+      "category" | "board" | "source" | "workspace"
+    > = {},
     signal?: AbortSignal,
   ) {
     return bountyStatusCountsSchema.parse(

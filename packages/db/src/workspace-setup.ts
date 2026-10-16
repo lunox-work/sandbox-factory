@@ -16,6 +16,7 @@ import {
   githubRepo,
   jiraBoard,
   jiraConnection,
+  member,
   organization,
 } from "./schema.js";
 
@@ -31,8 +32,10 @@ export interface WorkspaceSetupCounts {
   /** Registered source repositories GitHub has not lost. */
   readonly githubRepositories: number;
   readonly proposals: number;
-  /** One when the workspace holds any bounty: the page asks no more. */
-  readonly bounties: 0 | 1;
+  /** Bounties the workspace holds, sized or not. */
+  readonly bounties: number;
+  /** Members, the caller among them: one for a personal workspace. */
+  readonly members: number;
 }
 
 export interface WorkspaceSetupStore {
@@ -70,17 +73,15 @@ export function createWorkspaceSetupStore(db: Database): WorkspaceSetupStore {
             sql`select count(*) from ${bountyProposal} inner join ${bountyRun} on ${eq(bountyRun.id, bountyProposal.runId)} inner join ${bounty} on ${eq(bounty.id, bountyProposal.bountyId)} where ${eq(bountyProposal.organizationId, organization.id)}`,
           ),
           bounties: counted(
-            sql`select count(*) from (select 1 from ${bounty} where ${eq(bounty.organizationId, organization.id)} limit 1) as any_bounty`,
+            sql`select count(*) from ${bounty} where ${eq(bounty.organizationId, organization.id)}`,
+          ),
+          members: counted(
+            sql`select count(*) from ${member} where ${eq(member.organizationId, organization.id)}`,
           ),
         })
         .from(organization)
         .where(inArray(organization.id, [...organizationIds]));
-      return new Map(
-        rows.map(({ id, bounties, ...counts }) => [
-          id,
-          { ...counts, bounties: bounties > 0 ? 1 : 0 },
-        ]),
-      );
+      return new Map(rows.map(({ id, ...counts }) => [id, counts]));
     },
   };
 }

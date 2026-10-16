@@ -433,6 +433,7 @@ export function createApp({
                   },
                   proposals: counted.proposals,
                   bounties: counted.bounties,
+                  members: counted.members,
                 },
               };
         }),

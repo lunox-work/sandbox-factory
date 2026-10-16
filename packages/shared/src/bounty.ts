@@ -230,8 +230,9 @@ export const bountyResponseSchema = z.object({
 
 /**
  * What a bounty list may be narrowed to, as its query says it: one
- * category, `uncategorized` for the bounties in none, one board's, and how
- * far the bounties have got (`bountyStatus`).
+ * category, `uncategorized` for the bounties in none, one board's, how
+ * far the bounties have got (`bountyStatus`) and, for the list across the
+ * caller's workspaces, one workspace's.
  */
 export const bountyListFilterSchema = z.object({
   category: z
@@ -239,6 +240,8 @@ export const bountyListFilterSchema = z.object({
     .regex(/^[a-z0-9]+(-[a-z0-9]+)*$/)
     .optional(),
   board: z.string().min(1).optional(),
+  /** One workspace's bounties, by its id; only the caller's own count. */
+  workspace: z.string().min(1).optional(),
   /** `lunox`: only the bounties written in Lunox, with no Jira issue. */
   source: z.enum(["lunox"]).optional(),
   /** The last step done: `new`, `scoped`, `priced` or `live`. */
