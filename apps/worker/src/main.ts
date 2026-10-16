@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -89,9 +90,10 @@ const objects = createObjectStore({
     : {}),
 });
 // Every run of one commit reads the source this worker fetched for the
-// first, for as long as the disk keeps it.
+// first, for as long as the disk keeps it. Its root is this process's
+// own, not a fixed name in the shared temp directory.
 const sourceCache = await createSourceCache({
-  root: join(tmpdir(), "sandbox-factory-sources"),
+  root: await mkdtemp(join(tmpdir(), "sandbox-factory-sources-")),
 });
 const tokens = new InstallationTokens({
   appId: env.GITHUB_APP_ID,

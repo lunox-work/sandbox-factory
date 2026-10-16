@@ -43,8 +43,9 @@ export interface LocalProcessOptions {
   readonly root?: string;
   /**
    * The npm cache every job shares, outside any job's directory, and the
-   * lockfiles resolved for each distinct `package.json` beside it. Under
-   * the OS temp directory by default.
+   * lockfiles resolved for each distinct `package.json` beside it. A
+   * directory of this provider's own under the OS temp directory by
+   * default, made once and not at a name another user could guess.
    */
   readonly npmCache?: string;
 }
@@ -207,6 +208,11 @@ export function runProcess(
 export function createLocalProcessProvider(
   options: LocalProcessOptions = {},
 ): EvaluationProvider {
+  let sharedCache: Promise<string> | undefined;
+  const npmCacheOf = () =>
+    options.npmCache !== undefined
+      ? Promise.resolve(options.npmCache)
+      : (sharedCache ??= mkdtemp(join(tmpdir(), "sandbox-factory-npm-cache-")));
   return {
     name: "local-process",
     async create({ label, signal }) {
@@ -217,11 +223,11 @@ export function createLocalProcessProvider(
       );
       const home = join(directory, "home");
       const work = join(directory, "work");
-      const npmCache =
-        options.npmCache ?? join(tmpdir(), "sandbox-factory-npm-cache");
+      let npmCache: string;
       try {
         await mkdir(home);
         await mkdir(work);
+        npmCache = await npmCacheOf();
       } catch (error) {
         // No job to destroy it later: the directory goes now.
         await rm(directory, { recursive: true, force: true });
