@@ -103,6 +103,16 @@ export const sandboxSource = pgTable(
     sourceRepoId: text("source_repo_id")
       .notNull()
       .references(() => githubRepo.id),
+    /**
+     * A version asked for before its slice was ready: the next slice of
+     * this sandbox is cut and built when it is, as the person who asked.
+     * Cleared once that is done or refused. Set null with the person, and a
+     * request with no one behind it is dropped.
+     */
+    cutRequestedBy: text("cut_requested_by").references(() => user.id, {
+      onDelete: "set null",
+    }),
+    cutRequestedAt: ts("cut_requested_at"),
     updatedAt: ts("updated_at").notNull().defaultNow(),
   },
   // A repository's delete is checked against it.

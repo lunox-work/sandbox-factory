@@ -696,7 +696,12 @@ ready, it cuts a draft as `POST .../versions` does, its listing taken from
 the bounty (title, description, the repository's and bounty's stack) and its
 task from the approved proposal, queues its build and answers 201 with the
 draft and the run. A draft whose scope has blockers is cut without a build
-(`run: null`), for them to be read. A sandbox whose publication is live is
+(`run: null`), for them to be read. A 202 also remembers the request on the
+sandbox's source (`sandbox_source.cut_requested_by`, `cut_requested_at`):
+once the profiler settles a profile, `apps/api/src/sandbox/cutter.ts` makes
+it again as the person who asked, so the draft is cut and built with no
+second click; a cut clears it, as does any refusal but the analysis cap.
+`POST .../sandboxes/start` remembers it the same way. A sandbox whose publication is live is
 not sliced (`published`, 409): contributors work in it, so it is unpublished
 first. The newest unfrozen draft cut from the
 same slice run is built again rather than cut twice. A sliced draft starts
@@ -1146,8 +1151,10 @@ wakes the profiler: a later sweep discovers committed intent without it. The
 unique proposal/revision/snapshot constraint makes requests idempotent. Snapshot-less
 or disabled profiling retains the existing behavior; respec does not implicitly
 request profiles, and historical rows are not backfilled.
-`apps/api/src/pricing/profiler.ts` sweeps the rows in flight every 30
-seconds, since the worker reports a finished run only to the database: it
+`apps/api/src/pricing/profiler.ts` moves the rows in flight when a run
+ends: the run store sends `NOTIFY analysis_run_ended` in the same write, and
+the API listens. A sweep every 30 seconds stays, for a notification missed
+across a reconnect or a restart. Each pass: it
 enqueues the snapshot's graph and a `scope` run for the spec (no person
 behind either, so `requested_by` is null), then slices exactly the request
 the scope recorded, then builds the profile with `buildComplexityProfile`

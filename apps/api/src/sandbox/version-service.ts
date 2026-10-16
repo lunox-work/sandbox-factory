@@ -954,7 +954,9 @@ export function versionService(options: SandboxRouteOptions) {
    * proposal, and built when its scope has no blockers. The newest draft
    * cut from the same slice is built again rather than cut twice. A
    * sandbox whose publication is live is not sliced: contributors work in
-   * it, so it is unpublished first.
+   * it, so it is unpublished first. A request answered before the slice
+   * is ready is remembered as the actor's, and the cutter makes it again
+   * once it is; a draft cut clears it.
    */
   async function slice(
     owner: string,
@@ -968,12 +970,10 @@ export function versionService(options: SandboxRouteOptions) {
         "conflict",
       );
     let state = await sliceState(owner, sandbox);
-    const pending = (current: SandboxSliceDto) => ({
-      ok: true as const,
-      slice: current,
-      result: null,
-      run: null,
-    });
+    const pending = async (current: SandboxSliceDto) => {
+      await options.cuts?.requestCut(owner, sandbox.id, actor, now);
+      return { ok: true as const, slice: current, result: null, run: null };
+    };
     if (state.slice.status === "unavailable")
       return failure(
         {
@@ -1074,6 +1074,8 @@ export function versionService(options: SandboxRouteOptions) {
       if (!created.ok) return created;
       draft = created.result;
     }
+    // Cut, or found: whatever asked for it is answered.
+    await options.cuts?.clearCut(owner, sandbox.id);
     // A scope with blockers is cut, for its blockers to be read, but not
     // built: the build would only refuse it.
     if (draft.source.scope.blockers.length > 0)

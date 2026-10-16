@@ -45,6 +45,12 @@ const PAGE_SIZE = 100;
  * with tens of thousands of open tickets.
  */
 export const MAX_SCAN_CANDIDATES = 5_000;
+/**
+ * Pages asked for ahead of the one being read, once Jira has said how many
+ * tickets there are. Few: a selection that fills its cap stops early, and
+ * whatever was read ahead of it is wasted.
+ */
+const LOOKAHEAD_PAGES = 2;
 
 export interface BacklogPageReader {
   boardIssueSignals(
@@ -149,13 +155,33 @@ export async function selectBacklog(
     MAX_SCAN_CANDIDATES,
   );
 
-  while (selected.length < cap && candidatesScanned < scanLimit) {
-    const requested = Math.min(PAGE_SIZE, scanLimit - candidatesScanned);
-    const page = await client.boardIssueSignals(boardId, {
+  type Ahead = {
+    readonly startAt: number;
+    readonly requested: number;
+    readonly page: ReturnType<BacklogPageReader["boardIssueSignals"]>;
+  };
+  let ahead: Ahead[] = [];
+  const read = (at: number, requested: number): Ahead => {
+    const page = client.boardIssueSignals(boardId, {
       jql,
-      startAt,
+      startAt: at,
       maxResults: requested,
     });
+    // A page read ahead and never reached is not a failure of the scan.
+    page.catch(() => {});
+    return { startAt: at, requested, page };
+  };
+
+  while (selected.length < cap && candidatesScanned < scanLimit) {
+    const requested = Math.min(PAGE_SIZE, scanLimit - candidatesScanned);
+    const next = ahead.shift();
+    const page = await (
+      next !== undefined &&
+      next.startAt === startAt &&
+      next.requested === requested
+        ? next
+        : read(startAt, requested)
+    ).page;
 
     if (knownTotal === undefined && page.total !== undefined) {
       knownTotal = page.total;
@@ -168,6 +194,28 @@ export async function selectBacklog(
     // Offset by what Jira actually returned. Some sites cap below the request.
     startAt += page.issues.length;
     candidatesScanned += page.issues.length;
+
+    // The pages after this one, asked for while it is read, on a board
+    // with no ticket cap: one with a cap stops where it is met, and a page
+    // read past it is a Jira call for tickets it drops. A short page ends
+    // the scan below, so a full one says where the next begins.
+    if (page.issues.length < requested) ahead = [];
+    else if (knownTotal !== undefined && cap === Number.POSITIVE_INFINITY) {
+      const last = ahead.at(-1);
+      let at = last === undefined ? startAt : last.startAt + last.requested;
+      while (
+        ahead.length < LOOKAHEAD_PAGES &&
+        at < knownTotal &&
+        at - startAt + candidatesScanned < scanLimit
+      ) {
+        const more = Math.min(
+          PAGE_SIZE,
+          scanLimit - (at - startAt + candidatesScanned),
+        );
+        ahead.push(read(at, more));
+        at += more;
+      }
+    }
 
     const fitting: SelectedIssue[] = [];
     for (const issue of page.issues) {

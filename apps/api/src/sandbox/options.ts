@@ -67,6 +67,12 @@ export interface SandboxRouteOptions {
     organizationId: string,
     input: NewBountyProfile,
   ) => Promise<void>;
+  /**
+   * Where a version asked for before its slice was ready is remembered, for
+   * the cutter to cut once it is (`cutter.ts`). Absent, such a request is
+   * answered with where the slice stands and nothing more.
+   */
+  readonly cuts?: Pick<SandboxStore, "requestCut" | "clearCut">;
   readonly ensureWorker: () => Promise<void>;
   readonly maxActive?: number;
   readonly onLaunchError?: () => void;

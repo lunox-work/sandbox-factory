@@ -202,7 +202,12 @@ export type {
 } from "./schema.js";
 export { NotFoundError, RepositoryInUseError } from "./errors.js";
 export type { Database } from "./errors.js";
-export { createAnalysisRunStore } from "./analysis-runs.js";
+export {
+  createAnalysisRunStore,
+  RUN_ENDED_CHANNEL,
+  RUN_QUEUED_CHANNEL,
+  WORKER_APPLICATION_NAME,
+} from "./analysis-runs.js";
 export type {
   AnalysisRunStore,
   StoredAnalysisRun,
@@ -220,6 +225,7 @@ export type {
   CreateVersionResult,
   LinkSourceResult,
   NewSandboxVersion,
+  PendingCut,
   NewSlicedSource,
   NewStarterSource,
   ReplayContext,

@@ -1068,8 +1068,8 @@ test("registering reads the head before answering, so the row comes back ok", as
 });
 
 test("a repository outside the installation cannot be registered by id", async () => {
-  // Public repositories are readable with any token; the installation's own
-  // listing is what decides.
+  // Public repositories are readable with any token; a token narrowed to
+  // the repository is what decides.
   const stores = memoryGithub();
   const connectionId = await seedConnection(stores, "org_1", "9");
   const { app } = appWith({ stores });
@@ -1091,6 +1091,22 @@ test("a repository outside the installation cannot be registered by id", async (
     (await register({ externalId: "1296269", role: "sandbox" })).status,
     400,
   );
+  assert.equal(stores.repos.rows.size, 0);
+  // Readable, but not the installation's: GitHub will not narrow a token
+  // to it, and that is the refusal.
+  const outside = appWith({
+    stores,
+    world: world({ outsideInstallation: [1296269] }),
+  });
+  const refused = await outside.app.request(
+    `/api/v1/orgs/org_1/github/connections/${connectionId}/repositories`,
+    {
+      method: "POST",
+      headers: { ...signedIn, "content-type": "application/json" },
+      body: JSON.stringify({ externalId: "1296269", role: "source" }),
+    },
+  );
+  assert.equal(refused.status, 404);
   assert.equal(stores.repos.rows.size, 0);
 });
 

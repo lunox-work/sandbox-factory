@@ -202,18 +202,18 @@ export function mountJiraRoutes<Env extends JiraAppEnv>(
     const known = new Set(
       (await boards.list(organizationId)).map(({ id }) => id),
     );
-    const recorded: JiraBoardSummary[] = [];
-    for (const board of visible) {
-      recorded.push(
-        await boards.sync(organizationId, {
+    // Each board is its own row: written together, in the listing's order.
+    const recorded: JiraBoardSummary[] = await Promise.all(
+      visible.map((board) =>
+        boards.sync(organizationId, {
           connectionId,
           externalId: String(board.id),
           name: board.name,
           boardType: board.type,
           projectKey: board.projectKey,
         }),
-      );
-    }
+      ),
+    );
     await boards.markMissing(
       organizationId,
       connectionId,
@@ -367,45 +367,48 @@ export function mountJiraRoutes<Env extends JiraAppEnv>(
       // Every granted site is recorded. Asking the user to pick one here would
       // mean holding the tokens somewhere while they choose; a connection per
       // site is cheap, and a board is registered against one of them later.
-      for (const site of sites) {
-        const connection = await connections.upsert(organizationId, {
-          cloudId: site.cloudId,
-          siteUrl: site.url,
-          siteName: site.name,
-          accessToken: tokens.accessToken,
-          refreshToken: tokens.refreshToken ?? null,
-          expiresAt: tokens.expiresAt,
-          scopes: tokens.scopes,
-          resourceScopes: site.scopes,
-        });
+      // Each is its own connection, so they are recorded together.
+      await Promise.all(
+        sites.map(async (site) => {
+          const connection = await connections.upsert(organizationId, {
+            cloudId: site.cloudId,
+            siteUrl: site.url,
+            siteName: site.name,
+            accessToken: tokens.accessToken,
+            refreshToken: tokens.refreshToken ?? null,
+            expiresAt: tokens.expiresAt,
+            scopes: tokens.scopes,
+            resourceScopes: site.scopes,
+          });
 
-        /*
-          Its boards, registered straight away.
+          /*
+            Its boards, registered straight away.
 
-          Connecting a site *is* the choice — a board registration records a
-          pointer and nothing else, reads no tickets, and costs nothing until
-          someone previews or runs one. Making the user then pick boards one by
-          one was asking them to repeat a decision they had already made.
+            Connecting a site *is* the choice — a board registration records a
+            pointer and nothing else, reads no tickets, and costs nothing until
+            someone previews or runs one. Making the user then pick boards one by
+            one was asking them to repeat a decision they had already made.
 
-          Deliberately not awaited for its success: a site whose grant is
-          missing the Agile scopes, or which answers slowly, must still end as
-          a connected site. The sync runs again whenever the site's page is
-          opened, so a failure here costs a round trip rather than the boards.
+            Deliberately not awaited for its success: a site whose grant is
+            missing the Agile scopes, or which answers slowly, must still end as
+            a connected site. The sync runs again whenever the site's page is
+            opened, so a failure here costs a round trip rather than the boards.
 
-          Nothing is sized. Each board's backlog scan — the categories read
-          from ticket metadata, which costs no model call — is imported as
-          bounties with their scope filled from Jira, and a bounty is
-          sized when someone asks. Sizing every board on connect made the
-          first minutes of a workspace its most expensive.
-        */
-        try {
-          await syncBoards(organizationId, connection.id);
-        } catch {
-          // Swallowed on purpose. The result is discarded for the same
-          // reason: a site that granted no Agile scope is still a connected
-          // site, and the page says so when the sync fails there too.
-        }
-      }
+            Nothing is sized. Each board's backlog scan — the categories read
+            from ticket metadata, which costs no model call — is imported as
+            bounties with their scope filled from Jira, and a bounty is
+            sized when someone asks. Sizing every board on connect made the
+            first minutes of a workspace its most expensive.
+          */
+          try {
+            await syncBoards(organizationId, connection.id);
+          } catch {
+            // Swallowed on purpose. The result is discarded for the same
+            // reason: a site that granted no Agile scope is still a connected
+            // site, and the page says so when the sync fails there too.
+          }
+        }),
+      );
 
       const missing = missingScopes(tokens.scopes);
       return c.redirect(

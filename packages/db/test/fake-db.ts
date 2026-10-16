@@ -8,7 +8,7 @@
 import type { Database, Transaction } from "../src/errors.js";
 
 export interface FakeCall {
-  readonly kind: "select" | "insert" | "update" | "delete";
+  readonly kind: "select" | "insert" | "update" | "delete" | "execute";
   readonly values?: Record<string, unknown>;
   /**
    * The `set` clause of an upsert's conflict branch, when there was one.
@@ -184,6 +184,15 @@ function createFakeDbWith(rowsForQuery: RowsProvider): FakeDb {
       const call: FakeCall = { kind: "delete" };
       calls.push(call);
       return chain(response, undefined, markFiltered(call));
+    },
+    /**
+     * Raw statements: a store's `pg_notify`. Recorded, and answered with no
+     * rows without taking a sequenced response, so a notification does not
+     * shift the answers the queries around it expect.
+     */
+    execute: (query: unknown) => {
+      calls.push({ kind: "execute", values: { query } });
+      return Promise.resolve([]);
     },
     transaction: async (work: (transaction: unknown) => Promise<unknown>) =>
       work(db),

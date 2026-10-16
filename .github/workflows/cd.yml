@@ -451,8 +451,12 @@ jobs:
             .containerDefinitions[0].image = $image
             | .containerDefinitions[0].environment =
                 ((.containerDefinitions[0].environment // [])
-                 | map(select(.name != "AGENT_MODEL"))
-                 + [{name: "AGENT_MODEL", value: "claude-opus-5-5"}])
+                 | map(select(.name as $n
+                     | ["AGENT_MODEL", "WORKER_MODE", "WORKER_IDLE_EXIT_MINUTES"]
+                     | index($n) | not))
+                 + [{name: "AGENT_MODEL", value: "claude-opus-5-5"},
+                    {name: "WORKER_MODE", value: "poll"},
+                    {name: "WORKER_IDLE_EXIT_MINUTES", value: "15"}])
             | if $anthropic == "" or $anthropic == "None" then .
               else .containerDefinitions[0].secrets =
                 ((.containerDefinitions[0].secrets // [])

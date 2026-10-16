@@ -33,7 +33,7 @@ import type {
   AnalysisTool,
   ArtifactKind,
 } from "sandbox-factory";
-import type { Database } from "./errors.js";
+import type { Database, QueryExecutor } from "./errors.js";
 import { generateId } from "./mapping.js";
 import {
   analysisRun,
@@ -44,6 +44,25 @@ import {
   repoSnapshot,
 } from "./schema.js";
 import type { AnalysisRunRow } from "./schema.js";
+
+/**
+ * What the queue announces, with Postgres `NOTIFY`. A notification is sent
+ * inside the write's transaction, so it arrives once the write is visible.
+ * Its payload is the run's id, a hint only: a listener reads the queue
+ * again, and keeps its own timer for a notification it never received.
+ */
+export const RUN_QUEUED_CHANNEL = "analysis_run_queued";
+/** A run succeeded or failed, so whatever waited on it can move. */
+export const RUN_ENDED_CHANNEL = "analysis_run_ended";
+/**
+ * The `application_name` a worker's connections carry, so the launcher can
+ * see a worker that is alive but idle, which has no run to heartbeat.
+ */
+export const WORKER_APPLICATION_NAME = "sandbox-factory-worker";
+
+async function announce(tx: QueryExecutor, channel: string, runId: string) {
+  await tx.execute(sql`select pg_notify(${channel}, ${runId})`);
+}
 
 export interface StoredAnalysisRun {
   readonly id: string;
@@ -194,7 +213,10 @@ export interface AnalysisRunStore {
   failExpired(organizationId: string, now: Date): Promise<number>;
   /** Privileged watchdog discovery, followed by owner-scoped updates. */
   organizationsWithExpiredRuns(now: Date): Promise<string[]>;
-  /** Privileged queue health, used to launch the trusted worker. */
+  /**
+   * Privileged queue health, used to launch the trusted worker. A worker is
+   * fresh while it heartbeats a run, or while it is connected and idle.
+   */
   queueState(now: Date): Promise<{ queued: boolean; freshWorker: boolean }>;
   logKey(organizationId: string, runId: string): Promise<string | null>;
 }
@@ -406,6 +428,7 @@ export function createAnalysisRunStore(db: Database): AnalysisRunStore {
         const row = rows[0] as AnalysisRunRow | undefined;
         if (row === undefined)
           throw new Error("Analysis enqueue did not return a row.");
+        await announce(tx, RUN_QUEUED_CHANNEL, row.id);
         return {
           ok: true,
           run: toRun(row, repoId),
@@ -558,10 +581,16 @@ export function createAnalysisRunStore(db: Database): AnalysisRunStore {
           )
           .returning({ id: analysisRun.id });
         if (rows.length === 0) return false;
-        for (const item of artifacts)
-          await tx
-            .insert(artifact)
-            .values({ id: generateId("art"), runId: id, ...item });
+        // One statement for them all: a graph writes dozens.
+        if (artifacts.length > 0)
+          await tx.insert(artifact).values(
+            artifacts.map((item) => ({
+              id: generateId("art"),
+              runId: id,
+              ...item,
+            })),
+          );
+        await announce(tx, RUN_ENDED_CHANNEL, id);
         return true;
       });
     },
@@ -579,7 +608,9 @@ export function createAnalysisRunStore(db: Database): AnalysisRunStore {
         })
         .where(fence(owner, id, token, now))
         .returning({ id: analysisRun.id });
-      return rows.length > 0;
+      if (rows.length === 0) return false;
+      await announce(db, RUN_ENDED_CHANNEL, id);
+      return true;
     },
     async release(owner, id, token, now) {
       const rows = await db
@@ -592,7 +623,9 @@ export function createAnalysisRunStore(db: Database): AnalysisRunStore {
         })
         .where(fence(owner, id, token, now))
         .returning({ id: analysisRun.id });
-      return rows.length > 0;
+      if (rows.length === 0) return false;
+      await announce(db, RUN_QUEUED_CHANNEL, id);
+      return true;
     },
     async recordTiming(owner, id, timing) {
       const rows = await db
@@ -622,7 +655,15 @@ export function createAnalysisRunStore(db: Database): AnalysisRunStore {
           heartbeatAt: null,
         })
         .where(and(owned(owner), expired(now)))
-        .returning({ id: analysisRun.id });
+        .returning({ id: analysisRun.id, status: analysisRun.status });
+      // A run that has attempts left is queued again; one that has not has
+      // ended, and whatever waited on it fails with it.
+      for (const row of rows)
+        await announce(
+          db,
+          row.status === "queued" ? RUN_QUEUED_CHANNEL : RUN_ENDED_CHANNEL,
+          row.id,
+        );
       return rows.length;
     },
     async organizationsWithExpiredRuns(now) {
@@ -649,7 +690,18 @@ export function createAnalysisRunStore(db: Database): AnalysisRunStore {
           ),
         )
         .limit(1);
-      return { queued: queued.length > 0, freshWorker: fresh.length > 0 };
+      if (fresh.length > 0)
+        return { queued: queued.length > 0, freshWorker: true };
+      // A polling worker between runs heartbeats nothing, but it holds a
+      // connection to wait for the next enqueue on.
+      const idle = await db
+        .select({ pid: sql<number>`pid` })
+        .from(sql`pg_stat_activity`)
+        .where(
+          sql`application_name = ${WORKER_APPLICATION_NAME} and datname = current_database()`,
+        )
+        .limit(1);
+      return { queued: queued.length > 0, freshWorker: idle.length > 0 };
     },
     async logKey(owner, id) {
       const row = (

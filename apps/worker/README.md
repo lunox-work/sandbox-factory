@@ -424,8 +424,13 @@ API service group before registering worker revisions.
 Apply the worker ECR repository, egress-only security group, task role, task
 definition and API launcher settings. Then CD builds and pushes the worker,
 registers a revision, runs database migrations and updates the API. There is no
-worker service: the API launches Fargate batches using the latest ACTIVE family
-revision. Terraform ignores the worker's container definition after bootstrap,
+worker service: the API launches Fargate tasks using the latest ACTIVE family
+revision. A task polls (`WORKER_MODE=poll`), wakes on the queue's `NOTIFY`
+(`analysis_run_queued`, `analysis_run_ended`) rather than its five-second poll,
+and exits after `WORKER_IDLE_EXIT_MINUTES` (15) without a run, so a burst pays
+one cold start. Its connections carry `application_name`
+`sandbox-factory-worker`, which is how the launcher sees an idle task and does
+not start a second. Terraform ignores the worker's container definition after bootstrap,
 so an unrelated apply cannot replace the latest worker image with bootstrap.
 Container environment or secret-list changes must be applied to the active
 revision through CD when that list changes.

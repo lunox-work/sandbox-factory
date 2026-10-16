@@ -8,7 +8,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { test } from "node:test";
 import { repositoryToken } from "../src/credentials.js";
 import { executeRun } from "../src/run.js";
-import { workerLoop } from "../src/loop.js";
+import { wakeableWait, workerLoop } from "../src/loop.js";
 import { parseWorkerEnv } from "../src/env.js";
 import { uploadArtifacts } from "../src/upload.js";
 import { AnalysisError } from "../src/errors.js";
@@ -642,6 +642,41 @@ test("once drains the queue, poll waits, and stop prevents further claims", asyn
     /offline/,
   );
 });
+test("a polling worker stays warm for its idle minutes after a run, then returns", async () => {
+  let clock = 0;
+  let claims = 0;
+  const waits: number[] = [];
+  await workerLoop({
+    runs: { claimNext: async () => (++claims === 2 ? run : null) },
+    mode: "poll",
+    signal: new AbortController().signal,
+    execute: async () => {},
+    wait: async () => {
+      waits.push(clock);
+      clock += 4_000;
+    },
+    idleExitMs: 10_000,
+    now: () => clock,
+  });
+  // Idle 0 s, a run at 4 s, then idle from 4 s until 14 s.
+  assert.deepEqual(waits, [0, 4_000, 8_000, 12_000]);
+  assert.equal(claims, 6);
+});
+test("the poll's wait ends early on a wake, keeps one that came first, and ends on stop", async () => {
+  const stop = new AbortController();
+  const idle = wakeableWait(60_000, stop.signal);
+  const started = Date.now();
+  const waiting = idle.wait();
+  idle.wake();
+  await waiting;
+  // Woken before the wait: it does not wait at all, once.
+  idle.wake();
+  await idle.wait();
+  assert.ok(Date.now() - started < 1_000);
+  const stopped = idle.wait();
+  stop.abort();
+  await assert.rejects(stopped);
+});
 test("worker validates credentials, modes, and bounded limits", () => {
   const privateKey = generateKeyPairSync("rsa", { modulusLength: 2048 })
     .privateKey.export({ type: "pkcs8", format: "pem" })
@@ -653,6 +688,15 @@ test("worker validates credentials, modes, and bounded limits", () => {
     GITHUB_APP_PRIVATE_KEY: privateKey,
   };
   assert.equal(parseWorkerEnv(env).WORKER_MODE, "once");
+  assert.equal(parseWorkerEnv(env).WORKER_IDLE_EXIT_MINUTES, undefined);
+  assert.equal(
+    parseWorkerEnv({ ...env, WORKER_IDLE_EXIT_MINUTES: "15" })
+      .WORKER_IDLE_EXIT_MINUTES,
+    15,
+  );
+  assert.throws(() =>
+    parseWorkerEnv({ ...env, WORKER_IDLE_EXIT_MINUTES: "0" }),
+  );
   assert.equal(
     parseWorkerEnv({
       ...env,

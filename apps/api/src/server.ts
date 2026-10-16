@@ -29,6 +29,7 @@ import {
   createRateCardStore,
   createSandboxStore,
   createTokenCipher,
+  RUN_ENDED_CHANNEL,
   type NewBountyProfile,
 } from "@sandbox-factory/db";
 
@@ -61,6 +62,8 @@ import { GithubSnapshotter } from "./github/snapshot.js";
 import { resolveImageDigest } from "./image-digest.js";
 import { jiraClientFor, jiraClientsFor } from "./jira/credential.js";
 import { createApp } from "./routes.js";
+import { SandboxCutter } from "./sandbox/cutter.js";
+import { versionService } from "./sandbox/version-service.js";
 import { syncGithub } from "./bounties/context.js";
 import {
   builtAt,
@@ -448,12 +451,14 @@ const analysis =
         specs: bountySpecs,
         boards: jiraBoards,
       };
+const sandboxStore = createSandboxStore(connection.db);
 /** Sandbox versions, on the same footing as analysis: object storage and a worker. */
 const sandbox =
   analysis === undefined
     ? undefined
     : {
-        sandboxes: createSandboxStore(connection.db),
+        sandboxes: sandboxStore,
+        cuts: sandboxStore,
         runs: analysisRuns,
         artifacts: analysis.artifacts,
         objects: analysis.objects,
@@ -500,8 +505,26 @@ const bountyProfiler =
         ensureWorker: () => workerLauncher.ensureWorker(),
         removeObject: (key) => analysis.objects.remove(key),
         maxActive: env.MAX_ACTIVE_RUNS_PER_ORG,
-        onSettled: (owner, profile) => rubricPricer.settled(owner, profile),
+        onSettled: async (owner, profile) => {
+          try {
+            await rubricPricer.settled(owner, profile);
+          } finally {
+            sandboxCutter?.kick();
+          }
+        },
         onError: (code, error) => console.error(code, error),
+      });
+/**
+ * The versions asked for before their slice was ready, cut once the
+ * profiler settles it (`sandbox/cutter.ts`).
+ */
+const sandboxCutter =
+  sandbox === undefined || bountyProfiler === undefined
+    ? undefined
+    : new SandboxCutter({
+        sandboxes: sandboxStore,
+        slice: versionService(sandbox).slice,
+        onError: (code, error) => console.error(code, describeError(error)),
       });
 const analysisWatchdog =
   analysis === undefined
@@ -594,7 +617,16 @@ const bountyWatchdog = new BountyWatchdog({
 bountyWatchdog.start();
 analysisWatchdog?.start();
 bountyProfiler?.start();
+sandboxCutter?.start();
 githubReconciler?.start();
+// The worker announces each run it ends; the profiler moves on it at once
+// rather than on its next sweep, which stays for a notification missed.
+if (bountyProfiler !== undefined)
+  connection
+    .listen(RUN_ENDED_CHANNEL, () => bountyProfiler.kick())
+    .catch((error: unknown) =>
+      console.error("analysis_run_listen_failed", describeError(error)),
+    );
 
 const server = serve({ fetch: app.fetch, port: env.PORT }, (info) => {
   // First log line names the build. Logs outlive the deployment, whereas
@@ -614,6 +646,7 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
       githubReconciler?.stop(),
       analysisWatchdog?.stop(),
       bountyProfiler?.stop(),
+      sandboxCutter?.stop(),
       githubSnapshotter?.stop(),
     ]).then(() => {
       server.close(() => {

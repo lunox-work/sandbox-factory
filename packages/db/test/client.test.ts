@@ -40,3 +40,19 @@ test("the handle exposes drizzle's query builder", async () => {
   assert.equal(typeof connection.db.select, "function");
   await connection.close();
 });
+
+test("createConnection names its connections when asked", async () => {
+  const connection = createConnection({
+    url: UNUSED_URL,
+    max: 1,
+    applicationName: "sandbox-factory-worker",
+  });
+  assert.equal(typeof connection.db.select, "function");
+  await connection.close();
+});
+
+test("listen needs a server, and says so rather than hanging", async () => {
+  const connection = createConnection({ url: UNUSED_URL });
+  await assert.rejects(connection.listen("analysis_run_queued", () => {}));
+  await connection.close();
+});

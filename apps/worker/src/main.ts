@@ -6,12 +6,15 @@ import {
   createConnection,
   createObjectStore,
   createSandboxStore,
+  RUN_ENDED_CHANNEL,
+  RUN_QUEUED_CHANNEL,
+  WORKER_APPLICATION_NAME,
 } from "@sandbox-factory/db";
 import type { ClaimedAnalysisRun } from "@sandbox-factory/db";
 import { InstallationTokens } from "@sandbox-factory/github";
 import { repositoryToken } from "./credentials.js";
 import { parseWorkerEnv } from "./env.js";
-import { workerLoop } from "./loop.js";
+import { IDLE_POLL_MS, wakeableWait, workerLoop } from "./loop.js";
 import { executeRun } from "./run.js";
 import { createAnthropicModel } from "./agent/anthropic.js";
 import type { AgentSettings } from "./agent/loop.js";
@@ -28,7 +31,13 @@ import { createSliceAdapter } from "./tools/slice.js";
 import { createStarterAdapter } from "./tools/starter.js";
 
 const env = parseWorkerEnv();
-const connection = createConnection({ url: env.DATABASE_URL, max: 3 });
+// Named, so the launcher sees this worker while it is idle and has no run
+// to heartbeat.
+const connection = createConnection({
+  url: env.DATABASE_URL,
+  max: 3,
+  applicationName: WORKER_APPLICATION_NAME,
+});
 const runs = createAnalysisRunStore(connection.db);
 const artifacts = createArtifactStore(connection.db);
 const sandboxes = createSandboxStore(connection.db);
@@ -102,11 +111,23 @@ for (const signal of ["SIGINT", "SIGTERM"] as const)
     grace ??= setTimeout(() => stopCurrent.abort(), 60_000);
     grace.unref();
   });
+// A polling worker claims the moment a run is queued, or a run another
+// one waits on ends, rather than on its next poll.
+const idle = wakeableWait(IDLE_POLL_MS, stopClaiming.signal);
+if (env.WORKER_MODE === "poll")
+  for (const channel of [RUN_QUEUED_CHANNEL, RUN_ENDED_CHANNEL])
+    await connection
+      .listen(channel, () => idle.wake())
+      .catch(() => console.error("analysis_run_listen_failed"));
 try {
   await workerLoop({
     runs,
     mode: env.WORKER_MODE,
     signal: stopClaiming.signal,
+    wait: () => idle.wait(),
+    ...(env.WORKER_IDLE_EXIT_MINUTES === undefined
+      ? {}
+      : { idleExitMs: env.WORKER_IDLE_EXIT_MINUTES * 60_000 }),
     execute: async (run) => {
       await executeRun(run, {
         runs,

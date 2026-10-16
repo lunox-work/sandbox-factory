@@ -751,6 +751,14 @@ test("a repository is registered from what the installation can see, and built b
   expect(
     await within(dialog).findByText(/Every repository the App can see/),
   ).toBeDefined();
+  // GitHub's listing was read once, to open the dialog: registering marks
+  // it rather than reading it again.
+  expect(
+    calls.filter(
+      (call) =>
+        call === "GET /api/v1/orgs/org_1/github/connections/ghc_1/repositories",
+    ),
+  ).toHaveLength(1);
 
   // Its first build runs here, and holds the dialog open until it is done.
   const build = await within(dialog).findByTestId("repository-build");

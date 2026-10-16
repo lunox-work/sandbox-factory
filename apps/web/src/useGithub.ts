@@ -253,7 +253,11 @@ export interface GithubRepos {
   loading: boolean;
   error: string | null;
   refresh: () => Promise<void>;
-  register: (connectionId: string, externalId: string) => Promise<Result>;
+  /** The registered row, which the installation's listing is marked with. */
+  register: (
+    connectionId: string,
+    externalId: string,
+  ) => Promise<Result<GithubRepoDto>>;
   remove: (repoId: string) => Promise<Result>;
 }
 
@@ -278,14 +282,21 @@ export function useGithubRepos(
   }, [query.refresh]);
 
   const register = useCallback(
-    async (connectionId: string, externalId: string): Promise<Result> => {
+    async (
+      connectionId: string,
+      externalId: string,
+    ): Promise<Result<GithubRepoDto>> => {
       if (organizationId === undefined) {
         return { ok: false, error: "Could not register that repository." };
       }
       try {
-        await clients.github.register(organizationId, connectionId, externalId);
+        const repository = await clients.github.register(
+          organizationId,
+          connectionId,
+          externalId,
+        );
         await refresh();
-        return { ok: true, value: undefined };
+        return { ok: true, value: repository };
       } catch (error) {
         return failureOf(error, "Could not reach the server.");
       }

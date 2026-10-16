@@ -628,27 +628,21 @@ export function mountPricingRoutes<Env extends PricingAppEnv>(
         return c.json({ error: "Not found" }, 404);
       }
     }
-    const live = await freshProposal(
-      reviewOptions(options),
-      organizationId,
-      proposal,
-    );
+    // The stored reads do not wait on Jira's.
+    const [live, writebackOperations, activeRun] = await Promise.all([
+      freshProposal(reviewOptions(options), organizationId, proposal),
+      options.writebacks === undefined
+        ? []
+        : options.writebacks.listForProposal(organizationId, proposal.id),
+      options.runs.activeForProposal(organizationId, proposal.id),
+    ]);
     const { proposal: stored, liveSpec, ...freshness } = live;
     return c.json({
       proposal: stored,
       liveSpec: liveSpec ?? null,
       freshness,
-      writebackOperations:
-        options.writebacks === undefined
-          ? []
-          : await options.writebacks.listForProposal(
-              organizationId,
-              proposal.id,
-            ),
-      activeRun: await options.runs.activeForProposal(
-        organizationId,
-        proposal.id,
-      ),
+      writebackOperations,
+      activeRun,
     });
   });
 

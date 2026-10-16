@@ -33,6 +33,7 @@ function deps(run: MigrateDeps["run"] = async () => {}): {
         maxes.push(max);
         return {
           db: {} as Database,
+          listen: () => Promise.reject(new Error("not listening")),
           close: async () => {
             closes += 1;
           },

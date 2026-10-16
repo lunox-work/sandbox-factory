@@ -108,8 +108,10 @@ test("a starter run reads no snapshot: it is the organization's, cached under it
   if (!result.ok) return;
   assert.equal(result.run.snapshotId, null);
   assert.equal(result.run.repoId, null);
-  // No snapshot was looked up: owner lock, cache, spend cap, insert.
-  assert.equal(fake.calls.length, 4);
+  // No snapshot was looked up: owner lock, cache, spend cap, insert, and
+  // the notification a waiting worker wakes on.
+  assert.equal(fake.calls.length, 5);
+  assert.equal(fake.calls[4]?.kind, "execute");
   assert.equal(fake.calls[3]?.values?.["organizationId"], "owner");
   assert.equal(fake.calls[3]?.values?.["snapshotId"], null);
   // A tool reads a snapshot exactly when it reads source.
@@ -537,6 +539,20 @@ test("lease mutations refuse stale writes; finish inserts artifacts only after a
       present,
     );
     assert.equal(await store.failExpired("owner", now), present ? 1 : 0);
+    // finish, fail, release and the expiry each announce; a fenced-out
+    // write announces nothing.
+    assert.equal(
+      fake.calls.filter((call) => call.kind === "execute").length,
+      present ? 4 : 0,
+    );
+    if (present) {
+      const retried = createFakeDb([{ id: "run", status: "queued" }]);
+      await createAnalysisRunStore(retried.db).failExpired("owner", now);
+      assert.equal(
+        retried.calls.filter((call) => call.kind === "execute").length,
+        1,
+      );
+    }
     assert.ok(
       fake.calls
         .filter((call) => call.kind === "update")
@@ -578,6 +594,13 @@ test("watchdog discovery deduplicates owners and reads queue health", async () =
   assert.deepEqual(
     await createAnalysisRunStore(createFakeDb([]).db).queueState(now),
     { queued: false, freshWorker: false },
+  );
+  // No run heartbeats, but a polling worker is connected and idle.
+  assert.deepEqual(
+    await createAnalysisRunStore(
+      createSequencedFakeDb([[{ id: "queued" }], [], [{ pid: 7 }]]).db,
+    ).queueState(now),
+    { queued: true, freshWorker: true },
   );
 });
 test("artifacts are owner-scoped and never convert dates or expose an absent row incorrectly", async () => {
