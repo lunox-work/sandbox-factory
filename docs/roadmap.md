@@ -75,6 +75,19 @@ Order: the repository's tests first, the largest gain; then calls nobody gave
 behaviour, which builds on the fixtures every sliced build now writes; then
 strictness, measured best once merged pull requests can be replayed.
 
+### More of the repository's model
+
+The context builders cover TypeScript, JavaScript, Python, Go and Java
+surfaces and Prisma, Drizzle and Postgres migration schemas. Still proposed,
+each with a fixture: a syntactic tier for Rust, Kotlin, C#, Ruby and PHP; a
+Python `typed` tier through `stubgen --parse-only`, which runs no code;
+recognizers for TypeORM, Django, SQLAlchemy, Rails `schema.rb`, GORM, JPA and
+Mongoose; and deterministic sample rows per entity that satisfy every foreign
+key, which needs the build to generate a module fixtures may reference, since
+a fixture is one function expression and cannot import. An ephemeral database
+that runs the migrations was rejected for a builder: it executes repository
+SQL, so it belongs in the evaluation provider if anywhere.
+
 ## Merge-back
 
 ### The goal

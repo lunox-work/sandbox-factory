@@ -59,11 +59,6 @@ warning. With `--no-wait`, local main is refreshed when the script returns, not
 when the future merge happens; run `git pull --ff-only` before your next change.
 If checkout or fast-forward fails, the script warns and preserves your work.
 
-Policy changes (workflows, scripts, dependency/test configuration, infra) merge
-like any other change: once CI passes.
-Open a draft to hold one back. Dependabot majors and forks are not
-automatically merged.
-
 ## `rotate-token.sh`
 
 Two jobs: the GitHub token auto-merge uses, and the production app secrets.
@@ -79,19 +74,11 @@ Two jobs: the GitHub token auto-merge uses, and the production app secrets.
 
 ### `AUTO_MERGE_TOKEN`
 
-`auto-merge.yml` merges with this token rather than the default `GITHUB_TOKEN`,
-because GitHub raises no events for pushes made with the default token. `ci.yml`
-and `cd.yml` trigger on `push` to `main`, so a merge performed with the default
-token lands and **nothing deploys**.
-
-An absent or unusable token fails the auto-merge workflow. It never falls back
-to `GITHUB_TOKEN`, so a token failure cannot silently merge without triggering
-CI and CD. Use `--check` to validate the stored token and rotate it when needed.
-
-The token is a fine-grained PAT scoped to this repository, with **Contents** and
-**Pull requests** read and write. Resource owner must be **lunox-work**, not a
-personal account. If the org enforces PAT approval the token is inert until an
-owner approves it, which the script reports as "cannot see the repo".
+Why auto-merge needs its own token is in [ci.md](../docs/ci.md#auto-merge).
+The token is a fine-grained PAT scoped to this repository, with **Contents**
+and **Pull requests** read and write. Resource owner must be **lunox-work**,
+not a personal account. If the org enforces PAT approval the token is inert
+until an owner approves it, which the script reports as "cannot see the repo".
 
 - **Minting is a browser step.** GitHub has no API for issuing a PAT. The script
   validates what you minted, stores it, and verifies the write.

@@ -184,7 +184,7 @@ relevant reading set for your task.
 | [docs/github-apps.md](./docs/github-apps.md)     | Installed apps and settings that live outside files |
 | [scripts/README.md](./scripts/README.md)         | `ship.sh` and `rotate-token.sh`                     |
 | [infra/README.md](./infra/README.md)             | The AWS deployment                                  |
-| [apps/worker/README.md](./apps/worker/README.md) | Analysis adapters, artifacts, evaluation limits     |
+| [apps/worker/README.md](./apps/worker/README.md) | Analysis tools, artifacts, evaluation limits        |
 
 ## Contributing and security
 

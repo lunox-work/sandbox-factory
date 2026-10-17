@@ -19,6 +19,15 @@ Postgres and SeaweedFS and checks that required integration coverage ran; see
 [ci.md](./ci.md#ci-ciyml). Add service-dependent tests only for behavior a fake
 cannot verify, preserving the service-free local verification path.
 
+Bounty concurrency checks run separately with
+`npm run test:bounty-concurrency --workspace @sandbox-factory/db` and an explicit
+`DATABASE_URL` for a disposable Postgres service. Unlike ordinary tests this
+suite fails when Postgres is unavailable; CI runs it sequentially after `npm test`.
+The same command runs `bounty-migration.integration.ts`, which checks the
+hand-written backfills of migrations 0045 and 0046 on scratch databases. For
+local S3 verification, set `TEST_S3_ENDPOINT` to a disposable SeaweedFS port;
+never derive integration configuration from production environment files.
+
 - Node tests run compiled `dist-test/` output via `tsconfig.test.json`; do not
   introduce a runner that executes TypeScript directly.
 - Coverage thresholds live in workspace scripts: 90% for packages, 80% for API,
@@ -35,7 +44,7 @@ cannot verify, preserving the service-free local verification path.
   Confirm a UI regression test fails before the fix.
 - Extension tests use `node:test` with a fake `Host`. Keep logic in `commands.ts`,
   `task.ts` and `origin.ts`; only `extension.ts` imports `vscode`. That entry point,
-  `build.js` and type-only `host.js` are excluded from coverage.
+  `build.ts` and type-only `host.ts` are excluded from coverage.
 - Core's `*-laws.test.ts` and `*-properties.test.ts` check what a rule
   promises of every input rather than of chosen examples: the pricing
   arithmetic and stage rules over their whole bounded domain, handles,
@@ -151,16 +160,3 @@ reuse the volumes and may leave dependencies stale.
 Do not repair dependencies with `docker compose down -v`: Postgres and SeaweedFS
 have no profile restriction, so that also deletes persistent data. The targeted
 recreation used by Make preserves those services' volumes.
-
-Bounty concurrency checks run separately with
-`npm run test:bounty-concurrency --workspace @sandbox-factory/db` and an explicit
-`DATABASE_URL` for a disposable Postgres service. Unlike ordinary tests this
-suite fails when Postgres is unavailable; CI runs it sequentially after `npm test`.
-
-The concurrency suite also verifies atomic proposal/spec/profile-intent commit,
-rollback on an intent insertion failure, idempotency and discovery by a later
-sweep. The same command runs `bounty-migration.integration.ts`, which migrates
-scratch databases to just before migrations 0045 and 0046, seeds them, and
-checks each hand-written backfill against what its migration leaves. The regular DB tests retain service-free fakes. For local S3 verification,
-use the CI SeaweedFS fixture and set `TEST_S3_ENDPOINT` to its disposable localhost
-port; never derive integration configuration from production environment files.
