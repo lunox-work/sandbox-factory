@@ -24,7 +24,8 @@ attestation**, which is the part that is actually verifiable:
 gh attestation verify "oci://ghcr.io/lunox-work/sandbox-factory-api@$(
   curl -s https://platform.lunox.work/version | jq -r .imageDigest)" \
   --repo lunox-work/sandbox-factory \
-  --signer-workflow lunox-work/sandbox-factory/.github/workflows/cd.yml
+  --signer-workflow lunox-work/sandbox-factory/.github/workflows/cd.yml \
+  --source-ref refs/heads/main
 
 # Any file the CDN served you
 curl -sO https://platform.lunox.work/index.html
@@ -83,27 +84,13 @@ same step, so both registries hold one manifest with one digest. The mirror
 exists only so an outsider has something to pull — `verify` re-hashes what it
 pulls, and `gh api` alone would hand back the signed statement without checking
 its signature. A deploy fails if the mirror's digest is not what is about to
-run.
-
-```bash
-gh attestation verify "oci://ghcr.io/lunox-work/sandbox-factory-api@sha256:..." \
-  --repo lunox-work/sandbox-factory \
-  --signer-workflow lunox-work/sandbox-factory/.github/workflows/cd.yml \
-  --source-ref refs/heads/main
-```
-
-Both flags matter. Without them, an attestation from any workflow on any branch
-of this repository would satisfy the check.
+run. `--signer-workflow` and `--source-ref` both matter: without them, an
+attestation from any workflow on any branch of this repository would satisfy
+the check.
 
 **The SPA is verified per file.** cd.yml hands `attest-build-provenance` a
 checksum list covering every file in `dist`, so each is a subject of one signed
-statement and anyone can check what they were actually served:
-
-```bash
-curl -sO https://platform.lunox.work/index.html
-gh attestation verify index.html --repo lunox-work/sandbox-factory
-```
-
+statement and anyone can check what they were actually served.
 The script verifies `index.html`, reads the file list out of the statement it
 just verified, then downloads each file and compares hashes — so a file the CDN
 omits is noticed too. Subresource integrity was considered and rejected: SRI
@@ -136,30 +123,10 @@ something to enable by accident; the ARN belongs in `SECURITY.md` once it is on.
 ### What the environment can change
 
 The attestation covers the image, not the environment it was started with.
-`apps/api/src/env.ts` lists every variable the API reads and
-`apps/api/test/env-surface.test.ts` pins that list, so widening it is a reviewed
-change. None of them enables request logging — there is no log-level or debug variable to set, and adding one means
-updating that test.
-
-`S3_PUBLIC_ENDPOINT` optionally signs downloads against a browser-reachable S3
-gateway. Compose sets localhost while server storage calls use its internal
-SeaweedFS hostname; AWS leaves it unset.
-
-The analysis API additionally reads `WORKER_TASK_DEFINITION`, `WORKER_CLUSTER`,
-`WORKER_SUBNETS`, and `WORKER_SECURITY_GROUP` to launch the private source worker.
-They must be set together; omitted, Compose's worker polls the database.
-`WORKER_MAX_TASKS` caps the worker tasks the launcher keeps alive at once
-(default 4): it adds one beside those alive while the queue holds more runs of
-a kind than their slots run at once.
-`MAX_ACTIVE_RUNS_PER_ORG` bounds queued and running analyses (default 3),
-agent runs and builds counted apart.
-The worker reads storage and GitHub App credentials plus `WORKER_MODE`,
-`WORKER_IDLE_EXIT_MINUTES` (in `poll` mode, exit after that long without a
-run; unset, never), `MAX_TARBALL_BYTES` (default 200 MiB) and `MAX_FILES`
-(default 20,000).
-These limits change accepted workload size. Parser subprocesses receive none of
-the platform credentials. Analysis logs contain fixed lifecycle messages and
-public error codes, never raw subprocess output.
+`apps/api/src/env.ts` and `apps/worker/src/env.ts` list every variable each
+reads, with its default and what it bounds; `apps/api/test/env-surface.test.ts`
+pins the API's list, so widening it is a reviewed change. None of them enables
+request logging.
 
 ### Limits worth stating plainly
 
@@ -170,7 +137,6 @@ public error codes, never raw subprocess output.
 - **A targeted `index.html` is not detectable by its target alone.** We serve
   the document, so one specific visitor could be handed something else. They
   would find out only by running the verification above; nothing warns them.
-  This is why Signal ships no web app.
 - **Operations are not attested.** The code shows what enters the database. It
   cannot show who queried it afterwards, or where a backup went. That is what a
   DPA and an outside auditor are for, not a signature.
@@ -180,66 +146,28 @@ public error codes, never raw subprocess output.
   and the web files go up unsigned. Verification then fails loudly rather than
   passing on a false statement. Deploy forward to restore it.
 
-## Why the sha and not the version
+## What the footer says
 
-A version names a release, not a build. The deployed artifact, the signed
-tarball, the `.vsix`, any local build of that tag, and the docs-only commit
-after it all report the same version. Conversely, during a rolling deploy two
-artifacts from one commit can briefly report different versions.
+A version names a release, not a build: the deployed artifact, the signed
+tarball, the `.vsix` and the docs-only commit after a tag all report the
+same version. The commit sha is the one field that identifies a build, so
+it is what `sameBuild()` compares and what the attestation binds to. The
+footer always links the commit; it links the release only when
+`gitRef == releaseTag(version)`, which CD satisfies by compiling the tag it
+is about to cut into the artifact, so a build that merely carries a version
+never claims it shipped. The tag shape is `sandbox-factory-v1.0.0`, never
+`v1.0.0`: `releaseTag()` in `packages/shared/src/build-info.ts` is the one
+definition, pinned by a test, and `release.yml` once triggered on `v*` and
+published a release with no artifacts.
 
-The commit sha is the only field that identifies one build, which is why it is
-what `sameBuild()` compares and what the attestation binds to.
-
-## Which link the footer offers
-
-- **The commit** (`/commit/<sha>`) — always. It identifies this exact build and
-  resolves for every build there is.
-- **The release** (`/releases/tag/sandbox-factory-v1.0.0`) — only when this
-  build _is_ a tagged release. The gate is `gitRef == releaseTag(version)`; CD
-  compiles the tag it is about to cut into the artifact, so a deploy that
-  releases satisfies it. Local builds, PR builds and deploys that shipped
-  nothing releasable do not.
-
-The release is offered alongside the commit, never instead of it: a build that
-carries a version without being that release would otherwise claim it shipped.
-
-**One release is one sha.** The tag is cut on the deployed commit itself, so the
-footer, the release page, the asset filenames and the attestation all name the
-same commit. The release body repeats it as `Deployed commit:`.
-
-**The tag shape is `sandbox-factory-v1.0.0`, never `v1.0.0`.** The prefix is
-inherited from release-please and kept so existing releases are not orphaned.
-It is not cosmetic: `release.yml` once triggered on `v*`, never fired, and
-published a release with no artifacts and no error. `releaseTag()` in
-`packages/shared/src/build-info.ts` is the one definition, pinned by a test.
-
-## "Is this the repo head?" is the wrong question
-
-A deployed instance is usually **not** at `main`'s HEAD, and that is healthy —
-HEAD is whatever merged most recently, not what anyone decided to ship. Three
-answerable questions replace it:
-
-| Question                    | Answered by                       |
-| --------------------------- | --------------------------------- |
-| Which build am I running?   | the sha, always                   |
-| Is it the latest release?   | the version, against the tag list |
-| Was it built from our repo? | the attestation                   |
-
-## Web and API can legitimately differ
-
-They are built from one commit but deployed as two artifacts, so they drift:
-
-1. **Rolling deploys are not atomic** — one updates before the other.
-2. **An open tab holds an old bundle.** The main cause. `index.html` is
-   `no-cache`, but only a _reload_ re-fetches it.
-3. **A partial rollback** moves one and not the other.
-
-The footer shows a mismatch and does nothing about it. A reload prompt would
-fire during every rolling deploy and train people to dismiss it, and the state
-resolves itself on the next reload.
-
-An unidentified build on either side is _not_ a mismatch — the question is
-unanswerable, not answered "no" — so a local `docker compose up` stays quiet.
+Web and API are built from one commit but deployed as two artifacts, so the
+footer can show a mismatch during a rolling deploy, in a tab holding an old
+bundle, or after a partial rollback; it reports and does nothing, since the
+state resolves on reload. An unidentified build on either side is not a
+mismatch, so a local `docker compose up` stays quiet. A deployed instance
+is usually not at `main`'s head, and that is healthy. Ask which build (the
+sha), whether it is the latest release (the version against the tag list)
+and whether it was built from this repository (the attestation).
 
 ## How it is wired
 

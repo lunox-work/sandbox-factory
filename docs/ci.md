@@ -58,17 +58,12 @@ Each job runs `npm ci --ignore-scripts` → `npm run lint` → `npm run format:c
 → `npm run build` → `npm test` — the same sequence as `npm run verify`, which
 the pre-push hook runs. Keep them identical.
 
-CI also runs `npm run test:bounty-concurrency --workspace @sandbox-factory/db`
-sequentially after ordinary tests, against its disposable Postgres service.
-This scratch-database suite fails when Postgres is unavailable.
-
-CI then does three things `verify` does not: it runs against a **Postgres
-service container and a SeaweedFS fixture**, asserts the database-backed tests actually ran rather than
-skipping, and asserts the build recorded its commit. The S3 regression uploads
-a stream and downloads its signed URL, checking exact bytes and hash. It catches
-gateway incompatibilities such as optional AWS checksum trailer framing. Turbo
-passes the database URL and test S3 endpoint into the test tasks and their cache
-keys.
+CI then does what `verify` does not: it runs against a **Postgres service
+container and a SeaweedFS fixture**, runs the bounty concurrency suite
+sequentially after `npm test` (see [development.md](./development.md#container-dependencies)),
+asserts the database-backed tests ran rather than skipped, and asserts the
+build recorded its commit. Turbo passes the database URL and test S3 endpoint
+into the test tasks and their cache keys.
 
 - **Lint also checks import boundaries.** `npm run lint` runs each workspace's
   `tsc --noEmit`, then `npm run lint:deps`
@@ -92,13 +87,10 @@ keys.
   tree.
 
 The `Worker image smoke` job builds the pinned ARM64 worker image and runs the
-real Graphify fixture pipeline without credentials. It is in the checked-in
-required-check policy; apply that policy when enabling Phase 3 so a Python
-regression cannot merge while only the Node tests pass. The prerequisite DNS
-change must be applied before any worker launches; CD checks both the event
-filter and the Lambda's configured API service group before registering a worker
-revision. Worker tags are immutable, and rollback dispatches reuse existing
-worker images instead of rebuilding them.
+real Graphify fixture pipeline without credentials, so a Python regression
+cannot merge while only the Node tests pass. Worker image tags are immutable;
+a rollback dispatch reuses the existing worker image. Deployment
+prerequisites are in the [worker README](../apps/worker/README.md#deployment-order).
 
 The `Formal specs` job checks everything under [docs/specs](./specs/README.md):
 TLC, from the last stable TLA+ release pinned by checksum and cached under it,

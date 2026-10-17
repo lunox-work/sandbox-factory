@@ -1,14 +1,18 @@
 # Architecture
 
+The rules that hold across workspaces, with where each is enforced. Worker
+output contracts are in [apps/worker/README.md](../apps/worker/README.md);
+proposals are in the [roadmap](./roadmap.md).
+
 ## Dependency direction
 
-Dependencies point from apps into packages. Main paths below omit the
-`packages/` prefix; apps also import `shared` and `core` directly.
+Dependencies point from apps into packages. Apps also import `shared` and
+`core` directly.
 
 ```
 apps/web, apps/extension → client → shared → core
 apps/api, apps/worker    → db → core
-apps/api                → jira → shared
+apps/api                 → jira → shared
 apps/api, apps/worker    → github → shared
 ```
 
@@ -22,135 +26,45 @@ apps/api, apps/worker    → github → shared
 | `packages/github` | `shared`         | `client`, any app           |
 | `apps/*`          | any package      | another app                 |
 
-`npm run lint:deps` (dependency-cruiser, part of `npm run lint`) enforces this
-table plus two more rules: no unresolved imports and no runtime import cycles.
-The rules are in [`.dependency-cruiser.cjs`](../.dependency-cruiser.cjs); change
-its `packageDependencies` allowlist together with this table. Cycles that pass
-through a type-only import are allowed. The one accepted runtime cycle, between
-the auth and organization schema modules, is recorded in
-`.dependency-cruiser-known-violations.json`; do not add to that file to get a
-new cycle past CI.
+`npm run lint:deps` (dependency-cruiser, part of `npm run lint`) enforces the
+table, no unresolved imports and no runtime import cycles. The rules are in
+[`.dependency-cruiser.cjs`](../.dependency-cruiser.cjs); change its
+`packageDependencies` allowlist with this table. Type-only cycles are allowed.
+The one accepted runtime cycle (auth and organization schema modules) is in
+`.dependency-cruiser-known-violations.json`; do not add to that file.
 
-Three of these are load-bearing:
+Three rules are load-bearing:
 
 - **`packages/core` has zero dependencies.** It is bundled into a browser, a
-  Node server, and an extension host, and is the one publishable package.
-- **`packages/client` stays platform-neutral.** `fetch` only.
-  [`packages/client/tsconfig.json`](../packages/client/tsconfig.json) sets
-  `types: []`, so a `node:*` import fails to compile rather than breaking the
-  extension bundle at runtime. `lib` includes `DOM` only for the web-standard
-  `fetch`/`Headers`/`RequestInit` types.
-- **Only `apps/extension` may import `vscode`.** That module exists only in the
-  extension host; confining it is what lets the rest of the extension's logic
-  live in shared packages.
-
-`packages/db` sits beside `shared`: it depends on `core` and nothing else in the
-repo. Both `apps/api` and `apps/worker` import it.
+  Node server and an extension host, and is the one publishable package.
+- **`packages/client` is platform-neutral**: `fetch` only. Its tsconfig sets
+  `types: []`, so a `node:*` import fails to compile. `lib` includes `DOM`
+  only for the web-standard fetch types.
+- **Only `apps/extension` may import `vscode`.**
 
 ## Domain rules live in `packages/core`
 
-[`packages/core`](../packages/core/src/index.ts) owns the shared domain rules:
+| Area                                            | Source under `packages/core/src/`            |
+| ----------------------------------------------- | -------------------------------------------- |
+| Public handles and organization roles           | `handle.ts`, `roles.ts`                      |
+| Bounty text and the steps built on it           | `bounty.ts`, `stages.ts`                     |
+| Bounty selection, sizing and pricing            | `selection/`, `sizing.ts`, `pricing/`        |
+| Tech stack catalog                              | `stack.ts`                                   |
+| Repository facts, slices and context documents  | `repo/`, `analysis.ts`, `slice/`, `context/` |
+| Sandbox provenance, generation and the contract | `sandbox/`                                   |
 
-| Area                                              | Source under `packages/core/src/`            |
-| ------------------------------------------------- | -------------------------------------------- |
-| Public handles and organization roles             | `handle.ts`, `roles.ts`                      |
-| Bounty text and the stages built on it            | `bounty.ts`, `stages.ts`                     |
-| Bounty selection, sizing and pricing              | `selection/`, `sizing.ts`, `pricing/`        |
-| Tech stack catalog                                | `stack.ts`                                   |
-| Repository facts, slices and context documents    | `repo/`, `analysis.ts`, `slice/`, `context/` |
-| Sandbox provenance, generation, and task contract | `sandbox/`                                   |
-
-For handles, `apps/api` calls `normalizeHandle()` before
-storing one and maps the refusal to a 400; `apps/web` calls `isValidHandle()`
-and `toHandleStem()` in the rename forms.
-
-It is a genuine domain rule rather than a wire concern, because users and
-organizations draw handles from **one namespace** — a personal organization
-takes its owner's handle — so what counts as valid has to be decided once.
-
-`packages/shared` refines core's rules in `handleSchema` rather than restating
-them, so a change to the rules cannot leave the two disagreeing.
-
-## Browser state and application services
-
-Better Auth owns the session and its organization writes. Authenticated web
-content gets a user-scoped `ServerDataProvider` in `apps/web/src/data/query.tsx`.
-TanStack Query owns memberships, invitations, integration lists, repositories,
-members, account resources, bounties, pricing, proposal details/specs and analysis
-resources. Keys include user and owner before resource identifiers, filters and
-pages. Account changes recreate the cache; obsolete reads receive cancellation.
-Queries do not retry automatically, refetch on focus or reconnect. Stored reads
-are fresh for 30 seconds; intentional live Jira checks and run observation are
-explicit. Mutations invalidate affected resource families, and infinite lists
-retain the pages already opened when refreshed. Forms, dialogs, workflow inputs
-and URL selections remain local.
-
-`navigation/location.ts` publishes a stable pathname/search/hash snapshot for
-browser history and application push/replace. URL-owned workspaces are resolved
-from memberships before rendering owner-scoped content. Core's `roles.ts` parses
-held role combinations; response schemas accept held role strings while role
-assignment inputs keep their single-role allowlist.
-
-Feature clients in `packages/client/src` share `transport.ts`, validate shared
-success envelopes and preserve status, reason codes and conflict payloads.
-Reads accept abort signals, including body consumption. Proposal titles use a
-separate incremental NDJSON path. Query hooks and the observation lifecycle live
-in the web app. Observation requests do not overlap, stop on terminal results
-or tracking errors, and offer deliberate retry. Rate-card autosave serializes
-writes and retains the latest queued draft, revision conflicts and failed edits.
-Its controller is in `features/pricing/useRateCardAutosave.ts`; proposal lists,
-categories, peeks, search, titles and sizing progress are in `features/bounties`.
-
-Home is `apps/web/src/Home.tsx`: one card per workspace the person is in,
-personal first, with the counts the workspace list answers for each (`setup`
-on `/api/v1/me/orgs`, counted in one query by `packages/db/src/workspace-setup.ts`:
-bounties, proposals, healthy and broken connections, repositories, boards and
-members). Every count is a link — the bounties to `/bounties?workspace=<slug>`,
-the list narrowed to that workspace (`?workspace=<id>` on the `/me/bounties`
-routes), the connections, repositories and boards to the settings tab they are
-made on, the members to the members tab — and a workspace not set up yet says
-how far it has got and leads to onboarding instead. Onboarding, at `/onboarding`,
-is `apps/web/src/Onboarding.tsx`; it changes with what the workspace in the rail
-has connected. `features/onboarding/setup.ts` decides the stage (nothing, Jira,
-GitHub, both) and the getting-started checklist from facts that
-`useWorkspaceSetup.ts` reads through the same cache keys as the pages they
-summarise. Onboarding holds
-the checklist, always shown, and under it what no model call paid for: a
-board's backlog scan once Jira is connected (`BoardScan.tsx`, with the board
-picker and its menu of board-wide actions over `BacklogScan.tsx`), or a
-repository's x-ray from its snapshot (`RepoXray.tsx`), and the six categories
-in a dialog opened from its heading. Consent round
-trips return to whichever page started them, and `WorkspaceNotices.tsx` reports
-them on both. Until every checklist step is done (`setupComplete` in
-`setup.ts`) a workspace is offered onboarding alone: the shell reads the same
-facts, drops Home and Bounties from the rail, and lands `/` on `/onboarding`.
-Once they are, the rail drops Onboarding instead and `/onboarding` lands on
-`/`. Sizing on onboarding, a ticket or the whole board, waits for a
-repository where GitHub is offered. The arithmetic behind the last two is
-`features/onboarding/insights.ts`.
-
-API context and access rules live in `http-context.ts` and `access.ts`.
-`pricing/start-run.ts`, `pricing/approve-proposal.ts` and
-`sandbox/version-service.ts` take explicit owner/input/dependencies; routes keep
-membership checks, request parsing and HTTP mapping. `analysis/enqueue.ts` shares
-queue/log cleanup while callers retain interactive or profiler capacity policy.
-Database transaction types are inferred from Drizzle; transaction-only helpers
-state that requirement. Worker slice/build/fixtures share `tools/compiler-config.ts`
-for resolved compiler options and raw JSON-compatible configuration. The resolver
-separates active recursion from cached inherited configurations.
-
-Shared slice artifact schemas validate supported version 1 shapes after consumers
-verify original-byte hashes. Unsupported versions and malformed nested data use
-the existing artifact-unavailable outcomes. Jira's `transport.ts` bounds headers,
-bodies, OAuth and credential refresh, composes cancellation and aborts retry
-waits. GET retries remain bounded; writes dispatch once. Shared refresh owns its
-own deadline and persists rotated tokens before use, independent of one waiter's
-cancellation.
+Users and organizations draw handles from one namespace (a personal
+organization takes its owner's handle), so validity is decided once, in
+`handle.ts`. `apps/api` calls `normalizeHandle()` before storing and maps a
+refusal to 400; `apps/web` calls `isValidHandle()` and `toHandleStem()` in the
+rename forms; `packages/shared`'s `handleSchema` refines core's rule rather
+than restating it.
 
 ## TypeScript configuration
 
 [`tooling/tsconfig`](../tooling/tsconfig) holds the strictness contract in
-`base.json`. Every workspace extends one of four variants:
+`base.json`. Every workspace extends one variant and keeps path settings
+(`rootDir`, `outDir`, `include`) in its own config:
 
 | Config           | For                    | Notable departure                         |
 | ---------------- | ---------------------- | ----------------------------------------- |
@@ -159,1079 +73,524 @@ cancellation.
 | `react.json`     | the web app            | `moduleResolution: Bundler`, DOM libs     |
 | `extension.json` | the VS Code extension  | **CommonJS** — the host does not load ESM |
 
-Extend these rather than copying compiler options. Path settings (`rootDir`,
-`outDir`, `include`) stay in the extending config.
+Import extensions follow the resolution mode: `NodeNext` workspaces (`core`,
+`shared`, `client`, `db`, `api`, `worker`) write `from "./store.js"`; `web`
+(`Bundler`) writes `from "./tree"`. `extension` bundles under `Bundler` but
+tests under `NodeNext`, so it writes the `.js` form.
 
-Import extensions follow the resolution mode. `NodeNext` (`core`, `shared`,
-`client`, `db`, `api`, `worker`) writes `from "./store.js"` for `store.ts`;
-`web` (`Bundler`) writes `from "./tree"`. `extension` is bundled under
-`Bundler` but its tests compile under `NodeNext`, so it writes the `.js` form,
-which `Bundler` resolves too. A file moved between them needs its imports
-adjusted.
-
-## The database layer
+## Database and object storage
 
 [`packages/db`](../packages/db) holds the Drizzle schema, migrations, the
-owner-scoped stores, and an S3 object store.
-
-The store contracts and `NotFoundError` live in this package, not in
-`apps/api`, because a package may not import an app.
-[`packages/db/src/index.ts`](../packages/db/src/index.ts) exports them for callers.
-
-Tests use fake stores and database fixtures. The server requires `DATABASE_URL`
-and has no in-memory fallback.
+owner-scoped stores and an S3 object store. Store contracts and
+`NotFoundError` live here, not in `apps/api`, because a package may not
+import an app. The server requires `DATABASE_URL`; fake stores and database
+fixtures are for tests only.
 
 Object storage is SeaweedFS' S3 gateway locally and an S3 bucket in
-production, through one code path: only the plain object calls are used, and
-both answer those the same way. `S3_BUCKET` switches it on; locally the
-endpoint and a key pair point at SeaweedFS, in production neither is set, so
-the SDK talks to AWS with the task role. The differences that do exist, and
-where each is handled:
-
-- `forcePathStyle` is on, because a self-hosted gateway has no per-bucket DNS.
-  AWS accepts it too.
-- SeaweedFS creates a bucket on first write; S3 returns `NoSuchBucket`.
-  Terraform creates the production bucket (`infra/s3.tf`).
-- S3 answers a missing key with 403 rather than 404 unless the caller may
-  `s3:ListBucket`. The task role has it (`infra/iam.tf`); without it every
-  never-uploaded avatar would be a 500.
-- SeaweedFS as run in compose does not check credentials at all. Local
-  development proves nothing about IAM; the production grant is its own check.
-
-## Avatars
-
-Every user and team has a generated identicon
-(`packages/shared/src/identicon.ts`, frozen) and may upload a picture over it.
-A personal organization has no picture of its own: it wears its owner's face
-everywhere, so the only way to change it is on the account page.
-
-**Uploads are re-encoded, never stored as sent.** `apps/api/src/avatars/image.ts`
-sniffs the first bytes (PNG, JPEG, WebP or GIF only, so libvips never parses
-SVG or anything else), refuses a canvas over 40 megapixels from its header, and
-writes a 256px square WebP with no metadata. The object is named by the SHA-256
-of those bytes.
-
-**The picture columns hold our own served paths**, e.g.
-`/api/avatars/user/<id>/<hash>.webp`, in `user.image` and `organization.logo`.
-Both columns used to accept any string from a client — Better Auth's
-`update-user` and the organization plugin's create and update — which is why
-`logo` was once never rendered. Three hooks in `apps/api/src/auth.ts` now admit
-only null or the owner's own avatar path, so both are safe to render. The
-`update-user` guard is a _database_ hook on purpose: a request hook runs before
-the bearer plugin resolves a session, sees none, and cannot tell the caller's
-own path from another account's. A provider picture from signup stays until
-the person replaces or removes it.
-
-**Reads are sessionless and immutable.** `GET /api/avatars/:kind/:id/:hash.webp`
-sits under `/api/` so every proxy forwards it, outside `/api/v1` so no session
-is needed — member lists show other people's pictures, and the hash makes the
-URL unguessable without the picture. It is cached for a year, at the browser
-and at CloudFront, because a new picture is a new URL.
-
-**Writes go where the session is.** The user upload writes through
-`auth.api.updateUser`, whose response re-issues the session cookie, so the
-five-minute cookie cache carries the new picture at once. A team's is written
-through `OrganizationStore.setLogo` behind the membership guard, for owners
-and admins. The replaced object is then deleted, best effort: a failure leaves
-an orphan of a few kilobytes rather than failing a change that happened.
+production, through one code path switched on by `S3_BUCKET`. Where they
+differ: `forcePathStyle` is always on; SeaweedFS creates a bucket on first
+write while Terraform creates the production bucket (`infra/s3.tf`); S3 needs
+`s3:ListBucket` on the task role (`infra/iam.tf`) to answer a missing key with
+404 rather than 403; SeaweedFS in compose checks no credentials, so local
+development proves nothing about IAM.
 
 ## Auth
 
-Better Auth, configured in `apps/api/src/auth.ts` and mounted at `/api/auth/*`.
-Google, GitHub and Atlassian only — `emailAndPassword` is never enabled, so
-`/api/auth/sign-up/email` answers 400.
+Better Auth, configured in `apps/api/src/auth.ts` and mounted at
+`/api/auth/*`. Google, GitHub and Atlassian only; `emailAndPassword` is never
+enabled. The seven auth tables are bundled as `authSchema` in
+`packages/db/src/auth-schema.ts`. Two naming rules fail at runtime, not
+compile time, because the adapter resolves names by string: exported consts
+are singular, column properties are camelCase.
 
-Its four core tables (`user`, `session`, `account`, `verification`) live in
-`packages/db/src/schema.ts`, bundled as `authSchema` together with the
-organization plugin's three (see [Organizations](#organizations)). **Two naming rules fail at
-runtime rather than compile time**, because the adapter resolves both by string:
-the exported consts are singular, and the column properties are camelCase even
-though the columns are snake_case.
-
-**Account linking is implicit, and `trustedProviders` is what makes that safe.**
-Signing in with a provider whose verified email already belongs to an account
-merges into it — only when the provider is trusted _and_ asserts
-`email_verified`, and the existing account's address is verified. Adding a
-provider to that list is a security decision: it must verify address ownership
-before reporting an email. `apps/api/test/auth.test.ts` pins the list.
-
-**Atlassian is trusted by assertion.** It reports no `email_verified` claim, so
-`auth.ts` asserts one via `mapProfileToUser` and adds it to `trustedProviders`.
-Untrusted is not a usable position — the same guard gates the authenticated
-link route, so an untrusted Atlassian could not be connected from the account
-page either. The accepted risk: whoever controls an Atlassian account bearing an
-address can reach the account using it.
-
-Atlassian also needs an explicit `read:me` scope — its default scopes return a
-profile with no email — and sets `disableDefaultScope` to drop the site-scoped
-`read:jira-user`. Requesting no product scopes lets the Atlassian app be
-registered as resource-level (one selected site) rather than account-level.
-
-**Two credentials, one session store:**
-
-| Surface          | Carries                 | Why                                        |
-| ---------------- | ----------------------- | ------------------------------------------ |
-| `apps/web`       | httpOnly cookie         | The browser attaches it; JS cannot read it |
-| `apps/extension` | `Authorization: Bearer` | An extension host has no cookie jar        |
-
-The `bearer()` plugin enables the second, and the guard in `routes.ts` hands
-Better Auth the whole header set rather than picking one. `packages/client`
-sends `credentials: "include"` so the cookie survives a cross-subdomain hop.
-
-`account` carries a unique constraint on `(provider_id, account_id)`. Better
-Auth assumes that invariant rather than tolerating a breach —
-`findAccountByKey` throws when two rows collide, breaking sign-in for both
-users.
-
-Everything under `/api/v1` requires a session; `/health` and `/api/auth/*` do
-not. If `createApp` is given no `auth`, it serves 503 on `/api/*`, so a deploy
-missing the auth environment fails closed.
-
-**A session answers who is asking, not what they may read.** Every store method
-takes the owner as its first argument and puts it in the query — `upsert`
-records it, `remove` matches on both id and owner — so no call can read _or
-write_ across owners. An id belonging to someone else returns 404, not 403, so
-ids cannot be enumerated.
+- **Account linking is implicit; `trustedProviders` makes it safe.** A
+  provider whose verified email matches an existing verified account merges
+  into it. Adding a provider to the list is a security decision; the list is
+  pinned by `apps/api/test/auth.test.ts`. Atlassian reports no
+  `email_verified`, so `auth.ts` asserts one in `mapProfileToUser`; the
+  accepted risk is that whoever controls an Atlassian account bearing an
+  address can reach the account using it. Atlassian also needs the explicit
+  `read:me` scope and `disableDefaultScope`, which lets the app be registered
+  resource-level.
+- **Two credentials, one session store.** The web app carries an httpOnly
+  cookie; the extension sends `Authorization: Bearer` through the `bearer()`
+  plugin. The guard in `routes.ts` hands Better Auth the whole header set.
+  `packages/client` sends `credentials: "include"`.
+- **`/api/v1` requires a session**; `/health`, `/version` and `/api/auth/*` do
+  not. `createApp` without `auth` serves 503 on `/api/*`, so a deploy missing
+  the auth environment fails closed.
+- **A session says who is asking, not what they may read.** Every store
+  method takes the owner first and puts it in the query. Another owner's id
+  returns 404, not 403, so ids cannot be enumerated.
+- `account` has a unique `(provider_id, account_id)`; Better Auth throws on a
+  collision rather than tolerating one.
 
 ## Organizations
 
-The second principal. Better Auth's `organization` plugin owns the tables
-(`organization`, `member`, `invitation`) and every write to them, served under
-`/api/auth/organization/*`. `packages/db/src/organizations.ts` covers the reads
-it does not offer, and `apps/api/src/routes.ts` mounts them under
+Better Auth's `organization` plugin owns `organization`, `member` and
+`invitation` and every write to them under `/api/auth/organization/*`.
+`packages/db/src/organizations.ts` covers the reads it lacks, mounted under
 `/api/v1/orgs`.
 
-**Two names, as a user has.** `organization.id` is permanent and is what
-anything durable references; `organization.slug` is the public handle, unique
-but renameable. The pair mirrors `user.id` and `user.username` deliberately, so
-neither principal invites the mistake of storing a name as a key.
+- **Two names.** `organization.id` is permanent and referenced by anything
+  durable; `slug` is the renameable public handle, as `user.username` is.
+  Users and teams share one handle namespace in the `handle` registry table;
+  triggers keep it in step, and a personal organization follows its owner's
+  username on every rename.
+- **Hooks in `auth.ts` close the plugin's gaps.** `beforeCreateOrganization`
+  and `beforeUpdateOrganization` validate and lowercase the slug and repeat the
+  "already taken" check case-insensitively, since the plugin checks the raw
+  body before normalisation.
+- **`session.activeOrganizationId` is a preference, never an authorisation
+  input.** Organization-scoped routes take the id from the path and check the
+  `member` table (`requireMembership`); a non-member gets 404.
+- **Invitations are in-app.** No mail is sent; an invitation is a row the
+  invitee finds on their account page, matched against their primary address.
+  The server-only `addMember` endpoint is not used.
+- **Every organization keeps at least one owner**; the plugin refuses the last
+  one leaving, and the settings page disables those controls.
+- **Every user has a personal organization**, created by the
+  `user.create.after` hook (`kind = 'personal'`, sole owner, the user's
+  handle). This is what lets ownable rows take one non-null `organization_id`.
+  It cannot gain members or be deleted (`refusePersonal` guards in `auth.ts`)
+  and goes with the user by cascade. **Nothing below the API boundary branches
+  on `kind`**; only the workspace switcher, list and settings page do.
 
-**The handle rules live in `packages/core`.** `packages/core/src/handle.ts` is
-the single definition, shared by the profile store, the plugin hooks, the wire
-schemas and both browser forms — the only package all four can import. Users
-and organizations share **one** handle namespace, held in the `handle`
-registry table (migrations 0029 and 0030): `dana` is either a person or a
-team, never both. Triggers keep the registry in step with `user.username` and
-team slugs, and a personal organization takes its owner's username and
-follows it on every rename, so it never claims a handle of its own.
-`slugOwner` and `setUsername` both ask the registry.
+Open, cheap if needed: invitations match the primary address only (a
+`beforeAcceptInvitation` hook over `EmailStore.list` would widen it); handles
+are not reserved (`admin`, `api`, `o`, `u` are claimable). Deliberately not
+built: teams, custom roles, an email transport, an avatar crop tool or
+orphan sweeper.
 
-**The plugin leaves two gaps, closed by hooks in `auth.ts`.** It accepts any
-non-empty string as a slug, so `beforeCreateOrganization` and
-`beforeUpdateOrganization` validate and lowercase it. And its own "already
-taken" check runs on the **raw** body before those hooks normalise it, so
-`MyOrg` while `myorg` exists would pass it and fail on the unique constraint as
-a 500; the hooks repeat the check case-insensitively, excluding the
-organization's own id so a re-cased rename is not a collision.
+## Avatars
 
-**`session.activeOrganizationId` is a preference, never an authorisation
-input.** One value is shared by every tab and by the extension's bearer
-session, and the five-minute session cookie cache means a change in one lags in
-another. Organization-scoped routes take the id from the path and check
-membership against the `member` table; a non-member gets 404, not 403, exactly
-as any other owner-scoped row does.
+Every user and team has a generated identicon (`packages/shared/src/identicon.ts`,
+frozen) and may upload a picture over it; a personal organization wears its
+owner's. An upload is re-encoded to a 256px WebP with no metadata and named
+by its hash (`apps/api/src/avatars/image.ts`). `user.image` and
+`organization.logo` hold only our own served paths, enforced by hooks in
+`auth.ts`. Reads at `GET /api/avatars/:kind/:id/:hash.webp` are sessionless,
+outside `/api/v1`, and cached for a year. A team's picture is owners' and
+admins' to set.
 
-**Invitations are in-app.** `sendInvitationEmail` is left unset because this
-codebase sends no mail: an invitation is a row the invitee finds on their
-account page. It is addressed to their **primary** address, since that is what
-Better Auth compares against the session on accept. The server-only `addMember`
-endpoint is not used — joining changes what a session can reach, so the person
-accepts it.
+## Web app
 
-**Every organization keeps at least one owner.** The plugin refuses to let the
-last one leave, be removed or be demoted; the settings page disables those
-controls rather than letting the click fail.
+`apps/web/src/data/query.tsx` gives authenticated content a user-scoped
+`ServerDataProvider`; TanStack Query owns server reads with keys that include
+user and owner before resource ids. Queries do not retry or refetch on
+focus; stored reads are fresh for 30 seconds; mutations invalidate resource
+families. Forms, dialogs and URL selections stay local.
+`navigation/location.ts` publishes the pathname/search/hash snapshot; `routes.ts`
+defines every path and the legacy addresses it still lands. Feature clients in
+`packages/client/src` share `transport.ts`; query hooks and the run observation
+lifecycle live in the web app's `features/`.
 
-**Every user has a personal organization.** It is created by the
-`user.create.after` hook in `apps/api/src/auth.ts` — `kind = 'personal'`, a
-sole `owner` member, and the user's own handle — and migration `0015` did the
-same for everyone who predates the hook. This is what lets anything ownable
-take a single non-null `organization_id` rather than a nullable
-user/organization pair, which would need a `num_nonnulls(...) = 1` check
-drizzle-kit cannot generate and would double every unique index and store path.
+**Home** (`Home.tsx`) shows one card per workspace with the counts `setup` on
+`/api/v1/me/orgs` answers (`packages/db/src/workspace-setup.ts`); every count
+links to the page it is made on, the bounties to `/bounties?workspace=<slug>`.
+**Onboarding** (`Onboarding.tsx`, `/onboarding`)
+is the getting-started checklist plus what no model call paid for: a board's
+backlog scan once Jira is connected (`features/onboarding/BoardScan.tsx` over
+`BacklogScan.tsx`) or a repository's x-ray from its snapshot (`RepoXray.tsx`).
+`features/onboarding/setup.ts` decides the stage and `setupComplete`; until
+every step is done the rail offers onboarding alone and `/` lands there, and
+afterwards the rail drops it. Consent round trips return to the page that
+started them (`WorkspaceNotices.tsx`). Sizing from onboarding waits for a
+repository where GitHub is offered (`insights.ts`).
 
-It cannot gain members or be deleted: the `refusePersonal` guards in `auth.ts`
-cover the invitation, add-member and delete hooks, so "personal" stays a claim
-about the organization rather than a label on a two-person one. It goes when
-the user does, by the cascade on `personal_user_id`. Sharing means moving the
-work to a team organization.
+**Bounties** (`/bounties`) lists every workspace's bounties newest first from
+`GET /api/v1/me/bounties`, which reads the caller's memberships and lists
+across them (`BountyStore.listAcross`). A bounty opens in a panel
+(`?peek=:workspace/:id`, read-only) or on its page (`/bounties/:workspace/:id`)
+with three tabs, `?tab=scope|price|sandbox`. A new one is written at
+`/bounties/new`. A sandbox version's files open at
+`/sandboxes/:workspace/:versionId?path=`, outside the shell. A repository's
+page is `/o/:slug/repositories/:repoId`; settings are `/o/:slug/settings`.
 
-**Nothing below the API boundary branches on `kind`.** The stores take an
-organization id and the guard checks membership, whichever kind it is. Only
-surfaces distinguish them: the workspace switcher and the organizations list
-label and sort it first, and its settings page hides members, invitations and
-leaving.
+## API structure
 
-### Open questions
-
-Neither blocks anything; both are cheap if a need appears.
-
-- **Invitations match the primary address only.** One sent to an address
-  someone has proven but not made primary stays invisible to them. The fix is
-  a `beforeAcceptInvitation` hook accepting any of the caller's proven
-  addresses (`EmailStore.list`), not a schema change.
-- **Handles are not reserved.** Words like `admin`, `api`, `o` and `u` can be
-  claimed by a user or an organization. Once prefixed URLs (`/u/`, `/o/`)
-  carry real pages, add a short reserved list to
-  `packages/core/src/handle.ts`, applied to both principals.
-
-### Deliberately not built
-
-Teams; per-organization custom roles (`dynamicAccessControl`); an email
-transport, at which point `sendInvitationEmail` is one function and the in-app
-flow stays as the fallback; a crop tool, a sweeper for avatar objects orphaned
-by a failed delete, and more than one avatar size (see [Avatars](#avatars)).
+`apps/api/src/http-context.ts` and `access.ts` hold request context and access
+rules. `pricing/start-run.ts`, `pricing/approve-proposal.ts` and
+`sandbox/version-service.ts` take explicit owner, input and dependencies;
+routes keep membership checks, parsing and HTTP mapping. `analysis/enqueue.ts`
+shares queue and log cleanup. Provider wiring is in `server.ts`: Anthropic
+first with DeepSeek as fallback when both are configured, else either alone.
+`env.ts` lists every variable the API reads and `test/env-surface.test.ts`
+pins the list.
 
 ## Bounties
 
 ### Vocabulary
 
-One set of words for a bounty's lifecycle, used in the UI, the code and
-these docs alike.
+| Term                 | What it is                                                             | Done when                                                  | Code                                                       |
+| -------------------- | ---------------------------------------------------------------------- | ---------------------------------------------------------- | ---------------------------------------------------------- |
+| **Bounty**           | The whole record of one piece of work. Never the name of a step.       |                                                            | `bounty`                                                   |
+| **Scope** (step 1)   | Its title and description. Versioned.                                  | An owner or admin approves the version it is at.           | `stages.scope`, `scopeApproved`, `bounty.approved_version` |
+| **Price** (step 2)   | Its size and what that pays, with reasoning. Held by its **proposal**. | Its proposal is approved.                                  | `stages.price`, `bounty_proposal.status = 'approved'`      |
+| **Sandbox** (step 3) | The task cut for contributors, as versions.                            | A version is published and the publication has not lapsed. | `stages.sandbox`, `isPublicationLive`                      |
 
-| Term                 | What it is                                                                                   | Done when                                                  | Code                                                       |
-| -------------------- | -------------------------------------------------------------------------------------------- | ---------------------------------------------------------- | ---------------------------------------------------------- |
-| **Bounty**           | The whole record of one piece of work. Never the name of a step.                             |                                                            | `bounty`                                                   |
-| **Scope** (step 1)   | Its title and description: what the work is. Versioned.                                      | An owner or admin approves the version it is at.           | `stages.scope`, `scopeApproved`, `bounty.approved_version` |
-| **Price** (step 2)   | Its size and the amount that size pays, with the reasoning. Held by its **proposal** record. | Its proposal is approved.                                  | `stages.price`, `bounty_proposal.status = 'approved'`      |
-| **Sandbox** (step 3) | The task cut for contributors, as versions.                                                  | A version is published and the publication has not lapsed. | `stages.sandbox`, `isPublicationLive`                      |
+A bounty's **status** is the last step done (`bountyStatus` in
+`packages/core/src/stages.ts`): **New**, **Scoped**, **Priced** or **Live**.
+The furthest step decides, so a Live bounty stays Live while its scope is
+edited. A proposed, unapproved price is "price pending" beside the status.
+**Draft** is only a sandbox's unpublished state. **Proposal** names the record
+and its API (`/proposals/...`); the button reads "Price it".
 
-A bounty's **status** is the last step done, and is what the list's Status
-column shows and `?status=` filters by (`bountyStatus` in
-`packages/core/src/stages.ts`):
+### The model
 
-| Status     | Means                                     |
-| ---------- | ----------------------------------------- |
-| **New**    | No step approved yet.                     |
-| **Scoped** | Its scope is approved.                    |
-| **Priced** | Its price is approved.                    |
-| **Live**   | Its sandbox is published to contributors. |
-
-The furthest step decides: a live sandbox stays **Live** while its scope is
-edited. A price proposed and not yet approved is **pending**, said beside
-the status ("New · price pending"), not as a status of its own. **Draft**
-is only a sandbox's unpublished state. **Proposal** names the record and
-its API (`/proposals/...`), not a step; the button that makes one reads
-"Price it".
-
-**A bounty is the platform's own record of a piece of work, and it is two
-parts at least: its proposal and its sandbox.** The proposal specifies and
-prices it (`bounty_proposal.bounty_id`, one live at a time); the sandbox is
-where contributors do it (`sandbox.bounty_id`, exactly one). A bounty is
-written here, or imported from Jira by a run, and either way it is one
-`bounty` row, proposed, reviewed and cut into a sandbox the same way. Jira,
-a GitHub repository and any source added later enrich a bounty with
-context; none of them is required. A deployment with a model and no Jira
-or GitHub configured sizes the bounties written in it, and makes their
+**A bounty is the platform's own record: a proposal and a sandbox at least.**
+`bounty_proposal.bounty_id` (one live at a time) specifies and prices it;
+`sandbox.bounty_id` (exactly one) is where contributors do it. Jira, GitHub
+and any later source enrich it; none is required. A deployment with a model
+and no integrations sizes the bounties written in it and makes their
 sandboxes.
 
-**Jira enriches a bounty rather than owning it.** A `jira_issue` row is the
-pointer half of an imported bounty (`jira_issue.bounty_id`, one each): the
-first run that reads an issue creates the bounty, and every read after —
-a run, or opening one of its proposals — writes Jira's text back onto it
-(`refreshFromJira`, only when it differs, so the revision does not move
-for nothing). While the issue is there its text is Jira's to change, and
-the API refuses an edit to it (`jira_owned`); its stack is the
-platform's to set. When Jira stops returning the issue, the pointer is
-marked `removed_at` and the bounty keeps the text it last had: it is then
-sized, reviewed and edited as stored, like a bounty written here. If a
-board's run finds the issue again, the pointer is restored and Jira's text
-replaces the bounty's once more. Losing a board takes its pointers but not its
-bounties; it does take the runs that read through it, and with them the
-proposals those runs made (`bounty_run.board_id` and
-`bounty_proposal.run_id` cascade).
+**Jira enriches a bounty, never owns it.** A `jira_issue` row
+(`jira_issue.bounty_id`) is the pointer half of an imported bounty. The first
+run that reads an issue creates the bounty; every later read writes Jira's
+text back (`refreshFromJira`, only when it differs). While the issue exists its
+text is Jira's to change and the API refuses an edit (`jira_owned`); the stack
+is the platform's. When Jira stops returning the issue, `removed_at` is set
+and the bounty keeps its last text, edited and sized as stored. Losing a
+board takes its pointers and the runs that read through it (and their
+proposals) but not the bounties.
 
-**Freshness is the bounty's.** `bountySpecHash` in `packages/core`
-fingerprints a bounty's title and description, and `packages/jira`'s
-`pricingSpecHash` is that function, not a copy, so a proposal priced from
-Jira's text and one priced from the stored copy compare. A proposal is
-current while its bounty still hashes to what it was priced from: read live
-from Jira while the bounty follows an issue, and as stored otherwise. A
-proposal's page, and its poll while a Jira update is on its way, read the
-issue at most once a minute per bounty (`apps/api/src/jira/recent.ts`);
-approving a price or changing its scenarios reads Jira every time. A
-bounty's row keeps no issue type, priority or labels. A board's run reads
-them to choose which issues it sizes, and they reach the model only as
-context a person synced (below).
+**Freshness is the bounty's.** `bountySpecHash` fingerprints title and
+description; `packages/jira`'s `pricingSpecHash` is that function. A proposal
+is current while the bounty still hashes to what it was priced from, read
+live from Jira while it follows an issue (at most once a minute per bounty,
+`apps/api/src/jira/recent.ts`) and as stored otherwise. The bounty row keeps
+no issue type, priority or labels.
 
-**Sources are synced into a bounty as context.** Each source a bounty links
-adds context beyond its text, read only when a person asks: `POST
-.../bounties/:id/context/jira/sync` reads its issue's fields
-(`JiraClient.issueContext`: type, status, priority, labels, components,
-releases, due date, story points found by the site's own field name,
-estimates, demand and links; never a person or a comment) and takes its
-text as a run's read does. The site's field list is kept for an hour per
-site, so an import reads it once rather than per issue; where the context
-stands against Jira is kept a minute per issue, so reading it again, or a
-pin's answer, does not ask Jira again. Repositories are not synced but pinned: `GET
-.../context/github/commits` lists each connected repository's built
-commits (`RepoSnapshotStore.built`: snapshots whose graphify run succeeded
-and whose other builders have all finished, `snapshotBuilt` in core, which
-the run store records as `repo_snapshot.built_at` as the last of them ends) with
-the commit the scope holds it at, read from
-the latest version's revision, and `PUT .../context/github/commits` with
-`{ commits: { repoId: snapshotId } }` reads the Markdown of every
-repository the workspace has connected, each at the built commit picked
-for it, else the one the scope holds it at while still built, else its
-newest build, so a repository can be moved back to an older build and
-each is held at its own. The documents are chosen across them by
-`contextDocumentsAcross` in `packages/core/src/sources.ts` (every README,
-then guides and docs, a path naming a word of the title earlier, vendored
-code and boilerplate never) and cut to one set of caps. A repository never
-built is named as unread; a commit that is not built is refused
-`not_built`. Sizing a ticket picked on onboarding reads them the same way
-with no picks. A version synced while a bounty named one repository keeps
-that shape (`githubRepositories` reads either) and reads as `unsynced`
-until the workspace's are picked. Any member may sync and pin, and an
-approved scope holds back neither, as it does not hold back Jira's text. Each sync that finds something new is the
-source's next version in `bounty_context` (migration 0056), kept with the
-revision it was read at (Jira's `updated`, the commit); one that finds the
-same content moves only that version's revision and where its content
-says it was read (a repository moved back to an older build whose
-documents match names that commit). The hash leaves those
-revisions out, so an edit to the issue's text or a commit that changes no
-document makes no version. `GET .../context` says where each source stands:
-`unlinked`, `unsynced` (including a latest version from an issue or
-repository since replaced), `current`, `ahead` (Jira's `updated` is past
-the sync; for GitHub, the repositories built now are not the ones it read,
-since a newer build of one is offered, not followed) or `unavailable` with
-a reason.
-The scope holds the latest version of each source while it came from the
-source linked now (`heldContext` in `apps/api/src/bounties/held-context.ts`),
-and that is the context sizing and generation are given:
-`renderSourceContext` puts it after the bounty's text and outline under
-headings of its own (`draft-v6`, `jira-size-v5`, the starter agent's
-prompt). A proposal records the versions it was sized with
-(`bounty_proposal.jira_context_version` and `github_context_version`); a
-sandbox version freezes the context itself into its approved task (an
-optional `context` on schema version 3, so a task frozen before keeps its
-hash) and records its versions on `sandbox_version_source`. The bounty's
-`stages` carry all three, and a step made with an older version than the
-scope holds is behind on that source (`contextDrift`), as a step built
-on an older scope is behind on it.
+**Sources are synced into a bounty as context**, read only when asked
+(`apps/api/src/bounties/context.ts`). `POST .../bounties/:id/context/jira/sync`
+reads the issue's fields (`JiraClient.issueContext`; never a person or a
+comment). Repositories are pinned, not synced: `GET .../context/github/commits`
+lists each connected repository's built commits (`RepoSnapshotStore.built`,
+`snapshotBuilt` in core) and `PUT .../context/github/commits` with
+`{ commits: { repoId: snapshotId } }` reads every connected repository's
+Markdown at its picked commit, else the one held, else its newest build.
+Documents are chosen by `contextDocumentsAcross` in `packages/core/src/sources.ts`
+and cut to one set of caps; a `documents` run's set is read before GitHub. Each
+sync that finds something new is the source's next `bounty_context` version,
+kept with the revision it was read at; the hash leaves revisions out, so an
+issue edit or a commit that changes no document makes no version.
+`GET .../context` says where each source stands: `unlinked`, `unsynced`,
+`current`, `ahead` or `unavailable`. Any member may sync and pin; an approved
+scope holds back neither.
 
-**A bounty is identified by its id and shown by its title.** One from Jira
-also carries its issue's key (`bounty.jira.key`, a proposal's `issueKey`);
-one written here has no key, and those fields are null. There is no
-per-organization number: `bounty.number` and its `B-12` keys were dropped in
-migration 0048.
+The scope holds the latest version of each source (`heldContext` in
+`apps/api/src/bounties/held-context.ts`), and that is what sizing and
+generation are given (`renderSourceContext`). A proposal records the versions
+it was sized with (`bounty_proposal.jira_context_version`,
+`github_context_version`); a sandbox version freezes the context into its
+approved task (schema version 3) and records versions on
+`sandbox_version_source`. A step made with an older version than the scope
+holds is behind on that source (`contextDrift`).
 
-**Runs.** A `bounty` run sizes one bounty someone proposed
-(`POST .../bounties/:id/propose`); `reprice` and `respec` runs name their
-proposal's bounty too. Those three need a board only when the bounty came
-from one, whose selection and pricing settings they then use; otherwise
-the defaults. `backlog` and `issue` runs read a Jira board and import what
-they reach. A bounty following its issue cannot be read while its site
-needs reconnecting, and its run fails `reconnect` rather than sizing
-stale text. Approval posts back to Jira only for a bounty still following
-an issue on a site that holds the write grant.
+**Identity.** A bounty is identified by its id (`bty_`, older ones `tkt_`) and
+shown by its title; one from Jira carries its issue key. There is no
+per-organization number.
 
-**Nothing is sized unasked.** Connecting a site, or syncing one, registers
-its boards and starts no run. A board's backlog scan,
-`GET .../jira/boards/:id/backlog-preview`, is the selection a `backlog`
-run would make, classified against the categories in
-`packages/core/src/selection/categories.ts` from ticket metadata alone,
-with no model call and nothing stored. From it a person sizes one ticket
-(an `issue` run) or, having been told the cost, the whole board (a
-`backlog` run, `POST .../jira/boards/:id/runs`, owners and admins).
+### Steps, versions and approval
 
-**A board's scan is imported as bounties.** Every sync, and a board's
-registration, hands the boards it recorded to `importBoards`
-(`apps/api/src/bounties/import.ts`) in the background; `POST
-.../jira/boards/:id/import` does the same for one board on request. Each
-ticket the scan puts in a category, up to `IMPORT_LIMIT` per import,
-becomes a bounty as a run's read would make it (`JiraIssueStore.upsert`):
-its scope is the issue's text, its Jira fields are recorded as the
-scope's next Jira context version with no one as `synced_by`, and its
-categories are written to `bounty.categories` (migration 0057). No
-proposal and no sandbox are made, and no model is called. The scan's
-fallback, the oldest tickets when none fit a category, is not imported.
-An issue already imported is read again: new words are a new scope
-version, new fields a new context version, and the categories are what
-this scan says. The same route with `issueId` imports one issue a person
-found through the board's search (`GET .../jira/boards/:id/search`, which
-names the bounty each issue already is), classified as the scan would
-classify it. A `backlog` run writes the categories it picked a bounty for
-in the same way. Any member may import: it costs Jira reads only.
-
-**A board has no page of its own.** Its view is the bounty list narrowed
-to it, `/bounties?board=acme/jrb_1`, where the board can be rescanned and
-its issues searched and added; the old `/o/:slug/jira/:site/:board`
-address is rewritten to it. The list's filters narrow by category
-(`?category=`, or `uncategorized` for the bounties in none, shown as
-"Unassigned"), by where the bounties came from (`?board=`, or
-`?source=lunox` for those written here) and by status (`?status=new`,
-`scoped`, `priced` or `live`): `GET /api/v1/me/bounties` and
-`.../bounties` take `category`, `board`, `source` and `status`, and
-`GET /api/v1/me/bounty-categories` counts each category across the
-caller's workspaces, narrowed alike by `board`, `source` and `status`. A
-status is decided in SQL as `bountyStatus` decides it, from the bounty's
-own columns and `exists` over its proposal and sandbox, so the counts need
-no other join (`statusFilter` in `packages/db/src/bounties.ts`).
-
-**A proposal's revision and version.** `bounty_proposal.revision` moves on
-every write and is what each change is checked against (`expectedRevision`),
-what a write-back records and what a run starts from. `version` is the
-number people see: it moves only when an approval follows a change.
-`version_revision` holds the revision at which nothing has changed since
-the current version. An approval writes its own revision there and a
-withdrawal moves it on, so withdrawing and approving again keeps the version
-and `versioned_at`. A resize, re-price or spec change moves the revision past
-it, so the next approval is a new version (`packages/db/src/proposal-version.ts`,
-migration 0050).
-
-**Three steps, each versioned, none locked.** A bounty is made in order:
-its scope (title and description), its price (its proposal's
-`version`) and its sandbox (`sandbox_version.version`). The scope's
-version is `bounty.version`, moved by a change to the title or the
-description, whether written here or refreshed from Jira; each one is kept
-in `bounty_version` (migration 0053, which backfilled every bounty's text
-as its version 1). Each step records the version of the step before it
-that it was built on. A proposal's scope version is the latest
-`bounty_version` whose text hashes to its `spec_hash` (`scopeVersionOf`
-in `packages/core/src/stages.ts`), so nothing is stored for it. A sandbox
-version's price version is `sandbox_version_source.proposal_version`, the
-proposal's version when its task was taken while approved, and null
-otherwise and for versions taken before it was kept. No step holds another:
-the scope is edited under an approved proposal, and a proposal is
-unapproved or re-priced while its sandbox is published. A step built on an
+Each step is versioned and none locks another. The scope's version is
+`bounty.version`, kept in `bounty_version` on every title or description
+change, from here or from Jira. A proposal's `revision` moves on every write
+and is what `expectedRevision` checks; its `version` moves only when an
+approval follows a change (`packages/db/src/proposal-version.ts`). A sandbox
+version's is `sandbox_version.version`. Each step records the version of the
+step before it: a proposal's scope version is the latest `bounty_version`
+whose text hashes to its `spec_hash` (`scopeVersionOf`); a sandbox version's
+price version is `sandbox_version_source.proposal_version`. A step built on an
 earlier version than the step before is now at is behind (`stageDrift`),
-which the bounty's detail answers as `stages` and the page shows on the
-step's tab and at the top of its page. `GET .../bounties/:id/versions`
-lists the scope's versions.
+answered as `stages` on the bounty's detail. `GET .../bounties/:id/versions`
+lists scope versions.
 
-**A scope is approved as a proposal is.** `POST .../bounties/:id/approve`
-and `/unapprove` (owners and admins, against `expectedRevision`) record or
-clear `bounty.approved_version` with who and when (migration 0054). While
-that is the scope's version (`scopeApproved`) its title, description,
-repository, stack and Jira link are held: a change is refused
-`scope_approved` until it is unapproved. Jira is not held back: a refresh
-that makes a new version leaves the approval behind, and the scope reads
-as unapproved again. A proposal is re-analyzed only while it is not
-approved.
+`POST .../bounties/:id/approve` and `/unapprove` (owners and admins, against
+`expectedRevision`) set or clear `bounty.approved_version`. While that is the
+scope's version, title, description, stack and Jira link are held
+(`scope_approved`); a Jira refresh that makes a new version leaves the
+approval behind. A proposal is re-analyzed only while unapproved.
 
-**A bounty has one sandbox, and the sandbox three faces.** `sandbox.bounty_id`
-is unique and required, and a bounty with a sandbox cannot be removed. The
-private face is `sandbox_source` and `sandbox_version_source`: the source
-repository, alias table, approved task and hidden tests. The public face is
-`sandbox` and `sandbox_version`, the aliased copy contributors work in. The
-protected face is `submission`: one contributor's patch, pinned to the
-version it was made against and run with the public and hidden tests
-together. A submission's verdict is `submissionVerdict` in
-`packages/core/src/sandbox/submission.ts`: every test in both suites, and
-at least one hidden test, must pass. Only counts are kept, never hidden test
-names, and only a frozen version takes a submission. No route takes a
-submission yet; the table and its store (`packages/db/src/submissions.ts`)
-are the shape the contributor flow will write.
+**Runs.** A `bounty` run sizes one bounty (`POST .../bounties/:id/propose`);
+`reprice` and `respec` runs name their proposal's bounty. Those need a board
+only when the bounty came from one, whose selection and pricing settings they
+use. `backlog` and `issue` runs read a Jira board and import what they reach.
+A bounty following an issue on a site that needs reconnecting fails
+`reconnect` rather than sizing stale text. Approval posts back to Jira only
+for a bounty still following an issue on a site with the write grant.
 
-**The repository is enrichment for a sandbox too, and nobody picks it.**
-`POST .../sandboxes` takes only `bountyId`; the sandbox is cut from the
-repository its bounty's live proposal says the work touches
-(`bounty_proposal.repositories`, below), while the workspace still has it.
-A proposal that touches none, or several, makes a sandbox with no source,
-whose versions are generated; cutting several repositories into one
-sandbox is not built yet. `sandbox_source` exists only when it has one.
-Cutting a version is a slice, so that alone needs it, and is refused
-`no_source` without. One made without a repository has it linked later,
-once (`PUT .../sandboxes/:id/source`, no body), when its sizing has since
-named one, refused `no_touched_repository` otherwise: its versions are
-bound to the repository they were sliced from, so a different one is
-refused `source_linked`.
+**Nothing is sized unasked.** Connecting or syncing a site registers boards
+and starts no run. `GET .../jira/boards/:id/backlog-preview` is the selection
+a `backlog` run would make, classified against
+`packages/core/src/selection/categories.ts` from metadata alone, with no model
+call. From it a person sizes one ticket (an `issue` run) or, told the cost,
+the board (`POST .../jira/boards/:id/runs`, owners and admins).
 
-**A sandbox is made with its first version.** Making one chooses nothing,
-so the bounty's Sandbox tab offers no step for it: `POST
-.../sandboxes/start` (owners and admins, body `{ bountyId }`) makes the
-sandbox as `POST .../sandboxes` does, then begins its first version in the
-same request, sliced as `.../:id/slice` slices it when it has a repository,
-generated as `.../:id/starter` generates it when it has none, and answers
-201 with the sandbox beside the slice route's fields (`slice` null for a
-generated one). A refusal after the sandbox is made, such as a failed
-slice or the run limit, leaves it made; the tab reads the bounty again
-either way and goes on from the sandbox's own routes. The tab names the
-action as the API will take it: Slice when exactly one connected
-repository is touched, else Generate.
+**A board's scan is imported as bounties.** Every sync and registration hands
+boards to `importBoards` (`apps/api/src/bounties/import.ts`) in the
+background; `POST .../jira/boards/:id/import` does one board on request, or
+one issue with `issueId` found through `GET .../jira/boards/:id/search`. Each
+ticket the scan puts in a category, up to `IMPORT_LIMIT`, becomes a bounty
+with its scope, a Jira context version with no `synced_by`, and
+`bounty.categories`; no proposal, sandbox or model call. Any member may import.
 
-**Without a repository, a version is generated.** `POST
-.../sandboxes/:id/starter` snapshots the task from the bounty itself (its
-title and description, with its live proposal's spec and price) and queues
-a `sandbox_starter` run. The proposal must be approved: a bounty with none,
-or with a draft one, is refused `task_not_ready`
-(`starterTaskReadiness`). The run: an agent writes a
-starter from the bounty's title, description and tech stack (the stack
-detected in every repository the workspace has connected, and what the
-bounty adds), and the
-worker builds it and checks its baseline as a build would. A starter is
-source under `src/`, public tests that pass on it, hidden tests marked with
-their outcome on it (at least one fails until the bounty is done), the
-packages it installs, the walkthrough and a name table; its rules are
-`packages/core/src/sandbox/starter.ts`. The starter is written in the
-bounty's own vocabulary and leaves the workspace as a slice does: its name
-table (identifier and text rules, at least one, each renaming something)
-is applied with the inverse proof before the project is generated, and
-becomes the version's `alias_rules`, so a generated version has a name
-table like a sliced one. The contract is the sliced
-project's: Node and TypeScript, so a stack that names only another runtime
-(Python, Django, Go, ...) is refused `stack_unsupported`. The run is queued
-first, naming the version's id, and the version is made pointing at it
-(`starter_run_id`, which is also its `build_run_id`); `sandbox_version_source`
-holds a version sliced or generated, never both. When the run commits, the
-starter's hash, name table, hidden tests, scope and transform settle on the draft, with
-the build's harness and toolchain when its baseline passed. A generated
-version changes its listing like any draft, but its transform, its build and
-its replay are refused (`generated_version`, or replay's
-`source_unavailable`): it changes by generating a new version. Such a run
-reads no snapshot, so `analysis_run.organization_id` owns every run (added
-in migration 0049, backfilled through each run's snapshot). The bounty's
-panel generates a version for a sandbox with no repository and follows its
-run, and offers to link the one repository its sizing says the work touches
-to slice instead. A version's
-frozen task names the bounty (`ApprovedTaskSnapshot.bountyId`, schema
-version 3), and its spec and price must be that bounty's proposal's
-(`proposal_mismatch` otherwise). Versions frozen earlier
-keep what they were frozen with, because the snapshot is named by its hash:
-version 2 lists `ticketIds`, from when a sandbox linked any number of
-tickets, and version 1 lists `jiraIssueIds`.
+**A board has no page.** Its view is `/bounties?board=<workspace>/<boardId>`.
+The list filters by `category` (`uncategorized` for none), `board` or
+`source=lunox`, `status` and `workspace` (one organization id; the page takes
+its slug); `GET /api/v1/me/bounties`, `.../bounties`,
+`GET /api/v1/me/bounty-categories` and `/me/bounty-statuses` take the same
+filters. Status is decided in SQL as `bountyStatus` decides it
+(`statusFilter` in `packages/db/src/bounties.ts`).
 
-**With a repository, a version is sliced from its sizing.** The slice is
-the one the bounty's sizing already took: the complexity profile of its
-approved proposal's spec revision in the sandbox's repository
-(`bounty_profile`, matched by the snapshot the spec was drafted beside or
-the repository's name), which the profiler scopes and slices on the worker.
-The profiler's scope reads the snapshot's abstractions and data model: it
-enqueues or finds both on the graph run, waits for them to finish, and names
-those that succeeded.
-`GET .../sandboxes/:id/slice` says where it stands (`SandboxSliceDto`):
-`none` until asked for, the profile's `queued`, `scoping` and `slicing`, then
-`ready`; `failed` with the profile's code, final for that spec revision until
-a re-price drafts a new one; `unavailable` with no repository
-(`no_source`), no approved price with a spec (`task_not_ready`), or no
-profiler (`unconfigured`). `POST .../sandboxes/:id/slice` asks the profiler
-for a profile while there is none and answers 202 with the slice; once it is
-ready, it cuts a draft as `POST .../versions` does, its listing taken from
-the bounty (title, description, the repository's and bounty's stack) and its
-task from the approved proposal, queues its build and answers 201 with the
-draft and the run. A draft whose scope has blockers is cut without a build
-(`run: null`), for them to be read. A 202 also remembers the request on the
-sandbox's source (`sandbox_source.cut_requested_by`, `cut_requested_at`):
-once the profiler settles a profile, `apps/api/src/sandbox/cutter.ts` makes
-it again as the person who asked, so the draft is cut and built with no
-second click; a cut clears it, as does any refusal but the analysis cap.
-`POST .../sandboxes/start` remembers it the same way. A sandbox whose publication is live is
-not sliced (`published`, 409): contributors work in it, so it is unpublished
-first. The newest unfrozen draft cut from the
-same slice run is built again rather than cut twice. A sliced draft starts
-with no fixtures, so a build of one with none has the fixtures agent write
-them and the walkthrough before anything else (`writeFixtures` in
-`apps/worker/src/tools/fixtures.ts`), reading the slice as the workspace
-wrote it and the snapshot's data model; they settle with the build as the
-hidden tests and pseudonyms below do. A sliced draft starts
-with no hidden tests, and a sandbox none judges could never accept a
-submission, so a build whose baseline fails for that alone has an agent write
-them (`apps/worker/src/tools/hidden-tests.ts`): it reads the public project and
-the approved spec, and each candidate set is built in and run through a fresh
-baseline, as a starter's is. A set is kept only once its baseline passes; it
-then settles on the draft with the build's evidence when the run commits, with
-the transform it hashes to (`recordBuildOutput`), and later builds run it as
-written. A sliced draft starts with no pseudonyms either, though it is the
-workspace's own code, so a build of one with none has an agent write its name
-table first (`apps/worker/src/tools/pseudonyms.ts`): it reads the slice as the
-workspace wrote it, and each table is checked exactly as the build applies it,
-the inverse proof, the contract, spec, fixtures and listing still reading, the
-project generating and no public file naming the workspace. A table is kept
-only once that check is clean, and settles with the hidden tests. Whatever the
-table, every build scans the public files' paths and text for the names the
-workspace goes by (`packages/core/src/sandbox/vocabulary.ts`): the
-organization's name and handle and the repository's owner and name, which the
-API passes in the build's `vocabulary` parameter, and the repository's package
-scope and author. Each still there blocks the build, `vocabulary_leaked`,
-before its baseline runs. The version's title, summary and tags reach the
-README and the descriptor, so the table renames them there too. The bounty's
-Sandbox tab follows the slice, with the scope agent's
-steps while it works, then the build, as it follows a generated version's run.
+**Repositories.** A bounty names no repository and neither does a board. Its
+stack is what is detected in every connected repository plus what the bounty
+adds (`bounty.stack`), and sizing drafts each spec beside an outline of every
+built repository at the commit the scope holds (`apps/api/src/sizing/outline.ts`,
+neutral labels, one shared line cap). The draft names the repositories the work
+touches, recorded on `bounty_proposal.repositories` with the snapshot each was
+outlined at; a re-price says them again and a spec change keeps them.
 
-**Publishing a version.** `POST .../sandboxes/versions/:vid/publish`
-(owners and admins) records who approved the version and when, freezes it,
-and makes it the sandbox's `current_version_id` with status `published`.
-Only a version with a passing build is published: one with no recorded
-harness and toolchain is refused `not_ready`. It stands on the approval its
-task was taken from, not on the bounty's now: one whose task's proposal was
-not approved is refused `price_not_approved`, and one that was publishes
-whatever the bounty has done since. A version published before
-keeps its first approval and is only pointed at again. `POST
-.../sandboxes/:id/unpublish` takes the sandbox back to `draft` with no
-current version and clears its `expires_at`; its versions stay frozen. A
-publication lasts until a date: the body names `expiresAt`, refused
-`expiry_past` unless it is in the future, and an expired publication no
-longer holds the version's approval. No public repository is pushed
-yet, and the round-trip and disclosure gates `freezeReadiness` names are
-not run: publication marks the version contributors are to get. The
-bounty's Sandbox tab shows the chosen version over its Slice card, as the
-Bounty tab shows its proposal's version, with Publish or Unpublish beside
-it.
+## Sandboxes
 
-**A version's private sandbox can be read, not changed.** `GET
-.../sandboxes/versions/:id/files` lists what its build run (`build_run_id`,
-sliced or generated) wrote: `project/`, the hidden tests under `private/`
-and the build's own records, by path, size and hash; never storage keys.
-`GET .../files/content?path=` answers one of them as text through the API,
-since the bucket has no CORS for the browser to read a signed link. The
-path is matched against the run's artifact rows, never joined into a key; a
-file that is not UTF-8, or is over `SANDBOX_FILE_TEXT_MAX_BYTES`, is listed
-with `text: null` and why. Both are owners and admins only, as the hidden
-tests are among the files. The web app shows them at
-`/sandboxes/:workspace/:versionId?path=`, a page outside the shell that the
-bounty's Sandbox tab opens in a new tab once the build has succeeded.
+**One per bounty, three faces.** `sandbox.bounty_id` is unique and required;
+a bounty with a sandbox cannot be removed. The private face is
+`sandbox_source` and `sandbox_version_source` (source repository, alias
+table, approved task, hidden tests); the public face is `sandbox` and
+`sandbox_version` (the aliased copy contributors work in); the protected face
+is `submission` (a contributor's patch, pinned to a frozen version, run with
+both suites). `submissionVerdict` in `packages/core/src/sandbox/submission.ts`
+requires every test in both suites and at least one hidden test to pass; only
+counts are kept. No route takes a submission yet.
 
-**Migration 0046** dropped a bounty's issue type, priority and labels, and
-the type and priority a profile froze. Version 1 of the spec hash read the
-type, so before dropping it the migration recomputes each proposal's and
-spec revision's version 1 hash in SQL. Where that matches the stored hash,
-it writes version 2, the hash without the type, so a proposal still
-current stays current; one that does not match was already stale and stays
-on version 1, which reads as stale (`hash_version`).
+**Nobody picks the repository.** `POST .../sandboxes` takes `bountyId` and cuts
+from the one repository the live proposal says the work touches
+(`bounty_proposal.repositories`). None or several makes a sandbox with no
+source, whose versions are generated. `PUT .../sandboxes/:id/source` links one
+later, once (`no_touched_repository`, `source_linked`). `POST .../sandboxes/start`
+(owners and admins) makes the sandbox and begins its first version in one
+request: sliced when it has a repository, generated when not.
 
-**Migration 0045** renamed tickets to bounties: the `ticket` table, every
-`ticket_id` column, the `ticket` run kind and the `ticketId` keys inside a
-run's plan and outcomes and a profile's JSON. It replaced `sandbox_ticket`
-with `sandbox.bounty_id`. Each old link goes to the oldest sandbox that held
-it, and each sandbox takes its lowest-numbered one. A sandbox left with none
-is given a bounty of its own, titled after its newest version, so no
-sandbox is lost. Old bounty ids keep their `tkt_` prefix; new ones are
-`bty_`.
+**Without a repository, a version is generated.** `POST .../sandboxes/:id/starter`
+snapshots the task from the bounty and its approved proposal (`task_not_ready`
+otherwise) and queues a `sandbox_starter` run, whose agent writes a starter in
+the bounty's vocabulary with a name table applied under the inverse proof
+(`packages/core/src/sandbox/starter.ts`). The contract is Node and
+TypeScript; another runtime is `stack_unsupported`. A generated version's
+transform, build and replay are refused (`generated_version`); it changes by
+generating a new version. Such runs read no snapshot, so
+`analysis_run.organization_id` owns every run.
 
-**Migrations 0043 and 0044** made every existing `jira_issue` a bounty and
-moved what pointed at the issue to point at the bounty. Bounty text had
-lived only in Jira, so the backfill could copy only a title (the latest
-run's plan, else the key); the rest arrives on the next Jira read. Until
-then such a bounty shows no description, and one whose issue has gone
-reviews as stale, since the stored text is not what was priced.
+**With a repository, a version is sliced from its sizing.** The slice is the
+complexity profile of the approved proposal's spec revision in the sandbox's
+repository (`bounty_profile`), scoped and sliced by the profiler. `GET
+.../sandboxes/:id/slice` reports `none`, `queued`, `scoping`, `slicing`,
+`ready`, `failed` or `unavailable` (`no_source`, `task_not_ready`,
+`unconfigured`). `POST .../sandboxes/:id/slice` asks for a profile (202) or,
+once ready, cuts a draft as `POST .../:id/versions` does and queues its build
+(201). A 202 remembers the request on `sandbox_source.cut_requested_*`, and
+`apps/api/src/sandbox/cutter.ts` cuts it once the profile settles. A live
+publication refuses slicing (`published`). A sliced draft starts with no
+fixtures, hidden tests or pseudonyms; a build writes each it lacks with an
+agent (`apps/worker/src/tools/fixtures.ts`, `hidden-tests.ts`,
+`pseudonyms.ts`), keeps a set only once its check passes, and settles them on
+the draft when the run commits (`recordBuildOutput`). Every build scans the
+public files for the workspace's names (`packages/core/src/sandbox/vocabulary.ts`,
+passed as the build's `vocabulary`) and blocks `vocabulary_leaked`.
 
-The web app's Bounties page (`/bounties`) lists the bounties of every
-workspace the person is in, newest first, from `GET /api/v1/me/bounties`.
-That route is outside the membership guard: it reads the caller's own
-memberships and lists across them with `BountyStore.listAcross`, which takes
-the organizations as given. A team workspace's bounty is tagged with the
-workspace's name; a personal one's carries no tag. An opened bounty is read
-and changed through its own workspace's routes, as the role held there
-allows. A new one is written on its own page, `/bounties/new`, to the
-workspace in the rail unless the form names another; once saved, it opens on
-the Bounties page in the form's place in history. A bounty names no
-repository, and nothing offers to pick one: its work may touch any the
-workspace has connected. Its tech stack is the stack detected in every one
-of them, shown locked and followed live rather than copied, plus what the
-bounty adds (`bounty.stack`), which is all a write sends. The stack can be
-set on a bounty whose text follows Jira. The page lists bounties as cards and has no list of
-proposals: a proposal is made from a bounty and opens inside it. A bounty
-opens in a panel over the list, `/bounties?peek=:workspace/:id`, or as a page
-of its own, `/bounties/:workspace/:id`, which the panel's Open as page leads
-to and whose trail leads back; a card links the page, and a plain click
-opens the panel. The workspace is its handle, naming the routes the bounty
-is read through. Its page splits it into its three steps, numbered tabs
-named by `?tab=scope`, `price` or `sandbox` (the old `overview` and
-`bounty` still open theirs), each with its version and a warning when it
-is behind (or, for the scope, when a source has moved past its sync);
-the panel is a glance, read and not changed, in one column with no tabs: its
-details, a row each (status, price, why its scan picked it, sandbox, Jira
-issue, the repositories its sizing says the work touches, stack and
-workspace), its description, and its sandbox's version once it has one. The page's links name the workspace's repositories and lead
-to its GitHub settings, with each one's commit picker under them. Its proposal, and every
-change, are on its page, which the panel's Open as page leads to. On the page,
-a bounty with no price offers to make one on its Price tab; once it has
-one, that tab holds the live proposal in its peek, where it is
-reviewed and decided, without the peek's Spec tab or Jira link,
-since the bounty shows both. Each link on the scope has its context under
-it: its state, what its latest version adds, and, while its source is
-ahead, a warning; the issue's has a Sync item in its row's menu, and each
-repository a picker of its built commits, newest first, marked when an
-older build is held. Each step names the context versions it holds
-or was made with, and the price and sandbox steps warn at the top of their
-page when the scope holds newer context. The old `?bounty=…&workspace=…&proposal=…` query,
-the per-workspace `/o/:slug/bounties` and `/o/:slug/tickets?ticket=…`
-addresses, the old `?tab=proposals&proposal=…` and `/proposal` after either
-address, from when the proposal was a tab, all still land on the right
-bounty. A Jira board's old page lands on the bounty list narrowed to the
-board; there is no list of a board's proposals apart from its bounties.
+**Preparation.** Once a bounty's profile is ready and its price approved,
+`apps/api/src/sandbox/preparer.ts` queues a `fixtures` run that also writes the
+name table, named on `bounty_profile.prepared_run_id`, so the first cut builds
+with them. `workspace_setting.prepare_sandboxes` turns it off
+(`GET`/`PATCH .../settings`, owners and admins).
+
+**Publishing.** `POST .../sandboxes/versions/:vid/publish` (owners and
+admins) freezes the version and makes it `current_version_id` with status
+`published`. It needs a passing build (`not_ready`) and stands on the approval
+its task was taken from (`price_not_approved`). The body names `expiresAt`
+(`expiry_past`); an expired publication no longer holds the approval.
+`POST .../sandboxes/:id/unpublish` returns to `draft`. No public repository
+is pushed and the round-trip and disclosure gates `freezeReadiness` names are
+not run.
+
+**Files.** `GET .../sandboxes/versions/:vid/files` lists what the build run
+wrote (`project/`, hidden tests under `private/`, the build's records) and
+`.../files/content?path=` answers one as text, matched against the run's
+artifact rows, never joined into a key; over `SANDBOX_FILE_TEXT_MAX_BYTES` or
+not UTF-8 is `text: null`. Owners and admins only.
+
+**Provenance.** A version's private source row records the slice's manifest
+and contract hashes, the transform (alias rules, dependency choices, hidden
+tests, fixtures) and a snapshot of the approved task; a transform change
+clears the evidence gathered for the old one. A `sandbox_build` run generates
+the project and runs its baseline through an evaluation provider; only
+`EVALUATION_PROVIDER=local-process` runs builds, and it is not an isolation
+boundary. A repository a sandbox is built from cannot be removed, because
+replay needs its snapshot.
 
 ## Pricing
 
-[`apps/api/src/pricing/executor.ts`](../apps/api/src/pricing/executor.ts)
-coordinates drafting and sizing. The sizing model sees the bounty text and
-returns a whole size (`XS` through `XL`, or `unsized`), never a price.
-`priceFor` in `packages/core/src/sizing.ts` applies the organization's saved
-rate-card snapshot; a `+` size uses the rounded midpoint between adjacent
-prices, in minor currency units. Unsized bounties have no price.
+`apps/api/src/pricing/executor.ts` coordinates drafting and sizing. The sizing
+model sees the bounty text (never the outlines) and returns a whole size (`XS`
+to `XL`, or `unsized`), never a price. `priceFor` in `packages/core/src/sizing.ts`
+applies the organization's rate-card snapshot; a `+` size is the rounded
+midpoint of adjacent prices.
 
 Spec revisions add half steps for net scenario weight gained since the sized
-draft (`packages/core/src/pricing/step.ts`). Covered, light, moderate, and
-heavy scenarios default to 0, 1, 2, and 4 points, with four points per half
-step; board overrides are snapshotted with the run. A covered scenario
-(`packages/core/src/pricing/weight.ts`) is behaviour the other scenarios' code
-already has, proven by one more assertion in a test they already need: it
-exists so a bounty the draft wrote four scenarios for, to be exhaustive, can
-still be XS. A step or assessment stored before the weight existed reads it
-as its default. Trimming can reduce the step, never below its
-base, and XL is the cap. A fresh draft starts at step zero.
+draft (`packages/core/src/pricing/step.ts`): covered, light, moderate and heavy
+default to 0, 1, 2 and 4 points, four per half step; trimming never goes below
+the base and XL is the cap. A covered scenario (`weight.ts`) is behaviour
+another scenario's code already has, so an exhaustive draft can still be XS.
+Manual resize sets a new base at step zero; respec keeps base and settings
+without a sizing call; reprice starts fresh on the current card.
 
-Manual resize sets a new base and restarts the step from zero at the current
-spec revision (`resetStep`), keeping the saved card and step settings: the
-reviewer's size already covers the spec as it stands.
-Respec keeps the base, card, and step settings without another sizing call;
-reprice uses the current card and starts fresh.
+**The rubric sizes a proposal once its code is measured**
+(`packages/core/src/pricing/rubric.ts`, `rubric-v4`): scenarios by weight plus
+open questions, test cases, and code from the complexity profiles, minus
+discounts for an analogous pattern, tests in the touched modules and CI; the
+points per factor are `RUBRIC_POINTS` and the band edges sit beside them, and
+the total is held at zero. The code is scored over every repository the work
+touches, all of them or none (`unavailable`). Sizing
+stores the assessment (`bounty_proposal.rubric`); when the profiler settles,
+`RubricPricer` (`apps/api/src/pricing/rubric.ts`) re-scores and sets
+`sized_by = 'rubric'` on a proposed proposal, unless a reviewer sized it or
+the rubric is two whole sizes away (`rubricNeedsReview`). An approved proposal
+is not touched. `POST .../proposals/:id/rubric` restores the rubric's size over
+a reviewer's resize. Contention is retried once per profile, then
+`bounty_rubric_contended`.
 
-**The pricing rubric sizes a proposal once its code is measured**
-(`packages/core/src/pricing/rubric.ts`, `rubric-v4`). It scores three
-dimensions from countable evidence. Scenarios are scored by weight, with the
-step's points, plus open questions. Test cases are one per scenario with a
-test of its own (every weight above covered), plus each outcome step after a
-test's first; a covered scenario's outcomes are assertions in another's test
-and score nothing. A draft or answer whose scenarios are all covered is
-retried, and a trim that would leave only covered scenarios is refused,
-since covered is by the code another scenario needs. Code comes from
-the complexity profiles: slice size, touched modules, services, seams (at most
-four counted), untested modules, migrations, stubs and blockers, minus
-discounts for an analogous pattern, for tests in the touched modules (two
-points when every one has them, in proportion when some do) and for CI. The
-code's discounts can outweigh its costs, so a measurement moves the size
-either way; the total, not each dimension, is held at zero. The discounts sum
-to five points, less than XS and XS+ together, and a test pins that against
-the band edges. The total falls in a band of the nine priced sizes, and the
-rate card prices it. Sizing stores
-the assessment (`bounty_proposal.rubric`, migration 0051) with the code
-`pending` or `unavailable`, so the model's size stands. When the profiler
-settles a profile, `RubricPricer` (`apps/api/src/pricing/rubric.ts`)
-re-scores the current spec and sets `sized_by = 'rubric'` on a proposed
-proposal. A reviewer-sized proposal only has the assessment recorded, as
-does a model-sized one whose rubric size is two whole sizes or more away
-(`rubricNeedsReview`): a gap that wide means the model or the measurement
-misread the bounty, and a reviewer takes the rubric's size or leaves it.
-An approved proposal is not touched. A respec of a rubric-sized proposal is priced at
-the rubric's score of the changed spec, and the step still records what
-changed. `POST .../proposals/:id/rubric` puts the rubric's size back over a
-reviewer's resize. The code is scored over every repository the work
-touches: one profile each, counts summed and modules named by repository.
-`rubric-v2` adds four points per repository beyond the first for the
-integration across them, and charges modules beyond each repository's
-first, so crossing into another repository is charged once. `rubric-v3`
-scores only the work's slice blockers (an unresolved or dynamic import, once
-per kind and file; the profile's `workBlockers`) and at most two of them.
-The slicer's own build failures, such as a compile error per line from one
-config it could not read, are shown in the evidence but not scored.
-`rubric-v4` adds the covered weight, the tests and CI discounts, the seams
-cap and the total-level floor, so a small change in a well-kept repository
-prices small. The
-boundary summary the profile reads lists the work's blockers ahead of the
-slicer's own, so its cap (`SUMMARY_LIMITS.blockers`) never drops a scored
-one behind a noisy build. The rubric has
-a size once every profile is ready, and one failed fails the code. The code
-is all of the repositories or none: when a touched repository's snapshot is
-gone by the time the proposal is written, none is profiled and the code is
-`unavailable`, rather than a size scored from part of the work. Without a
-repository the rubric has no size, and the model and step price the bounty
-as before. A profile's settle meets the others' writes to the same
-proposal, so `RubricPricer` tries again once per profile of the revision,
-and reports `bounty_rubric_contended` if it still cannot write. Provider wiring is in
-`apps/api/src/server.ts`: Anthropic first with DeepSeek as fallback when both
-are configured, or either provider alone. See `.env.example` for configuration.
+## Jira
+
+Connecting a site is a second Atlassian grant, apart from signing in, whose
+consent asks `WRITE_SCOPES` (`packages/jira/src/oauth.ts`); a grant Atlassian
+returns short of them comes back as `partial-scopes` and the site is still
+connected. The flow and where each guard sits are in the header of
+`apps/api/src/jira/routes.ts`. A connection that can no longer be read
+answers `reconnect` until someone reconnects it. Tokens live encrypted in
+`jira_connection` (`packages/db/src/cipher.ts`, with `key_id` beside each
+value for rotation) and are refreshed by `apps/api/src/jira/credential.ts`,
+the one file that knows both the store and OAuth. Requests are bounded by
+`packages/jira/src/transport.ts`; reads retry within a deadline, writes
+dispatch once.
 
 ## GitHub
 
-One GitHub App, used two ways, and neither is the sign-in OAuth app, which
-asks for `read:user user:email` and only says who someone is.
+One GitHub App, used two ways; the sign-in OAuth app is separate.
 
-- **Installation tokens** do everything unattended: listing what an
-  installation can see, reading a repository, its branch head and its tree.
-  They are minted from the App's key
-  (`packages/github/src/installation-tokens.ts`), cached in memory until five
-  minutes before they expire, and **never stored**. One cache per API
-  process, shared by the routes, the webhook, the reconcile sweep and the
-  snapshotter.
+- **Installation tokens** do everything unattended, minted from the App's key
+  (`packages/github/src/installation-tokens.ts`), cached in memory and never
+  stored. `installationClient` in `apps/api/src/github/credential.ts` narrows
+  every token to its call: `discovery` (`metadata: read`) or `repository`
+  (one repository, `contents: read`). A mint refused with 422 marks the
+  repository `gone`.
+- **The user-to-server half** runs the connect flow. The grant in
+  `github_grant` is encrypted like Jira's tokens and lives as long as the
+  membership (a trigger on `member` drops it).
 
-**Every installation token is narrowed to what its call is for.**
-`installationClient` in `apps/api/src/github/credential.ts` takes a scope,
-and there are two, both read-only: `discovery` (installation-wide,
-`metadata: read`) lists and counts what an installation covers;
-`repository` (one repository by GitHub's numeric id, `contents: read` and
-`metadata: read`) reads that repository's pointer, tree and languages, and
-the few dependency manifests its stack is detected from. So a
-wider grant the App takes on later cannot reach these calls, and a token
-minted for one repository cannot read its neighbours. A mint narrowed to a
-repository the installation no longer covers is refused with 422, which
-reads as `GithubNotFound` and marks the repository `gone`, exactly as the
-unnarrowed read used to.
+**The callback's `installation_id` is untrusted.** An installation is linked
+only when it is in the person's own installation list, and
+`apps/api/src/github/authority.ts` checks again: a personal account's must be
+their own, an organization's must cover no repository they cannot read. That
+check is made once, at link time. `github_connection.installation_id` is
+unique, so another organization's attempt is `claimed`. The flow starts at
+the OAuth authorize URL, not the install page, so reconnecting an existing
+installation does not strand the person. Both connect flows sign `state` with
+one secret and a `purpose` (`apps/api/src/connect-state.ts`).
 
-- **The App's user-to-server half** runs the connect flow. The person's grant
-  is kept in `github_grant`, encrypted like Jira's tokens, and used for one
-  thing: proving which installations the person may link (below). It lives
-  as long as their membership: a trigger on `member` (migration 0038) drops
-  it however the membership ends, since the organization plugin's `leave`
-  route runs no hook.
+**Repositories are pointers.** A `github_repo` row is GitHub's numeric id, a
+name and the default branch's head. The webhook (`POST /api/github/webhook`,
+signature over raw bytes, writes applied before the 2xx) and a reconcile sweep
+every five minutes for repositories not read in fifteen (`If-None-Match`) keep
+it current; a push moves the head only when `pushed_at` is not older than the
+one recorded. Only `register` and `revive` bring a `gone` repository back. The
+sweep tells the App's failures (a 401 to the JWT stops it) from an
+installation's (a rate limit skips it; a gone installation sets
+`uninstalled_at`).
 
-**The callback's `installation_id` is untrusted.** It is a small integer
-anyone can type, and the signed state proves only that the person started a
-flow for their own organization. An installation is linked only when it is in
-that person's own installation list, whether its id came from the query or
-from the picker. `github_connection.installation_id` is unique across the
-table, so an installation belongs to one organization; another
-organization's attempt is `claimed`, and the conditional upsert in
-`GithubConnectionStore.link` writes nothing.
+**Every head is snapshotted** (`apps/api/src/github/snapshot.ts`), once per
+`(repository, commit)`: the recursive tree and language totals, written
+gzipped to `trees/<repoId>/<sha>/<objectId>.json.gz`, `TreeFacts` from
+`packages/core/src/repo/tree.ts`, and a `repo_snapshot` row. Work is queued
+off the request path and retried by the next sweep. The newest 20
+unreferenced snapshots per repository are kept, plus any a proposal was
+drafted beside. Snapshots need object storage; without a bucket the
+routes answer 503. Other branches are snapshotted when pulled
+(`GET .../repositories/:id/branches`, `POST .../repositories/:id/snapshots`
+with `{ branch }`); only the default branch redetects the stack.
 
-**Being in that list is not authority.** GitHub lists every installation
-covering a repository the person can reach at all, so an outside
-collaborator on one repository sees the whole organization's installation.
-`apps/api/src/github/authority.ts` checks again before anything is linked: a
-personal account's installation must be the person's own account, and an
-organization's must cover no repository the person cannot already read
-(their per-installation repository count equals the installation's). That
-needs no App permission beyond Contents and Metadata; proving the person
-administers the organization would need Members: read. The check is made when
-the installation is linked and not again: repositories later added to the
-installation, or its selection widened to all, become registrable by the
-organization without a second check.
+**The stack is detected beside the snapshot** (`apps/api/src/github/stack.ts`):
+up to 30 manifests from the tree, read by object id with the narrowed token,
+handed to `detectStack` (`packages/core/src/repo/stack.ts`); only the names
+found are kept, on `github_repo.stack`, from the catalog in
+`packages/core/src/stack.ts`. This and a bounty's document sync are the only
+reads of file contents outside the worker.
 
-**The flow starts at the OAuth authorize URL, not the install page.** The
-install page returns to the callback only for a fresh install, so
-reconnecting an installation that already exists would strand the person on
-GitHub's settings page. The callback sends them to the install page only when
-their list is empty; a list holding only installations linked to other
-organizations opens the picker, which marks them so and reaches the install
-page through `connect?install=1`.
+## Analysis
 
-**Repositories are pointers.** A `github_repo` row is GitHub's numeric id
-(which survives renames), a name, and the commit its default branch points at.
-Two writers keep that commit current: the webhook (`POST
-/api/github/webhook`, outside the session guard, signature checked over the
-raw bytes before parsing), and a reconcile sweep every five minutes for
-repositories not read in fifteen, which sends `If-None-Match` so a quiet
-repository costs nothing against the rate limit. A push only moves the head
-when its `pushed_at` is no older than the one recorded, so a late delivery
-cannot move it backwards; one in the same second leaves the row due for the
-next sweep, which reads the branch itself. No write but `register` and
-`revive` brings a `gone` repository back.
-
-**Every head is snapshotted.** Registering a repository, a push that moves
-its head, a new default branch and every sweep read ask
-`apps/api/src/github/snapshot.ts` for a snapshot of the head, which is a
-no-op once one exists for that `(repository, commit)`. Taking one reads the
-recursive tree and the language totals with a repository-scoped token,
-writes the file list (paths, sizes, Git object ids; never contents) gzipped
-to `trees/<repoId>/<sha>/<objectId>.json.gz` in the private bucket, computes
-`TreeFacts` (`packages/core/src/repo/tree.ts`: modules, sizes, extensions,
-tests, lockfiles, migrations, infrastructure), and inserts a
-`repo_snapshot` row. The commit is read once, at the start, so a row always
-describes the commit it names; a newer head is a newer row. The work is
-queued off the request path, a few at a time, and a job that fails is
-retried by the next sweep, which asks again for every repository it reads.
-A `gone` repository takes no new snapshot, checked again under a row lock
-when the row is written. The newest 20 unreferenced snapshots per
-repository are kept; one a proposal was drafted beside is kept however old.
-Each snapshot attempt uses a unique object key, so delayed pruning cannot delete
-a recreated snapshot of the same commit. Unsuccessful attempts remove their own
-objects, and disconnecting an installation collects all tree keys before the
-database cascade. Proposal writes lock surviving owned snapshots until commit
-and omit a snapshot deleted during drafting. Pruning waits for these writers
-before rechecking references.
-Snapshots need object storage: without a bucket none are taken and the
-snapshot routes answer 503.
-
-**Other branches are snapshotted when pulled.** A repository's page lists its
-branches (`GET .../repositories/:id/branches`, the first 300, each with its
-head) and an owner or admin can pull one (`POST .../repositories/:id/snapshots`
-with `{ branch }`). Pulling the default branch syncs it as the sweep does, so
-the head moves; any other branch's ref is read and that commit is queued with
-`refs/heads/<branch>` as its `ref`. A commit already snapshotted answers with
-its snapshot; otherwise the answer is 202 with the commit, and the page reads
-the list until it lands. A snapshot is still one per commit, under the branch
-it was first taken from, so a branch shows its own snapshots and the one at its
-head. Only the default branch's head redetects the stack.
-
-**A repository's tech stack is detected beside its snapshot.**
-`apps/api/src/github/stack.ts` picks up to 30 dependency manifests from the
-tree (`package.json`, `pyproject.toml`, `pom.xml`, `*.csproj`, `go.mod`,
-`Gemfile`, `Cargo.toml`, compose files and Dockerfiles, Terraform), shallowest
-first and none over 256 KiB, reads them by Git object id with the same
-narrowed token, and hands them with the language totals and the file list to
-`detectStack` (`packages/core/src/repo/stack.ts`). That is one of two reads
-of file contents outside the worker: each manifest's text is dropped once read,
-and only the names found are kept, on `github_repo.stack` with the commit and
-detection version they came from. Vendored code, fixtures and examples are
-skipped. A snapshot that already exists has its stack redone when either is
-stale, so the sweep backfills every repository within one interval and a new
-`STACK_DETECTION_VERSION` redoes them all; a failed read is reported and
-retried the same way, and never fails the snapshot. The names come from one
-catalog (`packages/core/src/stack.ts`), which also groups them by kind for the
-picker and stores other spellings (`postgres`, `k8s`) under its own. The other is a bounty's GitHub sync, which reads
-only Markdown documents, with the same narrowed token, and keeps them cut to
-their caps on `bounty_context` as the bounty's context (see Bounties).
-
-**A bounty names no repository, and neither does a board** (migration 0059
-dropped `bounty.repo_id` and `jira_board.source_repo_id`). Its work may
-touch any repository the workspace has connected, so sizing drafts each
-spec beside an outline of every one that is built, at the commit the
-bounty's scope holds it at (else its newest build), so the outline and the
-documents are of one commit and a repository never built cannot be named —
-module names with
-file counts and file types, under a neutral label each ("Repository 1"),
-sharing one cap of lines (`outlineLinesEach` in
-`apps/api/src/sizing/outline.ts`) — and the draft (`draft-v6`) names, by
-label, the repositories the work changes. Those are recorded on the
-proposal with the snapshot each was outlined at
-(`bounty_proposal.repositories`, which 0059 backfilled from the old
-`repo_snapshot_id`); a re-price says them again and a spec change keeps
-them. The size call is never shown the outlines.
-
-**A delivery is applied before it is answered.** GitHub does not retry a
-failed delivery on its own and records any 2xx as delivered, so the
-database writes run first and a failure answers 500, which GitHub shows as
-failed and lets someone redeliver. Only the head re-read after a
-default-branch change is left until after the 202.
-
-**The sweep tells the App's failures from an installation's.** A 401 to the
-App's JWT (a deleted key, a wrong App id, a skewed clock) stops the sweep and
-flags nothing, since every installation would answer the same. A rate limit
-skips only that installation, as GitHub's limits are per installation. A
-connection flagged unhealthy is probed with the JWT on each sweep until it
-recovers or GitHub says it is gone, which sets `uninstalled_at` and is final:
-a reinstall is a new installation id. Reconnecting clears either.
-
-Both connect flows sign their `state` with the same secret, so the state
-carries a `purpose` (`apps/api/src/connect-state.ts`) and each callback
-refuses the other's.
-
-**Analysis runs are private and cached.** Five _context builders_ describe a
-snapshot on their own, started from a repository's page
-(`/o/:slug/repositories/:repoId`) by an owner or admin and read by any
-member: a `graphify` run maps a snapshot's structure in a Fargate worker;
-an `abstractions` run lists every module's exported surface
-with its signatures, typed, syntactic or names only; a `data_model` run
-reads the entities, enums and relations the repository's Prisma schema,
-Drizzle tables or SQL migrations declare, with the modules that touch them;
-a `documents` run keeps its Markdown documents, which a bounty's sync reads
-instead of GitHub; and a `brief` run sums the others up in one bounded
-document, which the price reads for every connected repository. The
-abstractions and data model read graphify's map and are what the agents
-read; the brief waits for the rest of its snapshot's builders. A repository
-has one context: every builder at one commit, the snapshot
-`github_repo.context_snapshot_id` names. A repository is built where it
-is registered: the repositories dialog, in settings and onboarding alike,
-waits for its first snapshot, starts "Build all" on it and stays open
-until the snapshot is built or its map fails
-(`apps/web/src/features/analysis/useRepositoryBuilds.ts`), one repository
-at a time so a set is never refused by the run cap halfway; one registered
-before and never built offers the same build there. "Build all"
-(`POST .../repositories/:id/builds`) on another snapshot moves it there; the
-page's rows and "View all" read that snapshot whichever one is chosen, and
-say when the chosen one differs. Runs on other snapshots stay cached, so
-moving back costs nothing. The snapshot list always carries the context's
-snapshot, however many are newer. A `slice` run reads the graphify map and the same source to cut
-the files one task needs and describe their boundary (the stubs it imports
-from outside, the public surface outside code imports from it, the
-externals to mock). All are `analysis_run` rows keyed by `(snapshot, tool,
-version, params)`, reached only through the repository's owner, with their
-artifacts in the private bucket under `runs/<runId>/`. A builder other than
-graphify names itself in its parameters (`params.builder`), since their
-parameters are otherwise the same. A slice, a scope run and the
-`abstractions` and `data_model` builders name the graphify run they read
-(`params.graphRunId`) and are handed to a worker only after that run has
-finished; the API enqueues the graph run first when there is none. The walk and the record shapes are pure code in
-`packages/core/src/slice`; `apps/worker/README.md` states every output
-contract. A slice is a proposal: `stubCoverage: "full"` with no blockers
-lets it proceed to the provenance checks in
-[`packages/core/src/sandbox/provenance.ts`](../packages/core/src/sandbox/provenance.ts).
-Anything less remains diagnostic output and cannot produce a ready sandbox.
-A slice is cut for a bounty by the profiler and the sandbox flow, never by
-hand from the repository page, which only builds context.
+**Five context builders** describe a snapshot, started from a repository's
+page by an owner or admin and read by any member: `graphify`, `abstractions`,
+`data_model`, `documents` and `brief` (`CONTEXT_BUILDERS` in
+`packages/core/src/analysis.ts`; outputs in the worker README). A repository
+has one context, the snapshot `github_repo.context_snapshot_id` names; "Build
+all" (`POST .../repositories/:id/builds`) moves it, and the repositories
+dialog builds a repository where it is registered
+(`apps/web/src/features/analysis/useRepositoryBuilds.ts`). All runs are
+`analysis_run` rows keyed by `(snapshot, tool, version, params)`, reached
+through the repository's owner, with artifacts under `runs/<runId>/`. Graph
+readers name `params.graphRunId` and wait for it; the API enqueues the graph
+run first. A slice is cut for a bounty by the profiler and the sandbox flow,
+never by hand from the repository page.
 
 **Agents propose; deterministic code decides.** A `scope` run gives a model
-read-only tools over the extracted source and the bounty's approved spec,
-and it proposes a slice request: entry points and a budget chosen so the
-cuts fall on input/output seams. Its `check_scope` tool runs the very slice
-computation the `slice` tool runs, and an answer is recorded only when that
-computation agrees with it. When the snapshot has succeeded `abstractions`
-or `data_model` runs, the scope run names them (so they join its cache key)
-and the agent can read a module's surface and the data model, whose
-accessor modules are where a `database` seam belongs; the fixtures agent
-reads the data model too. Neither decides anything. The proposal fills the slice picker; a person
-starts the slice. Once a bounty's profile is ready and its price approved,
-the API prepares its sandbox (`apps/api/src/sandbox/preparer.ts`): a
-`fixtures` run that also writes the name table, named on the profile
-(`bounty_profile.prepared_run_id`), so the Sandbox click cuts the draft with
-those fixtures and its build takes the table when its own check passes it.
-A workspace turns it off with `workspace_setting.prepare_sandboxes`
-(`GET`/`PATCH .../settings`, owners and admins to change). Preparation runs
-are kept from members as builds are. A `fixtures` run, for a succeeded slice, writes default
-behaviour for mocked calls and the `npm run dev` walkthrough, type-checked
-against the slice's own stubs; a version copies them into its transform,
-and the build aliases them and runs the walkthrough in its baseline. The
-source is read only during a run: transcripts and tool results are never
-stored, only the structured answer, its token usage and fixed log lines.
-Agent runs need `ANTHROPIC_API_KEY` and `AGENT_MODEL` on the worker; without
-a key they fail `agent_unavailable` and nothing else changes.
+read-only tools and proposes entry points and a budget; `check_scope` runs the
+slice computation and an answer is recorded only when it agrees. With
+succeeded `abstractions` and `data_model` runs it also reads module surfaces
+and the data model. A `fixtures` run writes mocked behaviour and the
+walkthrough, type-checked against the slice's stubs. Transcripts are never
+stored. Agent runs need `ANTHROPIC_API_KEY` and `AGENT_MODEL` on the worker;
+without them they fail `agent_unavailable`.
 
-**A sized bounty is profiled from the code it touches.** When a spec's
-work touches repositories whose snapshots survive and profiling is
-configured, the proposal/spec transaction inserts a pending profile intent
-for each (`bounty_profile`, one row per revision and snapshot), with the
-owner, spec hash and locked snapshot. An intent
-insert failure rolls back the proposal and spec. The post-commit callback only
-wakes the profiler: a later sweep discovers committed intent without it. The
-unique proposal/revision/snapshot constraint makes requests idempotent. Snapshot-less
-or disabled profiling retains the existing behavior; respec does not implicitly
-request profiles, and historical rows are not backfilled.
-`apps/api/src/pricing/profiler.ts` moves the rows in flight when a run
-ends: the run store sends `NOTIFY analysis_run_ended` in the same write, and
-the API listens. Every change a page follows (an analysis or bounty run
-claimed, stepping, previewing or ended; a profile moving) is also sent on
-`run_changed`, which the API passes to the workspace's push channel
-(`GET /api/v1/orgs/:orgId/events`, `apps/api/src/events.ts`); the web app
-reads what changed again when told and keeps a slower timer behind it. A sweep every 30 seconds stays, for a notification missed
-across a reconnect or a restart. Each pass: it
-enqueues the snapshot's graph and a `scope` run for the spec (no person
-behind either, so `requested_by` is null), then slices exactly the request
-the scope recorded, then builds the profile with `buildComplexityProfile`
+**A sized bounty is profiled from the code it touches.** The proposal/spec
+transaction inserts a pending `bounty_profile` per touched snapshot (unique
+per proposal, revision and snapshot). `apps/api/src/pricing/profiler.ts`
+moves them on `NOTIFY analysis_run_ended` and a 30-second sweep: graph run,
+then `abstractions` and `data_model`, then a `scope` run naming the ones that
+succeeded, then the slice the scope recorded, then `buildComplexityProfile`
 (`packages/core/src/pricing/profile.ts`). The profile is evidence, not a
-price. It holds the slice's files, bytes and modules, the modules the
-scope's entry points touch, the services and environment the slice reaches,
-the spec's open questions and assumptions, the test files in the touched
-modules, migrations and CI, and an existing file the scope agent names as
-the pattern to follow, which the worker checks is a real file. A step that
-meets the organization's analysis cap waits for the next sweep, so a large
-backlog queues behind the cap rather than failing; the profiler meets it a
-slot early, so a person's own analysis is not refused while the backlog
-drains. The cap counts agent runs and builds apart, as a worker runs them
-apart: builds at the cap hold back only builds, so another repository's
-scope still goes in the same sweep. A failed run fails the
-profile for that revision; a re-price drafts a new revision and asks again.
-The whole chain needs what analysis needs, plus the agent's key.
+price. A step at the organization's analysis cap waits for the next sweep;
+the cap counts agent runs and builds apart. A failed run fails the profile for
+that revision; a re-price asks again.
 
-**Waits are measured from the rows.** A pricing run writes each model call
-it made once it ends (`bounty_run.model_calls`: tool, start, duration, the
-model that answered and whether the fallback did), a profile appends each
-status it moves to (`bounty_profile.transitions`), and the worker writes an
-analysis run's own timing (see the [worker contract](../apps/worker/README.md#output-contract)).
-The `flow_wait_sample` and `flow_wait` views (`packages/db/src/schema/flows.ts`)
-read them, with the rows' own timestamps, into click → price, click → rubric,
-sandbox draft → built, and each tool's queue and run time, as percentiles per
-week. They read across organizations: an operator's SQL prompt, not a route.
+**Events.** Every change a page follows is sent on `run_changed`, passed to
+the workspace's push channel (`GET /api/v1/orgs/:orgId/events`,
+`apps/api/src/events.ts`); the web app refetches when told and keeps a slower
+timer behind it. Waits are measured from the rows (`bounty_run.model_calls`,
+`bounty_profile.transitions`, `analysis_run.timing`) into the `flow_wait`
+views (`packages/db/src/schema/flows.ts`), an operator's SQL prompt.
 
-**Sandbox versions pin their provenance.** A version is cut from a succeeded
-slice. Its private source row records the slice's manifest and contract
-hashes, the transform (alias rules, dependency choices, hidden tests) and a
-snapshot of the approved task; fixtures, when attached, are part of the
-transform too. A transform change clears every piece of evidence gathered
-for the old one. A `sandbox_build` run, another
-`analysis_run`, generates the standalone project and runs its baseline
-through an evaluation provider. Only a worker started with
-`EVALUATION_PROVIDER=local-process` runs builds, and that provider is not an
-isolation boundary. A repository a sandbox is built from cannot be removed,
-alone or with its connection, because replay needs its snapshot.
+## The extension
 
-**The extension runs a task locally.** It reads `sandbox-task.json` from a
-clone for display only and runs the fixed command table from
-`packages/core` in VS Code terminals, only when invoked, in a trusted
-workspace. The API address is a user or application setting; a workspace
-value is ignored, and the stored token is keyed by origin.
+Reads `sandbox-task.json` from a clone for display and runs the fixed command
+table from `packages/core` in VS Code terminals, only when invoked, in a
+trusted workspace. The API address is a user or application setting; the
+stored token is keyed by origin. Sign-in is not built: the client's
+`getToken` callback is the seam.
 
-## Not yet built
+## Migration notes
 
-- **The extension's sign-in** — the client's `getToken` callback is the seam,
-  reading VS Code's encrypted secret storage. The API already accepts the token.
+Migrations are generated; these are the ones later readers ask about.
+
+| Migration | Did                                                                               |
+| --------- | --------------------------------------------------------------------------------- |
+| 0015      | Gave every existing user a personal organization                                  |
+| 0029–0030 | The shared `handle` registry                                                      |
+| 0043–0045 | Made every `jira_issue` a bounty; renamed tickets to bounties, `tkt_` kept        |
+| 0046      | Dropped issue type, priority and labels; spec hash v2 (hash without type)         |
+| 0048      | Dropped `bounty.number` and `B-12` keys                                           |
+| 0049      | `analysis_run.organization_id` for runs with no snapshot                          |
+| 0050–0051 | Proposal `version` apart from `revision`; the rubric assessment                   |
+| 0053–0054 | Scope versions in `bounty_version`; scope approval                                |
+| 0056–0057 | `bounty_context` versions; `bounty.categories`                                    |
+| 0059      | Dropped `bounty.repo_id` and `jira_board.source_repo_id`; `proposal.repositories` |
+| 0065–0067 | Cut requests, `repo_snapshot.built_at`, sandbox preparation                       |
