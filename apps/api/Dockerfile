@@ -5,7 +5,7 @@
 
 # ---- deps ------------------------------------------------------------------
 # Manifests only, so the install layer is cached until a dependency changes.
-FROM node:22-alpine AS deps
+FROM node:22-alpine@sha256:0a7108bf6c7bf5de370ffb1a3ed6be93d405b43ff159f681a8d18c0e2bc2e402 AS deps
 WORKDIR /repo
 
 COPY package.json package-lock.json ./
@@ -48,7 +48,7 @@ COPY turbo.json ./
 RUN npx turbo run build --filter=@sandbox-factory/api
 
 # ---- runtime ---------------------------------------------------------------
-FROM node:22-alpine AS runtime
+FROM node:22-alpine@sha256:0a7108bf6c7bf5de370ffb1a3ed6be93d405b43ff159f681a8d18c0e2bc2e402 AS runtime
 WORKDIR /repo
 ENV NODE_ENV=production
 

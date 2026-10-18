@@ -16,7 +16,7 @@ protection on `main`.
 | `terraform.yml`       | Validates infra; plans on PRs only, with a read-only role                     |
 | `deploy-watchdog.yml` | Daily: is production at `main`'s head?                                        |
 | `security-sweep.yml`  | Nightly security sweep                                                        |
-| `scorecard.yml`       | OpenSSF supply-chain posture, weekly. Pinned to an exact action version       |
+| `scorecard.yml`       | OpenSSF supply-chain posture, weekly                                          |
 
 ## Branch protection
 
@@ -117,9 +117,14 @@ Revisit CodeQL licensing and policy if visibility changes.
 
 ## Dependabot
 
-[`dependabot.yml`](../.github/dependabot.yml) watches npm and GitHub Actions
-weekly, capped at five open PRs. Dev-dependency minor and patch updates are
-grouped into one PR.
+[`dependabot.yml`](../.github/dependabot.yml) watches npm, GitHub Actions and
+the Dockerfiles' base images weekly, capped at five open PRs. Dev-dependency
+minor and patch updates are grouped into one PR.
+
+Every `uses:` is pinned to a commit SHA with its exact version as a trailing
+comment, and every base image by digest; Dependabot updates both. The worker's
+`python/requirements.lock` is hashed and installed with `--require-hashes`;
+regenerate it with `pip-compile --generate-hashes` when a pin changes.
 
 ## Auto-merge
 

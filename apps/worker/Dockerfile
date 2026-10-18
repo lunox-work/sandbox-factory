@@ -1,8 +1,8 @@
 # syntax=docker/dockerfile:1
-FROM node:22-bookworm-slim AS python
+FROM node:22-bookworm-slim@sha256:c3de60bf2f9dd0ac6370e6117950ff62d6e339527e7472301c9c78a017978392 AS python
 RUN apt-get update && apt-get install -y --no-install-recommends python3 python3-venv tar && rm -rf /var/lib/apt/lists/*
 COPY apps/worker/python/requirements.lock /tmp/requirements.lock
-RUN python3 -m venv /opt/graphify && /opt/graphify/bin/pip install --no-cache-dir -r /tmp/requirements.lock
+RUN python3 -m venv /opt/graphify && /opt/graphify/bin/pip install --no-cache-dir --require-hashes -r /tmp/requirements.lock
 ENV PATH="/opt/graphify/bin:${PATH}"
 
 FROM python AS deps
