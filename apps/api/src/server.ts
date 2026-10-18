@@ -509,8 +509,9 @@ const sandbox =
         contextFor,
         profiles: bountyProfiles,
         // Declared below, on the same footing; called only on a request.
-        requestProfile: (owner: string, input: NewBountyProfile) =>
-          bountyProfiler?.request(owner, input) ?? Promise.resolve(),
+        requestProfile: async (owner: string, input: NewBountyProfile) => {
+          await bountyProfiler?.request(owner, input);
+        },
         ensureWorker: () => workerLauncher.ensureWorker(),
         maxActive: env.MAX_ACTIVE_RUNS_PER_ORG,
         onLaunchError: () => console.error("analysis_worker_launch_failed"),
