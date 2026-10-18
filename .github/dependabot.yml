@@ -19,3 +19,9 @@ updates:
     directory: "/"
     schedule:
       interval: weekly
+
+  # Base images are pinned by digest; this keeps the digests current.
+  - package-ecosystem: docker
+    directories: ["/apps/api", "/apps/web", "/apps/worker"]
+    schedule:
+      interval: weekly

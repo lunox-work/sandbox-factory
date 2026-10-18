@@ -32,7 +32,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
@@ -106,7 +106,7 @@ jobs:
 
       - name: Open or update an issue
         if: steps.drift.outputs.stale == 'true' && steps.drift.outputs.age_days >= 1
-        uses: actions/github-script@v9
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           LIVE: ${{ steps.drift.outputs.live }}
           HEAD_SHA: ${{ steps.drift.outputs.head }}
@@ -159,7 +159,7 @@ jobs:
 
       - name: Close the issue once production catches up
         if: steps.drift.outputs.stale != 'true' && steps.live.outputs.unreachable != 'true'
-        uses: actions/github-script@v9
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
             const existing = await github.rest.issues.listForRepo({
