@@ -92,6 +92,12 @@ export interface ToolRunInput {
    */
   readonly step?: (text: string) => void;
   /**
+   * Says how far a builder has got, `done` units of `total`, for the bar
+   * on the page following the run (`progress.ts`). Absent where nothing
+   * follows it.
+   */
+  readonly advance?: (done: number, total: number) => void;
+  /**
    * Shows what a build has generated, before its baseline, on the version's
    * files while the baseline runs: the files are uploaded and recorded on
    * the run, in place of any shown before. Best effort, and never waited

@@ -36,6 +36,7 @@ import type {
 } from "sandbox-factory";
 import { indexRepository } from "../agent/repo-tools.js";
 import { AnalysisError } from "../errors.js";
+import { phasedProgress } from "../progress.js";
 import { snapshotOf } from "./adapter.js";
 import type { ArtifactFile, ToolAdapter } from "./adapter.js";
 import { findAccessors } from "./data-model/accessors.js";
@@ -134,6 +135,14 @@ export function createDataModelAdapter(): ToolAdapter {
         dependencies.map((node) => packageNameOf(node.label)),
       );
       const recognized: RecognizedSource[] = [];
+      // Each recognizer and the accessor scan, a quarter of the bar apiece:
+      // they read a handful of files each, and are quick.
+      const bar = phasedProgress(input.advance, {
+        prisma: 1,
+        drizzle: 1,
+        migrations: 1,
+        accessors: 1,
+      });
 
       const prismaFiles = paths.filter((path) => path.endsWith(".prisma"));
       if (prismaFiles.length > 0) {
@@ -147,6 +156,7 @@ export function createDataModelAdapter(): ToolAdapter {
         );
         input.log(`Prisma: read ${prismaFiles.length} schema files.`);
       }
+      bar.prisma(1, 1);
 
       const drizzleImports = dependencies.filter((node) =>
         DRIZZLE_CORE.test(node.label),
@@ -169,6 +179,7 @@ export function createDataModelAdapter(): ToolAdapter {
         recognized.push(source);
         input.log(`Drizzle: read ${drizzleFiles.length} files.`);
       }
+      bar.drizzle(1, 1);
 
       // Migration directories: the tree facts', and Drizzle Kit's output
       // wherever its journal is.
@@ -247,6 +258,7 @@ export function createDataModelAdapter(): ToolAdapter {
         );
         input.log(`SQL migrations: replayed ${ordered.length} files.`);
       }
+      bar.migrations(1, 1);
 
       input.signal.throwIfAborted();
       const merged = mergeSources(recognized);
@@ -272,6 +284,7 @@ export function createDataModelAdapter(): ToolAdapter {
         drizzle: drizzleDefinitions,
         importers: importerCounts(graph.graph),
       });
+      bar.accessors(1, 1);
       const model: DataModel = {
         schemaVersion: DATA_MODEL_SCHEMA_VERSION,
         toolVersion: DATA_MODEL_TOOL_VERSION,

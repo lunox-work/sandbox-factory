@@ -703,6 +703,33 @@
 }
 
 /*
+ * A builder running without a count yet (the brief, or one before its
+ * first report): a short segment slides along its bar
+ * (`features/analysis/RepositoryBuildProgress.tsx`).
+ */
+.build-bar-sweep {
+  animation: build-bar-sweep 1.4s ease-in-out infinite;
+}
+
+@keyframes build-bar-sweep {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(340%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .build-bar-sweep {
+    animation: none;
+    transform: none;
+    width: 100%;
+    opacity: 0.35;
+  }
+}
+
+/*
  * A model at work: the line beside the brand orb (`components/Orb.tsx`),
  * whose text a light sweeps across, so it reads apart from a page merely
  * loading.
