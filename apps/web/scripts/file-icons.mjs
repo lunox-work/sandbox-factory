@@ -15,6 +15,8 @@
 
 import { mkdir, readdir, rm, writeFile } from "node:fs/promises";
 
+import { safeSvgBody, svgNumber } from "./svg-body.mjs";
+
 const OUT = new URL("../src/assets/files/", import.meta.url);
 
 /** Folders with an icon of their own; each has a closed and an open one. */
@@ -120,13 +122,16 @@ function svgDocument(name) {
       `vscode-icons:${name} is transformed, which is not handled`,
     );
   }
+  const id = `vscode-icons:${name}`;
   const box = [
     icon.left ?? set.left ?? 0,
     icon.top ?? set.top ?? 0,
     icon.width ?? set.width ?? 16,
     icon.height ?? set.height ?? 16,
-  ].join(" ");
-  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${box}">${icon.body}</svg>\n`;
+  ]
+    .map((value) => svgNumber(value, id))
+    .join(" ");
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${box}">${safeSvgBody(icon.body, id)}</svg>\n`;
 }
 
 await mkdir(OUT, { recursive: true });

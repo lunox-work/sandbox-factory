@@ -24,6 +24,8 @@
 
 import { mkdir, readdir, rm, writeFile } from "node:fs/promises";
 
+import { safeSvgBody, svgNumber } from "./svg-body.mjs";
+
 const OUT = new URL("../src/assets/stack/", import.meta.url);
 
 /** vscode-icons' file icon; its `light-` variant is found by name. */
@@ -204,11 +206,11 @@ function lookup(sets, id) {
     throw new Error(`${id} is transformed, which is not handled`);
   }
   return {
-    body: icon.body,
-    left: icon.left ?? set.left ?? 0,
-    top: icon.top ?? set.top ?? 0,
-    width: icon.width ?? set.width ?? 16,
-    height: icon.height ?? set.height ?? 16,
+    body: safeSvgBody(icon.body, id),
+    left: svgNumber(icon.left ?? set.left ?? 0, id),
+    top: svgNumber(icon.top ?? set.top ?? 0, id),
+    width: svgNumber(icon.width ?? set.width ?? 16, id),
+    height: svgNumber(icon.height ?? set.height ?? 16, id),
   };
 }
 
