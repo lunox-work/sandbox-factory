@@ -24,15 +24,21 @@ export const ANALYSIS_ERROR_CODES = [
 ] as const;
 export type AnalysisErrorCode = (typeof ANALYSIS_ERROR_CODES)[number];
 /**
- * What an agent run has done so far, written as it works, so a page
- * following the run shows its steps rather than a spinner. Each step is a
- * line the worker writes about one tool call, never the model's prose. Only
- * the newest `ANALYSIS_PROGRESS_STEPS_MAX` are kept; `count` is how many
- * there have been.
+ * What a run has done so far, written as it works, so a page following the
+ * run shows its steps rather than a spinner. Each step is a line the worker
+ * writes about one tool call, never the model's prose. Only the newest
+ * `ANALYSIS_PROGRESS_STEPS_MAX` are kept; `count` is how many there have
+ * been. A context builder writes how far it has got instead, for a bar.
  */
 export interface AnalysisProgress {
   readonly count: number;
   readonly steps: readonly AnalysisProgressStep[];
+  /** Units done of a total the builder counts: files read, stages ended. */
+  readonly fraction?: AnalysisProgressFraction;
+}
+export interface AnalysisProgressFraction {
+  readonly done: number;
+  readonly total: number;
 }
 export interface AnalysisProgressStep {
   /** When it was done, as an ISO timestamp. */

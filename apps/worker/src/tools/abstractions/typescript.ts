@@ -280,7 +280,11 @@ function specifierBetween(from: string, to: string): string {
   return path.startsWith(".") ? path : `./${path}`;
 }
 
-export function extractTypedSurfaces(input: TypedInput): TypedSurfaces {
+/** `progress` hears how many of the input's files have been read so far. */
+export function extractTypedSurfaces(
+  input: TypedInput,
+  progress?: (done: number) => void,
+): TypedSurfaces {
   const root = resolve(input.root);
   const rel = (path: string) => relative(root, path).replaceAll("\\", "/");
   const abs = (path: string) => resolve(root, path);
@@ -288,6 +292,7 @@ export function extractTypedSurfaces(input: TypedInput): TypedSurfaces {
   const omissions: AbstractionOmission[] = [];
   const modules: RawModule[] = [];
   const fallback: string[] = [];
+  let read = 0;
   // Files in one directory share their nearest tsconfig; read each once.
   const configs = new Map<string, LoadedConfig>();
   const groups = new Map<string, { config: LoadedConfig; files: string[] }>();
@@ -337,6 +342,8 @@ export function extractTypedSurfaces(input: TypedInput): TypedSurfaces {
         file: key === "" ? null : key,
         detail: `This project reaches more than ${maxFiles} repository files; its ${files.length} modules are read syntactically.`,
       });
+      read += files.length;
+      progress?.(read);
       continue;
     }
     const checker = program.getTypeChecker();
@@ -361,6 +368,7 @@ export function extractTypedSurfaces(input: TypedInput): TypedSurfaces {
       return { package: binding.specifier };
     };
     for (const file of files) {
+      progress?.(++read);
       const source = program.getSourceFile(abs(file));
       if (source === undefined) {
         omissions.push({
@@ -530,6 +538,7 @@ export function extractTypedSurfaces(input: TypedInput): TypedSurfaces {
 export function extractTypedSurfacesInThread(
   input: TypedInput,
   signal: AbortSignal,
+  progress?: (done: number) => void,
 ): Promise<TypedSurfaces> {
   if (signal.aborted) return Promise.reject(signal.reason as Error);
   return new Promise((resolvePromise, reject) => {
@@ -546,8 +555,12 @@ export function extractTypedSurfacesInThread(
     };
     const abort = () => settle(() => reject(signal.reason));
     signal.addEventListener("abort", abort, { once: true });
-    worker.once("message", (result: TypedSurfaces) =>
-      settle(() => resolvePromise(result)),
+    worker.on(
+      "message",
+      (message: { done: number } | { result: TypedSurfaces }) => {
+        if ("result" in message) settle(() => resolvePromise(message.result));
+        else progress?.(message.done);
+      },
     );
     worker.once("error", (error) => settle(() => reject(error)));
     worker.once("exit", (code) =>

@@ -207,7 +207,7 @@ export const enqueueFixturesSchema = z.strictObject({
     .default(AGENT_DEADLINE_MINUTES),
 });
 
-/** What an agent run has done so far: `AnalysisProgress` in core. */
+/** What a run has done so far: `AnalysisProgress` in core. */
 export const analysisProgressSchema = z.object({
   count: z.number().int().nonnegative(),
   steps: z
@@ -218,6 +218,13 @@ export const analysisProgressSchema = z.object({
       }),
     )
     .max(ANALYSIS_PROGRESS_STEPS_MAX),
+  fraction: z
+    .object({
+      done: z.number().int().nonnegative(),
+      total: z.number().int().positive(),
+    })
+    .refine((fraction) => fraction.done <= fraction.total)
+    .optional(),
 });
 const runCommon = {
   id: z.string(),

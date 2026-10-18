@@ -1,15 +1,25 @@
 import { spawn } from "node:child_process";
 import { CommandError } from "./errors.js";
 
+/** How a driver says how far it has got, on a stderr line of its own. */
+export const PROGRESS_PREFIX = "@@progress";
+const PROGRESS_LINE = new RegExp(`^${PROGRESS_PREFIX} (\\d+) (\\d+)$`);
+
 /**
  * Platform credentials never enter parser subprocesses. Abort their whole group.
  * `env` adds fixed, non-secret settings a tool needs over the minimal base;
- * nothing of the worker's own environment passes through.
+ * nothing of the worker's own environment passes through. `progress` hears
+ * each `PROGRESS_PREFIX done total` line the tool writes to stderr.
  */
 export function command(
   executable: string,
   args: readonly string[],
-  options: { signal: AbortSignal; cwd?: string; env?: Record<string, string> },
+  options: {
+    signal: AbortSignal;
+    cwd?: string;
+    env?: Record<string, string>;
+    progress?: ((done: number, total: number) => void) | undefined;
+  },
 ): Promise<string> {
   options.signal.throwIfAborted();
   return new Promise((resolve, reject) => {
@@ -27,6 +37,7 @@ export function command(
       },
     });
     let output = "";
+    let errors = "";
     let bytes = 0;
     let exceeded = false;
     let killTimer: ReturnType<typeof setTimeout> | undefined;
@@ -50,6 +61,16 @@ export function command(
         return;
       }
       if (stdout) output += chunk.toString("utf8");
+      else if (options.progress !== undefined) {
+        errors += chunk.toString("utf8");
+        const lines = errors.split("\n");
+        errors = lines.pop() ?? "";
+        for (const line of lines) {
+          const match = PROGRESS_LINE.exec(line.trim());
+          if (match !== null)
+            options.progress(Number(match[1]), Number(match[2]));
+        }
+      }
     };
     child.stdout.on("data", (chunk: Buffer) => collect(chunk, true));
     child.stderr.on("data", (chunk: Buffer) => collect(chunk, false));

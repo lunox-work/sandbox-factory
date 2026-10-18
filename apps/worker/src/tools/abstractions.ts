@@ -46,6 +46,7 @@ import type {
 } from "sandbox-factory";
 import { z } from "zod";
 import { command } from "../command.js";
+import { phasedProgress } from "../progress.js";
 import { AnalysisError } from "../errors.js";
 import { snapshotOf } from "./adapter.js";
 import type { ArtifactFile, ToolAdapter } from "./adapter.js";
@@ -294,7 +295,11 @@ export function createAbstractionsAdapter(
     python?: string;
     scriptPath?: string;
     /** The typed tier; a worker thread unless a test runs it in place. */
-    typed?: (input: TypedInput, signal: AbortSignal) => Promise<TypedSurfaces>;
+    typed?: (
+      input: TypedInput,
+      signal: AbortSignal,
+      progress?: (done: number) => void,
+    ) => Promise<TypedSurfaces>;
   } = {},
 ): ToolAdapter {
   return {
@@ -312,12 +317,20 @@ export function createAbstractionsAdapter(
       );
       const files = surfaceModules(graph.graph);
       const scripts = files.filter(isScriptPath);
+      // One bar over the three passes, by the files each reads: the
+      // compiler's are the slow ones, the seams' a quick scan.
+      const bar = phasedProgress(input.advance, {
+        typed: scripts.length * 4,
+        syntactic: files.length - scripts.length,
+        seams: files.length / 4,
+      });
       let typed: TypedSurfaces | null = null;
       if (scripts.length > 0) {
         try {
           typed = await (options.typed ?? extractTypedSurfacesInThread)(
             { root: input.sourceDir, files: scripts },
             input.signal,
+            (done) => bar.typed(done, scripts.length),
           );
         } catch (error) {
           if (input.signal.aborted) throw error;
@@ -342,6 +355,7 @@ export function createAbstractionsAdapter(
           `Typed tier read ${typed.modules.length} of ${scripts.length} scripts.`,
         );
       }
+      bar.typed(1, 1);
       const listing = [
         ...files
           .filter((path) =>
@@ -368,7 +382,7 @@ export function createAbstractionsAdapter(
           await (options.execute ?? command)(
             options.python ?? "python3",
             [script, input.sourceDir, listingPath, outPath],
-            { signal: input.signal },
+            { signal: input.signal, progress: bar.syntactic },
           );
           syntactic = syntacticOutputSchema.parse(
             JSON.parse(await readFile(outPath, "utf8")),
@@ -397,6 +411,7 @@ export function createAbstractionsAdapter(
           `Syntactic tier read ${syntactic.modules.length} of ${listing.length} modules.`,
         );
       }
+      bar.syntactic(1, 1);
       input.signal.throwIfAborted();
       const index = assembleIndex({
         graph: graph.graph,
@@ -416,7 +431,9 @@ export function createAbstractionsAdapter(
         graphRunId: graph.run.id,
         graphSha256: sha256(graph.bytes),
         signal: input.signal,
+        progress: bar.seams,
       });
+      bar.seams(1, 1);
       input.log(
         `Seams index read ${seams.files} files: ${seams.modules.length} reach a service or the environment.`,
       );
