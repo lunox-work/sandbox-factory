@@ -12,6 +12,7 @@
 
 import ts from "typescript-compiler";
 import {
+  CONFINED_FORBIDDEN_NAMES,
   HARNESS_DIR,
   MOCK_RUNTIME_TYPES,
   RUN_PATH,
@@ -71,6 +72,105 @@ export function isSingleFunctionExpression(text: string): boolean {
   return ts.isArrowFunction(inner) || ts.isFunctionExpression(inner);
 }
 
+const FORBIDDEN = new Set(CONFINED_FORBIDDEN_NAMES);
+// A template is not a literal key, as the token check reads it.
+const literalKey = (node: ts.Node) =>
+  (ts.isStringLiteral(node) || ts.isNumericLiteral(node)) &&
+  !FORBIDDEN.has(node.text);
+
+/**
+ * Whether a string names a property where it stands: an object's, class's
+ * or type's member, a destructured key, an import or export specifier.
+ */
+function quotedName(node: ts.StringLiteral | ts.NoSubstitutionTemplateLiteral) {
+  const parent = node.parent;
+  return (
+    ("name" in parent && parent.name === node) ||
+    ("propertyName" in parent && parent.propertyName === node)
+  );
+}
+
+/**
+ * The fixture rules (`confinedCodeProblems` in core) read on the parsed
+ * code: forbidden names wherever they stand, quoted keys and escapes
+ * included; `Date` only as `new Date(value)`; computed members and keys only as literals; no
+ * `with`, `import()` or `import.meta`; and, for a walkthrough, only static
+ * imports of relative paths. The core check reads tokens and is the gate
+ * every build applies; this one is the parser's view of the same rules.
+ */
+export function confinedAstProblems(
+  text: string,
+  kind: "fixture" | "walkthrough",
+): string[] {
+  const file = ts.createSourceFile(
+    kind === "fixture" ? "fixture.ts" : "run.ts",
+    kind === "fixture" ? `(${text}\n);` : text,
+    ts.ScriptTarget.Latest,
+    true,
+  );
+  const problems = new Set<string>();
+  const visit = (node: ts.Node): void => {
+    if (ts.isIdentifier(node) || ts.isPrivateIdentifier(node)) {
+      const name = ts.idText(node);
+      if (FORBIDDEN.has(name)) problems.add(`\`${name}\` is not allowed.`);
+      // A value, never none: not `()` and not a spread that may be empty.
+      const value =
+        ts.isNewExpression(node.parent) && node.parent.expression === node
+          ? node.parent.arguments?.[0]
+          : undefined;
+      if (name === "Date" && (value === undefined || ts.isSpreadElement(value)))
+        problems.add(
+          "`Date` is allowed only as `new Date(value)`, never the current time.",
+        );
+    } else if (
+      ts.isImportDeclaration(node) ||
+      ts.isExportDeclaration(node) ||
+      ts.isImportEqualsDeclaration(node)
+    ) {
+      const specifier =
+        ts.isImportEqualsDeclaration(node) ||
+        node.moduleSpecifier === undefined ||
+        !ts.isStringLiteral(node.moduleSpecifier)
+          ? null
+          : node.moduleSpecifier.text;
+      if (kind === "fixture") problems.add("`import` is not allowed.");
+      else if (
+        specifier === null
+          ? !ts.isExportDeclaration(node)
+          : !specifier.startsWith("./") && !specifier.startsWith("../")
+      )
+        problems.add(
+          `${specifier ?? "That import"} is not a relative import; the walkthrough imports only the project's own files.`,
+        );
+    } else if (
+      (ts.isCallExpression(node) &&
+        node.expression.kind === ts.SyntaxKind.ImportKeyword) ||
+      (ts.isMetaProperty(node) &&
+        node.keywordToken === ts.SyntaxKind.ImportKeyword)
+    )
+      problems.add("`import` is not allowed.");
+    else if (node.kind === ts.SyntaxKind.WithStatement)
+      problems.add("`with` is not allowed.");
+    else if (
+      (ts.isElementAccessExpression(node) &&
+        !literalKey(node.argumentExpression)) ||
+      (ts.isComputedPropertyName(node) && !literalKey(node.expression))
+    )
+      problems.add(
+        'A computed member or key must be one string or number literal, such as `rows[0]` or `item["id"]`.',
+      );
+    else if (
+      (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) &&
+      FORBIDDEN.has(node.text) &&
+      quotedName(node)
+    )
+      problems.add(`\`${node.text}\` is not allowed.`);
+    ts.forEachChild(node, visit);
+  };
+  visit(file);
+  return [...problems];
+}
+
 const indexed = (names: readonly string[]) =>
   names.map((name) => `[${JSON.stringify(name)}]`).join("");
 
@@ -128,11 +228,20 @@ export function checkFixtures(input: FixtureCheckInput): FixtureCheck {
             `Fixture ${index}: The implementation must be exactly one function expression.`,
           ],
     ),
+    ...input.fixtures.flatMap((fixture, index) =>
+      confinedAstProblems(fixture.implementation, "fixture").map(
+        (problem) => `Fixture ${index}: ${problem}`,
+      ),
+    ),
     ...scenarioProblems(input.scenario).map(
       (problem) => `Walkthrough: ${problem.detail}`,
     ),
-  ];
-  if (problems.length > 0) return { ok: false, problems };
+    ...confinedAstProblems(input.scenario, "walkthrough").map(
+      (problem) => `Walkthrough: ${problem}`,
+    ),
+  ].filter((problem, index, all) => all.indexOf(problem) === index);
+  if (problems.length > 0)
+    return { ok: false, problems: problems.slice(0, PROBLEMS_MAX) };
   const files = new Map<string, string>();
   for (const file of input.included) files.set(file.path, file.text);
   for (const stub of input.stubs)

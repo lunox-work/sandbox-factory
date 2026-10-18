@@ -512,6 +512,11 @@ const sandbox =
         requestProfile: async (owner: string, input: NewBountyProfile) => {
           await bountyProfiler?.request(owner, input);
         },
+        // Approved, the measured profile is ready: cut and prepare it now.
+        onSliceApproved: () => {
+          sandboxCutter?.kick();
+          sandboxPreparer?.kick();
+        },
         ensureWorker: () => workerLauncher.ensureWorker(),
         maxActive: env.MAX_ACTIVE_RUNS_PER_ORG,
         onLaunchError: () => console.error("analysis_worker_launch_failed"),
@@ -574,6 +579,7 @@ const sandboxPreparer =
     : new SandboxPreparer({
         profiles: bountyProfiles,
         runs: analysisRuns,
+        artifacts: sandbox.artifacts,
         proposals: bountyProposals,
         bounties,
         organizationNames: sandbox.organizationNames,

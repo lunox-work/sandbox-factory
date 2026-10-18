@@ -143,6 +143,75 @@ describe("flow wait views", () => {
       createdAt: at(3500),
     });
     await proposal("bpr_bare", "brn_bare_reprice", "bty_bare");
+    // Each sized revision's profiles, measured at the first `ready` or
+    // `awaiting_approval` they moved to.
+    const profile = (
+      id: string,
+      proposalId: string,
+      revision: number,
+      status: string,
+      moves: { status: string; at: Date }[],
+      updatedAt: Date,
+    ) => sql`
+      insert into bounty_profile (
+        id, organization_id, proposal_id, spec_revision, spec_hash, status,
+        profile, transitions, updated_at
+      ) values (
+        ${id}, 'org_flow', ${proposalId}, ${revision}, ${"0".repeat(64)}, ${status},
+        ${status === "ready" || status === "awaiting_approval" ? sql.json({}) : null},
+        ${sql.json(moves.map((move) => ({ ...move, at: move.at.toISOString() })))},
+        ${updatedAt}
+      )
+    `;
+    // The sized run's: one ready at 300 s, one held for an approval at
+    // 400 s and approved an hour later, which is no part of the wait.
+    await spec("bpr_sized", 1, "brn_sized", at(20));
+    await profile(
+      "bpf_sized_a",
+      "bpr_sized",
+      1,
+      "ready",
+      [
+        { status: "slicing", at: at(100) },
+        { status: "ready", at: at(300) },
+      ],
+      at(300),
+    );
+    await profile(
+      "bpf_sized_b",
+      "bpr_sized",
+      1,
+      "ready",
+      [
+        { status: "awaiting_approval", at: at(400) },
+        { status: "ready", at: at(4000) },
+      ],
+      at(4000),
+    );
+    // Still awaiting its approval: measured all the same, at 250 s.
+    await spec("bpr_repriced", 1, "brn_first", at(20));
+    await profile(
+      "bpf_waiting",
+      "bpr_repriced",
+      1,
+      "awaiting_approval",
+      [{ status: "awaiting_approval", at: at(250) }],
+      at(250),
+    );
+    // Moved before transitions were kept: its `updated_at`, 300 s after
+    // the re-price's click.
+    await spec("bpr_repriced", 2, "brn_reprice", at(3600));
+    await profile("bpf_old", "bpr_repriced", 2, "ready", [], at(3800));
+    // One profile still slicing: the revision is not measured yet.
+    await profile(
+      "bpf_legacy_a",
+      "bpr_legacy",
+      1,
+      "ready",
+      [{ status: "ready", at: at(60) }],
+      at(60),
+    );
+    await profile("bpf_legacy_b", "bpr_legacy", 1, "slicing", [], at(30));
     // An analysis run that waited 100 s for a worker and ran for 6 s.
     await sql`
       insert into analysis_run (
@@ -175,6 +244,17 @@ describe("flow wait views", () => {
     assert.deepEqual(
       rows.map((row) => row.seconds),
       [20, 20, 20, 100, 100],
+    );
+  });
+
+  test("the rubric waits for every profile measured, approved or not, and never for an approval", async () => {
+    const rows = await sql<{ seconds: number }[]>`
+      select seconds from flow_wait_sample where flow = 'rubric'
+      order by seconds
+    `;
+    assert.deepEqual(
+      rows.map((row) => row.seconds),
+      [250, 300, 400],
     );
   });
 

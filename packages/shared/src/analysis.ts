@@ -277,6 +277,8 @@ export const starterParamsSchema = z.strictObject({
   sandboxVersionId: z.string().min(1),
   approvedTaskSha256: sha256Schema,
   stack: z.array(z.string().min(1)),
+  /** The names the workspace goes by, which no public file may carry. */
+  vocabulary: z.array(z.string().min(1)).optional(),
 });
 export const analysisRunDtoSchema = z.discriminatedUnion("tool", [
   z.strictObject({

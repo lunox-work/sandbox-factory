@@ -43,8 +43,9 @@ const REMOVED_REPOSITORY = "a removed repository";
 
 /**
  * What the rubric reads of the code: one spec revision's profiles, one per
- * repository its work touches, once every one is ready. One failed fails
- * the code, and one still in flight leaves it pending. `otherwise` is the
+ * repository its work touches, once every one is measured: ready, or
+ * awaiting its slice's approval, which holds back only the sandbox. One
+ * failed fails the code, and one still in flight leaves it pending. `otherwise` is the
  * status with none: `pending` while some have been asked for,
  * `unavailable` when none will be.
  */
@@ -57,7 +58,7 @@ export function rubricCode(
   if (profiles.some(({ status }) => status === "failed"))
     return { status: "failed" };
   const measured = profiles.flatMap(({ status, profile, repository }) =>
-    status === "ready" && profile !== null
+    (status === "ready" || status === "awaiting_approval") && profile !== null
       ? [{ repository: repository ?? REMOVED_REPOSITORY, profile }]
       : [],
   );
@@ -132,9 +133,9 @@ export class RubricPricer {
   }
 
   /**
-   * A profile has settled, ready or failed: score the proposal's spec with
-   * its revision's profiles, which is a size once every repository's has
-   * settled ready. Never throws; the profile stands whatever happens here.
+   * A profile has settled, measured or failed: score the proposal's spec
+   * with its revision's profiles, which is a size once every repository's
+   * is measured. Never throws; the profile stands whatever happens here.
    */
   async settled(owner: string, profile: StoredBountyProfile): Promise<void> {
     try {

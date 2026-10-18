@@ -163,7 +163,7 @@ try {
   );
   assert.match(
     sliceOut["stubs/src/folder/index.d.ts"],
-    /declare const value = 1;/,
+    /declare const value: number;/,
   );
   // `missing-package` is a bare specifier nothing pins; the fixture compiles
   // with it shimmed, and the missing pin is what blocks the slice.

@@ -18,6 +18,7 @@ import {
   FIXTURES_TOOL_VERSION,
   applyAliases,
   canonicalJson,
+  emailNames,
   isFixturesParams,
   jsonLeaves,
   vocabularyBlockers,
@@ -29,6 +30,7 @@ import type {
   SandboxFixture,
   SpecDraft,
   VersionFixtures,
+  VocabularyName,
 } from "sandbox-factory";
 import {
   aliasRulesSchema,
@@ -58,10 +60,13 @@ const preparedPseudonymsSchema = z.object({
 
 /**
  * The names the repository's root `package.json` gives its owner: the
- * scope of its package name, or the whole name unscoped, and its author.
- * None when it has no readable manifest.
+ * scope of its package name, or the whole name unscoped, its author, and
+ * the author's address (`emailNames`). None when it has no readable
+ * manifest.
  */
-export async function packageVocabulary(sourceDir: string): Promise<string[]> {
+export async function packageVocabulary(
+  sourceDir: string,
+): Promise<VocabularyName[]> {
   let manifest: unknown;
   try {
     manifest = JSON.parse(
@@ -72,22 +77,30 @@ export async function packageVocabulary(sourceDir: string): Promise<string[]> {
   }
   if (typeof manifest !== "object" || manifest === null) return [];
   const { name, author } = manifest as { name?: unknown; author?: unknown };
-  const names: string[] = [];
+  const names: VocabularyName[] = [];
   if (typeof name === "string")
-    names.push(
-      name.startsWith("@") ? (name.slice(1).split("/")[0] ?? "") : name,
-    );
-  // `Name <email> (url)`, or `{ name }`.
+    names.push({
+      name: name.startsWith("@") ? (name.slice(1).split("/")[0] ?? "") : name,
+      kind: "name",
+    });
+  // `Name <email> (url)`, or `{ name, email }`.
+  const field = (key: string) =>
+    typeof author === "object" &&
+    author !== null &&
+    typeof (author as Record<string, unknown>)[key] === "string"
+      ? ((author as Record<string, string>)[key] ?? "")
+      : "";
   const authorName =
     typeof author === "string"
       ? author.replace(/[<(].*$/, "").trim()
-      : typeof author === "object" &&
-          author !== null &&
-          typeof (author as { name?: unknown }).name === "string"
-        ? (author as { name: string }).name
-        : "";
-  if (authorName.length > 0) names.push(authorName);
-  return names.filter((entry) => entry.length > 0);
+      : field("name");
+  if (authorName.length > 0) names.push({ name: authorName, kind: "name" });
+  const email =
+    typeof author === "string"
+      ? (/<([^>]*)>/.exec(author)?.[1] ?? "")
+      : field("email");
+  names.push(...emailNames(email.trim()));
+  return names.filter((entry) => entry.name.length > 0);
 }
 
 /**

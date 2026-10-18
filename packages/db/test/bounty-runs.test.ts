@@ -385,6 +385,30 @@ test("finds the sizing in flight on one bounty", async () => {
   assert.equal(fake.calls[0]?.limited, 1);
 });
 
+test("a run sizing one board issue names its bounty, and is found by it", async () => {
+  const fake = createFakeDb([
+    row({
+      kind: "issue",
+      status: "running",
+      leaseToken: "lease",
+      leaseExpiresAt: new Date("2026-09-22T00:01:00Z"),
+    }),
+  ]);
+  const store = createBountyRunStore(fake.db);
+  assert.equal(
+    await store.attachBounty("org_1", "brn_1", "lease", "bty_1"),
+    true,
+  );
+  const write = fake.calls.find(
+    ({ values }) => values?.["bountyId"] !== undefined,
+  );
+  assert.equal(write?.values?.["bountyId"], "bty_1");
+  assert.ok(write?.filtered);
+  // The page is told, as it is of progress.
+  assert.ok(fake.calls.some(({ kind }) => kind === "execute"));
+  assert.equal((await store.activeForBounty("org_1", "bty_1"))?.id, "brn_1");
+});
+
 test("finds the change in flight on one proposal", async () => {
   const fake = createFakeDb([
     row({ kind: "reprice", sourceProposalId: "bpr_1", sourceRevision: 2 }),
@@ -417,6 +441,10 @@ test("run reads and lease writes report misses", async () => {
   );
   assert.equal(
     await store.recordProgress("org_1", "brn_x", "lease", { spec: null }),
+    false,
+  );
+  assert.equal(
+    await store.attachBounty("org_1", "brn_x", "lease", "bty_1"),
     false,
   );
   assert.equal(

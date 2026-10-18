@@ -17,6 +17,8 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { CONTEXT_BUILDERS } from "sandbox-factory";
 
 import { GithubConnections } from "../src/Github";
+import { Leaving } from "../src/Leaving";
+import { stopLeaving } from "../src/navigation/leave";
 
 const connection = {
   id: "ghc_1",
@@ -386,6 +388,8 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  // The leaving state is the module's, and outlives a test's render.
+  act(() => stopLeaving());
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
 });
@@ -678,42 +682,28 @@ test("when every account is another workspace's, the picker installs rather than
   const url = new URL(window.location.href, "http://localhost");
   expect(url.pathname).toBe("/api/v1/orgs/org_1/github/connect");
   expect(url.searchParams.get("install")).toBe("1");
-  // The wait for GitHub is said where it was asked for, and nothing else
-  // can start a second trip meanwhile.
-  const pending = within(picker).getByRole("button", {
-    name: /^Opening GitHub:\s*Install the App on an account you manage$/,
-  });
-  expect(pending.hasAttribute("disabled")).toBe(true);
-  expect(
-    screen
-      .getByRole("button", { name: "Connect another account" })
-      .hasAttribute("disabled"),
-  ).toBe(true);
 });
 
-test("connecting says it is on its way, until the page comes back from the cache", async () => {
+test("connecting covers the page while the browser leaves, so nothing behind it is pressed twice", async () => {
   renderTab();
+  render(<Leaving />);
 
-  fireEvent.click(
-    await screen.findByRole("button", { name: "Connect another account" }),
+  const control = await screen.findByRole("button", {
+    name: "Connect another account",
+  });
+  fireEvent.click(control);
+
+  expect(assigned).toHaveLength(1);
+  const url = new URL(assigned[0] ?? "", "http://localhost");
+  expect(url.pathname).toBe("/api/v1/orgs/org_1/github/connect");
+  expect(url.searchParams.get("returnTo")).toBe(
+    "/o/acme/settings?connection=github",
   );
-
-  const pending = screen.getByRole("button", {
-    name: "Redirecting to GitHub…",
-  });
-  expect(pending.hasAttribute("disabled")).toBe(true);
-
-  // Back from GitHub, restored as it was left.
-  act(() => {
-    window.dispatchEvent(
-      Object.assign(new Event("pageshow"), { persisted: true }),
-    );
-  });
-  expect(
-    screen
-      .getByRole("button", { name: "Connect another account" })
-      .hasAttribute("disabled"),
-  ).toBe(false);
+  expect(url.searchParams.has("install")).toBe(false);
+  expect(screen.getByTestId("leaving").textContent).toContain(
+    "Opening GitHub…",
+  );
+  expect(control.closest("[inert]")).not.toBeNull();
 });
 
 test("a repository is registered from what the installation can see, and built before the dialog lets go", async () => {

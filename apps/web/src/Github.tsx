@@ -94,12 +94,6 @@ function canManage(role: string): boolean {
 }
 
 /**
- * Which control sent the browser to GitHub. Not a boolean: every control
- * waits, but only the one pressed says why.
- */
-type Redirect = "connect" | "reconnect" | "install";
-
-/**
  * What each outcome means, in the words the person needs. `place` is where
  * it is shown: a flow that could not be tied to a workspace lands on Home,
  * where there is no Connect button to point at.
@@ -240,25 +234,8 @@ export function GithubConnections({
   // notice. Read from the outcome rather than copied into state by an effect,
   // so the notice never shows alone for a frame first.
   const picking = outcome === "pick" && manageable;
-  const [redirecting, setRedirecting] = useState<Redirect | null>(null);
   /** The repository whose context viewer is open, from its row's menu. */
   const [viewing, setViewing] = useState<GithubRepoDto | null>(null);
-
-  // Back from GitHub can restore this page from the browser's cache exactly
-  // as it was left: mid-redirect, every control waiting.
-  useEffect(() => {
-    const restored = (event: PageTransitionEvent) => {
-      if (event.persisted) setRedirecting(null);
-    };
-    window.addEventListener("pageshow", restored);
-    return () => window.removeEventListener("pageshow", restored);
-  }, []);
-
-  /** Leaves for GitHub, saying so on the control that was pressed. */
-  function redirect(control: Redirect) {
-    setRedirecting(control);
-    connect(control === "install" ? { install: true } : undefined);
-  }
 
   const header = (
     <header>
@@ -328,9 +305,8 @@ export function GithubConnections({
       {picking && (
         <InstallationPicker
           organizationId={organizationId}
-          redirecting={redirecting}
-          onConnect={() => redirect("reconnect")}
-          onInstall={() => redirect("install")}
+          onConnect={() => connect()}
+          onInstall={() => connect({ install: true })}
           onLinked={(connection) => {
             // Listed from the API's answer, in the same render the picker
             // gives way to the outcome: never "none connected" in between,
@@ -386,21 +362,11 @@ export function GithubConnections({
 
       {manageable ? (
         <div className="flex justify-end">
-          <Button
-            className="gap-2"
-            disabled={redirecting !== null}
-            onClick={() => redirect("connect")}
-          >
-            {redirecting === "connect" ? (
-              <Loader2 className="size-4 animate-spin" aria-hidden="true" />
-            ) : (
-              <Link2 className="size-4" />
-            )}
-            {redirecting === "connect"
-              ? "Redirecting to GitHub…"
-              : connections.length === 0
-                ? "Connect GitHub"
-                : "Connect another account"}
+          <Button className="gap-2" onClick={() => connect()}>
+            <Link2 className="size-4" />
+            {connections.length === 0
+              ? "Connect GitHub"
+              : "Connect another account"}
           </Button>
         </div>
       ) : (
@@ -423,14 +389,12 @@ export function GithubConnections({
  */
 function InstallationPicker({
   organizationId,
-  redirecting,
   onConnect,
   onInstall,
   onLinked,
   onClose,
 }: {
   organizationId: string;
-  redirecting: Redirect | null;
   onConnect: () => void;
   onInstall: () => void;
   onLinked: (connection: GithubConnectionDto) => void;
@@ -485,45 +449,21 @@ function InstallationPicker({
 
   /** The person's own authorization lapsed: only a fresh round trip helps. */
   const reconnect = (
-    <Button
-      size="sm"
-      className="gap-2 self-start"
-      disabled={redirecting !== null}
-      onClick={onConnect}
-    >
-      {redirecting === "reconnect" ? (
-        <Loader2 className="size-4 animate-spin" aria-hidden="true" />
-      ) : (
-        <Link2 className="size-4" />
-      )}
-      {redirecting === "reconnect"
-        ? "Redirecting to GitHub…"
-        : "Connect GitHub again"}
+    <Button size="sm" className="gap-2 self-start" onClick={onConnect}>
+      <Link2 className="size-4" />
+      Connect GitHub again
     </Button>
   );
 
-  /**
-   * The way to GitHub's install page, inside a sentence. Pending, it keeps
-   * its words and gains a spinner at their end, so the sentence does not
-   * reflow under the pointer.
-   */
+  /** The way to GitHub's install page, inside a sentence. */
   const install = (label: string) => (
     <button
       type="button"
       className="underline underline-offset-2 disabled:opacity-70"
-      disabled={redirecting !== null || linking !== null}
+      disabled={linking !== null}
       onClick={onInstall}
     >
-      {redirecting === "install" && (
-        <span className="sr-only">Opening GitHub: </span>
-      )}
       {label}
-      {redirecting === "install" && (
-        <Loader2
-          className="ml-1.5 inline size-3.5 animate-spin align-[-2px]"
-          aria-hidden="true"
-        />
-      )}
     </button>
   );
 
@@ -588,7 +528,7 @@ function InstallationPicker({
               {installation.status === "free" ? (
                 <Button
                   size="sm"
-                  disabled={linking !== null || redirecting !== null}
+                  disabled={linking !== null}
                   onClick={() => void choose(installation.installationId)}
                 >
                   {linking === installation.installationId && (

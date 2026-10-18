@@ -204,10 +204,33 @@ services:
     image: sandbox-factory-worker:local
     restart: on-failure
     working_dir: /repo
-    command: >
-      sh -c 'if [ -z "$$GITHUB_APP_ID" ]; then echo "Worker disabled: GitHub App is not configured"; exit 0; fi; npm ci --ignore-scripts
-      && npx turbo run build --filter=@sandbox-factory/worker
-      && npm start --workspace @sandbox-factory/worker'
+    # Evaluation jobs run as their own uids (apps/worker/README.md), so the
+    # worker never runs the checkout itself: on Docker Desktop a bind mount
+    # lets any uid write it, and a job could then change what the worker, the
+    # other containers or the host run next. Each start copies what the
+    # worker builds from the read-only checkout, which sits in root's home
+    # where no job uid can enter, into /repo, root's to write and readable by
+    # jobs: no git metadata, env files, keys or build output. Restarting the
+    # worker picks up a change, as before.
+    command:
+      - bash
+      - -c
+      - |
+        if [ -z "$$GITHUB_APP_ID" ]; then echo "Worker disabled: GitHub App is not configured"; exit 0; fi
+        set -eo pipefail
+        find /repo -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+        cd /root/checkout
+        tar -cf - --exclude=node_modules --exclude=dist --exclude=dist-test \
+          --exclude=.turbo --exclude=coverage --exclude='*.tsbuildinfo' \
+          --exclude=.env --exclude='.env.*' --exclude='*.pem' --exclude='*.key' \
+          --exclude=credentials.json --exclude=secrets.json \
+          package.json package-lock.json turbo.json tooling packages \
+          apps/*/package.json apps/worker \
+          | tar -C /repo -xf - --no-same-owner --no-same-permissions
+        cd /repo
+        npm ci --ignore-scripts
+        npx turbo run build --filter=@sandbox-factory/worker
+        npm start --workspace @sandbox-factory/worker
     stop_grace_period: 90s
     environment:
       DATABASE_URL: postgres://postgres:postgres@postgres:5432/sandbox_factory
@@ -229,18 +252,7 @@ services:
       MAX_TARBALL_BYTES: ${MAX_TARBALL_BYTES:-209715200}
       MAX_FILES: ${MAX_FILES:-20000}
     volumes:
-      - .:/repo
-      - /repo/node_modules
-      - /repo/apps/worker/node_modules
-      - /repo/apps/api/node_modules
-      - /repo/apps/web/node_modules
-      - /repo/apps/extension/node_modules
-      - /repo/packages/core/node_modules
-      - /repo/packages/db/node_modules
-      - /repo/packages/github/node_modules
-      - /repo/packages/jira/node_modules
-      - /repo/packages/shared/node_modules
-      - /repo/packages/client/node_modules
+      - .:/root/checkout:ro
     depends_on:
       postgres:
         condition: service_healthy

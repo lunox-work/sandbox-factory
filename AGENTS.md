@@ -69,8 +69,8 @@ Docker or dev scripts. It preserves the setup and testing constraints.
   web's `virtual:build-info`, Turbo's declared build env and both CI provenance
   checks. API `BUILD_*` values remain optional. Docker build args needed in two
   stages must be declared in both.
-- Dev containers `api-dev`, `web-dev` and `worker` must each shadow every
-  workspace's `node_modules`. `make up` refreshes them after lockfile changes;
+- Dev containers `api-dev` and `web-dev` must each shadow every workspace's
+  `node_modules`; `worker` copies the read-only checkout and installs its own. `make up` refreshes them after lockfile changes;
   `make relink` is the manual repair. Never use `down -v` for dependency repair:
   it deletes database and object-storage volumes.
 - Dependabot handles routine dependency bumps. Explain any added dependency

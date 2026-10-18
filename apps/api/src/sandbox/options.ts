@@ -68,7 +68,9 @@ export interface SandboxRouteOptions {
    * Absent, nothing is sliced from here.
    */
   readonly profiles?: Pick<BountyProfileStore, "forRevision"> &
-    Partial<Pick<BountyProfileStore, "preparationFor">>;
+    Partial<Pick<BountyProfileStore, "preparationFor" | "approveSlice">>;
+  /** Told when a slice is approved, so it is cut and prepared at once. */
+  readonly onSliceApproved?: () => void;
   /** Asks the profiler for a revision's profile it does not have yet. */
   readonly requestProfile?: (
     organizationId: string,

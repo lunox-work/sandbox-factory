@@ -22,7 +22,11 @@
  *   proposal says nothing about the re-price, so one with neither is left
  *   out.
  * - `rubric`: from that click, for the same runs, to the last of the spec
- *   revision's profiles being ready, which is when the rubric can size it.
+ *   revision's profiles being measured, which is when the rubric can size
+ *   it. A profile awaiting its slice's approval is measured; its time is
+ *   its first `ready` or `awaiting_approval` transition, so the wait for a
+ *   person's approval, and the approval itself, are no part of it. A row
+ *   that moved before transitions were kept falls back to `updated_at`.
  * - `sandbox_sliced`, `sandbox_generated`: from a sandbox version's draft
  *   to its build succeeding.
  * - `queue:<tool>`: an analysis run's wait for a worker to claim it.
@@ -64,14 +68,22 @@ const SAMPLES = sql`
     and r.status in ('succeeded', 'partial')
   union all
   select 'rubric', r.organization_id, r.created_at,
-    extract(epoch from max(p.updated_at) - r.created_at)::double precision
+    extract(epoch from max(m.measured_at) - r.created_at)::double precision
   from bounty_profile p
   join bounty_spec s on s.proposal_id = p.proposal_id and s.revision = p.spec_revision
   join bounty_run r on r.id = s.run_id
+  cross join lateral (
+    select coalesce(
+      (select min((t ->> 'at')::timestamptz)
+        from jsonb_array_elements(p.transitions) t
+        where t ->> 'status' in ('ready', 'awaiting_approval')),
+      p.updated_at
+    ) as measured_at
+  ) m
   where r.kind in ('bounty', 'reprice')
     or (r.kind = 'issue' and jsonb_array_length(r.planned) = 1)
   group by r.id, r.organization_id, r.created_at, p.proposal_id, p.spec_revision
-  having bool_and(p.status = 'ready')
+  having bool_and(p.status in ('ready', 'awaiting_approval'))
   union all
   select case when vs.slice_run_id is null then 'sandbox_generated' else 'sandbox_sliced' end,
     b.organization_id, v.created_at,

@@ -1,11 +1,12 @@
 /**
  * What the scope agent proposes for a bounty.
  *
- * A proposal is the slice request a person reviews in the picker (entry
- * points, budget, inferred edges), why each entry point is there, which of
- * the cut modules are input/output seams that are safe to mock, and the
- * deterministic result of slicing exactly that request. The model chooses;
- * the slice computation decides what the choice means. Pure shapes and
+ * A proposal is a slice request (entry points, budget, inferred edges),
+ * why each entry point is there, which of the cut modules are input/output
+ * seams that are safe to mock, and the deterministic result of slicing
+ * exactly that request. The model chooses; the slice computation decides
+ * what the choice means, and a person approves one wider than
+ * `AUTO_SLICE_LIMITS` before it is cut into a sandbox. Pure shapes and
  * rules: the agent loop and the slice computation live in the worker.
  */
 
@@ -104,6 +105,55 @@ export function sliceRequestOf(submission: ScopeSubmission): {
     budget: submission.budget,
     includeInferred: submission.includeInferred,
   };
+}
+
+/**
+ * The widest slice the sizing cuts from the scope agent's request without a
+ * person's approval. The agent reads repository text, which can steer it,
+ * so a wider request waits for an owner or admin to approve exactly what it
+ * holds. The bounds are the slice budget's defaults, which the tickets
+ * sized so far fit: 3 to 14 files a few imports deep.
+ */
+export const AUTO_SLICE_LIMITS = { includedFiles: 40, maxDepth: 3 } as const;
+/** Why a slice waits for approval. */
+export const SLICE_APPROVAL_REASONS = [
+  /** An entry point names a directory (or anything but a file it includes). */
+  "directory_entry_point",
+  "too_many_files",
+  "too_deep",
+] as const;
+export type SliceApprovalReason = (typeof SLICE_APPROVAL_REASONS)[number];
+
+/**
+ * Why a slice the profiler cut needs a person's approval, from the request
+ * it ran and what it included; empty when it is within `AUTO_SLICE_LIMITS`.
+ * An entry point counts as a file only when the slice included it by that
+ * path, so a directory, or a path it did not list, needs approval. Only a
+ * complete list can tell: one the summary cut short (`included` shorter
+ * than `includedFiles`) is not checked, and is past the file limit anyway.
+ */
+export function sliceApprovalReasons(
+  request: {
+    readonly entryPoints: readonly string[];
+    readonly budget: SliceBudget;
+  },
+  slice: {
+    readonly includedFiles: number;
+    readonly included: readonly string[];
+  },
+): SliceApprovalReason[] {
+  const included = new Set(slice.included);
+  const reasons: SliceApprovalReason[] = [];
+  if (
+    slice.included.length >= slice.includedFiles &&
+    request.entryPoints.some((entry) => !included.has(entry))
+  )
+    reasons.push("directory_entry_point");
+  if (slice.includedFiles > AUTO_SLICE_LIMITS.includedFiles)
+    reasons.push("too_many_files");
+  if (request.budget.maxDepth > AUTO_SLICE_LIMITS.maxDepth)
+    reasons.push("too_deep");
+  return reasons;
 }
 
 /**
