@@ -151,6 +151,7 @@ function profile(
     scopeRunId: "arn_scope",
     sliceRunId: "arn_slice",
     preparedRunId: null,
+    sliceApprovedAt: null,
     profile: measured,
     createdAt: "2026-10-01T00:00:00.000Z",
     updatedAt: "2026-10-01T00:00:00.000Z",
@@ -243,6 +244,17 @@ test("a measured profile sizes a model-sized proposal by the rubric", async () =
     currency: "USD",
   });
   assert.deepEqual(h.errors, []);
+});
+
+test("a profile measured from a slice awaiting approval sizes the proposal all the same", async () => {
+  // The approval holds back only the sandbox cut from the slice; the
+  // profile read only its summary, so the price does not wait for it.
+  const waiting = profile({ status: "awaiting_approval" });
+  const h = harness(proposal(), { profiles: [waiting] });
+  await h.pricer.settled(OWNER, waiting);
+  assert.equal(h.writes.length, 1);
+  assert.equal(h.writes[0]?.input.rubric.code.status, "measured");
+  assert.equal(h.writes[0]?.input.price?.complexity, "M");
 });
 
 test("a reviewer's size stands; the rubric is recorded beside it", async () => {
@@ -403,6 +415,15 @@ test("the code the rubric reads follows its profiles' statuses", () => {
       rubricCode([profile({ status, profile: null })], "unavailable"),
       { status: "pending" },
     );
+  // Measured and awaiting its slice's approval is measured.
+  assert.deepEqual(
+    rubricCode([profile({ status: "awaiting_approval" })], "pending"),
+    {
+      status: "measured",
+      profiles: [{ repository: "acme/app", profile: measured }],
+      specRevision: 2,
+    },
+  );
 
   const web = profile({ id: "bpf_2", repository: "acme/web" });
   // One failed fails the code, whatever the rest say.

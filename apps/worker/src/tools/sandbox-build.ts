@@ -23,10 +23,12 @@
  */
 
 import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { isBuiltin } from "node:module";
 import { dirname, join } from "node:path";
 import { nearestCompilerOptions } from "./compiler-config.js";
 export { nearestCompilerOptions } from "./compiler-config.js";
 import {
+  ENV_FILE,
   EVALUATION_LIMITS,
   PRIVATE_TESTS_DIR,
   PSEUDONYMS_FILE,
@@ -45,7 +47,7 @@ import {
   generateProject,
   isSandboxBuildParams,
   packageNameOf,
-  runtimePath,
+  privateTestArgv,
   transformConfigOf,
   vocabularyBlockers,
   vocabularyLeaks,
@@ -132,6 +134,83 @@ const CONTRACT_PSEUDO_PATH = "__boundary_symbols__.json";
  * and the descriptor's, which contributors read.
  */
 const LISTING_PSEUDO_PATH = "__listing__.json";
+/**
+ * The names of the packages the project mocks and of the environment
+ * variables it reads, which its `package.json`, `mocks/`, `sandbox.env`
+ * and README carry: renamed by the table like any other text, so a mock
+ * goes by the name the source now imports it by.
+ */
+const NAMES_PSEUDO_PATH = "__public_names__.json";
+const PACKAGE_NAME = /^(@[a-z0-9~-][a-z0-9._~-]*\/)?[a-z0-9~-][a-z0-9._~-]*$/;
+/** npm's limit, scope included. */
+const PACKAGE_NAME_MAX = 214;
+const ENVIRONMENT_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
+/**
+ * Variables Node, npm, the dynamic loader or OpenSSL read for themselves.
+ * `--env-file` sets each before the project's code runs, so a fixture
+ * value under one of these names would change how the project runs (a
+ * `NODE_OPTIONS` of `sandbox-fixture-…` stops Node outright).
+ */
+const RESERVED_ENVIRONMENT =
+  /^(?:(?:NODE|NPM_CONFIG|COREPACK|UV|LD|DYLD|OPENSSL)_.*|PATH|HOME|TMPDIR|TMP|TEMP|TZ|SSL_CERT_FILE|SSL_CERT_DIR|FORCE_COLOR|NO_COLOR)$/i;
+
+/**
+ * Why a mocked package cannot go by `name`, if it cannot: the mock is
+ * installed under it, and Node loads its own module by a built-in's name
+ * (`events`, `util`) whatever is installed.
+ */
+function packageNameProblem(name: string): string | null {
+  if (!PACKAGE_NAME.test(name)) return "is not a valid package name";
+  if (name.length > PACKAGE_NAME_MAX)
+    return `is longer than the ${PACKAGE_NAME_MAX} characters a package name may have`;
+  if (isBuiltin(name))
+    return "is a module Node provides, which it loads in place of the mock";
+  return null;
+}
+
+/**
+ * Why a renamed environment variable cannot go by `name`, if it cannot.
+ * A name the source already read is its own, reserved or not; only the
+ * table must not choose one.
+ */
+function environmentNameProblem(name: string, from: string): string | null {
+  if (!ENVIRONMENT_NAME.test(name))
+    return "is not a valid environment variable name";
+  if (name !== from && RESERVED_ENVIRONMENT.test(name))
+    return `is a variable Node or npm reads, which ${ENV_FILE} would set for them`;
+  return null;
+}
+
+/**
+ * Why the public names a table gave a set of names cannot stand: each must
+ * still be a name of its kind that the project can use, and no two may
+ * become one.
+ */
+function publicNameProblems(
+  kind: "package" | "environment variable",
+  problemOf: (name: string, from: string) => string | null,
+  pairs: readonly (readonly [string, string])[],
+  taken: ReadonlySet<string>,
+): string[] {
+  const problems: string[] = [];
+  const seen = new Map<string, string>();
+  for (const [from, to] of pairs) {
+    const problem = problemOf(to, from);
+    if (problem !== null)
+      problems.push(
+        from === to
+          ? `The project ${kind === "package" ? "mocks" : "reads"} the ${kind} ${to}, which ${problem}.`
+          : `The alias table renames the ${kind} ${from} to ${to}, which ${problem}.`,
+      );
+    const other = seen.get(to) ?? (to !== from && taken.has(to) ? to : null);
+    if (other !== null)
+      problems.push(
+        `The alias table renames the ${kind} ${from} to ${to}, which another ${kind} is already called.`,
+      );
+    seen.set(to, from);
+  }
+  return problems;
+}
 type ModuleSymbols = BoundaryContract["outbound"][number]["symbols"];
 interface ContractSymbols {
   outbound: ModuleSymbols[];
@@ -180,32 +259,90 @@ function stillReads(
 }
 
 /**
+ * The runner's closing counts: the `# name N` lines after the last plan
+ * line at the left margin, and nothing else after it. A file's own output
+ * reaches the report only as `# `-prefixed lines before them (`# \# pass 5`
+ * for a printed `# pass 5`), so it can neither end the report nor stand in
+ * for the plan; but a printed `pass 5` reads as `# pass 5`, which is why
+ * only the trailing block counts. Null when the report has none, or ends
+ * in anything else.
+ */
+function tapSummary(stdout: string): Map<string, number> | null {
+  const lines = stdout.split("\n");
+  let plan = -1;
+  for (const [index, line] of lines.entries())
+    if (/^1\.\.\d+$/.test(line)) plan = index;
+  if (plan < 0) return null;
+  const counts = new Map<string, number>();
+  for (const line of lines.slice(plan + 1)) {
+    if (line.trim() === "") continue;
+    const match = /^# ([a-z_]+) (\d+(?:\.\d+)?)$/.exec(line);
+    if (match === null) return null;
+    counts.set(match[1] ?? "", Number(match[2]));
+  }
+  return ["tests", "pass", "fail"].every((name) => counts.has(name))
+    ? counts
+    : null;
+}
+
+/**
+ * Whether the runner reported the file as a whole, as one top-level point
+ * named after the file: it does so when the file threw while loading,
+ * exited before its tests finished (`process.exit(0)` among them, which
+ * reads `ok`), or declared no test at all. Such a point says nothing ran
+ * to completion, whatever it says. The name is the path the runner was
+ * given, always in a directory, so a space in it still reads as one (a
+ * bare name is a path only without one). A test named like a test file
+ * reads the same and is refused with it.
+ */
+const WHOLE_FILE_POINT =
+  /^(?:not )?ok \d+ - (?:[^\s/]*|.*\/[^/\n]*)\.test\.[cm]?[jt]sx?$/m;
+
+/**
  * What a hidden test did, from its exit and the runner's TAP report.
+ *
+ * Exit 0 is a pass only when the closing counts (`tapSummary`) say at
+ * least one test passed and every test that ran did: none failed, was
+ * cancelled, skipped or left todo. Exit 0 with no report, or a report the
+ * runner made for the file as a whole (`WHOLE_FILE_POINT`), is an error:
+ * code that ends the process early must not read as a pass.
  *
  * The runner exits 1 both when a test failed and when the file never ran
  * its tests at all: it threw while loading, or imported something that is
  * not there. Only the first is the failure a hidden test is expected to
  * show on the baseline; the second is a broken test, and a build or harness
- * failure is never accepted as the expected one. The runner reports a file
- * that failed as a whole as one point with `ERR_TEST_FAILURE` and the
- * file's exit code, both at the point's own indent; a test that failed is a
- * point with its own error, whose `code` may be the same but whose values,
- * an asserted `{ exitCode }` among them, are indented deeper. A report that
- * says neither, cut short or missing, is an error.
+ * failure is never accepted as the expected one. A failed test is a point
+ * named after the test; a report that says neither, cut short or missing,
+ * is an error. Grading reads a submission's hidden tests with this rule.
  */
 export function privateTestOutcome(
   step: Pick<BaselineStep, "exitCode" | "timedOut">,
   stdout: string,
-): PrivateTestOutcome["observed"] {
+): Exclude<PrivateTestOutcome["observed"], "flaky"> {
   if (step.timedOut || step.exitCode === null) return "error";
-  if (step.exitCode === 0) return "pass";
-  if (step.exitCode !== 1) return "error";
-  const wholeFile =
-    /^ {2}code: 'ERR_TEST_FAILURE'$/m.test(stdout) &&
-    /^ {2}exitCode: \d+$/m.test(stdout);
-  if (wholeFile) return "error";
-  const failed = /^# fail (\d+)$/m.exec(stdout);
-  return failed !== null && Number(failed[1]) > 0 ? "fail" : "error";
+  if (step.exitCode !== 0 && step.exitCode !== 1) return "error";
+  const summary = tapSummary(stdout);
+  if (summary === null || WHOLE_FILE_POINT.test(stdout)) return "error";
+  const count = (name: string) => summary.get(name) ?? 0;
+  if (step.exitCode === 0)
+    return count("pass") >= 1 &&
+      count("pass") === count("tests") &&
+      count("fail") === 0 &&
+      count("cancelled") === 0
+      ? "pass"
+      : "error";
+  return count("fail") > 0 ? "fail" : "error";
+}
+
+/**
+ * Every test point a TAP report holds, at its depth, with its result and
+ * name: what two runs of one file must agree on.
+ */
+export function tapPoints(stdout: string): string[] {
+  return stdout
+    .split("\n")
+    .filter((line) => /^ *(?:not )?ok \d+ - /.test(line))
+    .map((line) => line.trimEnd());
 }
 
 /** Where a build writes the table its public files were renamed by. */
@@ -336,19 +473,33 @@ async function runBaseline(
           // baseline has just built, so it runs what they run after.
           await run("dev", SANDBOX_RUN_ARGV.dev);
           await run("public-tests", SANDBOX_RUN_ARGV.test);
-          for (const test of input.acceptanceTests) {
+          // Every hidden test runs twice, the second round after the first
+          // has finished, and must say the same of each test both times: a
+          // test that passes or fails by timing or leftover state cannot
+          // judge a submission. Only the tests run again, not the build.
+          const runTest = async (test: AcceptanceTest) => {
             const { step, stdout } = await run(
               "private-test",
-              [
-                "node",
-                "--env-file=sandbox.env",
-                "--test",
-                "--test-reporter=tap",
-                runtimePath(test.path),
-              ],
+              privateTestArgv(test.path),
               test.path,
             );
-            const observed = privateTestOutcome(step, stdout);
+            return {
+              index: steps.length - 1,
+              observed: privateTestOutcome(step, stdout),
+              points: tapPoints(stdout).join("\n"),
+            };
+          };
+          const first: Awaited<ReturnType<typeof runTest>>[] = [];
+          for (const test of input.acceptanceTests)
+            first.push(await runTest(test));
+          for (const [index, test] of input.acceptanceTests.entries()) {
+            const again = await runTest(test);
+            const before = first[index] ?? again;
+            const observed =
+              before.observed === again.observed &&
+              before.points === again.points
+                ? again.observed
+                : "flaky";
             const ok = observed === test.expectedBaseline;
             privateTests.push({
               path: test.path,
@@ -356,7 +507,10 @@ async function runBaseline(
               observed,
               ok,
             });
-            steps[steps.length - 1] = { ...step, ok };
+            for (const at of [before.index, again.index]) {
+              const step = steps[at];
+              if (step !== undefined) steps[at] = { ...step, ok };
+            }
           }
         }
       }
@@ -644,9 +798,9 @@ export async function reportedBaselineOf(
             expected.get(step.path ?? "")
           : !step.ok;
       if (!surprising) return;
-      surprises.push(
-        `--- ${step.path ?? step.name} (exit ${step.exitCode ?? "none"}${step.timedOut ? ", timed out" : ""})\n${tail(`${output.stdout}\n${output.stderr}`.trim())}`,
-      );
+      // A hidden test runs twice; the same surprise twice is told once.
+      const surprise = `--- ${step.path ?? step.name} (exit ${step.exitCode ?? "none"}${step.timedOut ? ", timed out" : ""})\n${tail(`${output.stdout}\n${output.stderr}`.trim())}`;
+      if (!surprises.includes(surprise)) surprises.push(surprise);
     },
   });
   const report = [
@@ -656,7 +810,7 @@ export async function reportedBaselineOf(
       .map((step) => `${step.name}: ${step.ok ? "ok" : "failed"}`),
     ...baseline.privateTests.map(
       (outcome) =>
-        `${outcome.path}: expected to ${outcome.expected}, ${outcome.observed === "error" ? "could not run" : `${outcome.observed}ed`}`,
+        `${outcome.path}: expected to ${outcome.expected}, ${outcome.observed === "error" ? "could not run" : outcome.observed === "flaky" ? "differed between two runs" : `${outcome.observed}ed`}`,
     ),
     ...baseline.reasons.map((reason) => `Reason: ${reason}`),
     ...surprises,
@@ -783,6 +937,17 @@ export function createSandboxBuildAdapter(
         tags: version.tags,
       };
       const listingLeaves = jsonLeaves(LISTING_PSEUDO_PATH, listing);
+      const privateNames = {
+        packages: source.scope.dependencies
+          .filter(
+            (dependency) =>
+              dependency.kind === "package" &&
+              dependency.resolution === "runtime-mock",
+          )
+          .map((dependency) => dependency.name),
+        environment: manifest.externals.environment.map((item) => item.name),
+      };
+      const nameLeaves = jsonLeaves(NAMES_PSEUDO_PATH, privateNames);
       const stubFiles = stubTexts.map((stub) => ({
         path: stub.module,
         text: stub.text,
@@ -813,6 +978,7 @@ export function createSandboxBuildAdapter(
               ...specLeaves,
               ...fixtureLeaves,
               ...listingLeaves,
+              ...nameLeaves,
               ...(scenario === null
                 ? []
                 : [{ path: RUN_PATH, text: scenario }]),
@@ -870,6 +1036,18 @@ export function createSandboxBuildAdapter(
             listing,
             textsOf(listingLeaves.length),
           );
+          const publicNames = withJsonLeaves(
+            privateNames,
+            textsOf(nameLeaves.length),
+          );
+          const packagePairs = privateNames.packages.map(
+            (name, index) =>
+              [name, publicNames.packages[index] ?? name] as const,
+          );
+          const environmentPairs = privateNames.environment.map(
+            (name, index) =>
+              [name, publicNames.environment[index] ?? name] as const,
+          );
           const aliasedScenario =
             scenario === null ? null : (aliased.files[at]?.text ?? scenario);
           /*
@@ -887,12 +1065,29 @@ export function createSandboxBuildAdapter(
               ? null
               : "fixtures",
           ].filter((name) => name !== null);
-          const blockers = broken.map((name): ProjectBlocker => ({
+          const blockers = [
+            ...broken.map(
+              (name) =>
+                `The alias table renamed a value the ${name} needs, so it no longer reads as one.`,
+            ),
+            ...publicNameProblems(
+              "package",
+              packageNameProblem,
+              packagePairs,
+              packageNames,
+            ),
+            ...publicNameProblems(
+              "environment variable",
+              environmentNameProblem,
+              environmentPairs,
+              new Set(privateNames.environment),
+            ),
+          ].map((detail): ProjectBlocker => ({
             code: "alias_failed",
             file: null,
-            detail: `The alias table renamed a value the ${name} needs, so it no longer reads as one.`,
+            detail,
           }));
-          if (broken.length > 0)
+          if (blockers.length > 0)
             return {
               aliased,
               blockers,
@@ -909,6 +1104,9 @@ export function createSandboxBuildAdapter(
               !specifier.startsWith(".") &&
               !specifier.startsWith("/") &&
               (packageNames.has(packageNameOf(specifier)) ||
+                packagePairs.some(
+                  ([, to]) => to === packageNameOf(specifier),
+                ) ||
                 isNodeBuiltin(specifier)),
           );
           const generate = (tests: readonly AcceptanceTest[]) => {
@@ -931,6 +1129,10 @@ export function createSandboxBuildAdapter(
               scenario: aliasedScenario,
               knownSpecifiers: NODE_BUILTINS,
               packageModules: packageModules(uses),
+              publicNames: {
+                packages: Object.fromEntries(packagePairs),
+                environment: Object.fromEntries(environmentPairs),
+              },
               ...(compilerOptions === undefined ? {} : { compilerOptions }),
             });
             return {

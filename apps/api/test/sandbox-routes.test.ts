@@ -333,6 +333,7 @@ const readyProfile: StoredBountyProfile = {
   scopeRunId: "arn_scope",
   sliceRunId: "arn_slice",
   preparedRunId: null,
+  sliceApprovedAt: null,
   profile: null,
   createdAt: stamp,
   updatedAt: stamp,
@@ -449,6 +450,8 @@ function fixture(
      * earlier cut of the same slice made.
      */
     lockedCut: boolean;
+    /** The slice's bounded summary, as its boundary contract's `meta`. */
+    summary: unknown;
   }> = {},
 ) {
   const published: { versionId: string; actor: string; expiresAt: string }[] =
@@ -463,6 +466,8 @@ function fixture(
   const linked: { id: string; sourceRepoId: string }[] = [];
   const requested: unknown[] = [];
   const cuts: unknown[] = [];
+  const approvals: unknown[] = [];
+  let approvedKicks = 0;
   const made: { bountyId: string; sourceRepoId: string | null }[] = [];
   let launches = 0;
   const stored = {
@@ -506,11 +511,14 @@ function fixture(
       "slice-manifest.json",
       overrides.unparsable === true ? "not json" : manifestText,
     ),
-    artifactOf(
-      "boundary_contract",
-      "boundary-contract.json",
-      overrides.seam === true ? seamContractText : contractText,
-    ),
+    {
+      ...artifactOf(
+        "boundary_contract",
+        "boundary-contract.json",
+        overrides.seam === true ? seamContractText : contractText,
+      ),
+      meta: (overrides.summary ?? null) as StoredArtifact["meta"],
+    },
   ];
   const fixtureArtifact = (runId: string, text: string): StoredArtifact => ({
     ...artifactOf("fixture_set", "fixture-set.json", text),
@@ -882,6 +890,18 @@ function fixture(
                 (overrides.profile?.sliceRunId ?? readyProfile.sliceRunId)
                 ? (overrides.profile?.preparedRunId ?? null)
                 : null,
+            approveSlice: async (
+              owner: string,
+              profileId: string,
+              sliceRunId: string,
+              actor: string,
+            ) => {
+              approvals.push({ owner, profileId, sliceRunId, actor });
+              return sliceRunId === readyProfile.sliceRunId;
+            },
+          },
+          onSliceApproved: () => {
+            approvedKicks += 1;
           },
           requestProfile: async (owner: string, input: unknown) => {
             requested.push({ owner, input });
@@ -947,6 +967,8 @@ function fixture(
     linked,
     requested,
     cuts,
+    approvals,
+    approvedKicks: () => approvedKicks,
     made,
     launches: () => launches,
   };
@@ -2101,6 +2123,8 @@ function starterFixture(
               workspaceRepo("ghr_1", { stack: ["TypeScript"] }),
             ]),
     },
+    organizationNames: async (owner: string) =>
+      owner === "org_1" ? ["Payflow Labs", "payflow-labs"] : [],
     proposals: {
       liveForBounty: async () =>
         overrides.proposal === false ? null : "bpr_1",
@@ -2204,6 +2228,12 @@ test("a sandbox with no repository has a version generated from its bounty, by a
   assert.equal(params.params.agent, "starter");
   // The repositories' detected stack, then what the bounty adds.
   assert.deepEqual(params.params.stack, ["TypeScript", "Zod"]);
+  // The organization's names, word by word too, which the starter checks
+  // no public file carries; a sandbox with no repository names none.
+  assert.deepEqual((params.params as { vocabulary?: string[] }).vocabulary, [
+    "payflow-labs",
+    "payflow",
+  ]);
   const made = f.created[0]?.input as {
     id: string;
     title: string;
@@ -2526,6 +2556,7 @@ test("a linked sandbox's slice is its sizing's profile of the approved spec", as
       specRevision: 2,
       scopeRunId: "arn_scope",
       sliceRunId: "arn_slice",
+      approval: null,
     },
   });
   assert.equal(
@@ -2590,6 +2621,7 @@ test("slicing asks for the sizing's profile until its slice is ready", async () 
       specRevision: 2,
       scopeRunId: null,
       sliceRunId: null,
+      approval: null,
     },
     version: null,
     source: null,
@@ -2643,6 +2675,287 @@ test("slicing asks for the sizing's profile until its slice is ready", async () 
     ).status,
     403,
   );
+});
+
+/** A slice's summary wider than the profiler cuts unasked. */
+const wideSummary = {
+  schemaVersion: 1,
+  language: "typescript",
+  stubCoverage: "full",
+  ready: true,
+  counts: {
+    includedFiles: 41,
+    includedBytes: 9_000,
+    outboundModules: 0,
+    inboundModules: 0,
+    stubs: 0,
+    publicSymbols: 0,
+    externals: 0,
+    blockers: 0,
+  },
+  included: ["src/app.ts", "src/b.ts"],
+  outbound: [],
+  inbound: [],
+  externals: { packages: [], environment: [] },
+  blockers: [],
+  truncated: true,
+};
+const awaiting = { status: "awaiting_approval" } as const;
+/** Counts within the limits, for a summary whose list is complete. */
+const narrowCounts = { ...wideSummary.counts, includedFiles: 2 };
+
+test("a slice awaiting approval shows the request it was cut from and the files it holds", async () => {
+  const f = fixture("owner", { profile: awaiting, summary: wideSummary });
+  const read = (await (await f.request("GET", "/sbx_1/slice")).json()) as {
+    slice: Record<string, unknown>;
+  };
+  assert.equal(read.slice["status"], "awaiting_approval");
+  assert.equal(read.slice["sliceRunId"], "arn_slice");
+  assert.deepEqual(read.slice["approval"], {
+    reasons: ["too_many_files"],
+    entryPoints: ["src/app.ts"],
+    budget: { maxFiles: 40, maxDepth: 3 },
+    includeInferred: false,
+    includedFiles: 41,
+    included: ["src/app.ts", "src/b.ts"],
+    truncated: true,
+  });
+  // A summary that cannot be read leaves nothing to approve: it is priced
+  // again, like a slice that failed, and nothing is cut meanwhile.
+  const unread = (await (
+    await fixture("owner", { profile: awaiting }).request("GET", "/sbx_1/slice")
+  ).json()) as { slice: Record<string, unknown> };
+  assert.equal(unread.slice["status"], "failed");
+  assert.equal(unread.slice["code"], "slice_unavailable");
+  assert.equal(unread.slice["approval"], null);
+  const stuck = fixture("owner", { profile: awaiting, bounty: true });
+  const sliced = await stuck.request("POST", "/sbx_1/slice");
+  assert.equal(sliced.status, 409);
+  assert.equal(
+    ((await sliced.json()) as { code: string }).code,
+    "slice_failed",
+  );
+  assert.deepEqual(stuck.created, []);
+  // Slicing meanwhile waits, remembered for once it is approved.
+  const waiting = fixture("owner", {
+    profile: awaiting,
+    summary: wideSummary,
+    bounty: true,
+  });
+  assert.equal((await waiting.request("POST", "/sbx_1/slice")).status, 202);
+  assert.deepEqual(waiting.created, []);
+  assert.deepEqual(waiting.enqueued, []);
+});
+
+test("approving a slice approves exactly the run and request shown, and has it cut", async () => {
+  const body = {
+    sliceRunId: "arn_slice",
+    entryPoints: ["src/app.ts"],
+    budget: { maxFiles: 40, maxDepth: 3 },
+    includeInferred: false,
+  };
+  const f = fixture("owner", {
+    profile: awaiting,
+    summary: wideSummary,
+    bounty: true,
+  });
+  const approved = await f.request("POST", "/sbx_1/slice/approve", body);
+  assert.equal(approved.status, 200);
+  assert.deepEqual(f.approvals, [
+    {
+      owner: "org_1",
+      profileId: "bpf_1",
+      sliceRunId: "arn_slice",
+      actor: "user_1",
+    },
+  ]);
+  // Cut as the approver once the profile is built, which starts at once.
+  assert.deepEqual(f.cuts, [
+    { asked: "sbx_1", owner: "org_1", actor: "user_1" },
+  ]);
+  assert.equal(f.approvedKicks(), 1);
+  // Nothing is cut or built by the approval itself.
+  assert.deepEqual(f.created, []);
+  assert.deepEqual(f.enqueued, []);
+
+  // Anything but what was shown is refused before the store is asked.
+  for (const changed of [
+    { ...body, sliceRunId: "arn_other" },
+    { ...body, entryPoints: ["src"] },
+    { ...body, budget: { maxFiles: 40, maxDepth: 2 } },
+    { ...body, includeInferred: true },
+  ]) {
+    const g = fixture("owner", {
+      profile: awaiting,
+      summary: wideSummary,
+      bounty: true,
+    });
+    const refused = await g.request("POST", "/sbx_1/slice/approve", changed);
+    assert.equal(refused.status, 409);
+    assert.equal(
+      ((await refused.json()) as { code: string }).code,
+      "slice_changed",
+    );
+    assert.deepEqual(g.approvals, []);
+    assert.deepEqual(g.cuts, []);
+  }
+
+  // A slice that is not waiting, or cannot be shown, has nothing to approve.
+  for (const overrides of [
+    { profile: {}, summary: { ...wideSummary, counts: narrowCounts } },
+    { profile: {} },
+    { profile: awaiting },
+  ]) {
+    const g = fixture("owner", { ...overrides, bounty: true });
+    const refused = await g.request("POST", "/sbx_1/slice/approve", body);
+    assert.equal(refused.status, 409);
+    assert.equal(
+      ((await refused.json()) as { code: string }).code,
+      "slice_not_awaiting_approval",
+    );
+    assert.deepEqual(g.approvals, []);
+  }
+  const wide = { profile: awaiting, summary: wideSummary, bounty: true };
+  assert.equal(
+    (
+      await fixture("member", wide).request(
+        "POST",
+        "/sbx_1/slice/approve",
+        body,
+      )
+    ).status,
+    403,
+  );
+  assert.equal(
+    (await fixture("owner", wide).request("POST", "/sbx_x/slice/approve", body))
+      .status,
+    404,
+  );
+  assert.equal(
+    (
+      await fixture("owner", wide).request(
+        "POST",
+        "/sbx_1/slice/approve",
+        body,
+        "org_2",
+      )
+    ).status,
+    404,
+  );
+  assert.equal(
+    (
+      await fixture("owner", wide).request("POST", "/sbx_1/slice/approve", {
+        sliceRunId: "arn_slice",
+      })
+    ).status,
+    400,
+  );
+  const held = await fixture("owner", {
+    ...wide,
+    bounty: false,
+    held: "price",
+  }).request("POST", "/sbx_1/slice/approve", body);
+  assert.equal(held.status, 409);
+  assert.equal(((await held.json()) as { code: string }).code, "step_held");
+});
+
+test("a profile measured ready from a wide slice before approvals were asked for waits for one", async () => {
+  const body = {
+    sliceRunId: "arn_slice",
+    entryPoints: ["src/app.ts"],
+    budget: { maxFiles: 40, maxDepth: 3 },
+    includeInferred: false,
+  };
+  const legacy = { profile: {}, summary: wideSummary, bounty: true };
+  const read = (await (
+    await fixture("owner", legacy).request("GET", "/sbx_1/slice")
+  ).json()) as { slice: Record<string, unknown> };
+  assert.equal(read.slice["status"], "awaiting_approval");
+  // Neither a click nor the cutter's pass cuts it meanwhile.
+  const f = fixture("owner", legacy);
+  assert.equal((await f.request("POST", "/sbx_1/slice")).status, 202);
+  assert.deepEqual(f.created, []);
+  assert.deepEqual(f.enqueued, []);
+  // Approved as shown, it is cut.
+  assert.equal(
+    (await f.request("POST", "/sbx_1/slice/approve", body)).status,
+    200,
+  );
+  assert.equal(f.approvals.length, 1);
+  // Once approved, it is ready and cut as any other.
+  const approved = fixture("owner", {
+    ...legacy,
+    profile: { sliceApprovedAt: stamp },
+  });
+  const cut = await approved.request("POST", "/sbx_1/slice");
+  assert.equal(cut.status, 201);
+});
+
+test("an approval asked again for the slice it approved asks for the cut again", async () => {
+  const body = {
+    sliceRunId: "arn_slice",
+    entryPoints: ["src/app.ts"],
+    budget: { maxFiles: 40, maxDepth: 3 },
+    includeInferred: false,
+  };
+  // The approval committed, and asking for the cut failed after it: the
+  // retry finds the profile ready and approved, and goes on.
+  const f = fixture("owner", {
+    profile: { sliceApprovedAt: stamp },
+    summary: wideSummary,
+    bounty: true,
+  });
+  const again = await f.request("POST", "/sbx_1/slice/approve", body);
+  assert.equal(again.status, 200);
+  assert.deepEqual(f.cuts, [
+    { asked: "sbx_1", owner: "org_1", actor: "user_1" },
+  ]);
+  // Still only exactly what was approved.
+  const g = fixture("owner", {
+    profile: { sliceApprovedAt: stamp },
+    summary: wideSummary,
+    bounty: true,
+  });
+  const other = await g.request("POST", "/sbx_1/slice/approve", {
+    ...body,
+    sliceRunId: "arn_other",
+  });
+  assert.equal(other.status, 409);
+  assert.equal(
+    ((await other.json()) as { code: string }).code,
+    "slice_not_awaiting_approval",
+  );
+  const changed = await g.request("POST", "/sbx_1/slice/approve", {
+    ...body,
+    includeInferred: true,
+  });
+  assert.equal(
+    ((await changed.json()) as { code: string }).code,
+    "slice_changed",
+  );
+  assert.deepEqual(g.cuts, []);
+});
+
+test("a slice is not approved while the sandbox's publication is live", async () => {
+  const live = fixture("owner", {
+    profile: awaiting,
+    summary: wideSummary,
+    bounty: true,
+    publishedUntil: "2026-10-03T00:00:00.000Z",
+  });
+  const refused = await live.request("POST", "/sbx_1/slice/approve", {
+    sliceRunId: "arn_slice",
+    entryPoints: ["src/app.ts"],
+    budget: { maxFiles: 40, maxDepth: 3 },
+    includeInferred: false,
+  });
+  assert.equal(refused.status, 409);
+  assert.deepEqual(await refused.json(), {
+    error: SLICE_PUBLISHED_REASON,
+    code: "published",
+  });
+  assert.deepEqual(live.approvals, []);
+  assert.deepEqual(live.cuts, []);
 });
 
 test("a ready slice is cut into a draft from the bounty and built", async () => {

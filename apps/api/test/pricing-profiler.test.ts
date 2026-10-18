@@ -17,6 +17,7 @@ import {
   type SliceBoundarySummaryDto,
 } from "@sandbox-factory/shared";
 import {
+  AUTO_SLICE_LIMITS,
   canonicalJson,
   isScopeParams,
   isSliceParams,
@@ -256,6 +257,7 @@ class FakeProfiles {
       sliceRunId: null,
       preparedRunId: null,
       profile: null,
+      sliceApprovedAt: null,
       createdAt: "2026-10-03T00:00:00.000Z",
       updatedAt: "2026-10-03T00:00:00.000Z",
     };
@@ -291,13 +293,36 @@ class FakeProfiles {
       status: to.status,
       ...(to.status === "scoping" ? { scopeRunId: to.scopeRunId } : {}),
       ...(to.status === "slicing" ? { sliceRunId: to.sliceRunId } : {}),
-      ...(to.status === "ready" ? { profile: to.profile } : {}),
+      ...(to.status === "ready" || to.status === "awaiting_approval"
+        ? { profile: to.profile }
+        : {}),
       ...(to.status === "failed"
         ? { errorCode: to.errorCode, runErrorCode: to.runErrorCode ?? null }
         : {}),
     });
     return true;
   };
+
+  /**
+   * What `approveSlice` does: only for the slice run a measured profile
+   * was cut from, which it makes ready as it was measured.
+   */
+  approve(id: string, sliceRunId: string) {
+    const row = this.rows.get(id);
+    if (
+      row === undefined ||
+      !["awaiting_approval", "ready"].includes(row.status) ||
+      row.profile === null ||
+      row.sliceRunId !== sliceRunId
+    )
+      return false;
+    this.rows.set(id, {
+      ...row,
+      status: "ready",
+      sliceApprovedAt: row.sliceApprovedAt ?? "2026-10-04T00:00:00.000Z",
+    });
+    return true;
+  }
 
   only(): StoredBountyProfile {
     const [row] = this.rows.values();
@@ -506,6 +531,93 @@ test("a requested profile is scoped, sliced and built from what was measured", a
   await h.profiler.sweep();
   assert.equal(h.runs.enqueued.length, enqueues);
   assert.deepEqual(h.errors, []);
+});
+
+test("a slice wider than the automatic limits is measured and priced, and waits for an approval of that slice run", async () => {
+  for (const [scope, summary] of [
+    // A directory entry point: the slice includes the files under it.
+    [
+      {
+        ...scopeMeta,
+        entryPoints: [{ path: "src/scheduler", reason: "all of it" }],
+      },
+      boundaryMeta,
+    ],
+    // More files than the limit.
+    [
+      { ...scopeMeta, budget: { maxFiles: 200, maxDepth: 2 } },
+      {
+        ...boundaryMeta,
+        counts: {
+          ...boundaryMeta.counts,
+          includedFiles: AUTO_SLICE_LIMITS.includedFiles + 1,
+        },
+      },
+    ],
+    // Deeper than the limit.
+    [{ ...scopeMeta, budget: { maxFiles: 20, maxDepth: 10 } }, boundaryMeta],
+  ] as const) {
+    const h = harness();
+    await h.profiler.request(OWNER, request);
+    await h.profiler.sweep();
+    scoped(h, scope);
+    await h.profiler.sweep();
+    sliced(h, summary);
+    await h.profiler.sweep();
+    let row = h.profiles.only();
+    // Measured from the summary's counts, so the price goes on with it, but
+    // held from the sandbox: only a ready profile is cut or prepared.
+    assert.equal(row.status, "awaiting_approval");
+    assert.equal(row.sliceRunId, h.runs.of("slice").id);
+    assert.equal(row.profile?.slice.files, summary.counts.includedFiles);
+    assert.deepEqual(
+      h.settled.map((settled) => [settled.status, settled.profile !== null]),
+      [["awaiting_approval", true]],
+    );
+    // Out of the sweep: nothing more to measure.
+    const enqueues = h.runs.enqueued.length;
+    await h.profiler.sweep();
+    assert.equal(h.profiles.only().status, "awaiting_approval");
+    assert.equal(h.runs.enqueued.length, enqueues);
+
+    // An approval names the slice run it saw; another run's is refused.
+    assert.equal(h.profiles.approve(row.id, "arn_other"), false);
+    assert.equal(h.profiles.approve(row.id, h.runs.of("slice").id), true);
+    await h.profiler.sweep();
+    row = h.profiles.only();
+    assert.equal(row.status, "ready");
+    // Ready as it was measured, without measuring or settling it again.
+    assert.equal(row.profile?.slice.files, summary.counts.includedFiles);
+    assert.equal(h.settled.length, 1);
+    assert.equal(h.runs.enqueued.length, enqueues);
+    assert.deepEqual(h.errors, []);
+  }
+});
+
+test("a slice exactly at the automatic limits is ready without an approval", async () => {
+  const h = harness();
+  await h.profiler.request(OWNER, request);
+  await h.profiler.sweep();
+  scoped(h, {
+    ...scopeMeta,
+    budget: { maxFiles: 200, maxDepth: AUTO_SLICE_LIMITS.maxDepth },
+  });
+  await h.profiler.sweep();
+  sliced(h, {
+    ...boundaryMeta,
+    counts: {
+      ...boundaryMeta.counts,
+      includedFiles: AUTO_SLICE_LIMITS.includedFiles,
+    },
+  });
+  await h.profiler.sweep();
+  const row = h.profiles.only();
+  assert.equal(row.status, "ready");
+  assert.equal(row.profile?.slice.files, 40);
+  assert.deepEqual(
+    h.settled.map((settled) => settled.status),
+    ["ready"],
+  );
 });
 
 test("at the organization's analysis cap a profile waits, and the rest of the sweep enqueues nothing of that slot", async () => {

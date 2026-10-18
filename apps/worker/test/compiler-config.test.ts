@@ -7,6 +7,7 @@ import ts from "typescript-compiler";
 import {
   loadConfig,
   nearestCompilerOptions,
+  pnpmWorkspacePatterns,
   workspacePackages,
 } from "../src/tools/compiler-config.js";
 
@@ -140,6 +141,75 @@ test("a base in one of the repository's workspace packages resolves without node
         ["web", "apps/web"],
       ],
     );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("workspace packages are found from pnpm, Lerna and nested or recursive globs", async () => {
+  const root = await mkdtemp(join(tmpdir(), "compiler-config-"));
+  try {
+    const manifests: Record<string, string> = {
+      "apps/web": "@acme/web",
+      "packages/core/ledger": "@acme/ledger",
+      "packages/deep/a/b": "@acme/deep",
+      "packages/deep/test/fixture": "@acme/fixture",
+      "services/billing": "@acme/billing",
+      "libs/auth": "@acme/auth",
+      "node_modules/zod": "zod",
+      "packages/.hidden/x": "@acme/hidden",
+      "tools/kit-a": "@acme/kit-a",
+      "tools/other": "@acme/other",
+    };
+    for (const [dir, name] of Object.entries(manifests)) {
+      await mkdir(join(root, dir), { recursive: true });
+      await writeFile(
+        join(root, dir, "package.json"),
+        JSON.stringify({ name }),
+      );
+    }
+    await writeFile(
+      join(root, "pnpm-workspace.yaml"),
+      [
+        "# pnpm",
+        "packages:",
+        "  - 'apps/*'",
+        '  - "packages/**"',
+        "  - '!**/test/**'",
+        "  - ./services/billing # one",
+        "",
+        "  - tools/kit-?",
+        "onlyBuiltDependencies:",
+        "  - esbuild",
+        "",
+      ].join("\n"),
+    );
+    await writeFile(
+      join(root, "lerna.json"),
+      JSON.stringify({ packages: ["libs/*"] }),
+    );
+    await writeFile(join(root, "package.json"), "{}");
+    assert.deepEqual(
+      [...workspacePackages(root).entries()]
+        .map(([name, dir]) => [name, relative(root, dir)])
+        .sort(),
+      [
+        ["@acme/auth", "libs/auth"],
+        ["@acme/billing", "services/billing"],
+        ["@acme/deep", "packages/deep/a/b"],
+        ["@acme/kit-a", "tools/kit-a"],
+        ["@acme/ledger", "packages/core/ledger"],
+        ["@acme/web", "apps/web"],
+      ],
+    );
+    // Flow style, and a glob that leaves the repository.
+    await writeFile(
+      join(root, "pnpm-workspace.yaml"),
+      "packages: ['apps/*', \"../*\"]\n",
+    );
+    await writeFile(join(root, "lerna.json"), "{}");
+    assert.deepEqual([...workspacePackages(root).keys()], ["@acme/web"]);
+    assert.deepEqual(pnpmWorkspacePatterns("catalog:\n  zod: 1\n"), []);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

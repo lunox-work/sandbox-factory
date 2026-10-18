@@ -41,12 +41,14 @@ export const COMPLEXITY_PROFILE_VERSION = "profile-v1";
 /**
  * Where a proposal's profile stands. `queued` waits for room under the
  * organization's analysis cap; `scoping` and `slicing` wait for their runs;
- * `ready` and `failed` are final for that spec revision.
+ * `awaiting_approval` holds a slice wider than `AUTO_SLICE_LIMITS` for an
+ * owner or admin; `ready` and `failed` are final for that spec revision.
  */
 export const PROFILE_STATUSES = [
   "queued",
   "scoping",
   "slicing",
+  "awaiting_approval",
   "ready",
   "failed",
 ] as const;

@@ -19,9 +19,11 @@ import { userEvent } from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 
 import { completeBountyFixture } from "./api-fixtures";
-import { fireEvent, render, screen, waitFor, within } from "./render";
+import { act, fireEvent, render, screen, waitFor, within } from "./render";
 
 import { Home, firstName, greeting } from "../src/Home";
+import { Leaving } from "../src/Leaving";
+import { stopLeaving } from "../src/navigation/leave";
 import { Onboarding } from "../src/Onboarding";
 
 const owner = {
@@ -395,9 +397,46 @@ beforeEach(() => {
   );
 });
 
+const realLocation = window.location;
+
 afterEach(() => {
+  // The leaving state is the module's, and outlives a test's render.
+  act(() => stopLeaving());
+  Object.defineProperty(window, "location", {
+    configurable: true,
+    value: realLocation,
+  });
   vi.unstubAllGlobals();
 });
+
+/**
+ * Records where the page is sent, reading everything else from the real
+ * location: jsdom cannot navigate, and says so when `href` is assigned.
+ */
+function recordNavigation(): string[] {
+  const assigned: string[] = [];
+  Object.defineProperty(window, "location", {
+    configurable: true,
+    value: {
+      get pathname() {
+        return realLocation.pathname;
+      },
+      get search() {
+        return realLocation.search;
+      },
+      get hash() {
+        return realLocation.hash;
+      },
+      get href() {
+        return realLocation.href;
+      },
+      set href(value: string) {
+        assigned.push(value);
+      },
+    },
+  });
+  return assigned;
+}
 
 /** What the workspace list says of a workspace with nothing connected. */
 function bare() {
@@ -919,6 +958,29 @@ test("sizing from the scan is one call for that ticket, and opens its proposal",
   );
 });
 
+test("a ticket's bounty page opens as soon as its run names it, to stream the rest", async () => {
+  world.jira = [jiraSite];
+  world.boards = [board];
+  world.github = [githubAccount];
+  world.repositories = [widgets];
+  // Imported, not yet sized: no outcome, no proposal.
+  world.sizingRun = { ...ticketRun(), bountyId: "bty_7" };
+  showOnboarding();
+
+  const teaser = await screen.findByTestId("teaser-bounty");
+  await userEvent.click(
+    await within(teaser).findByRole("button", { name: "Size ACME-7" }),
+  );
+
+  await waitFor(
+    () =>
+      expect(window.location.pathname + window.location.search).toBe(
+        "/bounties/acme/bty_7?tab=price",
+      ),
+    { timeout: 4_000 },
+  );
+});
+
 test("a ticket with a proposal already opens its bounty's page, read for it first", async () => {
   world.jira = [jiraSite];
   world.boards = [board];
@@ -1191,6 +1253,37 @@ test("sizing with no repository asks for GitHub first, and sizes nothing", async
     within(dialog).getByRole("button", { name: "Not now" }),
   );
   await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+});
+
+test("connecting GitHub from the ask covers the page while the browser leaves", async () => {
+  world.jira = [jiraSite];
+  world.boards = [board];
+  showOnboarding();
+  render(<Leaving />);
+  const assigned = recordNavigation();
+
+  const teaser = await screen.findByTestId("teaser-bounty");
+  await userEvent.click(
+    await within(teaser).findByRole("button", { name: "Size ACME-7" }),
+  );
+  const dialog = await screen.findByRole("dialog", {
+    name: "Connect GitHub to size ACME-7",
+  });
+  await userEvent.click(
+    within(dialog).getByRole("button", { name: "Connect GitHub" }),
+  );
+
+  // To GitHub through the API, back to where the ask was made.
+  expect(assigned).toHaveLength(1);
+  const target = new URL(assigned[0] ?? "", "http://localhost");
+  expect(target.pathname).toBe("/api/v1/orgs/org_1/github/connect");
+  expect(target.searchParams.get("returnTo")).toBe(
+    realLocation.pathname + realLocation.search,
+  );
+  // GitHub can take a while, or only bounce back: the page says it is going.
+  expect(screen.getByTestId("leaving").textContent).toContain(
+    "Opening GitHub…",
+  );
 });
 
 test("the board bar names the board under Jira's mark, and holds the board-wide actions in its menu", async () => {

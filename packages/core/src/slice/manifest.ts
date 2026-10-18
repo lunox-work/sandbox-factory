@@ -33,6 +33,7 @@ export const SLICE_BLOCKER_CODES = [
   "no_extractor",
   "declaration_incomplete",
   "compile_error",
+  "secret_file",
 ] as const;
 export type SliceBlockerCode = (typeof SLICE_BLOCKER_CODES)[number];
 
@@ -144,7 +145,25 @@ export interface RequiredBuildInputs {
      * here, not on the registry, so it is mocked and never installed.
      */
     readonly workspace?: true;
+    /**
+     * Where the repository says it is fetched from; absent when nothing
+     * it holds says. Only a package shown to come from the public
+     * registry is installed by its name.
+     */
+    readonly registry?: PackageRegistry;
   }[];
+}
+
+/**
+ * What a repository's lockfiles and npm configuration say of a package's
+ * registry. `public` is a lockfile entry resolved from the public registry
+ * with no configuration mapping its scope elsewhere; `private` is any
+ * lockfile entry or configuration that names another registry.
+ */
+export interface PackageRegistry {
+  readonly source: "public" | "private";
+  /** The file that says so, such as `package-lock.json` or `.npmrc`. */
+  readonly evidence: string;
 }
 
 /** Every operation a contribution may make on the slice has a stated rule. */

@@ -104,6 +104,12 @@ export const sliceManifestSchema = z.object({
         version: z.string().nullable(),
         declaredIn: z.string().nullable(),
         workspace: z.literal(true).optional(),
+        registry: z
+          .object({
+            source: z.enum(["public", "private"]),
+            evidence: z.string(),
+          })
+          .optional(),
       }),
     ),
   }),

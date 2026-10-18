@@ -289,3 +289,44 @@ test("the sandbox client parses every response and scopes every path to the owne
   // Nobody picks the repository: the link names none.
   assert.equal(calls[3]?.init?.body, undefined);
 });
+
+test("approving a slice posts the run and request shown, and reads the slice back", async () => {
+  const calls: { url: string; init: RequestInit | undefined }[] = [];
+  const request = {
+    sliceRunId: "arn_slice",
+    entryPoints: ["src"],
+    budget: { maxFiles: 200, maxDepth: 10 },
+    includeInferred: false,
+  };
+  const fetch = (async (input: unknown, init?: RequestInit) => {
+    calls.push({ url: String(input), init });
+    return new Response(
+      JSON.stringify({
+        slice: {
+          status: "slicing",
+          code: null,
+          reason: null,
+          specRevision: 2,
+          scopeRunId: "arn_scope",
+          sliceRunId: "arn_slice",
+        },
+      }),
+      { status: 200, headers: { "Content-Type": "application/json" } },
+    );
+  }) as typeof globalThis.fetch;
+  const client = new SandboxClient({
+    baseUrl: "https://api.test/",
+    fetch,
+    getToken: () => "token",
+  });
+  const slice = await client.approveSandboxSlice("org 1", "sbx 1", request);
+  // An answer without an approval reads as nothing left to approve.
+  assert.equal(slice.status, "slicing");
+  assert.equal(slice.approval, null);
+  assert.equal(
+    calls[0]?.url,
+    "https://api.test/api/v1/orgs/org%201/sandboxes/sbx%201/slice/approve",
+  );
+  assert.equal(calls[0]?.init?.method, "POST");
+  assert.deepEqual(JSON.parse(String(calls[0]?.init?.body)), request);
+});

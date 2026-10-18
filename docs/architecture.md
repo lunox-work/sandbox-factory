@@ -362,7 +362,10 @@ table, approved task, hidden tests); the public face is `sandbox` and
 is `submission` (a contributor's patch, pinned to a frozen version, run with
 both suites). `submissionVerdict` in `packages/core/src/sandbox/submission.ts`
 requires every test in both suites and at least one hidden test to pass; only
-counts are kept. No route takes a submission yet.
+counts are kept. `gradingTree` in `grading.ts` builds what a submission is run
+on: the version's files with only editable paths and new TypeScript files
+beside them taken, everything else refused with reasons, and `GRADING_COMMANDS`
+run without `npm run`. No route takes a submission yet.
 
 **Nobody picks the repository.** `POST .../sandboxes` takes `bountyId` and cuts
 from the one repository the live proposal says the work touches
@@ -386,9 +389,18 @@ generating a new version. Such runs read no snapshot, so
 complexity profile of the approved proposal's spec revision in the sandbox's
 repository (`bounty_profile`), scoped and sliced by the profiler. `GET
 .../sandboxes/:id/slice` reports `none`, `queued`, `scoping`, `slicing`,
-`ready`, `failed` or `unavailable` (`no_source`, `task_not_ready`,
-`unconfigured`). `POST .../sandboxes/:id/slice` asks for a profile (202) or,
-once ready, cuts a draft as `POST .../:id/versions` does and queues its build
+`awaiting_approval`, `ready`, `failed` or `unavailable` (`no_source`,
+`task_not_ready`, `unconfigured`). A slice wider than `AUTO_SLICE_LIMITS`
+(`packages/core/src/slice/scope.ts`: a directory entry point, over 40 files
+or depth over 3) is measured and priced, but awaits approval, with its
+request and files shown, before anything is cut or prepared from it; a
+profile measured `ready` from one before approvals existed is held the same.
+`POST .../:id/slice/approve` (owners and admins) names exactly that run and
+request (`slice_changed`, `slice_not_awaiting_approval`, `published`),
+records the approver, makes the profile `ready` and asks for a cut as the
+approver; asked again for the same approved run, it asks for the cut again.
+`POST .../sandboxes/:id/slice` asks for a profile (202) or, once ready, cuts
+a draft as `POST .../:id/versions` does and queues its build
 (201). A 202 remembers the request on `sandbox_source.cut_requested_*`, and
 `apps/api/src/sandbox/cutter.ts` cuts it once the profile settles. A live
 publication refuses slicing (`published`). A sliced draft starts with no
@@ -397,13 +409,17 @@ agent (`apps/worker/src/tools/fixtures.ts`, `hidden-tests.ts`,
 `pseudonyms.ts`), keeps a set only once its check passes, and settles them on
 the draft when the run commits (`recordBuildOutput`). Every build scans the
 public files for the workspace's names (`packages/core/src/sandbox/vocabulary.ts`,
-passed as the build's `vocabulary`) and blocks `vocabulary_leaked`.
+passed as the build's and starter's `vocabulary`; the organization's name,
+handle and repository owner by their distinctive words too) and blocks `vocabulary_leaked`,
+and for credentials (`packages/core/src/sandbox/secrets.ts`) and blocks
+`secret_found`, naming file, line and rule, never the value.
 
 **Preparation.** Once a bounty's profile is ready and its price approved,
 `apps/api/src/sandbox/preparer.ts` queues a `fixtures` run that also writes the
 name table, named on `bounty_profile.prepared_run_id`, so the first cut builds
-with them. `workspace_setting.prepare_sandboxes` turns it off
-(`GET`/`PATCH .../settings`, owners and admins).
+with them; a wide slice nobody approved is not prepared.
+`workspace_setting.prepare_sandboxes` turns it off (`GET`/`PATCH
+.../settings`, owners and admins).
 
 **Publishing.** `POST .../sandboxes/versions/:vid/publish` (owners and
 admins) freezes the version and makes it `current_version_id` with status
@@ -426,8 +442,8 @@ tests, fixtures) and a snapshot of the approved task; a transform change
 clears the evidence gathered for the old one. A `sandbox_build` run generates
 the project and runs its baseline through an evaluation provider; only
 `EVALUATION_PROVIDER=local-process` runs builds, and it is not an isolation
-boundary. A repository a sandbox is built from cannot be removed, because
-replay needs its snapshot.
+boundary, so a worker with `NODE_ENV=production` refuses it. A repository a
+sandbox is built from cannot be removed, because replay needs its snapshot.
 
 ## Pricing
 
@@ -557,8 +573,9 @@ per proposal, revision and snapshot). `apps/api/src/pricing/profiler.ts`
 moves them on `NOTIFY analysis_run_ended` and a 30-second sweep: graph run,
 then `abstractions` and `data_model`, then a `scope` run naming the ones that
 succeeded, then the slice the scope recorded, then `buildComplexityProfile`
-(`packages/core/src/pricing/profile.ts`). The profile is evidence, not a
-price. A step at the organization's analysis cap waits for the next sweep;
+(`packages/core/src/pricing/profile.ts`): `ready`, or `awaiting_approval`
+with the profile when the slice is wider than `AUTO_SLICE_LIMITS`, which
+the rubric reads as measured. The profile is evidence, not a price. A step at the organization's analysis cap waits for the next sweep;
 the cap counts agent runs and builds apart. A failed run fails the profile for
 that revision; a re-price asks again.
 

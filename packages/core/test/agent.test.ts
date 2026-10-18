@@ -13,7 +13,9 @@ import {
   readsSource,
   CONTEXT_BUILDERS,
   scenarioProblems,
+  AUTO_SLICE_LIMITS,
   scopeProblems,
+  sliceApprovalReasons,
   sliceRequestOf,
   toolOfParams,
   toolVersionOf,
@@ -71,8 +73,8 @@ test("slices, scopes and the map-reading builders read a graph", () => {
 
 test("every tool has a version", () => {
   for (const tool of ANALYSIS_TOOLS) assert.match(toolVersionOf(tool), /@/);
-  assert.equal(toolVersionOf("scope"), "scope@4");
-  assert.equal(toolVersionOf("fixtures"), "fixtures@2");
+  assert.equal(toolVersionOf("scope"), "scope@5");
+  assert.equal(toolVersionOf("fixtures"), "fixtures@3");
 });
 
 const submission: ScopeSubmission = {
@@ -93,6 +95,79 @@ test("a scope submission becomes the canonical slice request", () => {
     budget: { maxFiles: 10, maxDepth: 0 },
     includeInferred: false,
   });
+});
+
+test("a slice beyond the automatic limits says why it waits for approval", () => {
+  const request = {
+    entryPoints: ["src/a.ts"],
+    budget: { maxFiles: 40, maxDepth: AUTO_SLICE_LIMITS.maxDepth },
+  };
+  const slice = { includedFiles: 2, included: ["src/a.ts", "src/b.ts"] };
+  assert.deepEqual(sliceApprovalReasons(request, slice), []);
+  assert.deepEqual(
+    sliceApprovalReasons(
+      { ...request, budget: { maxFiles: 200, maxDepth: 10 } },
+      {
+        includedFiles: AUTO_SLICE_LIMITS.includedFiles + 1,
+        included: ["src/a.ts"],
+      },
+    ),
+    ["too_many_files", "too_deep"],
+  );
+  // A directory resolves to the files under it, so it is never included by
+  // its own path; neither is an entry point the slice did not list.
+  assert.deepEqual(
+    sliceApprovalReasons({ ...request, entryPoints: ["src"] }, slice),
+    ["directory_entry_point"],
+  );
+  assert.deepEqual(
+    sliceApprovalReasons({ ...request, entryPoints: ["src/c.ts"] }, slice),
+    ["directory_entry_point"],
+  );
+});
+
+test("a slice exactly at the automatic limits is cut unasked", () => {
+  const files = Array.from(
+    { length: AUTO_SLICE_LIMITS.includedFiles },
+    (_, index) => `src/f${index}.ts`,
+  );
+  const request = {
+    entryPoints: ["src/f0.ts"],
+    budget: { maxFiles: 200, maxDepth: AUTO_SLICE_LIMITS.maxDepth },
+  };
+  const slice = { includedFiles: files.length, included: files };
+  assert.equal(AUTO_SLICE_LIMITS.includedFiles, 40);
+  assert.equal(AUTO_SLICE_LIMITS.maxDepth, 3);
+  assert.deepEqual(sliceApprovalReasons(request, slice), []);
+  assert.deepEqual(
+    sliceApprovalReasons(request, {
+      includedFiles: files.length + 1,
+      included: [...files, "src/extra.ts"],
+    }),
+    ["too_many_files"],
+  );
+  assert.deepEqual(
+    sliceApprovalReasons(
+      { ...request, budget: { maxFiles: 200, maxDepth: 4 } },
+      slice,
+    ),
+    ["too_deep"],
+  );
+});
+
+test("an entry point is not judged against a file list the summary cut short", () => {
+  // The summary lists at most its limit of files: an entry point past it
+  // is not taken for a directory, and the slice waits for its size alone.
+  assert.deepEqual(
+    sliceApprovalReasons(
+      {
+        entryPoints: ["src/z.ts"],
+        budget: { maxFiles: 400, maxDepth: 2 },
+      },
+      { includedFiles: 250, included: ["src/a.ts", "src/b.ts"] },
+    ),
+    ["too_many_files"],
+  );
 });
 
 test("seams must be modules the request cuts, each once", () => {

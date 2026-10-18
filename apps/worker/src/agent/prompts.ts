@@ -42,9 +42,9 @@ export const FIXTURES_SYSTEM_PROMPT = `${SANDBOX_CONTEXT}
 
 The slice for the ticket below is fixed. Your job is to make its sandbox run for real: write default behaviour (fixtures) for the mocked calls the ticket's scenarios go through, and a walkthrough script that \`npm run dev\` runs.
 
-A fixture gives one mock path its behaviour. \`module\` is a cut module's path as listed below, \`symbol\` an export of it (\`default\` for a default export), \`member\` a dotted property path under that export or null, and \`call\` is "call" for a function call or "construct" for \`new\`. \`implementation\` is one JavaScript function expression that receives the call's arguments: no TypeScript syntax, no imports or require, no network, files, timers or randomness. Return values must match the declared types in the stubs; return a Promise where the declaration does. A "construct" fixture returns a plain object with the members the slice uses. Prefer small, believable, fixed data that makes the ticket's main scenario meaningful. Only give behaviour where it matters; every other call keeps returning a recorded mock.
+A fixture gives one mock path its behaviour. \`module\` is a cut module's path as listed below, \`symbol\` an export of it (\`default\` for a default export), \`member\` a dotted property path under that export or null, and \`call\` is "call" for a function call or "construct" for \`new\`. \`implementation\` is one JavaScript function expression that receives the call's arguments: no TypeScript syntax, no imports or require, no network, files, timers or randomness. These rules are checked on the text, and the check refuses names rather than guessing intent: never name \`process\`, \`globalThis\`, \`fetch\`, timers, \`Math.random\`, \`crypto\`, \`Buffer\`, \`eval\`, \`Function\`, \`Reflect\`, \`Proxy\`, \`constructor\` or \`prototype\`, even as a property; use \`Date\` only as \`new Date(value)\` with a fixed value; and index only with a literal key (\`rows[0]\`, \`item["id"]\`), finding a record with \`find\` or a \`switch\` rather than \`table[id]\`. Return values must match the declared types in the stubs; return a Promise where the declaration does. A "construct" fixture returns a plain object with the members the slice uses. Prefer small, believable, fixed data that makes the ticket's main scenario meaningful. Only give behaviour where it matters; every other call keeps returning a recorded mock.
 
-The walkthrough is TypeScript for \`sandbox/run.ts\`. Import the task's code with relative paths from \`sandbox/\` and \`.js\` extensions, for example \`import { total } from "../src/cart/total.js"\`. You may import \`{ recordedCalls }\` from \`"./mock.js"\` to show what the code asked of its seams. Walk the ticket's main scenario step by step with \`console.log\`, so a developer sees what happens today and where the ticket's change belongs. It runs before the ticket is implemented and must finish within a few seconds with exit code 0: call only code that exists now, and do not assert the new behaviour.
+The walkthrough is TypeScript for \`sandbox/run.ts\`. Import the task's code with relative paths from \`sandbox/\` and \`.js\` extensions, for example \`import { total } from "../src/cart/total.js"\`. You may import \`{ recordedCalls }\` from \`"./mock.js"\` to show what the code asked of its seams. The walkthrough keeps the fixtures' rules, and its only imports are relative ones. Walk the ticket's main scenario step by step with \`console.log\`, so a developer sees what happens today and where the ticket's change belongs. It runs before the ticket is implemented and must finish within a few seconds with exit code 0: call only code that exists now, and do not assert the new behaviour.
 
 When \`data_model\` is offered, a fixture that stands in for a database seam returns records that obey it: every required field present, each enum field holding one of its values, and foreign keys pointing at records another fixture returns.
 
@@ -87,6 +87,8 @@ export function starterBountySection(input: {
   readonly spec: SpecDraft | null;
   /** The bounty's synced context, as the approved task froze it. */
   readonly context?: ApprovedTaskContext | undefined;
+  /** The workspace's own names, which no public file may carry. */
+  readonly vocabulary?: readonly string[];
 }): string {
   const context =
     input.context === undefined
@@ -109,6 +111,11 @@ export function starterBountySection(input: {
     ...(context === ""
       ? []
       : [`The context synced into the bounty:\n\n${context}`]),
+    ...(input.vocabulary === undefined || input.vocabulary.length === 0
+      ? []
+      : [
+          `The workspace's own names, which no public file may carry however they are joined, the title and description in the README included: ${input.vocabulary.join(", ")}. Give each one the starter or the bounty's text uses a pseudonym.`,
+        ]),
   ].join("\n\n");
 }
 
@@ -118,7 +125,13 @@ The sandbox for the bounty below is built, and its baseline runs: it installs, b
 
 Write each hidden test under \`tests/private/\` as a \`*.test.ts\` file, and mark it with the outcome it has on the sandbox as it is now. "fail" is a test that only a finished bounty passes: it checks the behaviour the bounty asks for. "pass" is one that guards behaviour the code already has and a finished bounty must keep. At least one must be "fail". A submission is accepted when every hidden test passes, so test what the bounty's spec says through the code's own interface, such that any correct implementation passes and an incomplete one does not. Do not test names, messages or structure the spec leaves open.
 
-A "fail" test must fail by its assertions, not by breaking. Hidden tests are compiled with the project by \`npm run build\`, so they must type-check against the code as it is now: a test that imports a function or calls a parameter the bounty has yet to add breaks the build, and the whole baseline with it. When the bounty adds something new, reach it at run time inside the test, for example \`const mod: Record<string, unknown> = await import("../../src/feature.js")\`, assert that it exists, and call it through a type you declare in the test. A test that throws while its file loads, or imports something that is not there, is an error, never the failure it is expected to show.
+A "fail" test must fail by its assertions, not by breaking. Hidden tests are compiled with the project by \`npm run build\`, so they must type-check against the code as it is now: a test that imports a function or calls a parameter the bounty has yet to add breaks the build, and the whole baseline with it. When the bounty adds something new, reach it at run time inside the test, for example \`const mod: Record<string, unknown> = await import("../../src/feature.js")\`, assert that it exists, and call it through a type you declare in the test. A test that throws while its file loads, or imports something that is not there, is an error, never the failure it is expected to show. A "pass" is read from the runner's report, not only its exit code: at least one test must run to completion and none may be skipped, todo or cancelled, and a file that ends early or declares no test is an error. Do not name a test after a file.
+
+A submission is graded by these tests, so write them so that it can only pass by doing the work:
+- Assert observable results first: what the code returns, throws or leaves in the state it exposes. Use \`recordedCalls()\` only to confirm that a seam was reached, and with what, never as the only evidence that the behaviour is there.
+- Call \`resetMocks()\` at the start of each test, for example in \`beforeEach\`, and install the behaviour each test needs inside it, so no test depends on what another left behind.
+- Include at least one case whose inputs differ from the fixtures' default data and the walkthrough's: give the mocked calls other values with \`mockImplementation(path, fn)\` inside that test, so an implementation that hard-codes the public data fails. Never use the exact fixture values as a test's only inputs.
+- Each hidden test runs twice and must give the same result for every test both times: nothing may depend on timing, randomness, the clock or the order the tests run in.
 
 The toolchain is fixed: Node 22, TypeScript 5.9, ES modules. Tests use \`node:test\` and \`node:assert/strict\`. Import the project's code with relative paths from the test's folder and \`.js\` extensions; from \`tests/private/\` a file at \`src/feature.ts\` is \`../../src/feature.js\`. Cut modules are recording mocks; import \`{ mockImplementation, recordedCalls, resetMocks }\` from \`../../sandbox/mock.js\` to give a mocked call behaviour or to check what the code asked of it. Packages compile as \`any\`. Nothing may reach the network, a database or any outside service.
 
@@ -126,7 +139,7 @@ Read the project with the repository tools: they show the developer's project as
 
 export const PSEUDONYMS_SYSTEM_PROMPT = `${SANDBOX_CONTEXT}
 
-The sandbox for the bounty below is cut from the workspace's repository, and it is about to leave the workspace: an outside developer will read every file of it. It must not say whose code it is. Your job is to write its pseudonyms: a table of renames applied to every file of the slice, its paths, the spec and the fixtures before the project is generated, and undone in reverse to map a contribution back.
+The sandbox for the bounty below is cut from the workspace's repository, and it is about to leave the workspace: an outside developer will read every file of it. It must not say whose code it is. Your job is to write its pseudonyms: a table of renames applied to every file of the slice, its paths, the spec, the fixtures, and the names of the packages it mocks and the environment variables it reads before the project is generated, and undone in reverse to map a contribution back. A mocked package goes by the name the table gives it (\`@acme/ledger\` becomes \`@shop/ledger\` with an identifier rule \`acme -> shop\`); an environment variable is renamed whole (\`ACME_LEDGER_URL -> LEDGER_URL\`). Packages installed from the public registry keep their names.
 
 Read the slice with the repository tools: they show its source as the workspace wrote it. Find each name that says whose code this is: the company, the product and its features' brand names, customers, partners, internal systems and teams, and the types, functions, modules, files and strings named after them. Give each a neutral public name that keeps its meaning (\`AcmeInvoiceMailer\` becomes \`InvoiceMailer\`, \`acmeOrders\` becomes \`orders\`, a comment's "Acme" becomes "the shop"). Leave the domain's ordinary words (Order, Invoice, User), the language's and packages' own names (React, pg, express) and anything the bounty's work needs to read as it does. Rename what identifies; do not rename everything.
 

@@ -127,8 +127,11 @@ export function TeaserBounty({
     resource: "run",
     id: runId,
     read: (id, signal) => clients.runs.run(organizationId, id, signal),
+    // Followed only until it names its bounty, whose page shows the rest.
     terminal: (run) =>
-      terminalRun(run) || run.outcomes[0]?.proposalId !== undefined,
+      terminalRun(run) ||
+      run.bountyId !== null ||
+      run.outcomes[0]?.proposalId !== undefined,
     interval: 1000,
     startDelay: 1000,
     topics: (id) => [bountyRunTopic(id)],
@@ -152,10 +155,18 @@ export function TeaserBounty({
       return;
     const outcome = run.outcomes[0];
     const proposalId = outcome?.proposalId;
-    if (proposalId === undefined && !terminalRun(run)) return;
+    const bountyId = run.bountyId ?? outcome?.bountyId;
+    if (proposalId === undefined && bountyId === undefined && !terminalRun(run))
+      return;
     finished.current = run.id;
     setRunId(null);
-    if (proposalId !== undefined)
+    // Its sizing streams in on the bounty's own Price tab from here.
+    if (bountyId !== undefined && outcome?.status !== "failed") {
+      void onSized();
+      pushLocation(
+        bountyPricePath({ workspace: organizationSlug, id: bountyId }),
+      );
+    } else if (proposalId !== undefined)
       void openBounty(
         organizationId,
         organizationSlug,

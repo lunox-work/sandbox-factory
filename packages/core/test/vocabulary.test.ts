@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
+  emailNames,
+  organizationNames,
   termWords,
   vocabularyBlockers,
   vocabularyLeaks,
@@ -65,6 +67,123 @@ test("a match starts and ends on a word boundary", () => {
   assert.equal(count("pacme"), 0);
   assert.equal(count("ACMEs"), 0);
   assert.equal(count("Acmes"), 0);
+  // A run of capitals ends a word at its last one before a lowercase.
+  assert.equal(count("ACMEOrders"), 1);
+  assert.equal(count("XMLAcme"), 1);
+  assert.equal(count("PACME"), 0);
+  assert.equal(count("ACMEs"), 0);
+});
+
+test("an organization's distinctive words are terms of their own", () => {
+  const vocabulary = workspaceVocabulary([
+    ...organizationNames(["Acme Corp", "acme-corp", "Payflow Labs"]),
+    "billing-service",
+  ]);
+  assert.deepEqual(vocabulary, [
+    "acme-corp",
+    "acme",
+    "payflow-labs",
+    "payflow",
+    "billing-service",
+  ]);
+  const count = (text: string) =>
+    vocabularyLeaks([{ path: "x.ts", text }], vocabulary)
+      .map((leak) => `${leak.term}:${leak.occurrences}`)
+      .join(" ");
+  assert.equal(count('import { post } from "@acme/ledger";'), "acme:1");
+  assert.equal(count("const acmeOrders = AcmeOrders.load();"), "acme:2");
+  assert.equal(count("process.env.ACME_ORDERS"), "acme:1");
+  assert.equal(count("new PayflowClient()"), "payflow:1");
+  // Generic and short words stay out, and other names stay whole.
+  assert.equal(count("const corp = labs; billing.run(); service()"), "");
+  assert.equal(count("acmes and payflows"), "");
+  assert.deepEqual(
+    workspaceVocabulary(organizationNames(["Open Source Labs", "Big Co"])),
+    ["open-source-labs", "big-co"],
+  );
+});
+
+test("an organization's everyday words are scanned only as its whole name", () => {
+  const vocabulary = workspaceVocabulary(
+    organizationNames([
+      "First Choice Logistics",
+      "Blue Harbor Inc",
+      "PT Nusantara Tbk",
+      "Acme LLC",
+      "Zentrix Ltd",
+    ]),
+  );
+  assert.deepEqual(vocabulary, [
+    "first-choice-logistics",
+    "blue-harbor-inc",
+    "pt-nusantara-tbk",
+    "nusantara",
+    "acme-llc",
+    "acme",
+    "zentrix-ltd",
+    "zentrix",
+  ]);
+  const count = (text: string) =>
+    vocabularyLeaks([{ path: "x.ts", text }], vocabulary)
+      .map((leak) => `${leak.term}:${leak.occurrences}`)
+      .join(" ");
+  assert.equal(
+    count("user.firstName; choice(); blueButton; harbor.dock(); Inc.run()"),
+    "",
+  );
+  assert.equal(count("const blueHarbor = firstChoice;"), "");
+  assert.equal(
+    count("FIRST_CHOICE_LOGISTICS and blue-harbor-inc"),
+    "first-choice-logistics:1 blue-harbor-inc:1",
+  );
+  assert.equal(count("new ZentrixClient(); acmeOrders"), "acme:1 zentrix:1");
+});
+
+test("a name or word without a letter is not a term, nor found inside a number", () => {
+  assert.deepEqual(
+    workspaceVocabulary([
+      "12345",
+      "2024-01",
+      ...organizationNames(["4242 Holdings", "Web3 Studio"]),
+    ]),
+    ["4242-holdings", "web3-studio", "web3"],
+  );
+  const count = (text: string, term: string) =>
+    vocabularyLeaks([{ path: "x.ts", text }], [term])[0]?.occurrences ?? 0;
+  assert.equal(count("web3 web3Labs web30 aweb3", "web3"), 2);
+  assert.equal(count("id 9912345 12345678", "12345"), 0);
+  assert.equal(count("v12345 #12345 (12345)", "12345"), 2);
+});
+
+test("an author's address names them, and their organization unless public", () => {
+  assert.deepEqual(emailNames("jane.doe+pkg@acmecorp.io"), [
+    { name: "jane.doe", kind: "name" },
+    { name: "acmecorp.io", kind: "organization" },
+  ]);
+  assert.deepEqual(emailNames("payflow.dev@Gmail.com"), [
+    { name: "payflow.dev", kind: "name" },
+  ]);
+  assert.deepEqual(emailNames("12345+octocat@users.noreply.github.com"), [
+    { name: "octocat", kind: "name" },
+  ]);
+  assert.deepEqual(emailNames("octocat@users.noreply.github.com"), [
+    { name: "octocat", kind: "name" },
+  ]);
+  assert.deepEqual(emailNames("12345@acmecorp.io"), [
+    { name: "acmecorp.io", kind: "organization" },
+  ]);
+  for (const role of ["support", "Info", "no-reply", "noreply", "dev", "team"])
+    assert.deepEqual(emailNames(`${role}@acmecorp.io`), [
+      { name: "acmecorp.io", kind: "organization" },
+    ]);
+  assert.deepEqual(emailNames("engineering+npm@gmail.com"), []);
+  assert.deepEqual(emailNames("no-address"), []);
+  assert.deepEqual(emailNames("@acme.io"), []);
+  assert.deepEqual(workspaceVocabulary(emailNames("jane.doe@acmecorp.io")), [
+    "jane-doe",
+    "acmecorp-io",
+    "acmecorp",
+  ]);
 });
 
 test("non-Latin letters are words too", () => {

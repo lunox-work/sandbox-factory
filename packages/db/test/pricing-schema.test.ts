@@ -248,6 +248,7 @@ test("a profile has one row per spec revision and snapshot, and outlives the run
     scope_run_id: "set null",
     slice_run_id: "set null",
     prepared_run_id: "set null",
+    slice_approved_by: "set null",
   });
   const checks = config.checks.map(({ name }) => name);
   for (const expected of [

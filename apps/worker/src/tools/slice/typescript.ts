@@ -108,6 +108,57 @@ export interface ImportFact {
   readonly line: number;
 }
 
+/**
+ * The names read off a namespace binding (`ns.a`, `ns.T` in a type), or
+ * `ALL` once it escapes: passed or returned as a value, re-exported, read
+ * with a computed key, taken as `typeof ns`, or shadowed by another
+ * binding of the same name. Only a namespace that never escapes can be
+ * stubbed with less than the whole module.
+ */
+export function namespaceUses(
+  nodes: readonly ts.Node[],
+  name: string,
+  binding: ts.Node,
+): RequestedNames {
+  const used = new Set<string>();
+  let escaped = false;
+  const isKey = (parent: ts.Node, node: ts.Node) =>
+    (ts.isPropertyAssignment(parent) ||
+      ts.isPropertySignature(parent) ||
+      ts.isPropertyDeclaration(parent) ||
+      ts.isMethodDeclaration(parent) ||
+      ts.isMethodSignature(parent) ||
+      ts.isGetAccessorDeclaration(parent) ||
+      ts.isSetAccessorDeclaration(parent) ||
+      ts.isEnumMember(parent) ||
+      ts.isJsxAttribute(parent)) &&
+    parent.name === node;
+  const visit = (node: ts.Node) => {
+    if (escaped) return;
+    if (ts.isIdentifier(node) && node.text === name && node !== binding) {
+      const parent = node.parent;
+      if (
+        (ts.isPropertyAccessExpression(parent) && parent.name === node) ||
+        (ts.isQualifiedName(parent) && parent.right === node) ||
+        isKey(parent, node)
+      ) {
+        /* `x.ns` or a member key: another thing sharing the name. */
+      } else if (
+        ts.isPropertyAccessExpression(parent) &&
+        parent.expression === node &&
+        ts.isIdentifier(parent.name)
+      )
+        used.add(parent.name.text);
+      else if (ts.isQualifiedName(parent) && parent.left === node)
+        used.add(parent.right.text);
+      else escaped = true;
+    }
+    ts.forEachChild(node, visit);
+  };
+  for (const node of nodes) visit(node);
+  return escaped ? ALL : used;
+}
+
 /** Every import a file makes, with the names it takes, from the syntax. */
 export function importsOf(source: ts.SourceFile): ImportFact[] {
   const facts: ImportFact[] = [];
@@ -127,9 +178,15 @@ export function importsOf(source: ts.SourceFile): ImportFact[] {
       } else {
         if (clause.name !== undefined) names.add("default");
         const bindings = clause.namedBindings;
-        if (bindings !== undefined && ts.isNamespaceImport(bindings))
-          all = true;
-        else if (bindings !== undefined)
+        if (bindings !== undefined && ts.isNamespaceImport(bindings)) {
+          const used = namespaceUses(
+            source.statements,
+            bindings.name.text,
+            bindings.name,
+          );
+          if (used === ALL) all = true;
+          else for (const name of used) names.add(name);
+        } else if (bindings !== undefined)
           for (const element of bindings.elements)
             names.add((element.propertyName ?? element.name).text);
       }
@@ -242,6 +299,235 @@ export function extractionOptions(
     isolatedDeclarations: false,
     stripInternal: false,
   };
+}
+
+/**
+ * Options for a stub's declaration emit. A stub leaves the repository, so
+ * it carries no comments; the context builders, which stay private, keep
+ * them through `extractionOptions`. `@internal` declarations are emitted
+ * like any other, without their comments: the compiler's `stripInternal`
+ * would drop one the slice's code imports or a kept declaration names
+ * across the cut, and the stub would not declare what that code compiles
+ * against. `filterDeclaration` keeps only what is asked for and what that
+ * needs, so one nothing reaches is left out all the same.
+ */
+export function stubExtractionOptions(
+  base: ts.CompilerOptions,
+): ts.CompilerOptions {
+  return { ...extractionOptions(base), removeComments: true };
+}
+
+/** The type a literal widens to, or null for anything else. */
+function widened(literal: ts.Expression): ts.TypeNode | null {
+  const keyword = (kind: ts.KeywordTypeSyntaxKind) =>
+    ts.factory.createKeywordTypeNode(kind);
+  const value = ts.isPrefixUnaryExpression(literal) ? literal.operand : literal;
+  if (ts.isStringLiteralLike(value))
+    return keyword(ts.SyntaxKind.StringKeyword);
+  if (ts.isNumericLiteral(value)) return keyword(ts.SyntaxKind.NumberKeyword);
+  if (ts.isBigIntLiteral(value)) return keyword(ts.SyntaxKind.BigIntKeyword);
+  if (
+    value.kind === ts.SyntaxKind.TrueKeyword ||
+    value.kind === ts.SyntaxKind.FalseKeyword
+  )
+    return keyword(ts.SyntaxKind.BooleanKeyword);
+  return null;
+}
+
+/**
+ * A value's declared type with the literals in it widened: what an `as
+ * const` object, a tuple or a literal annotation (`const T: "secret"`)
+ * writes of the value. Only the shapes a value's type is spelled with are
+ * followed (object type members, tuples, unions, arrays, `readonly`); a
+ * function type, a type reference and its arguments are an API's types,
+ * not a value, and are kept. `null` stays.
+ */
+function widenType(node: ts.TypeNode): ts.TypeNode {
+  const { factory } = ts;
+  if (ts.isLiteralTypeNode(node)) return widened(node.literal) ?? node;
+  if (ts.isTemplateLiteralTypeNode(node))
+    return factory.createKeywordTypeNode(ts.SyntaxKind.StringKeyword);
+  if (ts.isParenthesizedTypeNode(node))
+    return factory.updateParenthesizedType(node, widenType(node.type));
+  if (ts.isUnionTypeNode(node))
+    return factory.updateUnionTypeNode(
+      node,
+      factory.createNodeArray(node.types.map(widenType)),
+    );
+  if (ts.isIntersectionTypeNode(node))
+    return factory.updateIntersectionTypeNode(
+      node,
+      factory.createNodeArray(node.types.map(widenType)),
+    );
+  if (ts.isArrayTypeNode(node))
+    return factory.updateArrayTypeNode(node, widenType(node.elementType));
+  if (ts.isTypeOperatorNode(node))
+    return factory.updateTypeOperatorNode(node, widenType(node.type));
+  if (ts.isTupleTypeNode(node))
+    return factory.updateTupleTypeNode(
+      node,
+      factory.createNodeArray(
+        node.elements.map((element) =>
+          ts.isNamedTupleMember(element)
+            ? factory.updateNamedTupleMember(
+                element,
+                element.dotDotDotToken,
+                element.name,
+                element.questionToken,
+                widenType(element.type),
+              )
+            : ts.isOptionalTypeNode(element)
+              ? factory.updateOptionalTypeNode(element, widenType(element.type))
+              : ts.isRestTypeNode(element)
+                ? factory.updateRestTypeNode(element, widenType(element.type))
+                : widenType(element),
+        ),
+      ),
+    );
+  if (ts.isTypeLiteralNode(node))
+    return factory.updateTypeLiteralNode(
+      node,
+      factory.createNodeArray(
+        node.members.map((member) =>
+          ts.isPropertySignature(member) && member.type !== undefined
+            ? factory.updatePropertySignature(
+                member,
+                member.modifiers,
+                member.name,
+                member.questionToken,
+                widenType(member.type),
+              )
+            : member,
+        ),
+      ),
+    );
+  return node;
+}
+
+/** A value's type: its literal initializer's, widened, or its own, widened. */
+function valueType(
+  type: ts.TypeNode | undefined,
+  initializer: ts.Expression | undefined,
+): { readonly type: ts.TypeNode | undefined; readonly cleared: boolean } {
+  const fromInitializer =
+    initializer === undefined ? null : widened(initializer);
+  if (fromInitializer !== null) return { type: fromInitializer, cleared: true };
+  return {
+    type: type === undefined ? undefined : widenType(type),
+    cleared: false,
+  };
+}
+
+const isPrivateMember = (member: ts.ClassElement) =>
+  !ts.isConstructorDeclaration(member) &&
+  ((member.name !== undefined && ts.isPrivateIdentifier(member.name)) ||
+    (ts.canHaveModifiers(member) &&
+      (ts.getModifiers(member) ?? []).some(
+        (m) => m.kind === ts.SyntaxKind.PrivateKeyword,
+      )));
+
+/**
+ * An emitted declaration file as a stub may show it. The emitter writes a
+ * literal constant's value (`declare const KEY = "sk_live_..."`, `static
+ * readonly KEY = "..."`), the literal types an `as const` value or an
+ * annotation spells it with, every comment it was not told to drop and
+ * each private member's name. A stub keeps each value's type with its
+ * literals widened to `string`, `number`, `bigint` or `boolean`, no
+ * comments, and private members only as one nameless brand, since no code
+ * outside the class can use them.
+ *
+ * Widening changes a type that reads a value's literal: a cut constant used
+ * as a discriminant (`kind: typeof KIND`) is a plain `string` in the stub,
+ * and code that relies on the narrower type may then not compile. That is
+ * the price of not shipping the value; the fixture compile reports it.
+ *
+ * A string enum member's value becomes its own name: it stays a string
+ * enum, each member its own type, without the text it stood for. Numeric
+ * members keep their values, which an ambient enum needs for its members
+ * to be constant, and a number names nothing.
+ */
+export function sanitizeDeclaration(text: string): string {
+  const source = ts.createSourceFile(
+    "m.d.ts",
+    text,
+    ts.ScriptTarget.Latest,
+    true,
+  );
+  const { factory } = ts;
+  const result = ts.transform(source, [
+    (context) => {
+      const visit = (node: ts.Node): ts.Node => {
+        if (ts.isVariableDeclaration(node)) {
+          const value = valueType(node.type, node.initializer);
+          return factory.updateVariableDeclaration(
+            node,
+            node.name,
+            node.exclamationToken,
+            value.type,
+            value.cleared ? undefined : node.initializer,
+          );
+        }
+        if (ts.isPropertyDeclaration(node)) {
+          const value = valueType(node.type, node.initializer);
+          return factory.updatePropertyDeclaration(
+            node,
+            node.modifiers,
+            node.name,
+            node.questionToken ?? node.exclamationToken,
+            value.type,
+            value.cleared ? undefined : node.initializer,
+          );
+        }
+        if (
+          ts.isEnumMember(node) &&
+          node.initializer !== undefined &&
+          ts.isStringLiteralLike(node.initializer) &&
+          (ts.isIdentifier(node.name) || ts.isStringLiteral(node.name))
+        )
+          return factory.updateEnumMember(
+            node,
+            node.name,
+            factory.createStringLiteral(node.name.text),
+          );
+        if (ts.isClassDeclaration(node)) {
+          // One `#private` brand, as the emitter writes for `#` members,
+          // keeps the class nominal without naming what it hides.
+          const members = node.members.filter((m) => !isPrivateMember(m));
+          const brand =
+            members.length < node.members.length
+              ? [
+                  factory.createPropertyDeclaration(
+                    undefined,
+                    factory.createPrivateIdentifier("#private"),
+                    undefined,
+                    undefined,
+                    undefined,
+                  ),
+                ]
+              : [];
+          return ts.visitEachChild(
+            factory.updateClassDeclaration(
+              node,
+              node.modifiers,
+              node.name,
+              node.typeParameters,
+              node.heritageClauses,
+              [...brand, ...members],
+            ),
+            visit,
+            context,
+          );
+        }
+        return ts.visitEachChild(node, visit, context);
+      };
+      return (root) => ts.visitEachChild(root, visit, context);
+    },
+  ]);
+  const printed = ts
+    .createPrinter({ removeComments: true })
+    .printFile(result.transformed[0] ?? source);
+  result.dispose();
+  return printed;
 }
 
 interface Declared {
@@ -454,7 +740,34 @@ export function filterDeclaration(
     }
   }
   const imports: { specifier: string; names: RequestedNames }[] = [];
-  for (const d of kept) if (d.importFrom !== null) imports.push(d.importFrom);
+  // A namespace import asks its module for what the kept statements read
+  // off it, not the whole module, unless the namespace escapes.
+  for (const d of kept) {
+    if (d.importFrom === null) continue;
+    const clause = ts.isImportDeclaration(d.statement)
+      ? d.statement.importClause
+      : undefined;
+    const bindings = clause?.namedBindings;
+    if (bindings === undefined || !ts.isNamespaceImport(bindings)) {
+      imports.push(d.importFrom);
+      continue;
+    }
+    const used = namespaceUses(
+      [...kept].filter((other) => other !== d).map((other) => other.statement),
+      bindings.name.text,
+      bindings.name,
+    );
+    imports.push({
+      specifier: d.importFrom.specifier,
+      names:
+        used === ALL
+          ? ALL
+          : new Set([
+              ...used,
+              ...(clause?.name === undefined ? [] : ["default"]),
+            ]),
+    });
+  }
   const visitImportTypes = (node: ts.Node) => {
     if (
       ts.isImportTypeNode(node) &&
@@ -594,7 +907,7 @@ export function extractTypeScriptBoundary(
         detail: error,
       });
   }
-  const options = extractionOptions(config.options);
+  const options = stubExtractionOptions(config.options);
   const host = boundedHost(root, options);
   const maxFiles = input.maxProgramFiles ?? PROGRAM_FILES_MAX;
   let parsed = 0;
@@ -768,7 +1081,8 @@ export function extractTypeScriptBoundary(
       program.emit(
         source,
         (fileName, content) => {
-          if (/\.d\.[cm]?ts$/.test(fileName)) text = content;
+          if (/\.d\.[cm]?ts$/.test(fileName))
+            text = sanitizeDeclaration(content);
         },
         undefined,
         true,

@@ -1,6 +1,7 @@
 import { ApiError } from "@sandbox-factory/client";
 import { useQueryClient } from "@tanstack/react-query";
 import { clients, queryKeys, useOwnerQuery, useUserId } from "./data/query";
+import { leaveFor } from "./navigation/leave";
 import { replaceLocation } from "./navigation/location";
 /**
  * The Jira sites an organization has connected.
@@ -142,9 +143,12 @@ export function useJira(organizationId: string | undefined): Jira {
     // Atlassian's consent screen, and an XHR would fail CORS trying.
     const returnTo = window.location.pathname + window.location.search;
     const query = new URLSearchParams({ returnTo });
-    window.location.href = `/api/v1/orgs/${encodeURIComponent(
-      organizationId,
-    )}/jira/connect?${query.toString()}`;
+    leaveFor(
+      `/api/v1/orgs/${encodeURIComponent(
+        organizationId,
+      )}/jira/connect?${query.toString()}`,
+      "Jira",
+    );
   }, [organizationId]);
 
   const disconnect = useCallback(

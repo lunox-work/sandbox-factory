@@ -275,7 +275,11 @@ export function ProposalPeek({
     profile.state === "ready" &&
     profile.profiles.length > 0 &&
     profile.profiles.every(
-      ({ status }) => status === "ready" || status === "failed",
+      // Measured awaiting its slice's approval has settled for the price.
+      ({ status }) =>
+        status === "ready" ||
+        status === "awaiting_approval" ||
+        status === "failed",
     )
       ? profile.profiles.map(({ id, status }) => `${id}:${status}`).join(",")
       : null;

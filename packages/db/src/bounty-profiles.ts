@@ -71,6 +71,11 @@ export interface StoredBountyProfile {
   /** The sandbox's preparation run, once one is queued. */
   readonly preparedRunId: string | null;
   readonly profile: ComplexityProfile | null;
+  /**
+   * When an owner or admin approved its slice, one wider than the profiler
+   * cuts unasked; null for a slice within those limits.
+   */
+  readonly sliceApprovedAt: string | null;
   readonly createdAt: string;
   readonly updatedAt: string;
 }
@@ -90,6 +95,14 @@ export interface NewBountyProfile {
 export type ProfileTransition =
   | { readonly status: "scoping"; readonly scopeRunId: string }
   | { readonly status: "slicing"; readonly sliceRunId: string }
+  /**
+   * Measured, so its price goes on, but its slice is wider than is cut
+   * unasked: nothing is cut or prepared from it until `approveSlice`.
+   */
+  | {
+      readonly status: "awaiting_approval";
+      readonly profile: ComplexityProfile;
+    }
   | { readonly status: "ready"; readonly profile: ComplexityProfile }
   | {
       readonly status: "failed";
@@ -139,6 +152,21 @@ export interface BountyProfileStore {
     to: ProfileTransition,
   ): Promise<boolean>;
   /**
+   * Approves the slice a measured profile waits on, as the person who
+   * looked at it: `awaiting_approval` becomes `ready`, and a `ready` one
+   * measured before approvals were asked for is marked approved. Asking
+   * again for the same slice run is true and keeps the first approval, so
+   * a retry after the approval committed still goes on. False when the
+   * profile is not measured from that slice run, so an approval of what
+   * was shown cannot pass for another.
+   */
+  approveSlice(
+    organizationId: string,
+    profileId: string,
+    sliceRunId: string,
+    approvedBy: string,
+  ): Promise<boolean>;
+  /**
    * Ready profiles with no preparation yet, of an approved proposal's
    * current spec revision, in a workspace that prepares its sandboxes,
    * least recently moved first.
@@ -184,6 +212,7 @@ function toStored(
     sliceRunId: row.sliceRunId,
     preparedRunId: row.preparedRunId,
     profile: row.profile,
+    sliceApprovedAt: row.sliceApprovedAt?.toISOString() ?? null,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
   };
@@ -369,6 +398,41 @@ export function createBountyProfileStore(db: Database): BountyProfileStore {
         .limit(1)) as { preparedRunId: string | null }[];
       return rows[0]?.preparedRunId ?? null;
     },
+    async approveSlice(owner, profileId, sliceRunId, approvedBy) {
+      const now = new Date();
+      const moved: ProfileTransitionTime = {
+        status: "ready",
+        at: now.toISOString(),
+      };
+      const rows = await db
+        .update(bountyProfile)
+        .set({
+          status: "ready",
+          // The first approval stands; a retry only finds it there.
+          sliceApprovedBy: sql`case when ${bountyProfile.sliceApprovedAt} is null then ${approvedBy} else ${bountyProfile.sliceApprovedBy} end`,
+          sliceApprovedAt: sql`coalesce(${bountyProfile.sliceApprovedAt}, ${now.toISOString()}::timestamptz)`,
+          transitions: sql`${bountyProfile.transitions} || case when ${bountyProfile.status} = 'awaiting_approval' then ${JSON.stringify([moved])}::jsonb else '[]'::jsonb end`,
+          updatedAt: now,
+        })
+        .where(
+          and(
+            eq(bountyProfile.organizationId, owner),
+            eq(bountyProfile.id, profileId),
+            inArray(bountyProfile.status, ["awaiting_approval", "ready"]),
+            isNotNull(bountyProfile.profile),
+            eq(bountyProfile.sliceRunId, sliceRunId),
+          ),
+        )
+        .returning({ proposalId: bountyProfile.proposalId });
+      const proposalId = rows[0]?.proposalId;
+      if (proposalId === undefined) return false;
+      await announceChange(db, {
+        organizationId: owner,
+        kind: "profile",
+        id: proposalId,
+      });
+      return true;
+    },
     async advance(owner, profileId, from, to) {
       const now = new Date();
       const moved: ProfileTransitionTime = {
@@ -381,7 +445,9 @@ export function createBountyProfileStore(db: Database): BountyProfileStore {
           status: to.status,
           ...(to.status === "scoping" ? { scopeRunId: to.scopeRunId } : {}),
           ...(to.status === "slicing" ? { sliceRunId: to.sliceRunId } : {}),
-          ...(to.status === "ready" ? { profile: to.profile } : {}),
+          ...(to.status === "ready" || to.status === "awaiting_approval"
+            ? { profile: to.profile }
+            : {}),
           ...(to.status === "failed"
             ? { errorCode: to.errorCode, runErrorCode: to.runErrorCode ?? null }
             : {}),

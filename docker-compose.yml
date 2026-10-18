@@ -230,6 +230,14 @@ services:
       MAX_FILES: ${MAX_FILES:-20000}
     volumes:
       - .:/repo
+      # Evaluation jobs run as their own uids (apps/worker/README.md) and can
+      # read whatever in the checkout is world-readable, so the env files go:
+      # the worker gets its settings from `environment` above, which Compose
+      # fills on the host, and never reads them. A file the checkout lacks is
+      # created empty as the mount point (`make secrets-template --force`
+      # still writes over it).
+      - /dev/null:/repo/.env.development:ro
+      - /dev/null:/repo/.env.production:ro
       - /repo/node_modules
       - /repo/apps/worker/node_modules
       - /repo/apps/api/node_modules
