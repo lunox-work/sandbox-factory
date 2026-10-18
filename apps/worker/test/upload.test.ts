@@ -79,12 +79,19 @@ test("after a failed upload none starts, those in flight finish, and it is throw
     const started: number[] = [];
     const finished: number[] = [];
     let failedAt = -1;
+    // The failure waits for all eight to reach the store: a worker that has
+    // claimed its file may still be hashing it, and is in flight all the same.
+    let allStarted: () => void = () => undefined;
+    const eightStarted = new Promise<void>((resolve) => {
+      allStarted = resolve;
+    });
     state.objects.putStream = async (key, body) => {
       const index = indexOf(key);
       started.push(index);
+      if (started.length === 8) allStarted();
       for await (const chunk of body) void chunk;
       if (index === 2) {
-        await delay(1);
+        await eightStarted;
         failedAt = started.length;
         throw new Error("store offline");
       }
