@@ -332,6 +332,10 @@ export function isSecretPath(path: string): boolean {
   const name = lower.slice(lower.lastIndexOf("/") + 1);
   const under = (suffix: string) =>
     lower === suffix || lower.endsWith(`/${suffix}`);
+  // Key JSON is matched on the stem, without `.*\.json$`: that pattern
+  // backtracks polynomially on a long name of repeated keywords.
+  const jsonStem = name.endsWith(".json") ? name.slice(0, -5) : null;
+  const firebase = jsonStem?.indexOf("firebase") ?? -1;
   return (
     (/^\.env(?:[.-]|$)|\.env$/.test(name) &&
       !/[.-](?:example|sample|template)$/.test(name)) ||
@@ -344,8 +348,11 @@ export function isSecretPath(path: string): boolean {
     name === ".git-credentials" ||
     /\.(?:pem|key|p8|p12|pfx|ppk|jks|keystore)$/.test(name) ||
     /^id_(?:rsa|dsa|ecdsa|ed25519)/.test(name) ||
-    /(?:credentials|service[-_]?account|adminsdk).*\.json$/.test(name) ||
-    /(?:^|[-_.])key\.json$|firebase.*key.*\.json$/.test(name) ||
+    (jsonStem !== null &&
+      (/credentials|service[-_]?account|adminsdk|(?:^|[-_.])key$/.test(
+        jsonStem,
+      ) ||
+        (firebase >= 0 && jsonStem.includes("key", firebase + 8)))) ||
     /(?:^|\.)secrets\.(?:json|ya?ml|toml)$/.test(name) ||
     /\.tfvars(?:\.json)?$/.test(name) ||
     /^kubeconfig(?:[-_][\w-]+)?(?:\.ya?ml)?$|\.kubeconfig$/.test(name) ||
