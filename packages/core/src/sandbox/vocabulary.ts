@@ -26,8 +26,16 @@
  * Other names (a repository's, a package's) are matched only whole, since
  * `billing-service` names one product but `billing` is everyone's word. A
  * name or word without a letter (`12345`) names nothing and is dropped.
+ *
+ * A package the slice imports from the workspace itself or from a private
+ * registry is mocked under its own name unless the table renames it, so its
+ * scope is scanned as an organization's name (`@acme/ledger` gives `acme`)
+ * and an unscoped one by its whole name (`payflow-sdk`). A package's own
+ * one word (`ledger`, `logger`) is the code's vocabulary, not whose code it
+ * is, and a public package mocked by default (`lodash`) names no one.
  */
 
+import type { RequiredBuildInputs } from "../slice/manifest.js";
 import type { ProjectBlocker } from "./project.js";
 
 /** Shorter names, separators aside, match too much to block on. */
@@ -59,15 +67,19 @@ const GENERIC_WORDS: ReadonlySet<string> = new Set([
   "docs",
   "example",
   "frontend",
+  "internal",
   "ios",
   "lib",
   "libs",
+  "local",
   "main",
   "mobile",
   "mono",
   "monorepo",
+  "packages",
   "personal",
   "platform",
+  "private",
   "project",
   "repo",
   "root",
@@ -289,6 +301,28 @@ export interface VocabularyName {
 /** Names that say who the organization is, to be scanned word by word too. */
 export function organizationNames(names: readonly string[]): VocabularyName[] {
   return names.map((name) => ({ name, kind: "organization" }));
+}
+
+/**
+ * The names the slice's privately hosted packages give (see the module
+ * comment): one of the workspace's own, or one a lockfile or `.npmrc` says
+ * comes from another registry. A package nothing says is public is mocked
+ * too, but by default, so it is not one.
+ */
+export function privatePackageNames(
+  packages: RequiredBuildInputs["packages"],
+): VocabularyName[] {
+  const names: VocabularyName[] = [];
+  for (const item of packages) {
+    if (item.workspace !== true && item.registry?.source !== "private")
+      continue;
+    const slash = item.name.indexOf("/");
+    if (item.name.startsWith("@") && slash > 1)
+      names.push({ name: item.name.slice(1, slash), kind: "organization" });
+    else if (termWords(item.name).length > 1)
+      names.push({ name: item.name, kind: "name" });
+  }
+  return names;
 }
 
 /** Shared and automated mailboxes: they name a function, not a person. */

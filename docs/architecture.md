@@ -365,7 +365,12 @@ requires every test in both suites and at least one hidden test to pass; only
 counts are kept. `gradingTree` in `grading.ts` builds what a submission is run
 on: the version's files with only editable paths and new TypeScript files
 beside them taken, everything else refused with reasons, and `GRADING_COMMANDS`
-run without `npm run`. No route takes a submission yet.
+run without `npm run`. Its `taskCodeProblems` is an advisory lint, not a
+boundary: a text match refuses the plain ways task code could reach the mocks
+or the test run, and misses others. Grading must isolate task code by process:
+each hidden test runs in its own process from a fresh copy of the version's
+files, its outcome read from outside, with no other hidden test, credential or
+grading state loaded beside task code. No route takes a submission yet.
 
 **Nobody picks the repository.** `POST .../sandboxes` takes `bountyId` and cuts
 from the one repository the live proposal says the work touches
@@ -394,11 +399,13 @@ repository (`bounty_profile`), scoped and sliced by the profiler. `GET
 (`packages/core/src/slice/scope.ts`: a directory entry point, over 40 files
 or depth over 3) is measured and priced, but awaits approval, with its
 request and files shown, before anything is cut or prepared from it; a
-profile measured `ready` from one before approvals existed is held the same.
+profile measured `ready` from one before approvals existed is held the same
+(`holdSlice`, which never holds one approved since it was read).
 `POST .../:id/slice/approve` (owners and admins) names exactly that run and
 request (`slice_changed`, `slice_not_awaiting_approval`, `published`),
-records the approver, makes the profile `ready` and asks for a cut as the
-approver; asked again for the same approved run, it asks for the cut again.
+records the first approver, makes the profile `ready` and asks for a cut as
+that approver; asked again for the same approved run, by anyone, it asks for
+the cut again as the first approver.
 `POST .../sandboxes/:id/slice` asks for a profile (202) or, once ready, cuts
 a draft as `POST .../:id/versions` does and queues its build
 (201). A 202 remembers the request on `sandbox_source.cut_requested_*`, and
@@ -410,7 +417,8 @@ agent (`apps/worker/src/tools/fixtures.ts`, `hidden-tests.ts`,
 the draft when the run commits (`recordBuildOutput`). Every build scans the
 public files for the workspace's names (`packages/core/src/sandbox/vocabulary.ts`,
 passed as the build's and starter's `vocabulary`; the organization's name,
-handle and repository owner by their distinctive words too) and blocks `vocabulary_leaked`,
+handle and repository owner by their distinctive words too, and the scope, or
+multi-word name, of each workspace or private-registry package the slice imports) and blocks `vocabulary_leaked`,
 and for credentials (`packages/core/src/sandbox/secrets.ts`) and blocks
 `secret_found`, naming file, line and rule, never the value.
 

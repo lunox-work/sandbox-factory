@@ -452,6 +452,13 @@ function fixture(
     lockedCut: boolean;
     /** The slice's bounded summary, as its boundary contract's `meta`. */
     summary: unknown;
+    /**
+     * Who the store says approved the slice first, when not the actor;
+     * null once their account is gone.
+     */
+    approvedBy: string | null;
+    /** The store finds the slice run moved on after the route's check. */
+    approvalMoved: boolean;
   }> = {},
 ) {
   const published: { versionId: string; actor: string; expiresAt: string }[] =
@@ -897,7 +904,15 @@ function fixture(
               actor: string,
             ) => {
               approvals.push({ owner, profileId, sliceRunId, actor });
-              return sliceRunId === readyProfile.sliceRunId;
+              return sliceRunId !== readyProfile.sliceRunId ||
+                overrides.approvalMoved === true
+                ? null
+                : {
+                    approvedBy:
+                      overrides.approvedBy === undefined
+                        ? actor
+                        : overrides.approvedBy,
+                  };
             },
           },
           onSliceApproved: () => {
@@ -2934,6 +2949,45 @@ test("an approval asked again for the slice it approved asks for the cut again",
     "slice_changed",
   );
   assert.deepEqual(g.cuts, []);
+});
+
+test("two approving at once cut as the first, and a slice moved past the check is not approved", async () => {
+  const body = {
+    sliceRunId: "arn_slice",
+    entryPoints: ["src/app.ts"],
+    budget: { maxFiles: 40, maxDepth: 3 },
+    includeInferred: false,
+  };
+  const wide = { profile: awaiting, summary: wideSummary, bounty: true };
+  // Another admin's approval committed first: it stands, and the cut is
+  // asked for as them rather than as this one.
+  const second = fixture("owner", { ...wide, approvedBy: "user_0" });
+  const approved = await second.request("POST", "/sbx_1/slice/approve", body);
+  assert.equal(approved.status, 200);
+  assert.deepEqual(second.cuts, [
+    { asked: "sbx_1", owner: "org_1", actor: "user_0" },
+  ]);
+  // The first approver's account is gone: the cut is the actor's.
+  const orphaned = fixture("owner", { ...wide, approvedBy: null });
+  assert.equal(
+    (await orphaned.request("POST", "/sbx_1/slice/approve", body)).status,
+    200,
+  );
+  assert.deepEqual(orphaned.cuts, [
+    { asked: "sbx_1", owner: "org_1", actor: "user_1" },
+  ]);
+
+  // What was shown passed, but the store found the slice run moved on.
+  const moved = fixture("owner", { ...wide, approvalMoved: true });
+  const refused = await moved.request("POST", "/sbx_1/slice/approve", body);
+  assert.equal(refused.status, 409);
+  assert.equal(
+    ((await refused.json()) as { code: string }).code,
+    "slice_changed",
+  );
+  assert.equal(moved.approvals.length, 1);
+  assert.deepEqual(moved.cuts, []);
+  assert.equal(moved.approvedKicks(), 0);
 });
 
 test("a slice is not approved while the sandbox's publication is live", async () => {

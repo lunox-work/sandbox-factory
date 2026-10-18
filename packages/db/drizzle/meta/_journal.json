@@ -505,6 +505,13 @@
       "when": 1792341276618,
       "tag": "0071_strong_ikaris",
       "breakpoints": true
+    },
+    {
+      "idx": 72,
+      "version": "7",
+      "when": 1792343358576,
+      "tag": "0072_rubric_measured_wait",
+      "breakpoints": true
     }
   ]
 }

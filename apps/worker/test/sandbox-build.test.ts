@@ -49,7 +49,8 @@ import { stubModules } from "../src/tools/slice-run.js";
 import { sha256 } from "../src/tools/slice/hash.js";
 import type { ToolInputs, ToolRunInput } from "../src/tools/adapter.js";
 import { contextModel, contextRun } from "./context-fixtures.js";
-import { fixture, slice, sliceRun, stamp } from "./fixture-slice.js";
+import { fixture, sha, slice, sliceRun, stamp } from "./fixture-slice.js";
+import type { SliceOutput } from "./fixture-slice.js";
 import { timingRecorder } from "../src/timing.js";
 
 /**
@@ -134,9 +135,10 @@ async function versionFor(
     blocked: boolean;
     stale: boolean;
     fixtures: VersionFixtures | null;
+    slice: SliceOutput;
   }> = {},
 ): Promise<StoredVersionWithSource> {
-  const { artifacts, manifest, contract } = await slice();
+  const { artifacts, manifest, contract } = overrides.slice ?? (await slice());
   const manifestSha =
     artifacts.find((a) => a.kind === "slice_manifest")?.sha256 ?? "";
   const contractSha =
@@ -273,9 +275,11 @@ async function runBuild(
     agent: AgentSettings;
     /** Context builders' runs the build can read, beside the slice. */
     served: readonly ReturnType<typeof contextRun>[];
+    /** The slice run's outputs, when not the fixture's own. */
+    slice: SliceOutput;
   }> = {},
 ) {
-  const { artifacts, objects } = await slice();
+  const { artifacts, objects } = options.slice ?? (await slice());
   const served = options.served ?? [];
   const version =
     options.version === undefined ? await versionFor() : options.version;
@@ -1118,6 +1122,89 @@ test("a public file naming the workspace blocks the build before any job runs", 
     clean.messages.includes(
       "No public file names the workspace (1 name(s) checked).",
     ),
+  );
+});
+
+/** The fixture's slice, its manifest requiring `packages` besides its own. */
+async function sliceRequiring(
+  packages: SliceOutput["manifest"]["requiredBuildInputs"]["packages"],
+): Promise<SliceOutput> {
+  const sliced = await slice();
+  const manifest = {
+    ...sliced.manifest,
+    requiredBuildInputs: {
+      ...sliced.manifest.requiredBuildInputs,
+      packages: [...sliced.manifest.requiredBuildInputs.packages, ...packages],
+    },
+  };
+  const bytes = Buffer.from(JSON.stringify(manifest));
+  const objects = new Map(sliced.objects);
+  const artifacts = sliced.artifacts.map((artifact) => {
+    if (artifact.kind !== "slice_manifest") return artifact;
+    objects.set(artifact.objectKey, bytes);
+    return { ...artifact, sha256: sha(bytes), sizeBytes: bytes.byteLength };
+  });
+  return { ...sliced, artifacts, objects, manifest };
+}
+
+test("a private package's scope or name blocks the build until the table renames it", async () => {
+  const pkg = (name: string) => ({
+    name,
+    version: "1.0.0",
+    declaredIn: "package.json",
+  });
+  const privateRegistry = { source: "private" as const, evidence: ".npmrc" };
+  const sliced = await sliceRequiring([
+    { ...pkg("@acmeinc/ledger"), workspace: true },
+    { ...pkg("payflow-sdk"), registry: privateRegistry },
+    // Mocked by default, a public package's name names no one.
+    pkg("left-pad"),
+  ]);
+  const leaked = await runBuild(fakeProvider().provider, {
+    slice: sliced,
+    version: await versionFor({ slice: sliced }),
+  });
+  assert.equal(leaked.manifest.baseline, null);
+  assert.deepEqual(
+    leaked.manifest.blockers.map((blocker) => blocker.code),
+    ["vocabulary_leaked", "vocabulary_leaked"],
+  );
+  assert.match(
+    leaked.manifest.blockers[0]?.detail ?? "",
+    /^"acmeinc" names the workspace .*package\.json/,
+  );
+  assert.match(
+    leaked.manifest.blockers[1]?.detail ?? "",
+    /^"payflow-sdk" names the workspace /,
+  );
+  // Renamed, the scope is gone from every public file, the mock included.
+  const scoped = await sliceRequiring([
+    { ...pkg("@acmeinc/ledger"), workspace: true },
+  ]);
+  const renamed = await runBuild(fakeProvider().provider, {
+    slice: scoped,
+    version: await versionFor({
+      slice: scoped,
+      aliasRules: [
+        {
+          before: "acmeinc",
+          after: "northwind",
+          kind: "identifier",
+          paths: [],
+        },
+      ],
+    }),
+  });
+  assert.deepEqual(
+    renamed.manifest.blockers.map((blocker) => blocker.code),
+    ["baseline_failed"],
+  );
+  const pkgJson = JSON.parse(await renamed.read("project/package.json")) as {
+    dependencies: Record<string, string>;
+  };
+  assert.equal(
+    pkgJson.dependencies["@northwind/ledger"],
+    "file:mocks/@northwind/ledger",
   );
 });
 

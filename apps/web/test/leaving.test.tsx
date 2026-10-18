@@ -1,8 +1,10 @@
+import { useQuery } from "@tanstack/react-query";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 
+import { nextRunChange, resetRunStreams } from "../src/data/events";
 import { Leaving, SLOW_LEAVE_MS } from "../src/Leaving";
 import { leaveFor, stopLeaving } from "../src/navigation/leave";
-import { act, fireEvent, render, screen } from "./render";
+import { act, fireEvent, render, screen, waitFor } from "./render";
 
 const realLocation = window.location;
 /** Where the page was sent. jsdom cannot navigate, so `href` is recorded. */
@@ -33,6 +35,8 @@ afterEach(() => {
     configurable: true,
     value: realLocation,
   });
+  resetRunStreams();
+  vi.unstubAllGlobals();
   vi.useRealTimers();
   vi.restoreAllMocks();
 });
@@ -116,4 +120,48 @@ test("Escape gives the page back at any point", () => {
   fireEvent.keyDown(screen.getByTestId("leaving"), { key: "Escape" });
   expect(stop).toHaveBeenCalledOnce();
   expect(screen.queryByTestId("leaving")).toBeNull();
+});
+
+test("cancelling gives the page its live data back: its streams open anew and its reads go again", async () => {
+  vi.spyOn(window, "stop").mockImplementation(() => {});
+  const opened: { readyState: number }[] = [];
+  vi.stubGlobal(
+    "EventSource",
+    class {
+      readyState = 0;
+      constructor() {
+        opened.push(this);
+      }
+      addEventListener() {}
+      close() {}
+    },
+  );
+  // The read under way when the browser stopped was aborted with it.
+  let reads = 0;
+  function Live() {
+    const query = useQuery({
+      queryKey: ["live"],
+      queryFn: async () => {
+        reads += 1;
+        if (reads === 1) throw new Error("aborted");
+        return "fresh";
+      },
+    });
+    return <p>{query.data ?? query.error?.message ?? "reading"}</p>;
+  }
+  render(
+    <>
+      <Live />
+      <Leaving />
+    </>,
+  );
+  const { stop } = nextRunChange("org_1", "bounty:brn_1");
+  await screen.findByText("aborted");
+  act(() => leaveFor("/api/v1/orgs/org_1/github/connect", "GitHub"));
+  // Stopping closes the page's streams without a word.
+  for (const source of opened) source.readyState = 2;
+  fireEvent.keyDown(screen.getByTestId("leaving"), { key: "Escape" });
+  expect(opened).toHaveLength(2);
+  await waitFor(() => expect(screen.getByText("fresh")).toBeTruthy());
+  stop();
 });

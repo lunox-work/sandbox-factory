@@ -110,6 +110,12 @@ export type ProfileTransition =
       readonly runErrorCode?: AnalysisErrorCode | null;
     };
 
+/** The approval a slice stands on. */
+export interface SliceApproval {
+  /** Who approved it first; null once their account is gone. */
+  readonly approvedBy: string | null;
+}
+
 export interface BountyProfileStore {
   /**
    * Asks for a spec revision's profile. Asking again for the same revision
@@ -154,18 +160,26 @@ export interface BountyProfileStore {
   /**
    * Approves the slice a measured profile waits on, as the person who
    * looked at it: `awaiting_approval` becomes `ready`, and a `ready` one
-   * measured before approvals were asked for is marked approved. Asking
-   * again for the same slice run is true and keeps the first approval, so
-   * a retry after the approval committed still goes on. False when the
-   * profile is not measured from that slice run, so an approval of what
-   * was shown cannot pass for another.
+   * measured before approvals were asked for is marked approved. Answers
+   * with the approval that stands, which is the first: asking again for
+   * the same slice run keeps it, so a retry after the approval committed
+   * still goes on, and two people approving at once are both told who
+   * approved first. Null when the profile is not measured from that slice
+   * run, so an approval of what was shown cannot pass for another.
    */
   approveSlice(
     organizationId: string,
     profileId: string,
     sliceRunId: string,
     approvedBy: string,
-  ): Promise<boolean>;
+  ): Promise<SliceApproval | null>;
+  /**
+   * Holds a profile measured `ready` from a wide slice before approvals
+   * were asked for: it becomes `awaiting_approval`, as it was measured.
+   * False when it has moved or its slice was approved since it was read,
+   * in the same statement, so an approval that lands first is never undone.
+   */
+  holdSlice(organizationId: string, profileId: string): Promise<boolean>;
   /**
    * Ready profiles with no preparation yet, of an approved proposal's
    * current spec revision, in a workspace that prepares its sandboxes,
@@ -421,6 +435,40 @@ export function createBountyProfileStore(db: Database): BountyProfileStore {
             inArray(bountyProfile.status, ["awaiting_approval", "ready"]),
             isNotNull(bountyProfile.profile),
             eq(bountyProfile.sliceRunId, sliceRunId),
+          ),
+        )
+        .returning({
+          proposalId: bountyProfile.proposalId,
+          approvedBy: bountyProfile.sliceApprovedBy,
+        });
+      const approved = rows[0];
+      if (approved === undefined) return null;
+      await announceChange(db, {
+        organizationId: owner,
+        kind: "profile",
+        id: approved.proposalId,
+      });
+      return { approvedBy: approved.approvedBy };
+    },
+    async holdSlice(owner, profileId) {
+      const now = new Date();
+      const moved: ProfileTransitionTime = {
+        status: "awaiting_approval",
+        at: now.toISOString(),
+      };
+      const rows = await db
+        .update(bountyProfile)
+        .set({
+          status: "awaiting_approval",
+          transitions: sql`${bountyProfile.transitions} || ${JSON.stringify([moved])}::jsonb`,
+          updatedAt: now,
+        })
+        .where(
+          and(
+            eq(bountyProfile.organizationId, owner),
+            eq(bountyProfile.id, profileId),
+            eq(bountyProfile.status, "ready"),
+            isNull(bountyProfile.sliceApprovedAt),
           ),
         )
         .returning({ proposalId: bountyProfile.proposalId });

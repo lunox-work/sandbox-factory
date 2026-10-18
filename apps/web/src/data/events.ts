@@ -221,6 +221,26 @@ export function nextRunChange(
   };
 }
 
+/**
+ * Opens anew every stream the browser has closed without a word, as
+ * `window.stop()` does: it closes the page's streams outright, firing no
+ * error, so nothing above would open them again. Each is shut until its
+ * new source is ready, which then reads again everything it follows.
+ */
+export function reopenRunStreams() {
+  for (const [owner, stream] of streams) {
+    if (stream.source.readyState !== CLOSED) continue;
+    if (stream.retrying !== null) clearTimeout(stream.retrying);
+    stream.retrying = null;
+    if (stream.open) {
+      stream.open = false;
+      for (const listener of stream.openness) listener(false);
+    }
+    stream.source = connect(owner);
+    listen(owner, stream);
+  }
+}
+
 /** For tests: forgets every stream, closing each. */
 export function resetRunStreams() {
   for (const stream of streams.values()) {

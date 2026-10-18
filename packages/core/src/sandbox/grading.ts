@@ -25,6 +25,15 @@
  * assertions, so both are refused, as is any import the check cannot read
  * (`require`, `getBuiltinModule`, `import()` of anything but a string).
  * An unchanged file is the version's own and is not read again.
+ *
+ * That check is an advisory lint, not a boundary: it matches text, and
+ * JavaScript has more ways to name a module or evaluate a string than any
+ * text match follows (an alias of `Function`, a property name built at run
+ * time). It refuses the plain spellings so a contributor learns early what
+ * grading will not trust. What grading does trust is process isolation:
+ * task code runs only in processes the grader reads from outside, each
+ * hidden test in its own from a fresh copy of the version's files, and no
+ * other hidden test, credential or grading state is loaded beside it.
  */
 
 import { TASK_DESCRIPTOR_PATH } from "./descriptor.js";
@@ -145,8 +154,10 @@ const RUN_MODULES =
  * packages' internals; the runner's own modules; or a module named in a
  * way this check cannot follow (`require`, `getBuiltinModule`, `import()`
  * of anything but one string, an absolute path or URL, a bare specifier
- * that climbs, code evaluated from a string, Node's internal bindings).
- * Specifiers resolve against the file's directory.
+ * that climbs, code evaluated from a string, Node's internal bindings,
+ * `process` or `globalThis` read by a computed name). Specifiers resolve
+ * against the file's directory. Advisory only, as the header says: a
+ * file this passes is not thereby safe to run beside the hidden tests.
  */
 export function taskCodeProblems(path: string, text: string): string[] {
   const problems: string[] = [];
@@ -166,8 +177,21 @@ export function taskCodeProblems(path: string, text: string): string[] {
     );
   if (/\bimport\s*\(\s*(?!(['"])[^'"\n]+\1\s*\))/.test(text))
     problems.push("A dynamic import must name its module as one string.");
-  if (/\beval\s*\(|\bFunction\s*\(/.test(text))
+  // `eval(...)` and `Function(...)`, and `Function` reached the plain other
+  // ways: `Reflect.construct`, an `async` function's prototype, and a
+  // `.constructor` called rather than read.
+  if (
+    /\beval\s*\(|\bFunction\s*\(|\bReflect\s*\.\s*construct\b|\bgetPrototypeOf\s*\(\s*async\b|\.\s*constructor\s*\(/.test(
+      text,
+    )
+  )
     problems.push("Task code must not evaluate strings as code.");
+  // `process["getBuiltin" + "Module"]`, `globalThis["ev" + "al"]`: a name
+  // built at run time that the checks above cannot read.
+  if (/\b(?:process|globalThis)\s*(?:\?\.\s*)?\[/.test(text))
+    problems.push(
+      "Task code must not read process or globalThis by a computed name.",
+    );
   const dir = dirnameOf(path);
   for (const match of text.matchAll(SPECIFIERS)) {
     const specifier = match[2] ?? match[4] ?? "";

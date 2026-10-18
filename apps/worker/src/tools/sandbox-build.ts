@@ -47,6 +47,7 @@ import {
   generateProject,
   isSandboxBuildParams,
   packageNameOf,
+  privatePackageNames,
   privateTestArgv,
   transformConfigOf,
   vocabularyBlockers,
@@ -1152,10 +1153,11 @@ export function createSandboxBuildAdapter(
         };
       };
       // The workspace's own names, which the pseudonyms must rename out of
-      // everything contributors read.
+      // everything contributors read, its private packages' among them.
       const vocabulary = workspaceVocabulary([
         ...(params.vocabulary ?? []),
         ...(await packageVocabulary(input.sourceDir)),
+        ...privatePackageNames(manifest.requiredBuildInputs.packages),
       ]);
       const leaksOf = (generated: readonly GeneratedFile[]) =>
         vocabularyLeaks(

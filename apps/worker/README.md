@@ -84,24 +84,29 @@ there once unpacked; the bucket expires them after 30 days, and removing
 the repository removes them (`src/fetch-source.ts`).
 
 The local evaluation provider gives each job a private home and temporary
-directory and an npm cache outside its directory: one per job uid on a root
-worker, one for every job otherwise. Installs reuse it, checked against the
-lockfile's sha512 integrity; the lockfile preparation step resolves in an
-empty cache of its own instead. The worker keeps the lockfile that step
+directory (npm logs there too) and an npm cache outside its directory: one per
+job uid on a root worker, of which only `_cacache` outlives a job, one for
+every job otherwise. Installs reuse it, checked against the lockfile's sha512
+integrity; the lockfile preparation step resolves in an empty cache of its own
+instead. The worker keeps the lockfile that step
 produced for each set of dependencies, keyed by what `package.json` asks to
 install, and reuses it only while its root entry matches that manifest and
 every package is its own `registry.npmjs.org` tarball with a sha512
 integrity (`src/evaluation/lockfiles.ts`); on a root worker the store's
 directory is one jobs cannot write. A root worker checks at startup that it
 can run processes as each job uid, then runs each job as a uid of its own
-from `EVALUATION_JOB_UID` (at least 10000, one per concurrent job) and kills
-everything that uid runs after the job; a uid it fails to clear is held back
-until a later sweep succeeds. That keeps the worker's process environment,
-caches and other jobs' files from a job, not what is world-readable or the
-network: in compose the job reads the checkout (the env files are masked)
-and reaches Postgres and SeaweedFS with their development credentials. Any
-other worker runs jobs as itself and warns once
-(`src/evaluation/isolation.ts`).
+from `EVALUATION_JOB_UID` (at least 10000, one per concurrent job, the range
+clear of 65534) and, after the job, kills everything that uid runs, confirmed
+by a `/proc` scan, and removes what it owns under `/tmp`, `/var/tmp` and
+`/dev/shm`; a uid it fails to clear is held back until a later sweep succeeds.
+That keeps the worker's process environment, caches and other jobs' files from
+a job, not what is world-readable or the network. In compose the worker mounts
+the checkout read-only where job uids cannot enter and runs a root-owned copy
+of what it builds from (`/repo`, without `.git`, env files, keys or build
+output, made at each start; see the `worker` service in
+`docker-compose.yml`): a job reads that copy but cannot change it, and reaches
+Postgres and SeaweedFS with their development credentials. Any other worker
+runs jobs as itself and warns once (`src/evaluation/isolation.ts`).
 
 ## Output contract
 
@@ -209,11 +214,10 @@ to the names asked for and what they reference (a namespace import's reads
 unless it escapes). `@internal` declarations are kept when asked for or
 referenced, without their comments; the contract's declarations are the
 same text. A slice that
-includes a credentials file (`isSecretPath`: `.env*` but its
-`.example`/`.sample`/`.template`, `*.pem`, `*.key`, `*.p12`, `*.pfx`, `*.jks`,
-`*.keystore`, `id_{rsa,dsa,ecdsa,ed25519}*`, `*credentials*.json`,
-`*service[-_]account*.json`, `*adminsdk*.json`, `.npmrc`, `.netrc`,
-`.aws/credentials`) is blocked `secret_file`. The whole is type-checked in memory with the
+includes a credentials file (`isSecretPath` in
+`packages/core/src/sandbox/secrets.ts`: env files, private keys, keystores
+and credential configs, never their `.example`/`.sample`/`.template`) is
+blocked `secret_file`. The whole is type-checked in memory with the
 source's nearest `tsconfig.json`, packages declared untyped; other languages
 get the cut modules by name and `stubCoverage: "names-only"`.
 
@@ -270,7 +274,7 @@ when a lockfile resolves it from the public registry and no configuration
 sends its scope elsewhere; any other is mocked by default, and one from
 another registry can never be approved. Every build scans the public files
 for the workspace's names (`packages/core/src/sandbox/vocabulary.ts`; an
-organization's distinctive words too) and blocks `vocabulary_leaked`, and for
+organization's distinctive words too, and the scope, or multi-word name, of each workspace or private-registry package the slice imports) and blocks `vocabulary_leaked`, and for
 credentials (`packages/core/src/sandbox/secrets.ts`) and blocks `secret_found`
 by file, line and rule, never the value. Starters are scanned the same way.
 `.gitignore` names only public files' output.

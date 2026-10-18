@@ -3,6 +3,7 @@ import { test } from "node:test";
 import {
   emailNames,
   organizationNames,
+  privatePackageNames,
   termWords,
   vocabularyBlockers,
   vocabularyLeaks,
@@ -137,6 +138,41 @@ test("an organization's everyday words are scanned only as its whole name", () =
     "first-choice-logistics:1 blue-harbor-inc:1",
   );
   assert.equal(count("new ZentrixClient(); acmeOrders"), "acme:1 zentrix:1");
+});
+
+test("a private package gives its scope, or its whole name if unscoped", () => {
+  const evidence = { source: "private" as const, evidence: ".npmrc" };
+  const pkg = (name: string) => ({ name, version: null, declaredIn: null });
+  const names = privatePackageNames([
+    { ...pkg("@acmeinc/ledger"), workspace: true },
+    { ...pkg("@payflow/core"), registry: evidence },
+    { ...pkg("payflow-sdk"), registry: evidence },
+    { ...pkg("@repo/ui"), workspace: true },
+    { ...pkg("@internal/billing"), workspace: true },
+    { ...pkg("logger"), workspace: true },
+    // Mocked by default or installed, a public name names no one.
+    pkg("lodash"),
+    { ...pkg("@lunox/public"), registry: { ...evidence, source: "public" } },
+  ]);
+  assert.deepEqual(names, [
+    { name: "acmeinc", kind: "organization" },
+    { name: "payflow", kind: "organization" },
+    { name: "payflow-sdk", kind: "name" },
+    { name: "repo", kind: "organization" },
+    { name: "internal", kind: "organization" },
+  ]);
+  const vocabulary = workspaceVocabulary(names);
+  assert.deepEqual(vocabulary, ["acmeinc", "payflow", "payflow-sdk"]);
+  const count = (text: string) =>
+    vocabularyLeaks([{ path: "x.ts", text }], vocabulary)
+      .map((leak) => `${leak.term}:${leak.occurrences}`)
+      .join(" ");
+  assert.equal(count('import { post } from "@acmeinc/ledger";'), "acmeinc:1");
+  assert.equal(
+    count('"@payflow/core": "file:mocks/@payflow/core"'),
+    "payflow:2",
+  );
+  assert.equal(count("const ledger = logger(billing, ui);"), "");
 });
 
 test("a name or word without a letter is not a term, nor found inside a number", () => {

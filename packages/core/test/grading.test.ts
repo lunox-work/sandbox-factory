@@ -343,6 +343,18 @@ test("task code that reaches the mock runtime or the test run is refused", () =>
     ['export const f = eval("1");', /evaluate strings/],
     ['export const f = Function("return 1");', /evaluate strings/],
     [
+      'const f = Reflect.construct(Function, ["return 1"]);',
+      /evaluate strings/,
+    ],
+    [
+      "const F = Object.getPrototypeOf(async () => {}).constructor;",
+      /evaluate strings/,
+    ],
+    ['const f = (async () => {}).constructor("return 1");', /evaluate strings/],
+    ['const g = process["getBuiltin" + "Module"];', /computed name/],
+    ["const e = globalThis[`ev${'al'}`];", /computed name/],
+    ['const e = globalThis?.["ev" + "al"];', /computed name/],
+    [
       'const m = "resetMocks";',
       /recordedCalls, mockImplementation or resetMocks/,
     ],
@@ -351,6 +363,23 @@ test("task code that reaches the mock runtime or the test run is refused", () =>
       refusedFor(text).some((item) => reason.test(item)),
       `${text}: ${refusedFor(text).join(" | ")}`,
     );
+  // Nor are what such code commonly reads: the environment, a constructor's
+  // name, or a class's own constructor.
+  for (const text of [
+    'export const port = process.env["PORT"] ?? process.argv[2];',
+    "export const kind = (x: object) => x.constructor.name;",
+    "export class Cart {\n  constructor(readonly id: string) {}\n}\n",
+  ])
+    assert.deepEqual(taskCodeProblems("src/cart/total.ts", text), [], text);
+  // A lint, not a boundary: `Function` under another name still passes,
+  // which is why grading isolates task code rather than trusting this.
+  assert.deepEqual(
+    taskCodeProblems(
+      "src/cart/total.ts",
+      'const F = Function;\nexport const f = new F("return 1");\n',
+    ),
+    [],
+  );
   // Task code may import task code, stubs, packages and Node's own modules.
   assert.deepEqual(
     taskCodeProblems(

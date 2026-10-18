@@ -346,7 +346,8 @@ test("advance moves a row only from the status it was read in, and sets what the
 });
 
 test("a wide slice is measured while it waits for approval, and an approval of that slice run makes it ready", async () => {
-  const fake = createFakeDb([{ proposalId: "bpp_1" }]);
+  // Approved first by someone else, whom the row still names.
+  const fake = createFakeDb([{ proposalId: "bpp_1", approvedBy: "usr_0" }]);
   const store = createBountyProfileStore(fake.db);
   const measured = { version: "profile-v1" } as never;
   assert.equal(
@@ -356,9 +357,9 @@ test("a wide slice is measured while it waits for approval, and an approval of t
     }),
     true,
   );
-  assert.equal(
+  assert.deepEqual(
     await store.approveSlice("org_1", "bpf_1", "arn_2", "usr_1"),
-    true,
+    { approvedBy: "usr_0" },
   );
   const [waiting, approved] = fake.calls
     .filter((call) => call.kind === "update")
@@ -374,7 +375,7 @@ test("a wide slice is measured while it waits for approval, and an approval of t
   // Waiting keeps the slice run it names, and the profile it measured.
   assert.deepEqual(waiting, { status: "awaiting_approval", profile: measured });
   // Approving makes it ready as it was measured; who and when are kept
-  // from the first approval, so a retry finds them and still answers true.
+  // from the first approval, so a retry finds them and is answered with it.
   assert.equal(approved?.["status"], "ready");
   assert.equal(approved?.["profile"], undefined);
   assert.ok(approved?.["sliceApprovedBy"] !== undefined);
@@ -391,9 +392,34 @@ test("a wide slice is measured while it waits for approval, and an approval of t
       "arn_old",
       "usr_1",
     ),
-    false,
+    null,
   );
   assert.equal(stale.calls.filter((call) => call.kind === "execute").length, 0);
+});
+
+test("a profile measured ready before approvals is held for one, unless approved since", async () => {
+  const fake = createFakeDb([{ proposalId: "bpp_1" }]);
+  assert.equal(
+    await createBountyProfileStore(fake.db).holdSlice("org_1", "bpf_1"),
+    true,
+  );
+  const [held] = fake.calls.filter((call) => call.kind === "update");
+  assert.equal(held?.values?.["status"], "awaiting_approval");
+  // It keeps the profile it was measured with.
+  assert.equal(held?.values?.["profile"], undefined);
+  assert.equal(held?.filtered, true);
+  assert.equal(fake.calls.filter((call) => call.kind === "execute").length, 1);
+
+  // Approved or moved since it was read: nothing is held, or told.
+  const approved = createFakeDb([]);
+  assert.equal(
+    await createBountyProfileStore(approved.db).holdSlice("org_1", "bpf_1"),
+    false,
+  );
+  assert.equal(
+    approved.calls.filter((call) => call.kind === "execute").length,
+    0,
+  );
 });
 
 test("a stored profile says when its slice was approved", async () => {

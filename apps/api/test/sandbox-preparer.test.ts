@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type {
   EnqueueAnalysisResult,
-  ProfileTransition,
   StoredAnalysisRun,
   StoredArtifact,
   StoredBounty,
@@ -87,11 +86,12 @@ function harness(
   }),
   /** The slice run's summary; null for one that cannot be read. */
   summary: object | null = narrow,
+  /** Whether the store holds a profile; false once it was approved since. */
+  holds = true,
 ) {
   const enqueued: { snapshotId: string; input: unknown }[] = [];
   const recorded: unknown[] = [];
-  const moved: { profileId: string; from: string; to: ProfileTransition }[] =
-    [];
+  const held: string[] = [];
   const errors: string[] = [];
   const removed: string[] = [];
   let launches = 0;
@@ -103,9 +103,9 @@ function harness(
         recorded.push({ owner, profileId, runId });
         return true;
       },
-      advance: async (_owner, profileId, from, to) => {
-        moved.push({ profileId, from, to });
-        return true;
+      holdSlice: async (_owner, profileId) => {
+        held.push(profileId);
+        return holds;
       },
     },
     runs: {
@@ -167,7 +167,7 @@ function harness(
     preparer,
     enqueued,
     recorded,
-    moved,
+    held,
     errors,
     removed,
     launches: () => launches,
@@ -267,7 +267,7 @@ test("one organization's trouble is reported and the pass goes on; the timer sta
         throw new Error("database blip");
       },
       recordPrepared: async () => true,
-      advance: async () => true,
+      holdSlice: async () => true,
     },
     runs: {
       get: async () => null,
@@ -299,7 +299,7 @@ test("one organization's trouble is reported and the pass goes on; the timer sta
 });
 
 test("a wide slice nobody approved is not prepared, and one measured ready before approvals waits for one", async () => {
-  // Ready from a wide slice before approvals were asked for: moved to wait,
+  // Ready from a wide slice before approvals were asked for: held to wait,
   // as it was measured, and nothing handed to an agent.
   const wide = harness(
     [profile({ profile: measured }), profile({ id: "bpf_2" })],
@@ -308,20 +308,26 @@ test("a wide slice nobody approved is not prepared, and one measured ready befor
   );
   await wide.preparer.sweep();
   assert.deepEqual(wide.enqueued, []);
-  assert.deepEqual(wide.moved, [
-    {
-      profileId: "bpf_1",
-      from: "ready",
-      to: { status: "awaiting_approval", profile: measured },
-    },
-  ]);
+  assert.deepEqual(wide.held, ["bpf_1", "bpf_2"]);
   assert.equal(wide.launches(), 0);
+
+  // Approved between the read and the hold: the store holds nothing, and
+  // this pass still prepares nothing from the stale read.
+  const raced = harness(
+    [profile({ profile: measured })],
+    undefined,
+    summaryOf(41),
+    false,
+  );
+  await raced.preparer.sweep();
+  assert.deepEqual(raced.held, ["bpf_1"]);
+  assert.deepEqual(raced.enqueued, []);
 
   // A slice whose summary cannot be read cannot be told within the limits.
   const unread = harness([profile()], undefined, null);
   await unread.preparer.sweep();
   assert.deepEqual(unread.enqueued, []);
-  assert.deepEqual(unread.moved, []);
+  assert.deepEqual(unread.held, []);
 
   // Approved, it is prepared without its slice being read again.
   const approved = harness(
@@ -331,5 +337,5 @@ test("a wide slice nobody approved is not prepared, and one measured ready befor
   );
   await approved.preparer.sweep();
   assert.equal(approved.enqueued.length, 1);
-  assert.deepEqual(approved.moved, []);
+  assert.deepEqual(approved.held, []);
 });

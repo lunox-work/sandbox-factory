@@ -10,8 +10,9 @@
  * unprivileged uid of its own (`isolation.ts`), which keeps the worker's
  * process environment, caches and lockfile store and other jobs' files out
  * of reach, though not what the machine leaves world-readable or its
- * network, and lets everything a job left running be killed; any other
- * worker runs jobs as itself.
+ * network, and lets everything a job left running be killed and what it
+ * left in shared temporary directories be removed; any other worker runs
+ * jobs as itself.
  * Hosted evaluation of contributor code needs a provider that meets
  * Decision 5 of the sandbox plan; this one records itself as
  * `local-process` so no record can mistake it for one, and the worker
@@ -50,7 +51,7 @@ import {
   chownTree,
   ISOLATION_WARNING,
   jobCache,
-  killIdentity,
+  sweepIdentity,
 } from "./isolation.js";
 import type { JobIdentity, JobIsolation } from "./isolation.js";
 import {
@@ -302,7 +303,11 @@ export function createLocalProcessProvider(
 ): EvaluationProvider {
   const isolation = options.isolation ?? null;
   if (isolation === null) options.warn?.(ISOLATION_WARNING);
-  const sweep = isolation?.sweep ?? ((identity) => killIdentity(identity));
+  // The identities' npm caches outlive their sweeps; `jobCache` prunes them.
+  const keep = isolation === null ? [] : [isolation.cacheRoot];
+  const sweep =
+    isolation?.sweep ??
+    ((identity: JobIdentity) => sweepIdentity(identity, keep));
   /** Identities no job holds; `limitJobs` keeps demand within them. */
   const free = [...(isolation?.identities ?? [])];
   /**
@@ -413,6 +418,8 @@ export function createLocalProcessProvider(
         NO_COLOR: "1",
         CI: "1",
         npm_config_cache: npmCache,
+        // npm logs into the cache otherwise, which outlives the job.
+        npm_config_logs_dir: join(tmp, "npm-logs"),
         npm_config_registry: "https://registry.npmjs.org/",
         npm_config_prefer_offline: "true",
         npm_config_update_notifier: "false",

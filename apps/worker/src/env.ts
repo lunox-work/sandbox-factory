@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { readPrivateKey } from "@sandbox-factory/github";
 import { AGENT_LIMITS_DEFAULT } from "./agent/loop.js";
-import { JOB_UID_MIN } from "./evaluation/isolation.js";
+import { JOB_UID_MAX, JOB_UID_MIN } from "./evaluation/isolation.js";
 const blank = (value: unknown) => (value === "" ? undefined : value);
 /** An unset secret: empty, or the placeholder the deploy's secrets start as. */
 const unsetSecret = (value: unknown) =>
@@ -64,11 +64,13 @@ const schema = z.object({
    * They need no passwd entry, and nothing else may run as them: after a
    * job, every process of its uid is killed. At least `JOB_UID_MIN`, above
    * the uids people and services get (`node` is 1000), and so never root,
-   * the only worker that switches to them.
+   * the only worker that switches to them; the whole range must also stay
+   * below `JOB_UID_MAX` and clear of `nobody`, which `jobIsolation` checks
+   * at startup.
    */
   EVALUATION_JOB_UID: z.preprocess(
     blank,
-    z.coerce.number().int().min(JOB_UID_MIN).max(2_000_000_000).default(61_000),
+    z.coerce.number().int().min(JOB_UID_MIN).max(JOB_UID_MAX).default(61_000),
   ),
   /**
    * The model behind the scope and fixtures agents. Without a key, agent

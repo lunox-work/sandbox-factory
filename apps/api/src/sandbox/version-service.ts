@@ -1090,10 +1090,10 @@ export function versionService(options: SandboxRouteOptions) {
    * the actor: only the slice run and request the body names, which must be
    * the ones `sliceState` showed. The profile, measured already, becomes
    * ready, and the cutter cuts and builds a version from it as though the
-   * actor had asked to slice one. Asked again for a slice already approved,
-   * the approval stands and the cut is asked for again, so a retry after a
-   * failure past the approval still has it cut. A live publication is
-   * refused first, as slicing refuses it.
+   * approver had asked to slice one. Asked again for a slice already
+   * approved, the first approval stands and the cut is asked for again, as
+   * its approver, so a retry after a failure past the approval still has
+   * it cut. A live publication is refused first, as slicing refuses it.
    */
   async function approveSlice(
     owner: string,
@@ -1139,18 +1139,19 @@ export function versionService(options: SandboxRouteOptions) {
       includeInferred: approval.includeInferred,
     });
     // What was shown is checked first; the store then holds the run fixed.
-    if (
+    const approved =
       canonicalJson({
         ...input,
         entryPoints: [...new Set(input.entryPoints)].sort(),
-      }) !== shown ||
-      !(await options.profiles.approveSlice(
-        owner,
-        profile.id,
-        input.sliceRunId,
-        actor,
-      ))
-    )
+      }) === shown
+        ? await options.profiles.approveSlice(
+            owner,
+            profile.id,
+            input.sliceRunId,
+            actor,
+          )
+        : null;
+    if (approved === null)
       return failure(
         {
           error:
@@ -1159,7 +1160,14 @@ export function versionService(options: SandboxRouteOptions) {
         },
         "conflict",
       );
-    await options.cuts?.requestCut(owner, sandbox.id, actor, now);
+    // Cut as whoever approved first, so two approving at once do not cut
+    // it as someone other than the approval it stands on.
+    await options.cuts?.requestCut(
+      owner,
+      sandbox.id,
+      approved.approvedBy ?? actor,
+      now,
+    );
     options.onSliceApproved?.();
     return {
       ok: true as const,

@@ -3857,9 +3857,9 @@ function generatingServer(input: {
     ],
   ]);
 }
-async function sandboxPart() {
+async function sandboxPart(role = "owner") {
   window.history.replaceState(null, "", "/bounties/acme/bty_7?tab=sandbox");
-  render(<Shell {...inAcme("owner")} />);
+  render(<Shell {...inAcme(role)} />);
   return within(await screen.findByTestId("bounty-detail")).getByRole(
     "region",
     { name: "Sandbox" },
@@ -4574,6 +4574,113 @@ test.each([
     expect(within(panel).getByText(said)).toBeDefined();
   },
 );
+
+/** A slice waiting on its approval, as the approval tests show it. */
+const waitingApproval = {
+  reasons: ["too_many_files"],
+  entryPoints: ["src/invitations"],
+  budget: { maxFiles: 120, maxDepth: 3 },
+  includeInferred: false,
+  includedFiles: 52,
+  included: ["src/invitations/send.ts"],
+  truncated: true,
+};
+
+test.each([
+  [
+    409,
+    "slice_changed",
+    "The slice changed since it was shown. Reload it and try again.",
+  ],
+  [
+    409,
+    "slice_not_awaiting_approval",
+    "The slice is not waiting for an approval.",
+  ],
+  [403, "forbidden", "Only owners and admins can do this."],
+])(
+  "an approval refused with %i %s says why, reads the slice again and can be tried again",
+  async (status, code, error) => {
+    const state = slicingServer({
+      versions: () => [],
+      slice: () =>
+        sliceOf({ status: "awaiting_approval", approval: waitingApproval }),
+      routes: [
+        [
+          "POST",
+          "/sandboxes/sbx_1/slice/approve",
+          () => json({ error, code }, status),
+        ],
+      ],
+    });
+    vi.stubGlobal("fetch", state.fetchMock);
+    const part = await sandboxPart();
+    const panel = await within(part).findByTestId("slice-approval");
+    const reads = () =>
+      state.calls.filter(
+        ({ method, url }) =>
+          method === "GET" && url.endsWith("/sandboxes/sbx_1/slice"),
+      ).length;
+    const before = reads();
+    await userEvent.click(
+      within(panel).getByRole("button", { name: "Approve slice" }),
+    );
+    expect((await within(part).findByRole("alert")).textContent).toBe(error);
+    await waitFor(() => expect(reads()).toBeGreaterThan(before));
+    const again = within(
+      await within(part).findByTestId("slice-approval"),
+    ).getByRole("button", { name: "Approve slice" }) as HTMLButtonElement;
+    expect(again.disabled).toBe(false);
+    await userEvent.click(again);
+    await waitFor(() =>
+      expect(
+        state.calls.filter(
+          ({ method, url }) =>
+            method === "POST" && url.endsWith("/sandboxes/sbx_1/slice/approve"),
+        ),
+      ).toHaveLength(2),
+    );
+  },
+);
+
+test("a member sees no slice to approve, and does not read it", async () => {
+  const state = slicingServer({
+    versions: () => [],
+    slice: () =>
+      sliceOf({ status: "awaiting_approval", approval: waitingApproval }),
+  });
+  vi.stubGlobal("fetch", state.fetchMock);
+  const part = await sandboxPart("member");
+  expect(
+    await within(part).findByText(/An owner or admin can slice one/),
+  ).toBeDefined();
+  expect(within(part).queryByTestId("slice-approval")).toBeNull();
+  expect(
+    within(part).queryByRole("button", { name: "Approve slice" }),
+  ).toBeNull();
+  expect(
+    state.calls.some(({ url }) => url.endsWith("/sandboxes/sbx_1/slice")),
+  ).toBe(false);
+});
+
+test("a slice waiting for approval whose files cannot be read says so, with nothing to approve", async () => {
+  vi.stubGlobal(
+    "fetch",
+    slicingServer({
+      versions: () => [],
+      slice: () => sliceOf({ status: "awaiting_approval", approval: null }),
+    }).fetchMock,
+  );
+  const part = await sandboxPart();
+  expect(
+    await within(part).findByText(
+      /what it holds could not be read back\. Price it again to slice a new spec\./,
+    ),
+  ).toBeDefined();
+  expect(
+    within(part).queryByRole("button", { name: "Approve slice" }),
+  ).toBeNull();
+});
 
 test("a slice that failed says why, and a refused slice says why too", async () => {
   vi.stubGlobal(

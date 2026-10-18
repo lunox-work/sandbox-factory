@@ -482,13 +482,15 @@ test("an isolated job runs as its identity, which no other job holds until it is
       argv: [
         "node",
         "-e",
-        "console.log(process.getuid(), process.env.npm_config_cache, process.env.TMPDIR)",
+        "console.log(process.getuid(), process.env.npm_config_cache, process.env.TMPDIR, process.env.npm_config_logs_dir)",
       ],
       limits,
     });
+    // npm logs into the job's temporary directory, not the cache that
+    // outlives it.
     assert.equal(
       result.stdout.trim(),
-      `${self.uid} ${join(root, "jobs", String(self.uid))} ${join(directory, "tmp")}`,
+      `${self.uid} ${join(root, "jobs", String(self.uid))} ${join(directory, "tmp")} ${join(directory, "tmp", "npm-logs")}`,
     );
     assert.equal((await stat(join(directory, "tmp"))).mode & 0o777, 0o700);
     // One identity per job at once.

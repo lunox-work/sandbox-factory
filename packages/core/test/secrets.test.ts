@@ -31,6 +31,11 @@ test("provider tokens are found by shape, on their line", () => {
     `legacy = "${join("sk-", RANDOM, RANDOM.slice(0, 16))}"`,
     `gitlab = "${join("gl", "pat-", RANDOM.slice(0, 20))}"`,
     `npm = "${join("npm", "_", RANDOM, "abcd")}"`,
+    `sendgrid = "${join("SG", ".", RANDOM.slice(0, 22), ".", RANDOM, "abcdefghijk")}"`,
+    `hf = "${join("hf", "_", RANDOM, "ab")}"`,
+    `curl -H "Authorization: Bearer ${RANDOM}"`,
+    `//registry.npmjs.org/:${join("_auth", "Token")}=${join("550e8400-e29b-", "41d4-a716-446655440000")}`,
+    `${join("_auth", "=")}${BASE64}`,
   ].join("\n");
   assert.deepEqual(ruleLines(text), [
     "2:private-key",
@@ -46,7 +51,48 @@ test("provider tokens are found by shape, on their line", () => {
     "12:openai-key",
     "13:gitlab-token",
     "14:npm-token",
+    "15:sendgrid-key",
+    "16:huggingface-token",
+    "17:bearer-token",
+    "18:npm-token",
+    "19:npm-token",
   ]);
+});
+
+test("a token or URL password is a placeholder only as a whole", () => {
+  assert.deepEqual(
+    ruleLines(
+      [
+        `stripe = "${join("sk_", "live_", "Test", RANDOM)}"`,
+        `gh = "${join("ghp_", "TEST", RANDOM)}"`,
+        `DATABASE_URL=postgres://app:${join("S3cr3t", "Test99")}@db/x`,
+        `slack = "${join("xox", "b-", "mock-", RANDOM)}"`,
+      ].join("\n"),
+    ),
+    [
+      "1:stripe-live-key",
+      "2:github-token",
+      "3:url-credentials",
+      "4:slack-token",
+    ],
+  );
+  const text = [
+    `stripe = "${join("sk_", "live_", "0".repeat(24))}"`,
+    `stripe = "${join("sk_", "live_", "x".repeat(24))}"`,
+    `hf = "${join("hf", "_", "X".repeat(34))}"`,
+    `slack = "${join("xox", "b-", "*".repeat(12))}"`,
+    "Authorization: Bearer <token>",
+    `Authorization: Bearer ${"x0".repeat(12)}`,
+    "Authorization: Bearer token_from_the_dashboard_v2",
+    "Authorization: Bearer abcdefghijklmnopqrstuvwxyz",
+    `//registry.npmjs.org/:${join("_auth", "Token")}=\${NPM_TOKEN}`,
+    `${join("_auth", "Token")}=$NPM_TOKEN`,
+    `this.${join("_auth", "Token")} = token;`,
+    "postgres://app:changeme@db/x",
+    "postgres://app:your-password-here@db/x",
+    "postgres://app:xxxxxxxx@db/x",
+  ].join("\n");
+  assert.deepEqual(scanSecrets([{ path: "ok.ts", text }]), []);
 });
 
 test("a service-account JSON and a generic assignment are found", () => {
@@ -78,6 +124,11 @@ test("a service-account JSON and a generic assignment are found", () => {
         `const apiKey = process.env.API_KEY ?? "${RANDOM}";`,
         `const secret = env.APP_SECRET || '${RANDOM}';`,
         `const sharedSecret = "9c1e4b7a2f0d8e3c6a5b1f4d7e0c9a2b";`,
+        `SECRET_KEY = "${RANDOM}"`,
+        `SECRET_KEY_BASE=${RANDOM}`,
+        `const signingKey = "Xk9-${RANDOM}";`,
+        'password: "correcthorsebatterystaple",',
+        "DB_PASSWORD=correcthorsebatterystaple",
       ].join("\n"),
     ),
     [
@@ -93,8 +144,34 @@ test("a service-account JSON and a generic assignment are found", () => {
       "10:generic-secret",
       "11:generic-secret",
       "12:generic-secret",
+      "13:generic-secret",
+      "14:generic-secret",
+      "15:generic-secret",
+      "16:generic-secret",
+      "17:generic-secret",
     ],
   );
+});
+
+test("a name that goes on past its secret word, or a value that reads as a name, is not a secret", () => {
+  const text = [
+    'const tokenizerModel = "gpt-4o-mini-2024-07-18";',
+    'const TOKEN_REFRESH_QUEUE = "token-refresh-queue-v2";',
+    'const passwordResetPath = "/account/password/reset2";',
+    'const secretArn = "arn:aws:secretsmanager:us-east-1:123456789012:secret:prod/db-AbCdEf";',
+    'const tokenCount = "1234567890abcdef1234";',
+    // A secret's name, but a path, an ARN, a model or a version for a value.
+    "DB_PASSWORD_FILE=/run/secrets/db_password_2",
+    'const apiKey = "arn:aws:secretsmanager:us-east-1:123456789012:secret:k9";',
+    'const authToken = "claude-3-5-sonnet-20241022";',
+    'const accessToken = "1.2.3-beta.4-build.5678";',
+    'const secret = "./config/keys/primary-v2";',
+    // Letters alone under a password's name: an identifier, or one letter.
+    'password: "passwordInputField",',
+    'const password = "aaaaaaaaaaaaaaaaaaaa";',
+    'const secret = "correcthorsebatterystaple";',
+  ].join("\n");
+  assert.deepEqual(scanSecrets([{ path: "ok.ts", text }]), []);
 });
 
 test("a URL's password is found unless empty, a template or a placeholder", () => {
@@ -225,6 +302,30 @@ test("credential files are recognized by name", () => {
     "android/app/release.jks",
     "android/upload.keystore",
     "apps/api/.env.local",
+    ".env-production",
+    "deploy/prod.env",
+    ".envrc",
+    "config/secrets.yml",
+    "secrets.json",
+    "secrets.toml",
+    "appsettings.secrets.yaml",
+    "serviceAccountKey.json",
+    "firebase-private-key-prod.json",
+    "gcp-key.json",
+    "home/.git-credentials",
+    ".pgpass",
+    ".pypirc",
+    "infra/prod.tfvars",
+    "infra/prod.auto.tfvars",
+    "infra/terraform.tfvars.json",
+    "home/.docker/config.json",
+    ".docker/config.json",
+    "AuthKey_ABC123.p8",
+    "deploy.ppk",
+    "kubeconfig",
+    "deploy/kubeconfig-prod.yaml",
+    "clusters/staging.kubeconfig",
+    "home/.kube/config",
   ])
     assert.equal(isSecretPath(path), true, path);
   for (const path of [
@@ -240,11 +341,22 @@ test("credential files are recognized by name", () => {
     "apps/api/.env.sample",
     ".env.template",
     ".env.local.example",
+    ".env-example",
+    "deploy/prod.env.sample",
+    "infra/terraform.tfvars.example",
     // Needed configuration; its tokens are found by content, not name.
     ".yarnrc.yml",
     "credentials",
     "aws/credentials",
     "src/keystore.ts",
+    "src/secrets.ts",
+    "docs/secrets.md",
+    "src/environment.ts",
+    "src/kubeconfig.ts",
+    "monkey.json",
+    "docker/config.json",
+    "kube/config",
+    "src/.kube/config.ts",
   ])
     assert.equal(isSecretPath(path), false, path);
 });

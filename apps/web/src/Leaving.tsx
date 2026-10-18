@@ -1,9 +1,11 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { useQueryClient, type QueryClient } from "@tanstack/react-query";
 
 import { LoadingLine } from "@/components/Message";
 import { Button } from "@/components/ui/button";
 
+import { reopenRunStreams } from "./data/events";
 import { stopLeaving, useLeaving } from "./navigation/leave";
 
 /** How long a navigation may take before the cover offers a way back. */
@@ -28,6 +30,7 @@ export function Leaving() {
 function Cover({ destination }: { destination: string }) {
   const ref = useRef<HTMLDivElement | null>(null);
   const [slow, setSlow] = useState(false);
+  const client = useQueryClient();
 
   // Nothing behind the cover can be reached while it is up: everything
   // else on the page goes inert and focus moves here. On the way out, the
@@ -63,11 +66,11 @@ function Cover({ destination }: { destination: string }) {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
       event.preventDefault();
-      cancel();
+      cancel(client);
     };
     window.addEventListener("keydown", onKeyDown, true);
     return () => window.removeEventListener("keydown", onKeyDown, true);
-  }, []);
+  }, [client]);
 
   return (
     <div
@@ -84,7 +87,7 @@ function Cover({ destination }: { destination: string }) {
           {slow ? `Still opening ${destination}…` : `Opening ${destination}…`}
         </LoadingLine>
         {slow && (
-          <Button variant="outline" size="sm" onClick={cancel}>
+          <Button variant="outline" size="sm" onClick={() => cancel(client)}>
             Cancel
           </Button>
         )}
@@ -93,8 +96,15 @@ function Cover({ destination }: { destination: string }) {
   );
 }
 
-/** Stops a navigation still under way, and takes the cover down. */
-function cancel() {
+/**
+ * Stops a navigation still under way, and takes the cover down. Stopping
+ * it also aborts the page's own requests and closes its push streams, and
+ * a read that failed is not tried again on its own, so the streams are
+ * opened anew and every query on screen is read again.
+ */
+function cancel(client: QueryClient) {
   window.stop();
   stopLeaving();
+  reopenRunStreams();
+  void client.invalidateQueries();
 }

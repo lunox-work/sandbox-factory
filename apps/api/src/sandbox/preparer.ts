@@ -48,7 +48,10 @@ export const PREPARATION_DEADLINE_MINUTES = 90;
 export interface SandboxPreparerOptions {
   readonly profiles: Pick<
     BountyProfileStore,
-    "unprepared" | "organizationsWithUnprepared" | "recordPrepared" | "advance"
+    | "unprepared"
+    | "organizationsWithUnprepared"
+    | "recordPrepared"
+    | "holdSlice"
   >;
   readonly runs: Pick<AnalysisRunStore, "enqueue" | "get" | "latestSucceeded">;
   /** The slice run's summary, which says whether it waits for approval. */
@@ -162,11 +165,9 @@ export class SandboxPreparer {
       // Unreadable, it cannot be told within the limits: not prepared.
       if (approval === null) return "skipped";
       if (holdsForApproval(profile, approval)) {
-        if (profile.profile !== null)
-          await this.#options.profiles.advance(owner, profile.id, "ready", {
-            status: "awaiting_approval",
-            profile: profile.profile,
-          });
+        // Held only while still unapproved: an approval that landed since
+        // this read stands, and the next pass prepares it.
+        await this.#options.profiles.holdSlice(owner, profile.id);
         return "skipped";
       }
     }
