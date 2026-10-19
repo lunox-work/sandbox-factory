@@ -40,8 +40,12 @@ for (const { flags, view, failing, status, merged } of [
     const repo = path.join(dir, "repo");
     fs.mkdirSync(repo);
     const remote = path.join(dir, "remote.git");
+    // Inherited GIT_* (a hook exports GIT_DIR) would point git at the
+    // repository running the tests rather than the one made here.
     const env = {
-      ...process.env,
+      ...Object.fromEntries(
+        Object.entries(process.env).filter(([key]) => !key.startsWith("GIT_")),
+      ),
       PATH: `${bin}:${process.env.PATH}`,
       GH_TEST_LOG: path.join(dir, "gh.log"),
       GH_TEST_VIEW: view ?? "",
@@ -127,9 +131,11 @@ esac
     const ref = `refs/heads/${BRANCH}`;
     const local = spawnSync("git", ["show-ref", "--verify", ref], {
       cwd: repo,
+      env,
     });
     const remoteRef = spawnSync("git", ["show-ref", "--verify", ref], {
       cwd: remote,
+      env,
     });
     assert.equal(local.status === 0, !merged, `local ${BRANCH}`);
     assert.equal(remoteRef.status === 0, !merged, `origin ${BRANCH}`);
