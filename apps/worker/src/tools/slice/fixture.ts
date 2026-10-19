@@ -14,8 +14,13 @@
 
 import { dirname, isAbsolute, relative, resolve } from "node:path";
 import ts from "typescript-compiler";
+import { NODE_GLOBAL_DECLARATIONS, packageNameOf } from "sandbox-factory";
 import type { CompilationResult } from "sandbox-factory";
-import { isScriptPath, NODE_BUILTINS } from "./typescript.js";
+import {
+  isScriptPath,
+  NODE_BUILTINS,
+  resolveModulesWith,
+} from "./typescript.js";
 
 export const DIAGNOSTICS_MAX = 100;
 export const SHIM_PATH = "__slice__/packages.d.ts";
@@ -28,6 +33,18 @@ export interface FixtureInput {
   readonly shimmedPackages: readonly string[];
   /** Diagnostic codes not to report: see `UNTYPED_PACKAGE_CODES`. */
   readonly ignoredCodes?: readonly number[];
+  /**
+   * Bare specifiers of the repository's own packages, to the path in
+   * `files` each stands for: no node_modules holds them here.
+   */
+  readonly modules?: ReadonlyMap<string, string>;
+  /** Diagnostics reported at most; defaults to `DIAGNOSTICS_MAX`. */
+  readonly limit?: number;
+  /**
+   * A directory whose node_modules holds fetched package types, read from
+   * disk; a package that resolves there is typed, and its shim yields.
+   */
+  readonly packageTypes?: string | null;
 }
 
 /**
@@ -252,8 +269,15 @@ function declareGlobal(name: string, global: PackageUse): string[] {
 }
 
 /** A module for one specifier, exporting what the slice reads of it. */
-function declareModule(specifier: string, root: PackageUse): string[] {
-  const lines = [`declare module ${JSON.stringify(specifier)} {`];
+function declareModule(
+  specifier: string,
+  root: PackageUse,
+  installed: boolean,
+): string[] {
+  // A pattern is consulted only when no file resolves the specifier.
+  const lines = [
+    `declare module ${JSON.stringify(installed ? `${specifier}*` : specifier)} {`,
+  ];
   const fallback = root.members.get("default") ?? use();
   // Local, and exported as the default: only its own lines lose `export`.
   lines.push(
@@ -295,12 +319,14 @@ const JSX_SHIM = [
 
 /**
  * Ambient declarations that make the listed packages resolve as `any`, with
- * Node's own modules and globals, which the sandbox gets from `@types/node`.
+ * Node's own modules and globals as the generated project declares them.
  * A specifier in `uses` gets a module of its own that exports each name the
  * slice reads as both a value and a type, so `import type { X }` and
  * `React.ComponentProps<"button">` check as they would with the package's
  * types; any other is untyped, which only works as a value. A global in
- * `uses` is a namespace of the types read off it.
+ * `uses` is a namespace of the types read off it. A `typed` package, whose
+ * fetched types the compile reads, is declared by patterns that yield to
+ * them.
  */
 export function packageShim(
   packages: readonly string[],
@@ -308,41 +334,49 @@ export function packageShim(
     modules: new Map(),
     globals: new Map(),
   },
+  typed: (name: string) => boolean = () => false,
 ): string {
-  const lines = [
-    'declare module "node:*";',
-    "declare var process: any;",
-    "declare var Buffer: any;",
-    "declare var global: any;",
-    "declare var require: any;",
-    "declare var module: any;",
-    "declare var exports: any;",
-    "declare var __dirname: string;",
-    "declare var __filename: string;",
-    ...JSX_SHIM,
-  ];
+  const lines = [...NODE_GLOBAL_DECLARATIONS, ...JSX_SHIM];
   // Node's modules by their bare names too: `import fs from "fs"`.
-  for (const name of [...new Set([...NODE_BUILTINS, ...packages])].sort()) {
-    if (!uses.has(name)) lines.push(`declare module "${name}";`);
-    lines.push(`declare module "${name}/*";`);
-  }
-  return `${lines.join("\n")}\n${packageModules({ modules: uses, globals }).text}`;
+  for (const name of [...new Set([...NODE_BUILTINS, ...packages])].sort())
+    if (typed(name)) {
+      // A pattern, which the package's own types take precedence over.
+      if (!uses.has(name)) lines.push(`declare module "${name}*";`);
+    } else {
+      if (!uses.has(name)) lines.push(`declare module "${name}";`);
+      lines.push(`declare module "${name}/*";`);
+    }
+  return `${lines.join("\n")}\n${
+    packageModules({ modules: uses, globals }, (specifier) =>
+      typed(packageNameOf(specifier)),
+    ).text
+  }`;
 }
 
 /**
  * The part of `packageShim` that declares what the slice reads: a module
  * for each specifier in `uses` and a namespace for each global. A sliced
  * project declares its packages with these too, so it builds against what
- * the slice was checked against.
+ * the slice was checked against; one it `installed` by a pattern, which
+ * yields to the package's own types.
  */
-export function packageModules({ modules: uses, globals }: PackageUses): {
+export function packageModules(
+  { modules: uses, globals }: PackageUses,
+  installed: (specifier: string) => boolean = () => false,
+): {
   specifiers: string[];
   text: string;
 } {
   const specifiers = [...uses.keys()].sort();
   const lines: string[] = [];
   for (const specifier of specifiers)
-    lines.push(...declareModule(specifier, uses.get(specifier) ?? use()));
+    lines.push(
+      ...declareModule(
+        specifier,
+        uses.get(specifier) ?? use(),
+        installed(specifier),
+      ),
+    );
   for (const name of [...globals.keys()].filter(isName).sort())
     lines.push(...declareGlobal(name, globals.get(name) ?? use()));
   return {
@@ -358,8 +392,13 @@ export function compileFixture(input: FixtureInput): CompilationResult {
   const options: ts.CompilerOptions = {
     ...input.compilerOptions,
     noEmit: true,
+    // Off with everything that needs it, which the compiler otherwise
+    // reports against the source's own config (TS5069).
     declaration: false,
+    declarationMap: false,
+    declarationDir: undefined,
     emitDeclarationOnly: false,
+    isolatedDeclarations: false,
     composite: false,
     incremental: false,
     tsBuildInfoFile: undefined,
@@ -370,10 +409,14 @@ export function compileFixture(input: FixtureInput): CompilationResult {
     noLib: false,
   };
   const libDir = dirname(ts.getDefaultLibFilePath(options));
-  const inLib = (path: string) => {
-    const rel = relative(libDir, resolve(path));
+  const within = (base: string, path: string) => {
+    const rel = relative(base, resolve(path));
     return !isAbsolute(rel) && !rel.startsWith("..");
   };
+  const types = input.packageTypes ?? null;
+  // The compiler's libs and the fetched package types are read from disk.
+  const inLib = (path: string) =>
+    within(libDir, path) || (types !== null && within(types, path));
   const directories = new Set<string>([root]);
   for (const path of files.keys())
     for (let dir = dirname(path); dir.startsWith(root); dir = dirname(dir)) {
@@ -390,11 +433,13 @@ export function compileFixture(input: FixtureInput): CompilationResult {
       directories.has(resolve(path)) ||
       (inLib(path) && ts.sys.directoryExists(path)),
     getDirectories: (path) =>
-      [...directories]
-        .filter(
-          (dir) => dirname(dir) === resolve(path) && dir !== resolve(path),
-        )
-        .map((dir) => relative(resolve(path), dir)),
+      inLib(path)
+        ? ts.sys.getDirectories(path)
+        : [...directories]
+            .filter(
+              (dir) => dirname(dir) === resolve(path) && dir !== resolve(path),
+            )
+            .map((dir) => relative(resolve(path), dir)),
     getSourceFile: (fileName, languageVersion) => {
       const text = host.readFile(fileName);
       return text === undefined
@@ -411,6 +456,17 @@ export function compileFixture(input: FixtureInput): CompilationResult {
     getNewLine: () => "\n",
     realpath: (path) => path,
   };
+  const modules = input.modules ?? new Map<string, string>();
+  if (modules.size > 0 || types !== null)
+    resolveModulesWith(host, root, options, {
+      workspaceModule: (specifier) => {
+        const path = modules.get(specifier);
+        return path !== undefined && files.has(resolve(root, path))
+          ? path
+          : null;
+      },
+      packageTypes: types,
+    });
   const rootNames = [...files.keys()].filter(isScriptPath).sort();
   const program = ts.createProgram(rootNames, options, host);
   const ignored = new Set(input.ignoredCodes ?? []);
@@ -442,7 +498,7 @@ export function compileFixture(input: FixtureInput): CompilationResult {
   return {
     attempted: true,
     ok: diagnostics.length === 0,
-    diagnostics: diagnostics.slice(0, DIAGNOSTICS_MAX),
+    diagnostics: diagnostics.slice(0, input.limit ?? DIAGNOSTICS_MAX),
     shimmedPackages: [...new Set(input.shimmedPackages)].sort(),
   };
 }

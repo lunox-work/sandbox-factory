@@ -38,6 +38,7 @@ import { createGraphifyAdapter } from "./tools/graphify.js";
 import { createSandboxBuildAdapter } from "./tools/sandbox-build.js";
 import { createScopeAdapter } from "./tools/scope.js";
 import { createSliceAdapter } from "./tools/slice.js";
+import { npmPackageTypes } from "./tools/slice/package-types.js";
 import { createStarterAdapter } from "./tools/starter.js";
 
 const env = parseWorkerEnv();
@@ -127,6 +128,8 @@ const objects = createObjectStore({
 const sourceCache = await createSourceCache({
   root: join(caches, "sources"),
 });
+// The published types of the public packages slices read, by package set.
+const packageTypes = npmPackageTypes({ root: join(caches, "package-types") });
 const tokens = new InstallationTokens({
   appId: env.GITHUB_APP_ID,
   privateKey: env.GITHUB_APP_PRIVATE_KEY,
@@ -145,11 +148,11 @@ function adapterFor(run: ClaimedAnalysisRun): ToolAdapter {
     case "brief":
       return createBriefAdapter();
     case "slice":
-      return createSliceAdapter();
+      return createSliceAdapter({ packageTypes });
     case "sandbox_build":
       return createSandboxBuildAdapter({ agent, provider: evaluation });
     case "scope":
-      return createScopeAdapter(agent);
+      return createScopeAdapter(agent, { packageTypes });
     case "fixtures":
       return createFixturesAdapter(agent);
     case "sandbox_starter":

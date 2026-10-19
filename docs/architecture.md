@@ -422,6 +422,17 @@ multi-word name, of each workspace or private-registry package the slice imports
 and for credentials (`packages/core/src/sandbox/secrets.ts`) and blocks
 `secret_found`, naming file, line and rule, never the value.
 
+**Slice checks.** A slice (`apps/worker/src/tools/slice.ts`) stubs each cut
+module from its declarations, the repository's own packages included,
+resolved to their source (`workspaceModuleResolver`). The worker fetches the
+published types of the public packages a slice reads
+(`apps/worker/src/tools/slice/package-types.ts`: the lockfile's versions,
+install scripts off, the public registry only, cached by package set); when
+it cannot, those packages are untyped. The fixture compile blocks only on
+errors the stubs add: one the source shares under untyped packages is kept as
+`compilation.untypedPackageErrors`, for the sandbox build to check against the
+packages it installs, whose own types win over the generated declarations.
+
 **Preparation.** Once a bounty's profile is ready and its price approved,
 `apps/api/src/sandbox/preparer.ts` queues a `fixtures` run that also writes the
 name table, named on `bounty_profile.prepared_run_id`, so the first cut builds

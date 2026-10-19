@@ -464,12 +464,16 @@ function exportValue(name: string, value: string, index: number): string {
   return `const ${local} = ${value};\nexport { ${local} as ${JSON.stringify(name)} };`;
 }
 
+/** A stub's `export * from "./x.js"`: the modules a barrel forwards to. */
+const STAR_EXPORT = /^export \* from (["'])(\.{1,2}\/[^"'\n]+)\1;?$/gm;
+
 function mockRuntimeFor(
   modulePath: string,
   originalModule: string,
   symbols: readonly BoundarySymbol[],
   fixtures: readonly SandboxFixture[],
   blockers: ProjectBlocker[],
+  stubText = "",
 ): string {
   const lines = [
     `// Generated runtime for the declarations in ${declarationPath(modulePath).split("/").pop() ?? ""}.`,
@@ -533,6 +537,12 @@ function mockRuntimeFor(
             exported,
           ),
     );
+    exported += 1;
+  }
+  // A barrel's names come from the modules it forwards to, whose runtimes
+  // sit beside their stubs as this one does.
+  for (const [, , specifier] of stubText.matchAll(STAR_EXPORT)) {
+    lines.push(`export * from ${JSON.stringify(specifier)};`);
     exported += 1;
   }
   if (exported === 0) lines.push("export {};");
@@ -620,44 +630,117 @@ export function createMock(origin: string, name?: string): any;
  * exporting those names as values and types, as the worker writes them for
  * the slice's own check. They take the place of the specifier's untyped
  * shorthand, which only works as a value: `import type { X }` from it fails.
+ * An installed package's are patterns (`"zod*"`), so its own types win.
  */
 export interface PackageModules {
   readonly specifiers: readonly string[];
   readonly text: string;
 }
 
+/** Classes Node has and the ES libraries do not, read as both a value and a type. */
+const NODE_CLASSES = [
+  "AbortController",
+  "AbortSignal",
+  "Blob",
+  "BroadcastChannel",
+  "DOMException",
+  "Event",
+  "EventTarget",
+  "File",
+  "FormData",
+  "Headers",
+  "MessageChannel",
+  "MessagePort",
+  "ReadableStream",
+  "Request",
+  "Response",
+  "TextDecoder",
+  "TextEncoder",
+  "TransformStream",
+  "URL",
+  "URLSearchParams",
+  "WebSocket",
+  "WritableStream",
+] as const;
+
+/** Types code reads off Node's own `NodeJS` namespace. */
+const NODE_NAMESPACE_TYPES = [
+  "Dict",
+  "ErrnoException",
+  "Immediate",
+  "Process",
+  "ProcessEnv",
+  "ReadOnlyDict",
+  "ReadableStream",
+  "ReadWriteStream",
+  "Signals",
+  "Timeout",
+  "Timer",
+  "WritableStream",
+] as const;
+
+/**
+ * Node's own modules and globals, untyped: what `@types/node` gives code
+ * the ES libraries alone do not. The slice is type-checked against these
+ * and a generated project builds against them. Where the DOM library
+ * declares a global too, the library's declaration comes first and keeps
+ * its type; the clash is in a declaration file, which `skipLibCheck`
+ * leaves unchecked.
+ */
+export const NODE_GLOBAL_DECLARATIONS: readonly string[] = [
+  'declare module "node:*";',
+  "declare var process: any;",
+  "declare var Buffer: any;",
+  "declare var global: any;",
+  "declare var require: any;",
+  "declare var module: any;",
+  "declare var exports: any;",
+  "declare var __dirname: string;",
+  "declare var __filename: string;",
+  "declare var console: any;",
+  "declare var performance: any;",
+  "declare var crypto: any;",
+  "declare function setTimeout(handler: (...args: any[]) => void, ms?: number, ...args: any[]): any;",
+  "declare function clearTimeout(handle: any): void;",
+  "declare function setInterval(handler: (...args: any[]) => void, ms?: number, ...args: any[]): any;",
+  "declare function clearInterval(handle: any): void;",
+  "declare function setImmediate(handler: (...args: any[]) => void, ...args: any[]): any;",
+  "declare function clearImmediate(handle: any): void;",
+  "declare function queueMicrotask(callback: () => void): void;",
+  "declare function structuredClone<T>(value: T): T;",
+  "declare function fetch(input: any, init?: any): Promise<any>;",
+  "declare function atob(data: string): string;",
+  "declare function btoa(data: string): string;",
+  ...NODE_CLASSES.flatMap((name) => [
+    `type ${name}<T0 = any, T1 = any> = any;`,
+    `declare var ${name}: any;`,
+  ]),
+  "declare namespace NodeJS {",
+  ...NODE_NAMESPACE_TYPES.map((name) => `  type ${name} = any;`),
+  "}",
+];
+
 export function ambientDeclarations(
   packages: readonly string[],
   modules: PackageModules = { specifiers: [], text: "" },
+  installed: ReadonlySet<string> = new Set(),
 ): string {
   const declared = new Set(modules.specifiers);
   const lines = [
     "// The same declarations the slice was type-checked against: Node's",
-    "// modules and globals untyped, and every package untyped. The project",
-    "// installs its approved packages for real; their own types are not",
-    "// consulted, so a contribution is checked against the slice's contract.",
-    'declare module "node:*";',
-    "declare var process: any;",
-    "declare var Buffer: any;",
-    "declare var global: any;",
+    "// modules and globals untyped, and every package untyped. A package the",
+    "// project installs is declared by a pattern, which the compiler",
+    "// consults only when the package brings no types of its own.",
+    ...NODE_GLOBAL_DECLARATIONS,
     "declare var globalThis: any;",
-    "declare var require: any;",
-    "declare var module: any;",
-    "declare var exports: any;",
-    "declare var __dirname: string;",
-    "declare var __filename: string;",
-    "declare var console: any;",
-    "declare function setTimeout(handler: (...args: any[]) => void, ms?: number, ...args: any[]): any;",
-    "declare function clearTimeout(handle: any): void;",
-    "declare function setInterval(handler: (...args: any[]) => void, ms?: number, ...args: any[]): any;",
-    "declare function clearInterval(handle: any): void;",
-    "declare function queueMicrotask(callback: () => void): void;",
-    "declare function structuredClone<T>(value: T): T;",
   ];
-  for (const name of [...new Set(packages)].sort(compare)) {
-    if (!declared.has(name)) lines.push(`declare module "${name}";`);
-    lines.push(`declare module "${name}/*";`);
-  }
+  for (const name of [...new Set(packages)].sort(compare))
+    if (installed.has(name)) {
+      if (!declared.has(name)) lines.push(`declare module "${name}*";`);
+    } else {
+      if (!declared.has(name)) lines.push(`declare module "${name}";`);
+      lines.push(`declare module "${name}/*";`);
+    }
   return `${lines.join("\n")}\n${modules.text}`;
 }
 
@@ -1098,6 +1181,7 @@ export function generateProject(input: ProjectInput): GeneratedProject {
         module.symbols,
         fixtures.filter((item) => item.module === module.module),
         blockers,
+        stub.text,
       ),
       class: "mock",
       public: true,
@@ -1219,6 +1303,7 @@ export function generateProject(input: ProjectInput): GeneratedProject {
           .map(packageNameOf),
       ],
       input.packageModules,
+      new Set(approvedPackages.map((p) => p.name)),
     ),
     class: "harness",
     public: true,

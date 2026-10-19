@@ -362,6 +362,142 @@ function rawOptionsOf(
   return Object.keys(options).length === 0 ? undefined : options;
 }
 
+/** Conditions an `exports` target is read under, types first. */
+const EXPORT_CONDITIONS = [
+  "types",
+  "typings",
+  "import",
+  "module",
+  "node",
+  "default",
+  "require",
+];
+
+/** The target an `exports` map gives a package subpath, or null. */
+export function exportTarget(exports: unknown, subpath: string): string | null {
+  const key = subpath === "" ? "." : `./${subpath}`;
+  const conditional = (value: unknown): string | null => {
+    if (typeof value === "string") return value;
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        const target = conditional(item);
+        if (target !== null) return target;
+      }
+      return null;
+    }
+    if (!isRecord(value)) return null;
+    for (const condition of EXPORT_CONDITIONS)
+      if (condition in value) {
+        const target = conditional(value[condition]);
+        if (target !== null) return target;
+      }
+    return null;
+  };
+  // A string, an array or a map of conditions is the root's alone.
+  if (
+    !isRecord(exports) ||
+    !Object.keys(exports).some((name) => name.startsWith("."))
+  )
+    return key === "." ? conditional(exports) : null;
+  if (key in exports) return conditional(exports[key]);
+  for (const pattern of Object.keys(exports)) {
+    const [prefix, suffix, ...more] = pattern.split("*");
+    if (prefix === undefined || suffix === undefined || more.length > 0)
+      continue;
+    if (
+      key.length >= prefix.length + suffix.length &&
+      key.startsWith(prefix) &&
+      key.endsWith(suffix)
+    ) {
+      const target = conditional(exports[pattern]);
+      return target === null
+        ? null
+        : target.replaceAll(
+            "*",
+            key.slice(prefix.length, key.length - suffix.length),
+          );
+    }
+  }
+  return null;
+}
+
+const SOURCE_EXTENSIONS = [".ts", ".tsx", ".mts", ".cts"];
+
+/**
+ * The repository source a bare specifier of one of the repository's own
+ * packages stands for, by path, or null for any other specifier. The
+ * package's `exports` (or `types`, `module`, `main`) name what it ships,
+ * which is usually a build output the snapshot does not have; a target
+ * under the package's `outDir` is read back under its `rootDir`, as the
+ * build wrote it from there, and a script target that is not an output is
+ * the source itself. Memoized; the resolver never leaves the root.
+ */
+export function workspaceModuleResolver(
+  root: string,
+  packages: () => ReadonlyMap<string, string>,
+): (specifier: string) => string | null {
+  const found = new Map<string, string | null>();
+  const isFile = (path: string) =>
+    isInside(root, path) &&
+    !path.split(/[\\/]/).includes("node_modules") &&
+    existsSync(path) &&
+    statSync(path).isFile();
+  const locate = (specifier: string): string | null => {
+    if (specifier.startsWith(".") || specifier.startsWith("/")) return null;
+    const { name, subpath } = packageSpecifier(specifier);
+    const directory = packages().get(name);
+    if (directory === undefined) return null;
+    const manifest = readJson(join(directory, "package.json"));
+    const own = isRecord(manifest) ? manifest : {};
+    const field = (key: string) => {
+      const value = own[key];
+      return typeof value === "string" && value !== "" ? value : null;
+    };
+    const target =
+      own["exports"] !== undefined
+        ? exportTarget(own["exports"], subpath)
+        : subpath !== ""
+          ? subpath
+          : (field("types") ??
+            field("typings") ??
+            field("module") ??
+            field("main") ??
+            "index");
+    if (target === null) return null;
+    const absolute = resolve(directory, target);
+    const base = absolute.replace(/(\.d)?\.[cm]?[jt]sx?$/, "");
+    const { outDir, rootDir } = loadConfig(
+      root,
+      join(directory, "package.json"),
+    ).options;
+    const built =
+      typeof outDir === "string" &&
+      !relative(outDir, base).startsWith("..") &&
+      !isAbsolute(relative(outDir, base));
+    const bases = built
+      ? [join(rootDir ?? join(directory, "src"), relative(outDir, base)), base]
+      : [base];
+    for (const candidate of bases)
+      for (const extension of SOURCE_EXTENSIONS)
+        for (const path of [
+          `${candidate}${extension}`,
+          join(candidate, `index${extension}`),
+        ])
+          if (isFile(path)) return relative(root, path).replaceAll("\\", "/");
+    // A JavaScript package's own source, when it is not a build output.
+    if (!built && /\.[cm]?jsx?$/.test(absolute) && isFile(absolute))
+      return relative(root, absolute).replaceAll("\\", "/");
+    return null;
+  };
+  return (specifier) => {
+    const hit = found.get(specifier);
+    if (hit !== undefined) return hit;
+    const module = locate(specifier);
+    found.set(specifier, module);
+    return module;
+  };
+}
+
 export function nearestCompilerOptions(
   root: string,
   file: string,

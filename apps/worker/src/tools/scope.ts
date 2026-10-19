@@ -60,6 +60,7 @@ import { loadAbstractions, loadDataModel, loadSeams } from "./context-runs.js";
 import type { ArtifactFile, ToolAdapter, ToolRunInput } from "./adapter.js";
 import { analyseSlice, loadGraph } from "./slice.js";
 import type { LoadedGraph, SliceAnalysis } from "./slice.js";
+import type { PackageTypesFetcher } from "./slice/package-types.js";
 
 /** Candidate requests one run may check before it must submit. */
 export const SCOPE_CHECKS_MAX = 8;
@@ -155,7 +156,10 @@ function checkReport(analysis: SliceAnalysis): string {
   return JSON.stringify(boundarySummary(analysis.contract, analysis.manifest));
 }
 
-export function createScopeAdapter(settings: AgentSettings): ToolAdapter {
+export function createScopeAdapter(
+  settings: AgentSettings,
+  options: { readonly packageTypes?: PackageTypesFetcher } = {},
+): ToolAdapter {
   return {
     name: "scope",
     version: SCOPE_TOOL_VERSION,
@@ -231,6 +235,9 @@ export function createScopeAdapter(settings: AgentSettings): ToolAdapter {
           run: snapshot,
           signal: input.signal,
           log: () => {},
+          ...(options.packageTypes === undefined
+            ? {}
+            : { packageTypes: options.packageTypes }),
           // A check reads its externals from the index when it has every
           // included file; a submission is always read from the source.
           ...(indexed && seams !== null

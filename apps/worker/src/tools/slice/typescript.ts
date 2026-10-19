@@ -1,4 +1,7 @@
-import { declarationPath as declarationPathFor } from "sandbox-factory";
+import {
+  declarationPath as declarationPathFor,
+  relativeSpecifier,
+} from "sandbox-factory";
 import { loadConfig, type LoadedConfig } from "../compiler-config.js";
 export {
   declarationPath as declarationPathFor,
@@ -21,7 +24,7 @@ export { loadConfig } from "../compiler-config.js";
  */
 
 import { existsSync } from "node:fs";
-import { dirname, isAbsolute, relative, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import type { BoundaryModule, CutEdge, SliceBlocker } from "sandbox-factory";
 import ts from "typescript-compiler";
 
@@ -250,14 +253,165 @@ export function importsOf(source: ts.SourceFile): ImportFact[] {
   return facts;
 }
 
-/** A compiler host that reads only the source tree and the compiler's libs. */
-export function boundedHost(root: string, options: ts.CompilerOptions) {
+const EXTENSIONS: readonly ts.Extension[] = [
+  ts.Extension.Dmts,
+  ts.Extension.Dcts,
+  ts.Extension.Dts,
+  ts.Extension.Mts,
+  ts.Extension.Cts,
+  ts.Extension.Tsx,
+  ts.Extension.Ts,
+  ts.Extension.Mjs,
+  ts.Extension.Cjs,
+  ts.Extension.Jsx,
+  ts.Extension.Js,
+  ts.Extension.Json,
+];
+
+/** Where a snapshot's bare specifiers resolve, having no node_modules. */
+export interface ModuleFallbacks {
+  /** The repository path of one of its own packages; see `workspaceModuleResolver`. */
+  readonly workspaceModule?: (specifier: string) => string | null;
+  /** A directory whose node_modules holds fetched package types. */
+  readonly packageTypes?: string | null;
+}
+
+/**
+ * Resolves imports as the compiler does, then a bare specifier it cannot
+ * resolve as one of the repository's own packages, then from the fetched
+ * package types, as if imported beside their node_modules.
+ */
+export function resolveModulesWith(
+  host: ts.CompilerHost,
+  root: string,
+  options: ts.CompilerOptions,
+  fallbacks: ModuleFallbacks,
+): void {
+  const cache = ts.createModuleResolutionCache(root, (name) => name, options);
+  const typesCache =
+    fallbacks.packageTypes == null
+      ? undefined
+      : ts.createModuleResolutionCache(
+          fallbacks.packageTypes,
+          (name) => name,
+          options,
+        );
+  host.resolveModuleNameLiterals = (
+    literals,
+    containingFile,
+    redirected,
+    compilerOptions,
+    containingSourceFile,
+  ) =>
+    literals.map((literal) => {
+      const mode = ts.getModeForUsageLocation(
+        containingSourceFile,
+        literal,
+        compilerOptions,
+      );
+      const resolved = ts.resolveModuleName(
+        literal.text,
+        containingFile,
+        compilerOptions,
+        host,
+        cache,
+        redirected,
+        mode,
+      );
+      if (resolved.resolvedModule !== undefined) return resolved;
+      if (literal.text.startsWith(".") || literal.text.startsWith("/"))
+        return resolved;
+      const module = fallbacks.workspaceModule?.(literal.text) ?? null;
+      if (module !== null) {
+        const resolvedFileName = resolve(root, module);
+        return {
+          resolvedModule: {
+            resolvedFileName,
+            extension:
+              EXTENSIONS.find((extension) =>
+                resolvedFileName.endsWith(extension),
+              ) ?? ts.Extension.Ts,
+            isExternalLibraryImport: false,
+          },
+        };
+      }
+      if (fallbacks.packageTypes == null) return resolved;
+      const typed = ts.resolveModuleName(
+        literal.text,
+        join(fallbacks.packageTypes, "index.ts"),
+        compilerOptions,
+        host,
+        typesCache,
+        undefined,
+        mode,
+      );
+      return typed.resolvedModule === undefined ? resolved : typed;
+    });
+}
+
+/**
+ * A declaration file with the module specifiers `to` maps replaced, in
+ * imports, re-exports and `import("...")` types; the rest is left as is.
+ */
+export function rewriteModuleSpecifiers(
+  text: string,
+  to: (specifier: string) => string | null,
+): string {
+  const source = ts.createSourceFile(
+    "m.d.ts",
+    text,
+    ts.ScriptTarget.Latest,
+    true,
+  );
+  const edits: { start: number; end: number; text: string }[] = [];
+  const replace = (literal: ts.Node | undefined) => {
+    if (literal === undefined || !ts.isStringLiteralLike(literal)) return;
+    const next = to(literal.text);
+    if (next !== null && next !== literal.text)
+      edits.push({
+        start: literal.getStart(source),
+        end: literal.getEnd(),
+        text: JSON.stringify(next),
+      });
+  };
+  const visit = (node: ts.Node) => {
+    if (ts.isImportDeclaration(node) || ts.isExportDeclaration(node))
+      replace(node.moduleSpecifier);
+    else if (
+      ts.isImportEqualsDeclaration(node) &&
+      ts.isExternalModuleReference(node.moduleReference)
+    )
+      replace(node.moduleReference.expression);
+    else if (ts.isImportTypeNode(node) && ts.isLiteralTypeNode(node.argument))
+      replace(node.argument.literal);
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  let result = text;
+  for (const edit of edits.sort((a, b) => b.start - a.start))
+    result = `${result.slice(0, edit.start)}${edit.text}${result.slice(edit.end)}`;
+  return result;
+}
+
+/**
+ * A compiler host that reads only the source tree, the compiler's libs
+ * and the fetched package types.
+ */
+export function boundedHost(
+  root: string,
+  options: ts.CompilerOptions,
+  fallbacks: ModuleFallbacks = {},
+) {
   const libDir = dirname(ts.getDefaultLibFilePath(options));
   const inside = (base: string, path: string) => {
     const rel = relative(base, resolve(path));
     return rel === "" || (!isAbsolute(rel) && !rel.startsWith(".."));
   };
-  const allowed = (path: string) => inside(root, path) || inside(libDir, path);
+  const types = fallbacks.packageTypes ?? null;
+  const allowed = (path: string) =>
+    inside(root, path) ||
+    inside(libDir, path) ||
+    (types !== null && inside(types, path));
   const host = ts.createCompilerHost(options, true);
   const base = { ...host };
   host.fileExists = (path) => allowed(path) && base.fileExists(path);
@@ -269,6 +423,8 @@ export function boundedHost(root: string, options: ts.CompilerOptions) {
   host.realpath = (path) => path;
   host.getCurrentDirectory = () => root;
   host.writeFile = () => {};
+  if (fallbacks.workspaceModule !== undefined || types !== null)
+    resolveModulesWith(host, root, options, fallbacks);
   return host;
 }
 
@@ -854,6 +1010,16 @@ export interface TypeScriptBoundary {
   readonly packages: ReadonlyMap<string, ReadonlySet<string>>;
   /** The options the fixture compiles with. */
   readonly compilerOptions: ts.CompilerOptions;
+  /**
+   * Imports of the repository's own packages, which resolve to their
+   * source: the cuts and internal imports they add, with specifiers, and
+   * each specifier's module.
+   */
+  readonly workspace: {
+    readonly outbound: readonly CutEdge[];
+    readonly internal: readonly CutEdge[];
+    readonly modules: ReadonlyMap<string, string>;
+  };
 }
 
 export interface TypeScriptBoundaryInput {
@@ -864,6 +1030,10 @@ export interface TypeScriptBoundaryInput {
   readonly texts: ReadonlyMap<string, string>;
   /** Defaults to `PROGRAM_FILES_MAX`. */
   readonly maxProgramFiles?: number;
+  /** The source of a repository package's specifier; see `workspaceModuleResolver`. */
+  readonly workspaceModule?: (specifier: string) => string | null;
+  /** A directory whose node_modules holds fetched package types. */
+  readonly packageTypes?: string | null;
 }
 
 const compare = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
@@ -908,7 +1078,16 @@ export function extractTypeScriptBoundary(
       });
   }
   const options = stubExtractionOptions(config.options);
-  const host = boundedHost(root, options);
+  const workspaceModule = input.workspaceModule ?? (() => null);
+  const host = boundedHost(root, options, {
+    workspaceModule,
+    packageTypes: input.packageTypes ?? null,
+  });
+  const workspaceModules = new Map<string, string>();
+  const workspaceEdges = {
+    outbound: [] as CutEdge[],
+    internal: [] as CutEdge[],
+  };
   const maxFiles = input.maxProgramFiles ?? PROGRAM_FILES_MAX;
   let parsed = 0;
   const parse = host.getSourceFile.bind(host);
@@ -946,8 +1125,11 @@ export function extractTypeScriptBoundary(
       configs: [...configs].sort(compare),
       packages: new Map(),
       compilerOptions: config.options,
+      workspace: { outbound: [], internal: [], modules: new Map() },
     };
   }
+  const isRelativeSpecifier = (specifier: string) =>
+    specifier.startsWith(".") || specifier.startsWith("/");
   const resolveSpecifier = (specifier: string, from: string) => {
     const resolved = ts.resolveModuleName(
       specifier,
@@ -955,8 +1137,15 @@ export function extractTypeScriptBoundary(
       options,
       host,
     ).resolvedModule;
-    if (resolved === undefined || resolved.isExternalLibraryImport === true)
-      return null;
+    if (resolved === undefined) {
+      // One of the repository's own packages, read from its source.
+      const module = isRelativeSpecifier(specifier)
+        ? null
+        : workspaceModule(specifier);
+      if (module !== null) workspaceModules.set(specifier, module);
+      return module;
+    }
+    if (resolved.isExternalLibraryImport === true) return null;
     const path = rel(resolved.resolvedFileName);
     return path.startsWith("..") || isAbsolute(path) ? null : path;
   };
@@ -966,8 +1155,6 @@ export function extractTypeScriptBoundary(
     list.add(file);
     packages.set(specifier, list);
   };
-  const isRelativeSpecifier = (specifier: string) =>
-    specifier.startsWith(".") || specifier.startsWith("/");
   type Target =
     | { readonly module: string }
     | { readonly unresolved: true }
@@ -988,22 +1175,38 @@ export function extractTypeScriptBoundary(
     module: string,
     names: RequestedNames,
     by: string,
-  ) => {
+  ): boolean => {
     const entry = into.get(module) ?? {
       names: new Set<string>(),
       importedBy: new Set<string>(),
     };
+    const before = entry.names === ALL ? -1 : entry.names.size;
     if (names === ALL) entry.names = ALL;
     else if (entry.names !== ALL)
       for (const name of names) entry.names.add(name);
     entry.importedBy.add(by);
+    const grew =
+      !into.has(module) ||
+      (entry.names === ALL ? before !== -1 : entry.names.size !== before);
     into.set(module, entry);
+    return grew;
   };
   const included = new Set(input.included);
   const requests = new Map<
     string,
     { names: Set<string> | typeof ALL; importedBy: Set<string> }
   >();
+  // What an import asks of each module, apart from what a barrel's
+  // `export *` forwards to it on the chance it has it.
+  const direct = new Map<
+    string,
+    { names: Set<string> | typeof ALL; importedBy: Set<string> }
+  >();
+  /** An import's request; true when it asks `module` for more than before. */
+  const asks = (module: string, names: RequestedNames, by: string) => {
+    merge(direct, module, names, by);
+    return merge(requests, module, names, by);
+  };
   const surface = new Map<
     string,
     { names: Set<string> | typeof ALL; importedBy: Set<string> }
@@ -1015,8 +1218,21 @@ export function extractTypeScriptBoundary(
     for (const fact of importsOf(source)) {
       const target = classify(fact.specifier, file);
       if ("module" in target) {
-        if (!included.has(target.module))
-          merge(requests, target.module, fact.names, file);
+        if (!included.has(target.module)) asks(target.module, fact.names, file);
+        // A package of the repository is imported by its name, which the
+        // generated project rewrites to the module like any path alias.
+        if (workspaceModules.get(fact.specifier) === target.module)
+          (included.has(target.module)
+            ? workspaceEdges.internal
+            : workspaceEdges.outbound
+          ).push({
+            from: file,
+            to: target.module,
+            relation: "imports",
+            specifier: fact.specifier,
+            location: `L${fact.line}`,
+            targetSymbol: null,
+          });
       } else if ("package" in target) recordPackage(fact.specifier, file);
       else
         blockers.push({
@@ -1031,8 +1247,7 @@ export function extractTypeScriptBoundary(
   // names a module the slice touches; its symbols are listed by name.
   for (const edge of input.outbound)
     if (!requests.has(edge.to) && isScriptPath(edge.to))
-      merge(
-        requests,
+      asks(
         edge.to,
         edge.targetSymbol === null
           ? ALL
@@ -1092,7 +1307,12 @@ export function extractTypeScriptBoundary(
     return text;
   };
   const stubs = new Map<string, { module: string; text: string }>();
-  const outbound: BoundaryModule[] = [];
+  const outbound = new Map<string, BoundaryModule>();
+  // Names each module declares itself, and where its `export *` lead: null
+  // for a package or an included file, which may have any name.
+  const declares = new Map<string, ReadonlySet<string>>();
+  const stars = new Map<string, readonly (string | null)[]>();
+  const forwards = new Map<string, ReadonlySet<string>>();
   const queue = [...requests.keys()].sort(compare);
   const done = new Set<string>();
   while (queue.length > 0) {
@@ -1119,7 +1339,7 @@ export function extractTypeScriptBoundary(
         location: null,
         detail: "No declaration could be emitted for this module.",
       });
-      outbound.push({
+      outbound.set(module, {
         module,
         symbols:
           request.names === ALL
@@ -1133,22 +1353,53 @@ export function extractTypeScriptBoundary(
       continue;
     }
     const filtered = filterDeclaration(text, request.names);
+    // A name only a barrel forwarded is judged at the barrel, below.
+    const wanted = direct.get(module)?.names;
     for (const name of filtered.missing)
-      blockers.push({
-        code: "declaration_incomplete",
-        file: module,
-        location: null,
-        detail: `${name} is not exported by this module.`,
-      });
-    const follow = [...filtered.imports, ...filtered.forwarded];
-    for (const next of follow) {
+      if (wanted === ALL || wanted?.has(name) === true)
+        blockers.push({
+          code: "declaration_incomplete",
+          file: module,
+          location: null,
+          detail: `${name} is not exported by this module.`,
+        });
+    declares.set(module, new Set(filtered.symbols.map(({ name }) => name)));
+    forwards.set(
+      module,
+      new Set(
+        filtered.forwarded.flatMap(({ names }) =>
+          names === ALL ? [] : [...names],
+        ),
+      ),
+    );
+    const leads: (string | null)[] = [];
+    // A stub names a module by a relative path, as the generated project
+    // has neither the repository's packages nor its path aliases.
+    const relocated = new Map<string, string>();
+    for (const next of [...filtered.imports, ...filtered.forwarded]) {
+      const star = filtered.forwarded.includes(next);
       const target = classify(next.specifier, module);
       if ("module" in target) {
+        if (!isRelativeSpecifier(next.specifier))
+          relocated.set(
+            next.specifier,
+            relativeSpecifier(module, target.module),
+          );
+        if (star)
+          leads.push(included.has(target.module) ? null : target.module);
         if (included.has(target.module)) continue;
-        merge(requests, target.module, next.names, module);
-        if (!done.has(target.module)) queue.push(target.module);
-      } else if ("package" in target) recordPackage(next.specifier, module);
-      else
+        // Asked for more than its stub has, a module is stubbed again.
+        const grew = star
+          ? merge(requests, target.module, next.names, module)
+          : asks(target.module, next.names, module);
+        if (grew) {
+          done.delete(target.module);
+          queue.push(target.module);
+        }
+      } else if ("package" in target) {
+        if (star) leads.push(null);
+        recordPackage(next.specifier, module);
+      } else
         blockers.push({
           code: "unresolved_import",
           file: module,
@@ -1156,15 +1407,49 @@ export function extractTypeScriptBoundary(
           detail: `${next.specifier} does not resolve to a repository file.`,
         });
     }
+    stars.set(module, leads);
     queue.sort(compare);
     const path = stubPathFor(module);
-    stubs.set(path, { module, text: filtered.text });
-    outbound.push({
+    stubs.set(path, {
+      module,
+      text:
+        relocated.size === 0
+          ? filtered.text
+          : rewriteModuleSpecifiers(
+              filtered.text,
+              (specifier) => relocated.get(specifier) ?? null,
+            ),
+    });
+    outbound.set(module, {
       module,
       symbols: filtered.symbols.map((symbol) => ({ ...symbol })),
       importedBy: [...request.importedBy].sort(compare),
       stubPath: path,
     });
+  }
+  // A name a barrel forwards is missing only when no module its `export *`
+  // lead to, however deep, declares it.
+  const provides = (module: string, name: string, seen: Set<string>) => {
+    if (declares.get(module)?.has(name) === true) return true;
+    if (seen.has(module)) return false;
+    seen.add(module);
+    return (stars.get(module) ?? []).some(
+      (lead): boolean => lead === null || provides(lead, name, seen),
+    );
+  };
+  for (const [module, names] of forwards) {
+    const wanted = direct.get(module)?.names;
+    for (const name of names)
+      if (
+        (wanted === ALL || wanted?.has(name) === true) &&
+        !provides(module, name, new Set())
+      )
+        blockers.push({
+          code: "declaration_incomplete",
+          file: module,
+          location: null,
+          detail: `${name} is not exported by this module.`,
+        });
   }
   const inbound: BoundaryModule[] = [];
   for (const [module, request] of [...surface.entries()].sort(([a], [b]) =>
@@ -1217,7 +1502,9 @@ export function extractTypeScriptBoundary(
   };
   return {
     extractorVersion: TYPESCRIPT_EXTRACTOR_VERSION,
-    outbound: outbound.sort((a, b) => compare(a.module, b.module)),
+    outbound: [...outbound.values()].sort((a, b) =>
+      compare(a.module, b.module),
+    ),
     inbound,
     stubs: [...stubs.entries()]
       .sort(([a], [b]) => compare(a, b))
@@ -1226,5 +1513,10 @@ export function extractTypeScriptBoundary(
     configs: [...configs].sort(compare),
     packages,
     compilerOptions: config.options,
+    workspace: {
+      outbound: workspaceEdges.outbound,
+      internal: workspaceEdges.internal,
+      modules: workspaceModules,
+    },
   };
 }

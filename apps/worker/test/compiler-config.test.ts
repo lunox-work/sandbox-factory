@@ -5,9 +5,11 @@ import { join, relative } from "node:path";
 import { test } from "node:test";
 import ts from "typescript-compiler";
 import {
+  exportTarget,
   loadConfig,
   nearestCompilerOptions,
   pnpmWorkspacePatterns,
+  workspaceModuleResolver,
   workspacePackages,
 } from "../src/tools/compiler-config.js";
 
@@ -210,6 +212,57 @@ test("workspace packages are found from pnpm, Lerna and nested or recursive glob
     await writeFile(join(root, "lerna.json"), "{}");
     assert.deepEqual([...workspacePackages(root).keys()], ["@acme/web"]);
     assert.deepEqual(pnpmWorkspacePatterns("catalog:\n  zod: 1\n"), []);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("an exports map gives a subpath its target, types first, patterns too", () => {
+  const exports = {
+    ".": { import: "./dist/index.js", types: "./dist/index.d.ts" },
+    "./sub": ["./dist/sub.js"],
+    "./parts/*": { node: { default: "./dist/parts/*.js" } },
+  };
+  assert.equal(exportTarget(exports, ""), "./dist/index.d.ts");
+  assert.equal(exportTarget(exports, "sub"), "./dist/sub.js");
+  assert.equal(exportTarget(exports, "parts/a"), "./dist/parts/a.js");
+  assert.equal(exportTarget(exports, "missing"), null);
+  // A string or a bare map of conditions is the root's alone.
+  assert.equal(exportTarget("./index.js", ""), "./index.js");
+  assert.equal(exportTarget({ default: "./index.js" }, "sub"), null);
+});
+
+test("a workspace specifier resolves to the source its build output came from, and nothing else does", async () => {
+  const root = await mkdtemp(join(tmpdir(), "workspace-module-"));
+  try {
+    const write = async (path: string, text: string) => {
+      await mkdir(join(root, path, ".."), { recursive: true });
+      await writeFile(join(root, path), text);
+    };
+    await write("package.json", JSON.stringify({ workspaces: ["pkgs/*"] }));
+    await write(
+      "pkgs/built/package.json",
+      JSON.stringify({ name: "built", main: "./out/index.js" }),
+    );
+    await write(
+      "pkgs/built/tsconfig.json",
+      JSON.stringify({ compilerOptions: { rootDir: "lib", outDir: "out" } }),
+    );
+    await write("pkgs/built/lib/index.ts", "export const a = 1;\n");
+    await write(
+      "pkgs/plain/package.json",
+      JSON.stringify({ name: "plain", main: "./index.js" }),
+    );
+    await write("pkgs/plain/index.js", "export const b = 1;\n");
+    await write("pkgs/empty/package.json", JSON.stringify({ name: "empty" }));
+    const resolve = workspaceModuleResolver(root, () =>
+      workspacePackages(root),
+    );
+    assert.equal(resolve("built"), "pkgs/built/lib/index.ts");
+    assert.equal(resolve("plain"), "pkgs/plain/index.js");
+    assert.equal(resolve("empty"), null);
+    assert.equal(resolve("zod"), null);
+    assert.equal(resolve("./built"), null);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
