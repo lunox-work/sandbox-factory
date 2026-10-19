@@ -459,6 +459,12 @@ export interface VocabularyLeak {
   readonly files: readonly string[];
 }
 
+/** Where a term was found in a text: `text.slice(start, end)`. */
+export interface TermMatch {
+  readonly start: number;
+  readonly end: number;
+}
+
 /**
  * Every match of `term` in `text` that starts and ends on a word boundary:
  * not a letter, or a case change an identifier marks (`myAcme`, `acmeOrders`,
@@ -467,9 +473,9 @@ export interface VocabularyLeak {
  * or ends on a digit (`web3`) needs a non-digit there too, so `web3` is not
  * found in `web30`.
  */
-function countTerm(text: string, term: string): number {
+export function termMatches(text: string, term: string): TermMatch[] {
   const pattern = new RegExp(term.split("-").join("[\\s_\\-./]*"), "giu");
-  let count = 0;
+  const matches: TermMatch[] = [];
   for (const match of text.matchAll(pattern)) {
     const start = match.index;
     const end = start + match[0].length;
@@ -490,10 +496,13 @@ function countTerm(text: string, term: string): number {
       (is(UPPER, after) &&
         is(UPPER, text[end - 1]) &&
         is(LOWER, text[end + 1]));
-    if (opens && closes) count += 1;
+    if (opens && closes) matches.push({ start, end });
   }
-  return count;
+  return matches;
 }
+
+const countTerm = (text: string, term: string) =>
+  termMatches(text, term).length;
 
 /** Each term found in the files' paths or text, in the vocabulary's order. */
 export function vocabularyLeaks(

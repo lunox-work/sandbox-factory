@@ -95,6 +95,33 @@ test("alias rules are validated as a set: empty, identity, duplicates, chains an
   );
 });
 
+test("two text rules that differ only by case are distinct: they validate, apply and invert exactly", () => {
+  const rules = [
+    rule(" lunox ", " acme ", "text"),
+    rule(" LUNOX ", " ACME ", "text"),
+  ];
+  assert.equal(validateAliasRules(rules).ok, true);
+  const file = { path: "src/note.ts", text: "// lunox and LUNOX and Lunox\n" };
+  const result = applyAliases([file], rules);
+  assert.equal(result.ok, true);
+  // Each spelling by its own rule; the third, matched by neither, stays.
+  assert.equal(result.files[0]?.text, "// acme and ACME and Lunox\n");
+  assert.deepEqual(result.applied, [1, 1]);
+  const back = renameFile(
+    { path: file.path, text: result.files[0]?.text ?? "" },
+    invertAliasRules(rules),
+  );
+  assert.equal(back.text, file.text);
+  // Identifier and path rules keep the refusal, on each side that differs.
+  for (const kind of ["identifier", "path"] as const) {
+    const codes = validateAliasRules([
+      rule("lunox", "acme", kind),
+      rule("LUNOX", "ACME", kind),
+    ]).problems.map((problem) => problem.code);
+    assert.deepEqual(codes, ["casing_variant", "casing_variant"], kind);
+  }
+});
+
 test("aliases apply to whole identifiers only, rename paths, and prove the inverse", () => {
   const files = [
     {

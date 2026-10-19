@@ -3194,8 +3194,8 @@ test("a sandbox that could not be made says why, and the bounty stays as it was"
       () =>
         json(
           {
-            error: "This bounty already has a sandbox.",
-            code: "bounty_has_sandbox",
+            error: "Only a source repository can back a sandbox.",
+            code: "repo_role",
           },
           409,
         ),
@@ -3219,12 +3219,51 @@ test("a sandbox that could not be made says why, and the bounty stays as it was"
   await waitFor(() => expect(generate.hasAttribute("disabled")).toBe(false));
   await userEvent.click(generate);
   expect((await within(sandboxPart).findByRole("alert")).textContent).toContain(
-    "This bounty already has a sandbox.",
+    "Only a source repository can back a sandbox.",
   );
   // Asked for by the bounty alone.
   expect(state.calls.find(({ method }) => method === "POST")?.body).toEqual({
     bountyId: "bty_7",
   });
+});
+
+test("a sandbox already started for the bounty, as its price was approved, is no error to the click", async () => {
+  const state = server([
+    [
+      "POST",
+      "/sandboxes/start",
+      () =>
+        json(
+          {
+            error: "This bounty already has a sandbox.",
+            code: "bounty_has_sandbox",
+          },
+          409,
+        ),
+    ],
+    [
+      "GET",
+      "/bounties/bty_7",
+      () => json({ bounty: detail({ ...SCOPED, proposal: approvedSummary }) }),
+    ],
+  ]);
+  vi.stubGlobal("fetch", state.fetchMock);
+  window.history.replaceState(null, "", "/bounties/acme/bty_7?tab=sandbox");
+  render(<Shell {...inAcme("owner")} />);
+
+  const panel = await screen.findByTestId("bounty-detail");
+  const sandboxPart = within(panel).getByRole("region", { name: "Sandbox" });
+  const generate = await within(sandboxPart).findByRole("button", {
+    name: "Generate",
+  });
+  await waitFor(() => expect(generate.hasAttribute("disabled")).toBe(false));
+  await userEvent.click(generate);
+  await waitFor(() =>
+    expect(
+      state.calls.filter(({ url }) => url.includes("/bounties/bty_7")).length,
+    ).toBeGreaterThan(1),
+  );
+  expect(within(sandboxPart).queryByRole("alert")).toBeNull();
 });
 
 test("a bounty's row leaves its sandbox to the bounty", async () => {

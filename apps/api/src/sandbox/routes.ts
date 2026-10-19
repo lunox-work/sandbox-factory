@@ -114,8 +114,8 @@ const failed = (c: Context, refusal: Failure): Response =>
  * it. Null when it touches none, which a generated version is for, or
  * several, which are generated from until they can be cut together.
  */
-async function touchedSource(
-  options: SandboxRouteOptions,
+export async function touchedSource(
+  options: Pick<SandboxRouteOptions, "proposals" | "repos">,
   owner: string,
   bountyId: string,
 ): Promise<string | null> {

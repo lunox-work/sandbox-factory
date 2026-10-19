@@ -5,11 +5,14 @@
  * A rule is an explicit pair with a kind and a scope. Rules are ordered,
  * and applied in that order; they are validated as a set before any text
  * is touched, because two rules that look harmless alone can interact (one
- * rule's output is another's input, two rules share a target, two names
- * differ only by case). Application is deterministic and textual, bounded
- * to identifier or path tokens so a name inside a longer identifier is
- * never touched, and it is checked to be reversible: applying the inverse
- * table to the output must give the input back byte for byte. A
+ * rule's output is another's input, two rules share a target, two
+ * identifier or path names differ only by case). Application is
+ * deterministic and textual, bounded to identifier or path tokens so a name
+ * inside a longer identifier is never touched, and it is checked to be
+ * reversible: applying the inverse table to the output must give the input
+ * back byte for byte. A text rule matches its exact, case-sensitive
+ * characters and is inverted the same way, so two text rules that differ
+ * only by case are distinct and both hold. A
  * transformation that cannot be mapped back is refused, never silently
  * dropped. Redaction of implementation is not a rename and has no place
  * here.
@@ -151,6 +154,12 @@ export function validateAliasRules(
         detail: `${rule.after} is already the target of rule ${shared}.`,
       });
     else targets.set(targetKey, index);
+    // Identifier and path names that differ only by case are refused. Text
+    // is exempt: a text rule is applied with an exact, case-sensitive
+    // pattern and inverted exactly, so ` lunox ` → ` acme ` beside
+    // ` LUNOX ` → ` ACME ` is unambiguous both ways, and it is how a
+    // spelling no identifier rule can reach is covered.
+    if (rule.kind === "text") return;
     for (const [name, side] of [
       [rule.before, "source"],
       [rule.after, "target"],

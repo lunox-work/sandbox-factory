@@ -72,6 +72,7 @@ import { jiraClientFor, jiraClientsFor } from "./jira/credential.js";
 import { createApp } from "./routes.js";
 import { SandboxCutter } from "./sandbox/cutter.js";
 import { SandboxPreparer } from "./sandbox/preparer.js";
+import { touchedSource } from "./sandbox/routes.js";
 import { versionService } from "./sandbox/version-service.js";
 import { syncGithub } from "./bounties/context.js";
 import {
@@ -570,7 +571,7 @@ const sandboxCutter =
         onError: (code, error) => console.error(code, describeError(error)),
       });
 /**
- * Approved bounties' sandboxes, prepared once their profile is ready
+ * Approved bounties' sandboxes, started once their profile is ready
  * (`sandbox/preparer.ts`), in workspaces that have not turned it off.
  */
 const sandboxPreparer =
@@ -582,10 +583,10 @@ const sandboxPreparer =
         artifacts: sandbox.artifacts,
         proposals: bountyProposals,
         bounties,
-        organizationNames: sandbox.organizationNames,
-        ensureWorker: () => workerLauncher.ensureWorker(),
-        removeObject: (key) => sandbox.objects.remove(key),
-        maxActive: env.MAX_ACTIVE_RUNS_PER_ORG,
+        sandboxes: sandboxStore,
+        touchedSource: (owner, bountyId) =>
+          touchedSource(sandbox, owner, bountyId),
+        slice: versionService(sandbox).slice,
         onError: (code, error) =>
           console.error(
             code,

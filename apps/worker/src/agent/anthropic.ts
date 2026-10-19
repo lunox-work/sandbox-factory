@@ -2,7 +2,8 @@
  * The Anthropic model behind the agent loop.
  *
  * One streamed Messages call per turn on the beta endpoint, for the
- * server-side refusal fallback. Adaptive thinking at high effort, strict
+ * server-side refusal fallback. Adaptive thinking at the effort the agent
+ * asks for (`AgentEffort`), strict
  * tool schemas, and automatic prompt caching: the loop resends a growing
  * transcript every turn, so the cached prefix is most of each request. An
  * authentication, permission or unknown-model failure is the worker's
@@ -49,7 +50,7 @@ export function createAnthropicModel(options: {
               })),
               messages: [...request.messages],
               thinking: { type: "adaptive" },
-              output_config: { effort: "high" },
+              output_config: { effort: request.effort },
               cache_control: { type: "ephemeral" },
               betas: ["server-side-fallback-2026-07-01"],
               fallbacks: "default",

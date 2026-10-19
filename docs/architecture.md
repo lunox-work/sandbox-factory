@@ -411,10 +411,28 @@ a draft as `POST .../:id/versions` does and queues its build
 (201). A 202 remembers the request on `sandbox_source.cut_requested_*`, and
 `apps/api/src/sandbox/cutter.ts` cuts it once the profile settles. A live
 publication refuses slicing (`published`). A sliced draft starts with no
-fixtures, hidden tests or pseudonyms; a build writes each it lacks with an
-agent (`apps/worker/src/tools/fixtures.ts`, `hidden-tests.ts`,
-`pseudonyms.ts`), keeps a set only once its check passes, and settles them on
-the draft when the run commits (`recordBuildOutput`). Every build scans the
+fixtures, hidden tests or pseudonyms, and no model stands between its cut and
+its first baseline. Fixtures come only from a `fixtures` run attached to the
+draft, else it builds with none (recording mocks, the default walkthrough). The name
+table is drafted by rule (`packages/core/src/sandbox/pseudonyms.ts`: workspace
+package imports become relative paths, vocabulary terms become placeholders),
+and only a draft the build's check refuses goes to the pseudonyms agent
+(`apps/worker/src/tools/pseudonyms.ts`), which starts from it. The check
+also refuses an import rule whose relative path reaches no generated file
+(`unresolvedImportRules`), and a mock runtime is named by its public path, so
+a renamed cut module keeps its fixtures. Only the
+vocabulary is renamed by rule; other names that say whose code it is are not.
+Hidden tests are written by an agent beside the first
+baseline (`hidden-tests.ts`), its first prompt quoting the project and a
+test file per scenario drafted by rule (`hiddenTestScaffold`: the path, the
+imports that resolve from it, the steps as comments); it may
+submit the set its last passing run ran without writing it again. The build
+reads the slice, the preparation and the repository's names at once, and
+shows its preview while the baseline runs. Agents run
+at the effort their work needs (`AgentEffort`): `medium` where a
+deterministic check decides (scope, hidden tests, pseudonyms). Each set
+is kept only once its check passes, and settles on the draft when the run
+commits (`recordBuildOutput`). Every build scans the
 public files for the workspace's names (`packages/core/src/sandbox/vocabulary.ts`,
 passed as the build's and starter's `vocabulary`; the organization's name,
 handle and repository owner by their distinctive words too, and the scope, or
@@ -433,11 +451,19 @@ errors the stubs add: one the source shares under untyped packages is kept as
 `compilation.untypedPackageErrors`, for the sandbox build to check against the
 packages it installs, whose own types win over the generated declarations.
 
-**Preparation.** Once a bounty's profile is ready and its price approved,
-`apps/api/src/sandbox/preparer.ts` queues a `fixtures` run that also writes the
-name table, named on `bounty_profile.prepared_run_id`, so the first cut builds
-with them; a wide slice nobody approved is not prepared.
-`workspace_setting.prepare_sandboxes` turns it off (`GET`/`PATCH
+**Preparation.** Once a bounty's profile is ready and its price approved, and
+the bounty has no sandbox, `apps/api/src/sandbox/preparer.ts` starts its
+sandbox as a Sandbox click would, as the price's approver: made, cut and
+built, hidden tests included, so a later click finds it there
+(`bounty_has_sandbox`, which the page reads as done). What the cut would
+refuse is refused before the sandbox is made (`cutRefusal`), so none is left
+without a version. A held step, a bounty
+touching no single repository, and a wide slice nobody approved are left for
+a person, and not read again by a timer pass until a prompt or a change; a
+build refused at the cap becomes a pending cut. Organizations are worked on
+four at a time. Older profiles
+name a `fixtures` run on `bounty_profile.prepared_run_id`, whose fixtures and
+table a build still takes. `workspace_setting.prepare_sandboxes` turns it off (`GET`/`PATCH
 .../settings`, owners and admins).
 
 **Publishing.** `POST .../sandboxes/versions/:vid/publish` (owners and
@@ -581,7 +607,8 @@ never by hand from the repository page.
 read-only tools and proposes entry points and a budget; `check_scope` runs the
 slice computation and an answer is recorded only when it agrees. With
 succeeded `abstractions` and `data_model` runs it also reads module surfaces
-and the data model. A `fixtures` run writes mocked behaviour and the
+and the data model, and its first prompt names the modules that share the
+spec's words (`apps/worker/src/agent/scope-candidates.ts`). A `fixtures` run writes mocked behaviour and the
 walkthrough, type-checked against the slice's stubs. Transcripts are never
 stored. Agent runs need `ANTHROPIC_API_KEY` and `AGENT_MODEL` on the worker;
 without them they fail `agent_unavailable`.

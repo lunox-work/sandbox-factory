@@ -135,7 +135,7 @@ A submission is graded by these tests, so write them so that it can only pass by
 
 The toolchain is fixed: Node 22, TypeScript 5.9, ES modules. Tests use \`node:test\` and \`node:assert/strict\`. Import the project's code with relative paths from the test's folder and \`.js\` extensions; from \`tests/private/\` a file at \`src/feature.ts\` is \`../../src/feature.js\`. Cut modules are recording mocks; import \`{ mockImplementation, recordedCalls, resetMocks }\` from \`../../sandbox/mock.js\` to give a mocked call behaviour or to check what the code asked of it. Packages compile as \`any\`. Nothing may reach the network, a database or any outside service.
 
-Read the project with the repository tools: they show the developer's project as it is built, with its public tests, walkthrough and mocks. Use \`run_hidden_tests\` to build the project with your tests and run its baseline in a fresh job; it shows each step, what each test did against what you said it would, and the output of those that surprised you. Runs are limited. Finish by calling \`submit_hidden_tests\` once with a short summary of what the tests check. It runs the baseline again and is accepted when it passes: the project builds and runs, the public tests pass and each hidden test does what you said it would.`;
+The files you need most are quoted below, so write from them rather than reading them again; the repository tools show the rest of the developer's project as it is built. The tests compile under the quoted \`tsconfig.json\`, so write to its strictness: under \`noUncheckedIndexedAccess\` an indexed element or a \`match\` group may be \`undefined\` and must be narrowed before use. Use \`run_hidden_tests\` to build the project with your tests and run its baseline in a fresh job; it shows each step, what each test did against what you said it would, and the output of those that surprised you. Runs are limited. Finish by calling \`submit_hidden_tests\` once with a short summary of what the tests check. When your last \`run_hidden_tests\` passed, submit with \`tests: null\`: that set is accepted as it ran, with no need to write it out again. Tests given instead are run through the baseline again and accepted when it passes: the project builds and runs, the public tests pass and each hidden test does what you said it would.`;
 
 export const PSEUDONYMS_SYSTEM_PROMPT = `${SANDBOX_CONTEXT}
 
@@ -143,7 +143,7 @@ The sandbox for the bounty below is cut from the workspace's repository, and it 
 
 Read the slice with the repository tools: they show its source as the workspace wrote it. Find each name that says whose code this is: the company, the product and its features' brand names, customers, partners, internal systems and teams, and the types, functions, modules, files and strings named after them. Give each a neutral public name that keeps its meaning (\`AcmeInvoiceMailer\` becomes \`InvoiceMailer\`, \`acmeOrders\` becomes \`orders\`, a comment's "Acme" becomes "the shop"). Leave the domain's ordinary words (Order, Invoice, User), the language's and packages' own names (React, pg, express) and anything the bounty's work needs to read as it does. Rename what identifies; do not rename everything.
 
-Rules are applied in order. Use kind "identifier" for a TypeScript name, matched only as a whole identifier; "text" for a word or phrase in strings, comments and inside longer names, matched anywhere and case-sensitive; and "path" for a file or folder name in paths and import specifiers. A text rule on a brand word renames it inside every identifier that contains it, so one rule often covers many names. Within one kind, two names may not differ only by case: cover \`Acme\` with a text rule and \`acmeOrders\` with an identifier rule. A public name must not already occur in a file the rule touches, no public name may be another rule's private name, and every rule must rename something.
+Rules are applied in order. Use kind "identifier" for a TypeScript name, matched only as a whole identifier; "text" for a word or phrase in strings, comments and inside longer names, matched anywhere and case-sensitive; and "path" for a file or folder name in paths and import specifiers. A text rule on a brand word renames it inside every identifier that contains it, so one rule often covers many names. Two identifier rules, or two path rules, may not have names that differ only by case: cover \`Acme\` with a text rule and \`acmeOrders\` with an identifier rule; text rules are exact, so \` acme \` and \` ACME \` may each have one. A public name must not already occur in a file the rule touches, no public name may be another rule's private name, and every rule must rename something.
 
 The workspace's own names are listed below, and the build refuses a project whose public files still carry any of them, however they are joined (\`acme-shop\`, \`acmeShop\`, \`ACME_SHOP\`). Cover them all, and the other names you find. Use \`check_pseudonyms\` to check a table exactly as the build will apply it; it lists each problem, or what each rule renamed. Finish by calling \`submit_pseudonyms\` once with the table and a short summary of what it renames. It is checked again and accepted when it holds.`;
 
@@ -156,7 +156,7 @@ export function pseudonymsSection(input: {
   /** What the check says of the slice with no pseudonyms. */
   readonly unrenamed: readonly string[];
   readonly overview: string;
-  /** A table drafted before the fixtures, and what the check says of it now. */
+  /** A table drafted by rule, and what the check says of it. */
   readonly drafted?: {
     readonly rules: readonly AliasRule[];
     readonly problems: readonly string[];
@@ -177,18 +177,28 @@ export function pseudonymsSection(input: {
     ...(input.drafted === undefined
       ? []
       : [
-          `A table was drafted before the fixtures and the walkthrough were written. Start from it; against them, the check says:\n${input.drafted.problems.map((problem) => `- ${problem}`).join("\n")}\n\nThe drafted table:\n${input.drafted.rules.map((rule, index) => `${index + 1}. ${rule.kind} ${rule.before} -> ${rule.after}${rule.paths.length === 0 ? "" : ` (in ${rule.paths.join(", ")})`}`).join("\n")}`,
+          `A table was drafted by rule from the workspace's names: its packages' imports made relative paths, and each name given a placeholder. Start from it, and keep what holds; the check says:\n${input.drafted.problems.map((problem) => `- ${problem}`).join("\n")}\n\nThe drafted table:\n${input.drafted.rules.map((rule, index) => `${index + 1}. ${rule.kind} ${rule.before} -> ${rule.after}${rule.paths.length === 0 ? "" : ` (in ${rule.paths.join(", ")})`}`).join("\n")}`,
         ]),
     `The slice:\n\n${input.overview}`,
   ].join("\n\n");
 }
 
-/** The bounty hidden tests are written for, and the project they run in. */
+/**
+ * The bounty hidden tests are written for, and the project they run in,
+ * with the files it needs most quoted whole.
+ */
 export function hiddenTestsSection(input: {
   readonly title: string;
   readonly summary: string;
   readonly spec: SpecDraft | null;
   readonly overview: string;
+  readonly quoted: readonly { readonly path: string; readonly text: string }[];
+  readonly unquoted: readonly string[];
+  /** A file per scenario, drafted by rule (`hiddenTestScaffold`). */
+  readonly scaffold: readonly {
+    readonly path: string;
+    readonly text: string;
+  }[];
 }): string {
   return [
     `The bounty's title: ${input.title}`,
@@ -197,5 +207,11 @@ export function hiddenTestsSection(input: {
       ? "The bounty has no Gherkin spec; test what its title and summary ask for."
       : `The bounty's approved Gherkin spec, which the hidden tests should cover:\n\n${renderGherkin(input.spec)}`,
     `The project:\n\n${input.overview}`,
+    `Its configuration, mock interface, public tests, walkthrough, source and stubs, as the build generated them. They are quoted here whole, so read only what is not:\n\n${input.quoted.map((file) => `--- ${file.path}\n${file.text}`).join("\n\n")}${input.unquoted.length === 0 ? "" : `\n\nNot quoted, for want of room (read them with the tools): ${input.unquoted.join(", ")}`}`,
+    ...(input.scaffold.length === 0
+      ? []
+      : [
+          `A file per scenario, drafted by rule: its path under tests/private/, the imports that resolve from there, and the scenario's steps where its assertions go. Start each test from its file, fill in the assertions, drop an import it does not use, and merge or add files as the scenarios need:\n\n${input.scaffold.map((file) => `--- ${file.path}\n${file.text}`).join("\n\n")}`,
+        ]),
   ].join("\n\n");
 }

@@ -41,6 +41,10 @@ import { z } from "zod";
 import { AnalysisError } from "../errors.js";
 import type { AgentSettings, AgentTool } from "../agent/loop.js";
 import { runAgent } from "../agent/loop.js";
+import {
+  scopeCandidates,
+  scopeCandidatesSection,
+} from "../agent/scope-candidates.js";
 import { SCOPE_SYSTEM_PROMPT, bountySection } from "../agent/prompts.js";
 import {
   accessorHint,
@@ -424,6 +428,18 @@ export function createScopeAdapter(
           return { content: "Recorded.", accepted: true };
         },
       };
+      // Where to start reading, by the spec's words; without the
+      // abstractions, by paths alone.
+      const candidates = scopeCandidatesSection(
+        scopeCandidates({
+          spec: task.draft,
+          modules:
+            abstractions?.modules ??
+            index.paths
+              .filter((path) => /\.tsx?$/.test(path) && !path.endsWith(".d.ts"))
+              .map((path) => ({ path, exports: [], importers: 0 })),
+        }),
+      );
       const outcome = await runAgent({
         model: settings.model,
         step: input.step,
@@ -444,6 +460,7 @@ export function createScopeAdapter(
                 `The seams index lists ${seams.modules.length} of ${seams.files} files as reaching a service or an environment variable; \`module_seams\` looks any of them up without spending a check.`,
               ]),
           ...(dataModel === null ? [] : [accessorHint(dataModel)]),
+          ...(candidates === null ? [] : [candidates]),
         ].join("\n\n"),
         tools: [
           ...repositoryTools(index),
@@ -458,6 +475,8 @@ export function createScopeAdapter(
         ],
         submitTool: "submit_scope",
         limits: settings.limits,
+        // `check_scope` decides what a request produces; the agent picks.
+        effort: "medium",
         signal: input.signal,
         log: input.log,
       });

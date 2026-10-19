@@ -77,6 +77,15 @@ export interface AgentTurn {
     readonly cacheWriteTokens: number;
   };
 }
+/**
+ * How hard the model thinks each turn. Most of an agent's spend is output,
+ * thinking included, so an agent whose work a deterministic check decides
+ * (a scope `check_scope` confirms, tests their baseline runs) takes less.
+ */
+export type AgentEffort = "low" | "medium" | "high";
+/** What an agent runs at when it names none. */
+export const AGENT_EFFORT_DEFAULT: AgentEffort = "high";
+
 /** One model behind the loop; the Anthropic one, or a script in tests. */
 export interface AgentModel {
   readonly model: string;
@@ -85,6 +94,7 @@ export interface AgentModel {
       readonly system: string;
       readonly tools: readonly AgentToolDefinition[];
       readonly messages: readonly MessageParam[];
+      readonly effort: AgentEffort;
     },
     signal: AbortSignal,
   ): Promise<AgentTurn>;
@@ -123,6 +133,8 @@ export async function runAgent(input: {
   readonly tools: readonly AgentTool[];
   readonly submitTool: string;
   readonly limits: AgentLimits;
+  /** `AGENT_EFFORT_DEFAULT` unless the agent's work needs less. */
+  readonly effort?: AgentEffort;
   readonly signal: AbortSignal;
   readonly log: (line: string) => void;
   /** Told what each call did, for the page following the run. */
@@ -173,7 +185,12 @@ export async function runAgent(input: {
     }
     const asked = clock();
     const reply = await input.model.turn(
-      { system: input.system, tools: definitions, messages },
+      {
+        system: input.system,
+        tools: definitions,
+        messages,
+        effort: input.effort ?? AGENT_EFFORT_DEFAULT,
+      },
       signal,
     );
     const modelMs = clock() - asked;

@@ -494,6 +494,10 @@ export function useBounties(organizationId: string): Bounties {
         return null;
       } catch (error) {
         void load();
+        // Started for the bounty already, by a person or once its price
+        // was approved: what the click asked for is there.
+        if (error instanceof ApiError && error.code === "bounty_has_sandbox")
+          return null;
         return error instanceof ApiError
           ? error.message
           : "Could not reach the server.";

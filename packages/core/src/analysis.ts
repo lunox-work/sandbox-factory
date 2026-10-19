@@ -386,15 +386,11 @@ export interface SandboxBuildParams extends GraphifyParams {
    */
   readonly vocabulary?: readonly string[];
   /**
-   * The snapshot's newest succeeded `data_model` run, which the fixtures
-   * agent reads when the build writes fixtures for a draft with none.
-   */
-  readonly dataModelRunId?: string;
-  /**
    * A succeeded preparation run on the same slice (`FixturesParams` with
-   * `pseudonyms`): a draft with no fixtures takes its fixtures, and one
-   * with no name table its table when the build's checks pass it, rather
-   * than running the agents again.
+   * `pseudonyms`, queued before 2026-10-19): a draft with no fixtures takes its fixtures, and one
+   * with no name table its table when the build's checks pass it. A build
+   * never waits for one: without it, a draft has no fixtures and a table
+   * drafted by rule.
    */
   readonly preparedRunId?: string;
 }
@@ -429,11 +425,9 @@ export interface FixturesParams extends AgentTaskParams {
   readonly sliceRunId: string;
   readonly dataModelRunId?: string;
   /**
-   * A sandbox's preparation, run once a bounty's profile is ready and its
-   * price approved: after the fixtures, the run writes the name table too,
-   * checked against the workspace's names (`workspaceVocabulary`) over the
-   * slice, the spec, the fixtures and the listing a cut would give the
-   * version. Absent for a person's fixtures run, which keeps its cache key.
+   * Legacy: a sandbox's preparation, a run that wrote the name table after
+   * the fixtures. Nothing writes it since 2026-10-19; stored runs still
+   * carry it, and the API keeps hiding those from members.
    */
   readonly pseudonyms?: {
     readonly vocabulary: readonly string[];

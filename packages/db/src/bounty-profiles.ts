@@ -26,6 +26,7 @@ import {
   bountyProposal,
   githubRepo,
   repoSnapshot,
+  sandbox,
   workspaceSetting,
 } from "./schema.js";
 import type { BountyProfileRow } from "./schema.js";
@@ -39,8 +40,11 @@ export const PENDING_PROFILE_STATUSES: readonly ProfileStatus[] = [
 
 /**
  * A ready profile with no preparation, of an approved proposal's current
- * spec revision, in a workspace that has not turned preparation off: what
- * `unprepared` lists. Joined to `bounty_proposal`.
+ * spec revision whose bounty has no sandbox yet, in a workspace that has
+ * not turned preparation off: what `unprepared` lists. Joined to
+ * `bounty_proposal`. A bounty with a sandbox has been cut, and its build
+ * did not wait for a preparation, so one queued now would be spent for
+ * nothing.
  */
 const UNPREPARED = and(
   eq(bountyProfile.status, "ready"),
@@ -49,6 +53,7 @@ const UNPREPARED = and(
   eq(bountyProposal.status, "approved"),
   eq(bountyProposal.specRevision, bountyProfile.specRevision),
   sql`not exists (select 1 from ${workspaceSetting} where ${workspaceSetting.organizationId} = ${bountyProfile.organizationId} and not ${workspaceSetting.prepareSandboxes})`,
+  sql`not exists (select 1 from ${sandbox} where ${sandbox.bountyId} = ${bountyProposal.bountyId})`,
 );
 
 export interface StoredBountyProfile {
@@ -191,15 +196,6 @@ export interface BountyProfileStore {
   ): Promise<StoredBountyProfile[]>;
   /** Privileged discovery for `unprepared`, followed by owner-scoped reads. */
   organizationsWithUnprepared(): Promise<string[]>;
-  /**
-   * Names a ready profile's preparation run. False when it has one, or is
-   * not ready, so two passes cannot both queue one.
-   */
-  recordPrepared(
-    organizationId: string,
-    profileId: string,
-    runId: string,
-  ): Promise<boolean>;
   /** The preparation run of the profile a slice run was cut for, if any. */
   preparationFor(
     organizationId: string,
@@ -381,21 +377,6 @@ export function createBountyProfileStore(db: Database): BountyProfileStore {
         )
         .where(UNPREPARED)) as { organizationId: string }[];
       return [...new Set(rows.map((row) => row.organizationId))];
-    },
-    async recordPrepared(owner, profileId, runId) {
-      const rows = await db
-        .update(bountyProfile)
-        .set({ preparedRunId: runId })
-        .where(
-          and(
-            eq(bountyProfile.organizationId, owner),
-            eq(bountyProfile.id, profileId),
-            eq(bountyProfile.status, "ready"),
-            isNull(bountyProfile.preparedRunId),
-          ),
-        )
-        .returning({ id: bountyProfile.id });
-      return rows.length > 0;
     },
     async preparationFor(owner, sliceRunId) {
       const rows = (await db

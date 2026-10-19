@@ -394,6 +394,7 @@ test("the Anthropic model streams one strict, cached, adaptive call per turn", a
         },
       ],
       messages: [{ role: "user", content: "hello" }],
+      effort: "medium",
     },
     signal,
   );
@@ -407,6 +408,8 @@ test("the Anthropic model streams one strict, cached, adaptive call per turn", a
   const params = sent[0] ?? {};
   assert.equal(params["model"], "claude-test");
   assert.deepEqual(params["thinking"], { type: "adaptive" });
+  // At the effort the agent asked for.
+  assert.deepEqual(params["output_config"], { effort: "medium" });
   assert.deepEqual(params["cache_control"], { type: "ephemeral" });
   assert.equal(params["fallbacks"], "default");
   assert.deepEqual(params["betas"], ["server-side-fallback-2026-07-01"]);
@@ -432,7 +435,12 @@ test("the Anthropic model streams one strict, cached, adaptive call per turn", a
         },
       } as never,
     });
-  const request = { system: "s", tools: [], messages: [] };
+  const request = {
+    system: "s",
+    tools: [],
+    messages: [],
+    effort: "high" as const,
+  };
   for (const error of [
     new Anthropic.AuthenticationError(401, undefined, "no", new Headers()),
     new Anthropic.PermissionDeniedError(403, undefined, "no", new Headers()),

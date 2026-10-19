@@ -470,23 +470,6 @@ test("the preparer discovers each organization with unprepared rows once", async
   );
 });
 
-test("a preparation is named once, and only on a ready row", async () => {
-  const fake = createFakeDb([{ id: "bpf_1" }]);
-  const store = createBountyProfileStore(fake.db);
-  assert.equal(await store.recordPrepared("org_1", "bpf_1", "arn_p"), true);
-  assert.deepEqual(fake.calls[0]?.values, { preparedRunId: "arn_p" });
-  assert.equal(fake.calls[0]?.filtered, true);
-  const taken = createFakeDb([]);
-  assert.equal(
-    await createBountyProfileStore(taken.db).recordPrepared(
-      "org_1",
-      "bpf_1",
-      "arn_q",
-    ),
-    false,
-  );
-});
-
 test("a slice's preparation is its newest profile's, or none", async () => {
   const fake = createFakeDb([{ preparedRunId: "arn_p" }]);
   assert.equal(
