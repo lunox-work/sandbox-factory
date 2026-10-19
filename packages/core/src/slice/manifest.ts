@@ -93,6 +93,20 @@ export interface CompilationResult {
   }[];
   /** Package specifiers declared `any` so the fixture could type-check. */
   readonly shimmedPackages: readonly string[];
+  /**
+   * Errors the source has too, checked the same way with its own code in
+   * place of the stubs: what declaring its packages untyped costs, not
+   * counted against the slice. Absent when nothing failed.
+   */
+  readonly untypedPackageErrors?: CompilationResult["diagnostics"];
+  /**
+   * Packages whose published types the check read, at the versions read,
+   * rather than declaring them untyped. Absent when none were fetched.
+   */
+  readonly typedPackages?: readonly {
+    readonly name: string;
+    readonly version: string;
+  }[];
 }
 
 export interface BoundaryContract {
@@ -502,6 +516,18 @@ export function renderBoundaryMarkdown(
       lines.push(
         `- ${diagnostic.file === null ? "" : `\`${diagnostic.file}\`${diagnostic.line === null ? "" : `:${diagnostic.line}`} `}${diagnostic.code}: ${diagnostic.message}`,
       );
+  const typed = contract.compilation.typedPackages ?? [];
+  if (typed.length > 0)
+    lines.push(
+      "",
+      `Checked against the published types of ${typed.map(({ name, version }) => `\`${name}@${version}\``).join(", ")}.`,
+    );
+  const untyped = contract.compilation.untypedPackageErrors?.length ?? 0;
+  if (untyped > 0)
+    lines.push(
+      "",
+      `${untyped} more error${untyped === 1 ? "" : "s"} the source has too, with its packages untyped, ${untyped === 1 ? "is" : "are"} not counted; the sandbox build checks them against the packages it installs.`,
+    );
   lines.push("");
   return lines.join("\n");
 }

@@ -18,6 +18,7 @@ import {
   UNTYPED_PACKAGE_OPTIONS,
 } from "../src/tools/slice/fixture.js";
 import { gitBlobId, gitFileMode, sha256 } from "../src/tools/slice/hash.js";
+import type { PackageTypes } from "../src/tools/slice/package-types.js";
 import {
   declarationPathFor,
   extractTypeScriptBoundary,
@@ -593,6 +594,307 @@ test("an import of the repository's own workspace package is marked, and the reg
   }
 });
 
+test("a workspace package with source is stubbed from it like a cut module, through barrels, and untyped-package errors the source shares are not counted", async () => {
+  const [out, source] = await Promise.all([
+    scratch("workspace-typed"),
+    scratch("workspace-typed-src"),
+  ]);
+  try {
+    const write = async (path: string, text: string) => {
+      await mkdir(dirname(join(source, path)), { recursive: true });
+      await writeFile(join(source, path), text);
+    };
+    const tsconfig = JSON.stringify({
+      compilerOptions: {
+        module: "NodeNext",
+        moduleResolution: "NodeNext",
+        target: "ES2022",
+        strict: true,
+        rootDir: "src",
+        outDir: "dist",
+      },
+    });
+    await write(
+      "package.json",
+      JSON.stringify({ private: true, workspaces: ["apps/*", "packages/*"] }),
+    );
+    // Built to dist, which the snapshot lacks: read back from src.
+    await write(
+      "packages/shared/package.json",
+      JSON.stringify({
+        name: "@acme/shared",
+        type: "module",
+        exports: {
+          ".": { types: "./dist/index.d.ts", default: "./dist/index.js" },
+        },
+        dependencies: { zod: "^4.0.0", "@acme/core": "*" },
+      }),
+    );
+    await write("packages/shared/tsconfig.json", tsconfig);
+    await write(
+      "packages/shared/src/index.ts",
+      'export * from "./schemas.js";\nexport * from "./wrapped.js";\n',
+    );
+    await write(
+      "packages/shared/src/schemas.ts",
+      'import { z } from "zod";\nexport const itemSchema = z.object({ id: z.string() });\n',
+    );
+    await write(
+      "packages/shared/src/wrapped.ts",
+      'import type { Core } from "@acme/core";\nexport interface Wrapped { readonly core: Core }\n',
+    );
+    await write(
+      "packages/core/package.json",
+      JSON.stringify({
+        name: "@acme/core",
+        type: "module",
+        types: "./dist/index.d.ts",
+      }),
+    );
+    await write("packages/core/tsconfig.json", tsconfig);
+    await write(
+      "packages/core/src/index.ts",
+      "export interface Core { readonly n: number }\nexport function make(): Core { return { n: 1 }; }\n",
+    );
+    await write(
+      "apps/svc/package.json",
+      JSON.stringify({
+        name: "svc",
+        type: "module",
+        dependencies: { zod: "^4.0.0", "@acme/shared": "*", "@acme/core": "*" },
+      }),
+    );
+    await write("apps/svc/tsconfig.json", tsconfig);
+    await write(
+      "apps/svc/src/main.ts",
+      [
+        'import { make } from "@acme/core";',
+        'import { itemSchema, type Wrapped } from "@acme/shared";',
+        'import type { z } from "zod";',
+        "declare function read<T>(schema: z.ZodType<T>): T | null;",
+        "export function run(wrapped: Wrapped): number {",
+        "  const item = read(itemSchema);",
+        "  return wrapped.core.n + make().n + (item === null ? 0 : item.id.length);",
+        "}",
+        "",
+      ].join("\n"),
+    );
+    const { manifest, contract, read } = await runSlice(
+      out,
+      ["apps/svc/src/main.ts"],
+      {
+        sourceDir: source,
+        graph: graphOf(
+          ["@acme/core", "@acme/shared", "zod"].map((name) => [
+            "apps/svc/src/main.ts",
+            `dependency:apps/svc/src/main.ts:external:${name}`,
+            name,
+          ]),
+          { "0": ["apps/svc/src/main.ts"] },
+        ),
+      },
+    );
+    // The repository's packages are modules now; zod is still a package.
+    assert.deepEqual(
+      manifest.requiredBuildInputs.packages.map((item) => item.name),
+      ["zod"],
+    );
+    assert.deepEqual(
+      manifest.cuts.outbound.map((edge) => [edge.specifier, edge.to]),
+      [
+        ["@acme/core", "packages/core/src/index.ts"],
+        ["@acme/shared", "packages/shared/src/index.ts"],
+      ],
+    );
+    // A module stubbed before another stub asked it for more is stubbed
+    // again, and a stub names a module by a relative path.
+    const core = await read("stubs/packages/core/src/index.d.ts");
+    assert.match(core, /function make\(\): Core/);
+    assert.match(core, /interface Core/);
+    assert.match(
+      await read("stubs/packages/shared/src/wrapped.d.ts"),
+      /from "\.\.\/\.\.\/core\/src\/index\.js"/,
+    );
+    // A barrel's names come from its `export *`, and none is missing.
+    assert.deepEqual(
+      contract.blockers.filter((b) => b.code === "declaration_incomplete"),
+      [],
+    );
+    // `read(itemSchema)` infers nothing with zod untyped, in the source as
+    // in the stubs: not counted against the slice, but kept.
+    assert.equal(contract.compilation.ok, true, JSON.stringify(contract));
+    assert.deepEqual(
+      contract.compilation.untypedPackageErrors?.map((d) => d.code).sort(),
+      ["TS18048", "TS2339"],
+    );
+    assert.equal(manifest.meta.ready, true);
+    assert.match(await read("boundary.md"), /2 more errors the source has too/);
+  } finally {
+    await rm(out, { recursive: true, force: true });
+    await rm(source, { recursive: true, force: true });
+  }
+});
+
+test("a public package's fetched types reach the stubs and the check, and a failed fetch leaves it untyped", async () => {
+  const [source, types] = await Promise.all([
+    scratch("typed-src"),
+    scratch("typed-types"),
+  ]);
+  try {
+    const write = async (path: string, text: string) => {
+      await mkdir(dirname(join(source, path)), { recursive: true });
+      await writeFile(join(source, path), text);
+    };
+    const tsconfig = JSON.stringify({
+      compilerOptions: {
+        module: "NodeNext",
+        moduleResolution: "NodeNext",
+        target: "ES2022",
+        strict: true,
+        rootDir: "src",
+        outDir: "dist",
+      },
+    });
+    await write(
+      "package.json",
+      JSON.stringify({ private: true, workspaces: ["apps/*", "packages/*"] }),
+    );
+    await write(
+      "package-lock.json",
+      JSON.stringify({
+        packages: {
+          "node_modules/kit": {
+            version: "1.2.3",
+            resolved: "https://registry.npmjs.org/kit/-/kit-1.2.3.tgz",
+          },
+        },
+      }),
+    );
+    await write(
+      "packages/shared/package.json",
+      JSON.stringify({
+        name: "@acme/shared",
+        type: "module",
+        types: "./dist/index.d.ts",
+        dependencies: { kit: "^1.0.0" },
+      }),
+    );
+    await write("packages/shared/tsconfig.json", tsconfig);
+    // A value whose type the source infers from the package.
+    await write(
+      "packages/shared/src/index.ts",
+      'import { box } from "kit";\nexport const boxed = box({ id: "a" });\n',
+    );
+    await write(
+      "apps/svc/package.json",
+      JSON.stringify({
+        name: "svc",
+        type: "module",
+        dependencies: { kit: "^1.0.0", "@acme/shared": "*" },
+      }),
+    );
+    await write("apps/svc/tsconfig.json", tsconfig);
+    await write(
+      "apps/svc/src/main.ts",
+      [
+        'import type { Box } from "kit";',
+        'import { boxed } from "@acme/shared";',
+        "declare function open<T>(box: Box<T>): T | null;",
+        "const value = open(boxed);",
+        'export const id: string = value === null ? "" : value.id;',
+        "",
+      ].join("\n"),
+    );
+    await mkdir(join(types, "node_modules/kit"), { recursive: true });
+    await writeFile(
+      join(types, "node_modules/kit/package.json"),
+      JSON.stringify({ name: "kit", version: "1.2.3", types: "index.d.ts" }),
+    );
+    await writeFile(
+      join(types, "node_modules/kit/index.d.ts"),
+      "export interface Box<T> { readonly value: T }\nexport declare function box<T>(value: T): Box<T>;\n",
+    );
+    const graph = graphOf(
+      ["@acme/shared", "kit"].map((name) => [
+        "apps/svc/src/main.ts",
+        `dependency:apps/svc/src/main.ts:external:${name}`,
+        name,
+      ]),
+      { "0": ["apps/svc/src/main.ts"] },
+    );
+    const asked: unknown[] = [];
+    const slice = async (fetched: PackageTypes | { failed: string }) => {
+      const out = await scratch("typed");
+      try {
+        const messages: string[] = [];
+        await createSliceAdapter({
+          packageTypes: async (requests) => {
+            asked.push(requests);
+            return fetched;
+          },
+        }).run({
+          sourceDir: source,
+          outDir: out,
+          params: {
+            deadlineMinutes: 30,
+            graphRunId: graphRun.id,
+            entryPoints: ["apps/svc/src/main.ts"],
+            budget: { maxFiles: 40, maxDepth: 3 },
+            includeInferred: false,
+          },
+          run: { snapshotId: "rsn_1", commitSha: "a".repeat(40) },
+          inputs: inputsFor(graph),
+          signal: new AbortController().signal,
+          log: (line) => messages.push(line),
+        });
+        const read = (path: string) => readFile(join(out, path), "utf8");
+        return {
+          messages,
+          contract: JSON.parse(
+            await read("boundary-contract.json"),
+          ) as BoundaryContract,
+          stub: await read("stubs/packages/shared/src/index.d.ts"),
+        };
+      } finally {
+        await rm(out, { recursive: true, force: true });
+      }
+    };
+    const typed = await slice({
+      directory: types,
+      packages: [{ name: "kit", version: "1.2.3" }],
+    });
+    // At the version the lockfile installed; no @types package is pinned.
+    assert.deepEqual(asked[0], [{ name: "kit", spec: "1.2.3" }]);
+    assert.match(typed.stub, /boxed: import\("kit"\)\.Box<\{/);
+    assert.equal(typed.contract.compilation.ok, true);
+    assert.equal(typed.contract.compilation.untypedPackageErrors, undefined);
+    assert.deepEqual(typed.contract.compilation.typedPackages, [
+      { name: "kit", version: "1.2.3" },
+    ]);
+    assert.deepEqual(typed.contract.compilation.shimmedPackages, []);
+    assert.match(typed.messages.join("\n"), /Read the types of kit@1\.2\.3/);
+    // Without them, `boxed` is `any` and `open` infers nothing: the source
+    // fails the same way, so the slice still passes, and says so.
+    const untyped = await slice({ failed: "offline" });
+    assert.match(untyped.stub, /boxed: any/);
+    assert.equal(untyped.contract.compilation.ok, true);
+    assert.deepEqual(
+      untyped.contract.compilation.untypedPackageErrors
+        ?.map(({ code }) => code)
+        .sort(),
+      ["TS18048", "TS2339"],
+    );
+    assert.equal(untyped.contract.compilation.typedPackages, undefined);
+    assert.match(
+      untyped.messages.join("\n"),
+      /could not be fetched \(offline\); packages stay untyped/,
+    );
+  } finally {
+    await rm(source, { recursive: true, force: true });
+    await rm(types, { recursive: true, force: true });
+  }
+});
+
 test("a language without an extractor still gets the manifest and names", async () => {
   const out = await scratch("python");
   try {
@@ -1090,6 +1392,55 @@ test("React code checks against shimmed packages: their names are types too, and
     assert.ok(
       untyped.diagnostics.some(({ code }) => code === "TS2709"),
       JSON.stringify(untyped.diagnostics),
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a Node ES module checks with its package scope and Node's globals, under a base that emits declaration maps", async () => {
+  const root = await scratch("node-esm");
+  try {
+    const source = [
+      'import { readFile } from "node:fs/promises";',
+      "export async function poll(signal: AbortSignal): Promise<number> {",
+      "  const controller = new AbortController();",
+      "  const timer: NodeJS.Timeout = setTimeout(() => controller.abort(), 10);",
+      "  clearTimeout(timer);",
+      '  console.log(signal.aborted, await readFile("x"));',
+      "  return performance.now();",
+      "}",
+    ].join("\n");
+    const compile = (files: [string, string][]) =>
+      compileFixture({
+        root,
+        files: new Map([
+          ...files,
+          ["apps/svc/src/poll.ts", source],
+          ["__slice__/packages.d.ts", packageShim([])],
+        ]),
+        compilerOptions: {
+          strict: true,
+          target: ts.ScriptTarget.ES2022,
+          lib: ["lib.es2022.d.ts"],
+          module: ts.ModuleKind.NodeNext,
+          moduleResolution: ts.ModuleResolutionKind.NodeNext,
+          verbatimModuleSyntax: true,
+          declaration: true,
+          declarationMap: true,
+        },
+        shimmedPackages: [],
+      });
+    assert.deepEqual(
+      compile([["apps/svc/package.json", '{"type":"module"}\n']]).diagnostics,
+      [],
+    );
+    // Without its package.json the file is CommonJS, which ESM syntax
+    // under verbatimModuleSyntax is not.
+    const scopeless = compile([]);
+    assert.ok(
+      scopeless.diagnostics.some(({ code }) => code === "TS1295"),
+      JSON.stringify(scopeless.diagnostics),
     );
   } finally {
     await rm(root, { recursive: true, force: true });

@@ -26,6 +26,12 @@ const edge = z.object({
   location: z.string().nullable(),
   targetSymbol: z.string().nullable(),
 });
+const diagnostic = z.object({
+  file: z.string().nullable(),
+  line: z.number().int().nullable(),
+  code: z.string(),
+  message: z.string(),
+});
 const module = z.object({
   module: z.string(),
   symbols: z.array(
@@ -56,15 +62,12 @@ export const boundaryContractSchema = z.object({
   compilation: z.object({
     attempted: z.boolean(),
     ok: z.boolean(),
-    diagnostics: z.array(
-      z.object({
-        file: z.string().nullable(),
-        line: z.number().int().nullable(),
-        code: z.string(),
-        message: z.string(),
-      }),
-    ),
+    diagnostics: z.array(diagnostic),
     shimmedPackages: strings,
+    untypedPackageErrors: z.array(diagnostic).optional(),
+    typedPackages: z
+      .array(z.object({ name: z.string(), version: z.string() }))
+      .optional(),
   }),
   blockers: z.array(blocker),
 }) satisfies z.ZodType<BoundaryContract>;

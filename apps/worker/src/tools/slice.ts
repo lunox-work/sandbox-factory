@@ -21,6 +21,7 @@ import {
   boundarySummary,
   canonicalJson,
   detectExternals,
+  isRegistryVersion,
   isSecretPath,
   isSliceParams,
   parseSliceGraph,
@@ -33,6 +34,7 @@ import type {
   BoundaryContract,
   BoundaryModule,
   CompilationResult,
+  CutEdge,
   IncludedFile,
   SliceBlocker,
   SliceExternals,
@@ -45,7 +47,10 @@ import type {
 import type { StoredAnalysisRun, StoredArtifact } from "@sandbox-factory/db";
 import { AnalysisError } from "../errors.js";
 import { snapshotOf } from "./adapter.js";
-import { workspacePackages } from "./compiler-config.js";
+import {
+  workspaceModuleResolver,
+  workspacePackages,
+} from "./compiler-config.js";
 import { packageRegistries } from "./package-registry.js";
 import type {
   ArtifactFile,
@@ -54,6 +59,7 @@ import type {
   ToolRunInput,
 } from "./adapter.js";
 import {
+  DIAGNOSTICS_MAX,
   SHIM_PATH,
   compileFixture,
   packageShim,
@@ -62,6 +68,13 @@ import {
   UNTYPED_PACKAGE_OPTIONS,
 } from "./slice/fixture.js";
 import { gitBlobId, gitFileMode, sha256 } from "./slice/hash.js";
+import {
+  lockedSpec,
+  typesPackageOf,
+  type PackageTypes,
+  type PackageTypesFetcher,
+  type PackageTypesRequest,
+} from "./slice/package-types.js";
 import {
   declarationPathFor,
   extractTypeScriptBoundary,
@@ -84,6 +97,27 @@ export function sliceArtifactKind(path: string): ArtifactFile["kind"] {
 }
 
 const compare = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
+
+/** "Cannot find module": what no package's types explain. */
+const UNRESOLVED_MODULE_CODES: readonly string[] = ["TS2307", "TS2792"];
+
+const edgeKey = (edge: CutEdge) =>
+  `${edge.from}\n${edge.to}\n${edge.relation}\n${edge.specifier ?? ""}\n${edge.location ?? ""}\n${edge.targetSymbol ?? ""}`;
+
+/** Edges in `reach`'s order, each once. */
+function sortEdges(edges: readonly CutEdge[]): CutEdge[] {
+  return [...new Map(edges.map((edge) => [edgeKey(edge), edge])).values()].sort(
+    (a, b) => compare(edgeKey(a), edgeKey(b)),
+  );
+}
+
+/** A repository file's text, or null when it is missing or outside. */
+async function readSource(root: string, path: string): Promise<string | null> {
+  const absolute = resolve(root, path);
+  const rel = relative(root, absolute);
+  if (rel === "" || rel.startsWith("..") || isAbsolute(rel)) return null;
+  return readFile(absolute, "utf8").catch(() => null);
+}
 
 /** The version a package.json nearest the importing file pins, if any. */
 async function pinnedVersion(
@@ -124,6 +158,48 @@ async function pinnedVersion(
     if (version !== undefined) return { version, declaredIn: path };
     if (dir === "") return { version: null, declaredIn: null };
   }
+}
+
+/**
+ * The fields of the `package.json` nearest each file that decide how the
+ * file compiles: `type`, whether NodeNext reads it as an ES module, and
+ * `imports`, where its `#` specifiers resolve. Keyed by the manifest's path.
+ */
+async function packageScopes(
+  root: string,
+  files: readonly string[],
+): Promise<Map<string, string>> {
+  const scopes = new Map<string, string>();
+  const absent = new Set<string>();
+  for (const file of files)
+    for (let dir = dirname(file); ; dir = dirname(dir)) {
+      if (dir === "." || dir === "/") dir = "";
+      const path = dir === "" ? "package.json" : `${dir}/package.json`;
+      if (scopes.has(path)) break;
+      if (!absent.has(path)) {
+        const text = await readFile(join(root, path), "utf8").catch(() => null);
+        if (text !== null) {
+          let parsed: unknown;
+          try {
+            parsed = JSON.parse(text);
+          } catch {
+            parsed = null;
+          }
+          const own =
+            parsed !== null && typeof parsed === "object"
+              ? (parsed as Record<string, unknown>)
+              : {};
+          scopes.set(
+            path,
+            `${JSON.stringify({ type: own["type"], imports: own["imports"] })}\n`,
+          );
+          break;
+        }
+        absent.add(path);
+      }
+      if (dir === "") break;
+    }
+  return scopes;
 }
 
 async function readIncluded(
@@ -276,6 +352,11 @@ export async function analyseSlice(input: {
    * all, as `detectExternals` would give them; null to read them here.
    */
   readonly externalsOf?: (included: readonly string[]) => SliceExternals | null;
+  /**
+   * Fetches the types of the public packages the slice reads; without it,
+   * or when it fails, every package is untyped.
+   */
+  readonly packageTypes?: PackageTypesFetcher;
 }): Promise<SliceAnalysis> {
   const { params, graph } = input;
   const graphRun = graph.run;
@@ -326,9 +407,23 @@ export async function analyseSlice(input: {
     specifier !== null &&
     !specifier.startsWith(".") &&
     !specifier.startsWith("/");
+  // A JSON or stylesheet import does not make a TypeScript slice
+  // untyped; code in another language does.
+  const scripted =
+    walk.included.some(isScriptPath) &&
+    walk.included.every((path) => isScriptPath(path) || isDataPath(path));
+  // The repository's own packages are not on the registry (or are someone
+  // else's there). One whose source the slice can read is a cut module like
+  // any other, stubbed from its declarations; the rest are mocked packages.
+  const workspaces = workspacePackages(input.sourceDir);
+  const workspaceModule = workspaceModuleResolver(
+    input.sourceDir,
+    () => workspaces,
+  );
   for (const dependency of walk.dependencies) {
     if (dependency.status !== "dynamic" && isBare(dependency.specifier)) {
       if (isNodeBuiltin(dependency.specifier)) continue;
+      if (scripted && workspaceModule(dependency.specifier) !== null) continue;
       const files = packageFiles.get(dependency.specifier) ?? new Set();
       files.add(dependency.file);
       packageFiles.set(dependency.specifier, files);
@@ -346,11 +441,6 @@ export async function analyseSlice(input: {
             : `${dependency.specifier ?? ""} does not resolve to a repository file.`,
       });
   }
-  // A JSON or stylesheet import does not make a TypeScript slice
-  // untyped; code in another language does.
-  const scripted =
-    walk.included.some(isScriptPath) &&
-    walk.included.every((path) => isScriptPath(path) || isDataPath(path));
   let language: BoundaryContract["language"] = "none";
   let extractorVersion: string | null = null;
   let outbound: BoundaryModule[];
@@ -364,31 +454,184 @@ export async function analyseSlice(input: {
     shimmedPackages: [],
   };
   const synthetic: SyntheticFile[] = [];
+  let cuts = walk.cuts;
+  let internalImports = walk.internal;
+  const versions = new Map<string, Record<string, string> | null>();
+  // And a package from another registry is not the public one of its name.
+  const registryOf = packageRegistries(input.sourceDir);
+  const namesOf = (files: ReadonlyMap<string, ReadonlySet<string>>) =>
+    [...new Set([...files.keys()].map(packageNameOf))].sort(compare);
+  const importerOf = (
+    files: ReadonlyMap<string, ReadonlySet<string>>,
+    name: string,
+  ) =>
+    [...files.entries()]
+      .filter(([specifier]) => packageNameOf(specifier) === name)
+      .flatMap(([, importers]) => [...importers])
+      .sort(compare)[0] ?? "";
+  /**
+   * What the sandbox must install to build the slice, pinned where the
+   * importer's package.json pins it, and the blockers of what is not.
+   */
+  const requiredPackages = async (
+    files: ReadonlyMap<string, ReadonlySet<string>>,
+  ) => {
+    const required: SliceManifest["requiredBuildInputs"]["packages"][number][] =
+      [];
+    const unpinned: SliceBlocker[] = [];
+    for (const name of namesOf(files)) {
+      const from = importerOf(files, name);
+      const pinned = await pinnedVersion(input.sourceDir, from, name, versions);
+      if (workspaces.has(name)) {
+        required.push({ name, ...pinned, workspace: true });
+        continue;
+      }
+      const registry = registryOf(name);
+      required.push({
+        name,
+        ...pinned,
+        ...(registry === null ? {} : { registry }),
+      });
+      if (pinned.version === null)
+        unpinned.push({
+          code: "missing_build_input",
+          file: from === "" ? null : from,
+          location: null,
+          detail: `${name} is imported but no package.json pins its version.`,
+        });
+    }
+    return { required, unpinned };
+  };
+  /**
+   * The public packages whose types the extractor and the fixture may
+   * read: each the repository shows comes from the public registry, at a
+   * registry version, with the `@types` package its importer pins beside it.
+   */
+  const typeRequests = async (
+    files: ReadonlyMap<string, ReadonlySet<string>>,
+  ) => {
+    const requests: PackageTypesRequest[] = [];
+    const request = async (name: string, from: string) => {
+      const { version } = await pinnedVersion(
+        input.sourceDir,
+        from,
+        name,
+        versions,
+      );
+      if (
+        version !== null &&
+        isRegistryVersion(version) &&
+        registryOf(name)?.source === "public"
+      )
+        requests.push({
+          name,
+          spec: lockedSpec(input.sourceDir, name) ?? version,
+        });
+    };
+    for (const name of namesOf(files)) {
+      if (workspaces.has(name)) continue;
+      const from = importerOf(files, name);
+      await request(name, from);
+      await request(typesPackageOf(name), from);
+    }
+    return requests;
+  };
   if (scripted) {
     language = "typescript";
-    const boundary = extractTypeScriptBoundary({
-      root: input.sourceDir,
-      included: walk.included,
-      outbound: walk.cuts.outbound,
-      inbound: walk.cuts.inbound,
-      texts,
-    });
+    const extract = (packageTypes: string | null) =>
+      extractTypeScriptBoundary({
+        root: input.sourceDir,
+        included: walk.included,
+        outbound: walk.cuts.outbound,
+        inbound: walk.cuts.inbound,
+        texts,
+        workspaceModule,
+        packageTypes,
+      });
+    const withPackages = (
+      found: ReadonlyMap<string, ReadonlySet<string>>,
+    ): Map<string, Set<string>> => {
+      const merged = new Map<string, Set<string>>();
+      for (const [specifier, files] of [...packageFiles, ...found])
+        merged.set(
+          specifier,
+          new Set([...(merged.get(specifier) ?? []), ...files]),
+        );
+      return merged;
+    };
+    let boundary = extract(null);
     input.signal.throwIfAborted();
+    // Untyped, the extractor finds which packages the slice reads; typed,
+    // it emits the stubs again with what the source infers from them.
+    let types: PackageTypes | null = null;
+    const requests =
+      input.packageTypes === undefined
+        ? []
+        : await typeRequests(withPackages(boundary.packages));
+    if (input.packageTypes !== undefined && requests.length > 0) {
+      const fetched = await input.packageTypes(requests, input.signal);
+      if ("failed" in fetched)
+        input.log(
+          `Package types could not be fetched (${fetched.failed}); packages stay untyped.`,
+        );
+      else {
+        types = fetched;
+        input.log(
+          `Read the types of ${fetched.packages.map(({ name, version }) => `${name}@${version}`).join(", ")}.`,
+        );
+        const known = new Set(namesOf(withPackages(boundary.packages)));
+        const typed = extract(fetched.directory);
+        input.signal.throwIfAborted();
+        // A package only the types name is one of theirs, which they resolve.
+        boundary = {
+          ...typed,
+          packages: new Map(
+            [...typed.packages].filter(([specifier]) =>
+              known.has(packageNameOf(specifier)),
+            ),
+          ),
+        };
+      }
+    }
     extractorVersion = boundary.extractorVersion;
     outbound = [...boundary.outbound];
     inbound = [...boundary.inbound];
     stubs = boundary.stubs;
     configs = [...boundary.configs];
     blockers.push(...boundary.blockers);
+    cuts = {
+      outbound: sortEdges([...cuts.outbound, ...boundary.workspace.outbound]),
+      inbound: cuts.inbound,
+    };
+    internalImports = sortEdges([
+      ...internalImports,
+      ...boundary.workspace.internal,
+    ]);
     for (const [specifier, files] of boundary.packages) {
       const list = packageFiles.get(specifier) ?? new Set();
       for (const file of files) list.add(file);
       packageFiles.set(specifier, list);
     }
     const shimmed = [...new Set([...packageFiles.keys()].map(packageNameOf))];
+    const typedNames = new Set(types?.packages.map(({ name }) => name) ?? []);
+    const typed = (name: string) =>
+      typedNames.has(name) || typedNames.has(typesPackageOf(name));
     const fixture = new Map<string, string>(texts);
+    for (const [path, text] of await packageScopes(input.sourceDir, [
+      ...walk.included,
+      ...stubs.map((stub) => stub.module),
+    ]))
+      if (!fixture.has(path)) fixture.set(path, text);
     for (const stub of stubs)
       fixture.set(declarationPathFor(stub.module), stub.text);
+    // A package of the repository resolves to its stub, or to its source
+    // when the slice includes it.
+    const stubbed = new Set(stubs.map((stub) => stub.module));
+    const stubModules = new Map<string, string>();
+    for (const [specifier, module] of boundary.workspace.modules)
+      if (stubbed.has(module))
+        stubModules.set(specifier, declarationPathFor(module));
+      else if (texts.has(module)) stubModules.set(specifier, module);
     // What the slice and its stubs read of each package, so the names it
     // uses as types are declared as types.
     const packageNames = new Set(shimmed);
@@ -401,18 +644,80 @@ export async function analyseSlice(input: {
           (packageNames.has(packageNameOf(specifier)) ||
             isNodeBuiltin(specifier)),
       ),
+      typed,
     );
     fixture.set(SHIM_PATH, shim);
-    compilation = compileFixture({
-      root: input.sourceDir,
-      files: fixture,
-      compilerOptions: {
-        ...boundary.compilerOptions,
-        ...UNTYPED_PACKAGE_OPTIONS,
-      },
-      shimmedPackages: shimmed,
-      ignoredCodes: UNTYPED_PACKAGE_CODES,
-    });
+    const compile = (
+      files: ReadonlyMap<string, string>,
+      modules: ReadonlyMap<string, string>,
+    ) =>
+      compileFixture({
+        root: input.sourceDir,
+        files,
+        compilerOptions: {
+          ...boundary.compilerOptions,
+          ...UNTYPED_PACKAGE_OPTIONS,
+        },
+        shimmedPackages: shimmed.filter((name) => !typed(name)),
+        ignoredCodes: UNTYPED_PACKAGE_CODES,
+        modules,
+        limit: Infinity,
+        packageTypes: types?.directory ?? null,
+      });
+    compilation = compile(fixture, stubModules);
+    if (types !== null)
+      compilation = {
+        ...compilation,
+        typedPackages: [...types.packages].sort((a, b) =>
+          compare(a.name, b.name),
+        ),
+      };
+    if (!compilation.ok) {
+      // The same check with the source's own code in place of the stubs.
+      // What fails there too is what declaring the packages untyped costs,
+      // since the repository compiles against their real types; only what
+      // the stubs add counts against the slice. The sandbox build checks
+      // the rest against the packages it installs.
+      const own = new Map(fixture);
+      for (const stub of stubs) {
+        own.delete(declarationPathFor(stub.module));
+        const text = await readSource(input.sourceDir, stub.module);
+        if (text !== null) own.set(stub.module, text);
+      }
+      const baseline = compile(own, boundary.workspace.modules);
+      const key = (diagnostic: CompilationResult["diagnostics"][number]) =>
+        `${diagnostic.file ?? ""}\n${diagnostic.line ?? ""}\n${diagnostic.code}\n${diagnostic.message}`;
+      // An import that resolves nowhere is never the packages' types.
+      const inherited = new Set(
+        baseline.diagnostics
+          .filter(({ code }) => !UNRESOLVED_MODULE_CODES.includes(code))
+          .map(key),
+      );
+      const added = compilation.diagnostics.filter(
+        (diagnostic) => !inherited.has(key(diagnostic)),
+      );
+      const untyped = compilation.diagnostics.filter((diagnostic) =>
+        inherited.has(key(diagnostic)),
+      );
+      compilation = {
+        ...compilation,
+        ok: added.length === 0,
+        diagnostics: added,
+        untypedPackageErrors: untyped,
+      };
+    }
+    compilation = {
+      ...compilation,
+      diagnostics: compilation.diagnostics.slice(0, DIAGNOSTICS_MAX),
+      ...(compilation.untypedPackageErrors === undefined
+        ? {}
+        : {
+            untypedPackageErrors: compilation.untypedPackageErrors.slice(
+              0,
+              DIAGNOSTICS_MAX,
+            ),
+          }),
+    };
     for (const diagnostic of compilation.diagnostics.slice(0, 20))
       blockers.push({
         code: "compile_error",
@@ -433,6 +738,11 @@ export async function analyseSlice(input: {
         ? "Fixture compiled with stubs in place."
         : `Fixture compilation reported ${compilation.diagnostics.length} errors.`,
     );
+    const untyped = compilation.untypedPackageErrors?.length ?? 0;
+    if (untyped > 0)
+      input.log(
+        `${untyped} errors the source has too with its packages untyped were not counted.`,
+      );
   } else {
     outbound = namesOnly(walk.cuts.outbound, "to");
     inbound = namesOnly(walk.cuts.inbound, "from");
@@ -443,45 +753,8 @@ export async function analyseSlice(input: {
       detail: "Signature extraction exists for TypeScript and JavaScript only.",
     });
   }
-  const versions = new Map<string, Record<string, string> | null>();
-  const packages: SliceManifest["requiredBuildInputs"]["packages"][number][] =
-    [];
-  // The repository's own packages are not on the registry (or are someone
-  // else's there): the graph leaves their imports bare, and they are mocked.
-  const workspaces = workspacePackages(input.sourceDir);
-  // And a package from another registry is not the public one of its name.
-  const registryOf = packageRegistries(input.sourceDir);
-  for (const name of [
-    ...new Set([...packageFiles.keys()].map(packageNameOf)),
-  ].sort(compare)) {
-    const from = [...packageFiles.entries()]
-      .filter(([specifier]) => packageNameOf(specifier) === name)
-      .flatMap(([, files]) => [...files])
-      .sort(compare)[0];
-    const pinned = await pinnedVersion(
-      input.sourceDir,
-      from ?? "",
-      name,
-      versions,
-    );
-    if (workspaces.has(name)) {
-      packages.push({ name, ...pinned, workspace: true });
-      continue;
-    }
-    const registry = registryOf(name);
-    packages.push({
-      name,
-      ...pinned,
-      ...(registry === null ? {} : { registry }),
-    });
-    if (pinned.version === null)
-      blockers.push({
-        code: "missing_build_input",
-        file: from ?? null,
-        location: null,
-        detail: `${name} is imported but no package.json pins its version.`,
-      });
-  }
+  const { required: packages, unpinned } = await requiredPackages(packageFiles);
+  blockers.push(...unpinned);
   for (const path of versions.keys())
     if (versions.get(path) !== null) configs.push(path);
   configs = [...new Set(configs)].sort(compare);
@@ -554,8 +827,8 @@ export async function analyseSlice(input: {
     included: includedFiles,
     synthetic,
     requiredBuildInputs: { configs, packages },
-    cuts: walk.cuts,
-    internalImports: walk.internal,
+    cuts,
+    internalImports,
     externals,
     communities: walk.communities,
     blockers: sortedBlockers,
@@ -564,8 +837,8 @@ export async function analyseSlice(input: {
     meta: {
       includedFiles: includedFiles.length,
       includedBytes,
-      outboundCuts: walk.cuts.outbound.length,
-      inboundCuts: walk.cuts.inbound.length,
+      outboundCuts: cuts.outbound.length,
+      inboundCuts: cuts.inbound.length,
       stubCoverage,
       externals: externals.packages.length + externals.environment.length,
       blockers: sortedBlockers.length,
@@ -581,7 +854,9 @@ export async function analyseSlice(input: {
   };
 }
 
-export function createSliceAdapter(): ToolAdapter {
+export function createSliceAdapter(
+  options: { readonly packageTypes?: PackageTypesFetcher } = {},
+): ToolAdapter {
   return {
     name: "slice",
     version: SLICE_TOOL_VERSION,
@@ -603,6 +878,9 @@ export function createSliceAdapter(): ToolAdapter {
           run: snapshot,
           signal: input.signal,
           log: input.log,
+          ...(options.packageTypes === undefined
+            ? {}
+            : { packageTypes: options.packageTypes }),
         });
       // The touched communities' wiki pages, so the reader has the narrative.
       const pages: string[] = [];

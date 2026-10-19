@@ -961,6 +961,15 @@ export function createSandboxBuildAdapter(
           .filter((dependency) => dependency.kind === "package")
           .map((dependency) => dependency.name),
       );
+      const installedPackages = new Set(
+        source.scope.dependencies
+          .filter(
+            (dependency) =>
+              dependency.kind === "package" &&
+              dependency.resolution === "approved-package",
+          )
+          .map((dependency) => dependency.name),
+      );
       /*
         The project a name table makes: what blocks it, and, once the table
         held, how to generate it with a set of hidden tests. Pure, so the
@@ -1129,7 +1138,9 @@ export function createSandboxBuildAdapter(
               fixtures: aliasedFixtures,
               scenario: aliasedScenario,
               knownSpecifiers: NODE_BUILTINS,
-              packageModules: packageModules(uses),
+              packageModules: packageModules(uses, (specifier) =>
+                installedPackages.has(packageNameOf(specifier)),
+              ),
               publicNames: {
                 packages: Object.fromEntries(packagePairs),
                 environment: Object.fromEntries(environmentPairs),

@@ -532,7 +532,7 @@ test("only a package shown to come from the public registry is installed by defa
   );
 });
 
-test("only a registry version is installed; a URL, a path or an alias blocks", () => {
+test("only a registry version is installed, or an alias to one; a URL or a path blocks", () => {
   const pinnedTo = (version: string) =>
     resolveScope({
       manifest: {
@@ -545,7 +545,15 @@ test("only a registry version is installed; a URL, a path or an alias blocks", (
       contract,
       choices: { zod: "approved-package" },
     });
-  for (const version of ["^4.0.0", "4.1.2", ">=1 <2 || 3.x", "latest", "~1.2"])
+  for (const version of [
+    "^4.0.0",
+    "4.1.2",
+    ">=1 <2 || 3.x",
+    "latest",
+    "~1.2",
+    "npm:typescript@5.9.3",
+    "npm:@scope/pkg@^1.0.0",
+  ])
     assert.deepEqual(pinnedTo(version).blockers, [], version);
   for (const version of [
     "file:../../..",
@@ -554,7 +562,10 @@ test("only a registry version is installed; a URL, a path or an alias blocks", (
     "github:owner/repo",
     "owner/repo",
     "https://example.test/x.tgz",
-    "npm:other@1",
+    "npm:other",
+    "npm:other@file:../x",
+    "npm:other@github:owner/repo",
+    "npm:../x@1",
     "workspace:*",
   ]) {
     const scope = pinnedTo(version);
@@ -1137,7 +1148,13 @@ test("the generated project is standalone: rewritten imports, stubs beside mocks
   assert.equal(tsconfig.compilerOptions["module"], "NodeNext");
   // Its packages are untyped, as in the slice's check.
   assert.equal(tsconfig.compilerOptions["noImplicitAny"], false);
+  // An installed package by a pattern its own types take precedence over;
+  // a mocked one exactly.
   assert.match(
+    byPath.get("sandbox/ambient.d.ts")?.text ?? "",
+    /declare module "zod\*";/,
+  );
+  assert.doesNotMatch(
     byPath.get("sandbox/ambient.d.ts")?.text ?? "",
     /declare module "zod";/,
   );
@@ -1217,6 +1234,40 @@ test("the generated project is standalone: rewritten imports, stubs beside mocks
     result.files.map((f) => f.path),
     [...result.files.map((f) => f.path)].sort(),
   );
+});
+
+test("a barrel's runtime forwards to the modules its stub forwards to, never to a package", () => {
+  const result = project({
+    stubs: [
+      {
+        module: "lib/index.ts",
+        path: "lib/index.ts",
+        text: 'export * from "./service.js";\nexport * from "zod";\nexport declare const own: number;\n',
+      },
+    ],
+    contract: {
+      ...contract,
+      outbound: [
+        {
+          module: "lib/index.ts",
+          symbols: [
+            {
+              name: "own",
+              kind: "variable",
+              declaration: "export declare const own: number;",
+            },
+          ],
+          importedBy: [],
+          stubPath: "stubs/lib/index.d.ts",
+        },
+      ],
+    },
+  });
+  const runtime =
+    result.files.find((f) => f.path === "lib/index.js")?.text ?? "";
+  assert.match(runtime, /^export \* from "\.\/service\.js";$/m);
+  assert.match(runtime, /\bown\b/);
+  assert.doesNotMatch(runtime, /zod|export \{\};/);
 });
 
 test("the generator refuses what it cannot explain: unknown bare imports, missing stubs, unknown symbol kinds", () => {
@@ -1844,6 +1895,15 @@ test("a package declared as a module of what is read of it takes the place of it
     ambientDeclarations(["@acme/shared"]),
     /declare module "@acme\/shared";/,
   );
+  // An installed one is a pattern, subpaths included, unless declared.
+  const installed = ambientDeclarations(
+    ["@acme/shared", "zod"],
+    { specifiers: ["@acme/shared"], text: module },
+    new Set(["zod", "@acme/shared"]),
+  );
+  assert.match(installed, /declare module "zod\*";/);
+  assert.doesNotMatch(installed, /declare module "zod(\/\*)?";/);
+  assert.doesNotMatch(installed, /declare module "@acme\/shared[*/]/);
 });
 
 test("a credential in any public file blocks the project, by file and line", () => {

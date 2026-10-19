@@ -51,10 +51,23 @@ export type DependencyResolution = (typeof DEPENDENCY_RESOLUTIONS)[number];
 
 /**
  * A version or range the registry answers: semver, a range of them, or a
- * dist-tag. No protocol (`git+https:`, `file:`, `npm:`) and no path or
+ * dist-tag. No protocol (`git+https:`, `file:`) and no path or
  * `owner/repo` shorthand, which is what a `:` or a `/` would make it.
  */
 const REGISTRY_RANGE = /^[0-9A-Za-z.\-+^~<>=|* ]+$/;
+
+/**
+ * An alias to another package of the same registry, at a registry version:
+ * `npm:typescript@5.9.3` installs `typescript` under the alias's name.
+ */
+const REGISTRY_ALIAS =
+  /^npm:(?:@[a-z0-9~-][a-z0-9._~-]*\/)?[a-z0-9~-][a-z0-9._~-]*@([^@]+)$/;
+
+/** Whether the registry resolves a pin, directly or through an alias. */
+export function isRegistryVersion(version: string): boolean {
+  const alias = REGISTRY_ALIAS.exec(version);
+  return REGISTRY_RANGE.test(alias === null ? version : (alias[1] ?? ""));
+}
 
 export interface ResolvedDependency {
   /** A package name, or a repository path for a cut module. */
@@ -223,19 +236,19 @@ export function resolveScope(input: ScopeInput): ScopeRecord {
     }
     // Only what the registry resolves is installed. The version is the
     // repository's own text, and npm also takes a git URL, a tarball URL,
-    // `file:` or `link:` to a path outside the job, or an alias to another
-    // package, each fetched or linked by the install.
+    // or `file:` or `link:` to a path outside the job, each fetched or
+    // linked by the install. An alias is the registry's when its target is.
     if (
       item.version !== null &&
       resolution === "approved-package" &&
-      !REGISTRY_RANGE.test(item.version)
+      !isRegistryVersion(item.version)
     ) {
       dependencies.push({
         name: item.name,
         kind: "package",
         version: item.version,
         resolution: "unresolved",
-        detail: "Not a registry version: a URL, a path or an alias.",
+        detail: "Not a registry version: a URL or a path.",
       });
       blockers.push({
         code: "dependency_unresolved",
