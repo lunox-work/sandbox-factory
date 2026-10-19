@@ -97,3 +97,6 @@ test-results/
 
 # TLC scratch files (docs/specs); -cleanup empties it but leaves the folder
 docs/specs/states/
+
+# Claude Code agent worktrees (Prettier reads this file, not the global ignore)
+.claude/worktrees/

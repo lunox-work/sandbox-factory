@@ -2,4 +2,7 @@
 # point a human sees the change before it can land on main.
 # Bypass (WIP branch, debugging CI): git push --no-verify
 echo "pre-push: running full verification (lint, format, build, test + coverage)..."
+# Git exports GIT_DIR to hooks, as an absolute path in a linked worktree; a
+# test that runs git in a temporary repository would act on this one instead.
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_PREFIX GIT_COMMON_DIR
 npm run verify
