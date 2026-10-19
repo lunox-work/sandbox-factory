@@ -1164,6 +1164,33 @@ test("worker validates credentials, modes, and bounded limits", () => {
     "none",
   );
   assert.throws(() => parseWorkerEnv({ ...env, EVALUATION_PROVIDER: "e2b" }));
+  // Local processes are no boundary for contributor code: a production
+  // worker refuses them at startup, and runs without a provider still.
+  assert.throws(
+    () =>
+      parseWorkerEnv({
+        ...env,
+        NODE_ENV: "production",
+        EVALUATION_PROVIDER: "local-process",
+      }),
+    /refused with NODE_ENV=production/,
+  );
+  assert.equal(
+    parseWorkerEnv({ ...env, NODE_ENV: "production" }).EVALUATION_PROVIDER,
+    "none",
+  );
+  assert.equal(parseWorkerEnv(env).EVALUATION_JOB_UID, 61_000);
+  assert.equal(
+    parseWorkerEnv({ ...env, EVALUATION_JOB_UID: "70000" }).EVALUATION_JOB_UID,
+    70_000,
+  );
+  assert.throws(() => parseWorkerEnv({ ...env, EVALUATION_JOB_UID: "0" }));
+  // Not a uid people or services get, such as `node`'s 1000.
+  assert.throws(() => parseWorkerEnv({ ...env, EVALUATION_JOB_UID: "1000" }));
+  assert.equal(
+    parseWorkerEnv({ ...env, EVALUATION_JOB_UID: "10000" }).EVALUATION_JOB_UID,
+    10_000,
+  );
 });
 
 test("source tokens use repository-scoped read permissions", async () => {

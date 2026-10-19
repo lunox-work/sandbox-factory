@@ -63,14 +63,16 @@ export function createDocumentsAdapter(): ToolAdapter {
       const found = repositoryDocuments(files);
       const read = sourceReader(input.sourceDir);
       const documents: GithubContextDocument[] = [];
-      for (const path of found.paths) {
+      for (const [done, path] of found.paths.entries()) {
         input.signal.throwIfAborted();
+        input.advance?.(done, found.paths.length);
         const bytes = index.sizes.get(path) ?? 0;
         if (bytes > CONTEXT_DOCUMENT_BYTES_MAX) continue;
         const text = await read(path);
         const kept = text === null ? null : keptDocument(path, bytes, text);
         if (kept !== null) documents.push(kept);
       }
+      input.advance?.(1, 1);
       const set: DocumentSet = {
         schemaVersion: DOCUMENT_SET_SCHEMA_VERSION,
         toolVersion: DOCUMENTS_TOOL_VERSION,

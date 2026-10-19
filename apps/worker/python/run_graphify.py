@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import time
 
@@ -26,6 +27,19 @@ def canonical(value):
     return json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
 
 
+class Progress:
+    """How far the run has got, as `@@progress done total` lines on stderr: at most one per percent."""
+
+    def __init__(self, total):
+        self.total, self.shown = max(total, 1), -1
+
+    def __call__(self, done):
+        percent = done * 100 // self.total
+        if percent != self.shown:
+            self.shown = percent
+            print(f"@@progress {done} {self.total}", file=sys.stderr, flush=True)
+
+
 def run(source, out):
     if importlib.metadata.version("graphifyy") != "0.4.18":
         raise RuntimeError("The Graphify driver requires graphifyy 0.4.18")
@@ -37,11 +51,16 @@ def run(source, out):
         os.chdir(source)
         detection = detect(Path("."))
         files = sorted(Path(item["path"] if isinstance(item, dict) else item) for item in detection["files"]["code"] if not DEFAULT_IGNORE.intersection(Path(item["path"] if isinstance(item, dict) else item).parts))
+        # Each file's extraction is a unit; the import facts, and the
+        # communities with every view written from them, a quarter as many.
+        tail = max(1, len(files) // 4)
+        progress = Progress(len(files) + 2 * tail)
         nodes, edges, omissions = {}, [], []
         file_old_ids = {}
         per_file = []
         with tempfile.TemporaryDirectory(prefix="graphify-cache-") as cache:
-            for file in files:
+            for index, file in enumerate(files):
+                progress(index)
                 raw = extract([file], cache_root=Path(cache))
                 rel = file.as_posix()
                 mapping = {}
@@ -68,6 +87,7 @@ def run(source, out):
                     edges.append({**edge, "source": src, "target": tgt, "source_file": rel})
                 else:
                     omissions.append({"file": rel, "target": edge.get("target"), "relation": edge.get("relation"), "reason": "unresolved_ast_target"})
+        progress(len(files))
         with tempfile.TemporaryDirectory(prefix="dependency-facts-") as directory:
             listing = Path(directory) / "files.json"
             listing.write_text(canonical([file.as_posix() for file in files]))
@@ -86,6 +106,7 @@ def run(source, out):
                     nodes.setdefault(target_id, {"id": target_id, "label": key, "source_file": fact["file"], "file_type": "code", "dependencyStatus": "external" if dep["external"] else "unresolved"})
                     omissions.append({"file": fact["file"], **dep})
                 edges.append({"source": f"file:{fact['file']}", "target": target_id, "relation": "imports", "confidence": "EXTRACTED", "source_file": fact["file"], "source_location": f"L{dep['line']}", "specifier": dep["specifier"], "resolved": bool(target), "weight": 1.0})
+        progress(len(files) + tail)
         # Stable construction order and a fixed implementation/seed. Canonical
         # facts preserve parallel relations; Graphify's views use a DiGraph.
         node_list = [nodes[key] for key in sorted(nodes)]
@@ -122,6 +143,7 @@ def run(source, out):
                     "visualizationNodes": len(view_nodes), "skippedSensitive": detection.get("skipped_sensitive", []), "nodes": len(node_list), "edges": len(edge_list), "unresolved": len(omissions), "confidence": dict(Counter(edge.get("confidence", "EXTRACTED") for edge in edge_list)),
                     "canonicalGraphSha256": hashlib.sha256((out / "graph.json").read_bytes()).hexdigest(), "durationSeconds": round(time.monotonic() - started, 3)}
         (out / "manifest.json").write_text(canonical(manifest), encoding="utf-8")
+        progress(len(files) + 2 * tail)
         print(json.dumps({"visualizationNodes": len(view_nodes), "skippedSensitive": detection.get("skipped_sensitive", []), "nodes": len(node_list), "edges": len(edge_list), "communities": len(communities), "unresolved": len(omissions)}))
     finally:
         os.chdir(previous)

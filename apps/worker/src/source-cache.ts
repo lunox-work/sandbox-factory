@@ -15,6 +15,7 @@
 
 import { createHash, randomUUID } from "node:crypto";
 import {
+  chmod,
   mkdir,
   readdir,
   readFile,
@@ -76,7 +77,11 @@ export async function createSourceCache(
   const maxBytes = options.maxBytes ?? SOURCE_CACHE_BYTES;
   const now = options.now ?? Date.now;
   const entries = new Map<string, Entry>();
-  await mkdir(options.root, { recursive: true });
+  // Private client source: the worker's user alone reads it, not an
+  // evaluation job's (`evaluation/isolation.ts`), however the directory
+  // was left.
+  await mkdir(options.root, { recursive: true, mode: 0o700 });
+  await chmod(options.root, 0o700);
 
   // What an earlier worker on this disk left complete is kept.
   for (const name of await readdir(options.root)) {

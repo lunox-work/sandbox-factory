@@ -1,6 +1,7 @@
 import { ApiError } from "@sandbox-factory/client";
 import { useQueries, useQueryClient } from "@tanstack/react-query";
 import { clients, queryKeys, useOwnerQuery, useUserId } from "./data/query";
+import { leaveFor } from "./navigation/leave";
 import { replaceLocation } from "./navigation/location";
 /**
  * An organization's GitHub: the installations it has linked, and the
@@ -116,12 +117,13 @@ export function useGithub(
       // A full-page navigation: the browser has to reach GitHub, and an XHR
       // would fail CORS following the redirect there.
       const returnTo = window.location.pathname + window.location.search;
-      window.location.href = `${base(organizationId)}/connect?${new URLSearchParams(
-        {
+      leaveFor(
+        `${base(organizationId)}/connect?${new URLSearchParams({
           returnTo,
           ...(options?.install === true ? { install: "1" } : {}),
-        },
-      ).toString()}`;
+        }).toString()}`,
+        "GitHub",
+      );
     },
     [organizationId],
   );

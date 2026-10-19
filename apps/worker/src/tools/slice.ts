@@ -21,6 +21,7 @@ import {
   boundarySummary,
   canonicalJson,
   detectExternals,
+  isSecretPath,
   isSliceParams,
   parseSliceGraph,
   reach,
@@ -45,6 +46,7 @@ import type { StoredAnalysisRun, StoredArtifact } from "@sandbox-factory/db";
 import { AnalysisError } from "../errors.js";
 import { snapshotOf } from "./adapter.js";
 import { workspacePackages } from "./compiler-config.js";
+import { packageRegistries } from "./package-registry.js";
 import type {
   ArtifactFile,
   ToolAdapter,
@@ -291,6 +293,16 @@ export async function analyseSlice(input: {
     location: null,
     detail: `${entry} names no file in the graph.`,
   }));
+  // A file that exists to hold credentials never leaves the repository,
+  // whatever imports it.
+  for (const path of walk.included)
+    if (isSecretPath(path))
+      blockers.push({
+        code: "secret_file",
+        file: path,
+        location: null,
+        detail: `${path} is a credentials file; a slice may not include it. Import fixture values instead.`,
+      });
   if (walk.included.length === 0) {
     // Nothing to slice: say which entry points missed before failing.
     for (const blocker of blockers) input.log(blocker.detail);
@@ -437,6 +449,8 @@ export async function analyseSlice(input: {
   // The repository's own packages are not on the registry (or are someone
   // else's there): the graph leaves their imports bare, and they are mocked.
   const workspaces = workspacePackages(input.sourceDir);
+  // And a package from another registry is not the public one of its name.
+  const registryOf = packageRegistries(input.sourceDir);
   for (const name of [
     ...new Set([...packageFiles.keys()].map(packageNameOf)),
   ].sort(compare)) {
@@ -454,7 +468,12 @@ export async function analyseSlice(input: {
       packages.push({ name, ...pinned, workspace: true });
       continue;
     }
-    packages.push({ name, ...pinned });
+    const registry = registryOf(name);
+    packages.push({
+      name,
+      ...pinned,
+      ...(registry === null ? {} : { registry }),
+    });
     if (pinned.version === null)
       blockers.push({
         code: "missing_build_input",

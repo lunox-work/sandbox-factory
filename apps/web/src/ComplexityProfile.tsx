@@ -325,6 +325,14 @@ function RepositoryProfile({
           ))}
         </ul>
       )}
+      {stored.status === "awaiting_approval" && (
+        <p className="text-muted-foreground mt-2 text-xs" role="status">
+          The slice the scope agent chose is wider than a sandbox is cut from
+          unasked. It is measured and priced as it is; once the price is
+          approved, an owner or admin approves the slice on the Sandbox tab
+          before a sandbox is cut from it.
+        </p>
+      )}
     </>
   );
 }

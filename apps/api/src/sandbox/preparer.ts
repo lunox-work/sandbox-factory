@@ -14,19 +14,31 @@
  * what this process did not see. A run refused at the organization's
  * analysis cap is asked for again on the next pass, one slot short of the
  * cap, as the profiler's are, so a person's own analysis is not refused.
+ *
+ * The fixtures and pseudonyms agents read the slice, whose repository text
+ * can steer them, so a slice wider than `AUTO_SLICE_LIMITS` is prepared
+ * only once an owner or admin approved it. The profiler holds such a one
+ * `awaiting_approval`, which this never lists; a profile measured `ready`
+ * from one before approvals were asked for is checked here, and moved to
+ * `awaiting_approval` rather than prepared (`holdsForApproval`).
  */
 
 import type {
   AnalysisRunStore,
+  ArtifactStore,
   BountyProfileStore,
   BountyProposalStore,
   BountyStore,
   StoredBountyProfile,
 } from "@sandbox-factory/db";
-import { workspaceVocabulary } from "sandbox-factory";
+import { organizationNames, workspaceVocabulary } from "sandbox-factory";
 
 import { enqueueAnalysis } from "../analysis/enqueue.js";
-import { sliceListing } from "./version-service.js";
+import {
+  holdsForApproval,
+  sliceApprovalOf,
+  sliceListing,
+} from "./version-service.js";
 
 /** How often unprepared profiles are looked at without a prompt. */
 export const PREPARE_SWEEP_MS = 60_000;
@@ -36,9 +48,14 @@ export const PREPARATION_DEADLINE_MINUTES = 90;
 export interface SandboxPreparerOptions {
   readonly profiles: Pick<
     BountyProfileStore,
-    "unprepared" | "organizationsWithUnprepared" | "recordPrepared"
+    | "unprepared"
+    | "organizationsWithUnprepared"
+    | "recordPrepared"
+    | "holdSlice"
   >;
-  readonly runs: Pick<AnalysisRunStore, "enqueue" | "latestSucceeded">;
+  readonly runs: Pick<AnalysisRunStore, "enqueue" | "get" | "latestSucceeded">;
+  /** The slice run's summary, which says whether it waits for approval. */
+  readonly artifacts: Pick<ArtifactStore, "list">;
   readonly proposals: Pick<BountyProposalStore, "get">;
   readonly bounties: Pick<BountyStore, "get">;
   /** The organization's name and handle, which no public file may carry. */
@@ -139,6 +156,21 @@ export class SandboxPreparer {
   ): Promise<"queued" | "found" | "full" | "skipped"> {
     if (profile.snapshotId === null || profile.sliceRunId === null)
       return "skipped";
+    if (profile.sliceApprovedAt === null) {
+      const approval = await sliceApprovalOf(
+        this.#options,
+        owner,
+        profile.sliceRunId,
+      );
+      // Unreadable, it cannot be told within the limits: not prepared.
+      if (approval === null) return "skipped";
+      if (holdsForApproval(profile, approval)) {
+        // Held only while still unapproved: an approval that landed since
+        // this read stands, and the next pass prepares it.
+        await this.#options.profiles.holdSlice(owner, profile.id);
+        return "skipped";
+      }
+    }
     const proposal = await this.#options.proposals.get(
       owner,
       profile.proposalId,
@@ -177,8 +209,11 @@ export class SandboxPreparer {
           pseudonyms: {
             // The names `workspaceNames` gives a build of this sandbox.
             vocabulary: workspaceVocabulary([
-              ...names,
-              ...(profile.repository?.split("/") ?? []),
+              ...organizationNames([
+                ...names,
+                ...(profile.repository?.split("/").slice(0, 1) ?? []),
+              ]),
+              ...(profile.repository?.split("/").slice(1) ?? []),
             ]),
             ...sliceListing(bounty),
           },

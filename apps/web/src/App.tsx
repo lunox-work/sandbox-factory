@@ -13,6 +13,7 @@ import { Account } from "./Account";
 import { signOut, useSession } from "./auth";
 import { Breadcrumbs } from "./Breadcrumbs";
 import { Home } from "./Home";
+import { Leaving } from "./Leaving";
 import { Onboarding } from "./Onboarding";
 import { CreateOrganization, Organization } from "./Organization";
 import { Organizations } from "./Organizations";
@@ -77,6 +78,7 @@ export function App() {
    */
   return (
     <ServerDataProvider key={session.user.id} userId={session.user.id}>
+      <Leaving />
       {sandboxFiles !== undefined ? (
         <Suspense
           fallback={

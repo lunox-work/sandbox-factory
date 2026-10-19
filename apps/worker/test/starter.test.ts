@@ -105,6 +105,7 @@ test("a starter type-checks as its build would, and says where it does not", asy
     const ok = checkStarter({
       root,
       version: projectVersion,
+      vocabulary: ["acme"],
       starter: submission,
       spec: null,
     });
@@ -114,6 +115,7 @@ test("a starter type-checks as its build would, and says where it does not", asy
     const jsx = checkStarter({
       root,
       version: projectVersion,
+      vocabulary: ["acme"],
       starter: {
         ...submission,
         files: [
@@ -131,6 +133,7 @@ test("a starter type-checks as its build would, and says where it does not", asy
     const broken = checkStarter({
       root,
       version: projectVersion,
+      vocabulary: ["acme"],
       starter: {
         ...submission,
         files: [
@@ -154,6 +157,7 @@ test("a starter type-checks as its build would, and says where it does not", asy
     const misplaced = checkStarter({
       root,
       version: projectVersion,
+      vocabulary: ["acme"],
       starter: {
         ...submission,
         files: [{ path: "lib/cart.ts", text: "" }],
@@ -167,6 +171,7 @@ test("a starter type-checks as its build would, and says where it does not", asy
     const unresolved = checkStarter({
       root,
       version: projectVersion,
+      vocabulary: ["acme"],
       starter: {
         ...submission,
         scenario: 'import "../src/missing.js";\n',
@@ -176,11 +181,14 @@ test("a starter type-checks as its build would, and says where it does not", asy
     });
     assert.deepEqual(unresolved.problems, [
       "sandbox/run.ts: ../src/missing.js does not resolve to a file in the project.",
+      // `acmeTotal` is left in its private name, which says whose it is.
+      'src/cart.ts: "acme" names the workspace and appears 3 times in 2 public files: src/cart.ts, tests/public/cart.test.ts. Give it a pseudonym.',
     ]);
     // The name table: required, renaming something, and reversible.
     const nameless = checkStarter({
       root,
       version: projectVersion,
+      vocabulary: ["acme"],
       starter: { ...submission, aliases: [] },
       spec: null,
     });
@@ -188,6 +196,7 @@ test("a starter type-checks as its build would, and says where it does not", asy
     const idle = checkStarter({
       root,
       version: projectVersion,
+      vocabulary: ["acme"],
       starter: {
         ...submission,
         aliases: [
@@ -202,6 +211,7 @@ test("a starter type-checks as its build would, and says where it does not", asy
     const colliding = checkStarter({
       root,
       version: projectVersion,
+      vocabulary: ["acme"],
       starter: {
         ...submission,
         aliases: [
@@ -220,6 +230,7 @@ test("a starter type-checks as its build would, and says where it does not", asy
     const pathRule = checkStarter({
       root,
       version: projectVersion,
+      vocabulary: ["acme"],
       starter: {
         ...submission,
         aliases: [
@@ -403,6 +414,7 @@ const params = {
   sandboxVersionId: "sbv_1",
   approvedTaskSha256: "a".repeat(64),
   stack: ["TypeScript"],
+  vocabulary: ["acme"],
 };
 function inputs(
   version: StoredVersionWithSource | null = stored,
@@ -446,6 +458,63 @@ async function runStarter(
 const isCode = (code: string) => (error: unknown) =>
   error instanceof AnalysisError && error.code === code;
 
+test("a starter naming the workspace anywhere a developer reads is refused until renamed", async () => {
+  const root = await mkdtemp(join(tmpdir(), "starter-leak-"));
+  try {
+    const listed = {
+      ...projectVersion,
+      title: "Sum the Acme cart",
+      tags: ["payflow"],
+    };
+    const check = (
+      vocabulary: readonly string[],
+      aliases = submission.aliases,
+    ) =>
+      checkStarter({
+        root,
+        version: listed,
+        starter: { ...submission, aliases },
+        spec: null,
+        vocabulary,
+      });
+    // The title and tags reach the README and the descriptor as written.
+    const leaked = check(["acme", "payflow"]);
+    assert.equal(leaked.ok, false);
+    assert.deepEqual(leaked.problems, [
+      'README.md: "acme" names the workspace and appears 2 times in 2 public files: README.md, sandbox-task.json. Give it a pseudonym.',
+      'sandbox-task.json: "payflow" names the workspace and appears 1 time in 1 public file: sandbox-task.json. Give it a pseudonym.',
+    ]);
+    // Renamed by the table, the listing is clean, and the project says so.
+    const renamed = check(
+      ["acme", "payflow"],
+      [
+        ...submission.aliases,
+        { before: "Acme", after: "Shop", kind: "text", paths: [] },
+        { before: "payflow", after: "payments", kind: "text", paths: [] },
+      ],
+    );
+    assert.deepEqual(renamed.problems, []);
+    assert.equal(renamed.ok, true);
+    if (!renamed.ok) return;
+    assert.equal(renamed.project.descriptor.title, "Sum the Shop cart");
+    assert.deepEqual(renamed.project.descriptor.tags, ["payments"]);
+    assert.match(
+      renamed.project.files.find((file) => file.path === "README.md")?.text ??
+        "",
+      /^# Sum the Shop cart/,
+    );
+    // A name the table leaves in the source is refused the same way.
+    const inSource = check(["acme"], submission.aliases.slice(1));
+    assert.equal(inSource.ok, false);
+    assert.match(
+      inSource.problems.join("\n"),
+      /"acme" names the workspace .*: README\.md, sandbox-task\.json, src\/cart\.ts\./,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("the starter agent checks, runs and submits a starter that is built as the version", async () => {
   const fake = fakeProvider();
   const model = scripted([
@@ -473,6 +542,10 @@ test("the starter agent checks, runs and submits a starter that is built as the 
     assert.match(model.prompts[0] ?? "", /Sum a cart/);
     assert.match(model.prompts[0] ?? "", /price times quantity/);
     assert.match(model.prompts[0] ?? "", /The tech stack: TypeScript\./);
+    assert.match(
+      model.prompts[0] ?? "",
+      /The workspace's own names, which no public file may carry.*: acme\./,
+    );
     assert.match(model.results[0]?.[0]?.content ?? "", /needs a name table/);
     assert.equal(model.results[1]?.[0]?.is_error, true);
     assert.equal(
@@ -509,7 +582,7 @@ test("the starter agent checks, runs and submits a starter that is built as the 
     assert.equal(manifest.sliceRunId, null);
     assert.equal(manifest.sourceSnapshotId, null);
     assert.equal(manifest.starterSha256, sha(setText));
-    assert.equal(manifest.toolVersion, "sandbox_starter@3");
+    assert.equal(manifest.toolVersion, "sandbox_starter@4");
     assert.equal(
       manifest.transformConfigSha256,
       sha(

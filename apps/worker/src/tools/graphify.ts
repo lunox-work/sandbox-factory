@@ -33,7 +33,7 @@ export function createGraphifyAdapter(
       await (options.execute ?? command)(
         options.python ?? "python3",
         [script, input.sourceDir, input.outDir],
-        { signal: input.signal },
+        { signal: input.signal, progress: input.advance },
       );
       const artifacts: ArtifactFile[] = [];
       const visit = async (directory: string, prefix = "") => {

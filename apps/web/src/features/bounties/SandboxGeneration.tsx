@@ -141,6 +141,101 @@ function sliceActivity(slice: SandboxSliceDto): string {
   return "Cutting the slice from the repository";
 }
 
+/** Why a slice waits for approval, as a person reads it. */
+const APPROVAL_REASONS: Record<
+  NonNullable<SandboxSliceDto["approval"]>["reasons"][number],
+  string
+> = {
+  directory_entry_point: "starts from a directory rather than named files",
+  too_many_files: "holds more files than are cut unasked",
+  too_deep: "follows imports deeper than are cut unasked",
+};
+
+const REASON_LIST = new Intl.ListFormat("en", {
+  style: "long",
+  type: "conjunction",
+});
+
+/** Why a slice waits, as one clause: "holds …, and follows …". */
+function approvalReasons(
+  reasons: NonNullable<SandboxSliceDto["approval"]>["reasons"],
+): string {
+  return reasons.length === 0
+    ? "is wider than is cut unasked"
+    : REASON_LIST.format(reasons.map((reason) => APPROVAL_REASONS[reason]));
+}
+
+/**
+ * A slice wider than its sizing cuts unasked: what the scope agent asked
+ * for and what that holds, for an owner or admin to approve as shown. The
+ * agent read the repository, whose text can steer it, so nothing of it is
+ * cut or built until then.
+ */
+function SliceApproval({
+  slice,
+  approving,
+  onApprove,
+}: {
+  slice: SandboxSliceDto;
+  approving: boolean;
+  onApprove: (approval: NonNullable<SandboxSliceDto["approval"]>) => void;
+}) {
+  const approval = slice.approval;
+  if (approval === null)
+    return (
+      <p className="text-muted-foreground text-sm" role="status">
+        Its sizing's slice waits for approval, but what it holds could not be
+        read back. Price it again to slice a new spec.
+      </p>
+    );
+  return (
+    <div className="flex flex-col gap-3" data-testid="slice-approval">
+      <p className="text-sm">
+        The slice the scope agent chose {approvalReasons(approval.reasons)}.
+        Nothing is cut from it until an owner or admin approves exactly this.
+      </p>
+      <dl className="grid grid-cols-[7rem_minmax(0,1fr)] gap-x-4 gap-y-1 text-sm">
+        <dt className="text-muted-foreground">Entry points</dt>
+        <dd className="min-w-0 font-mono text-xs break-all">
+          {approval.entryPoints.join(", ")}
+        </dd>
+        <dt className="text-muted-foreground">Depth</dt>
+        <dd className="tabular-nums">
+          {approval.budget.maxDepth} imports, up to {approval.budget.maxFiles}{" "}
+          files
+          {approval.includeInferred && ", with inferred relations"}
+        </dd>
+        <dt className="text-muted-foreground">Files</dt>
+        <dd className="tabular-nums">{approval.includedFiles}</dd>
+      </dl>
+      <ul
+        aria-label="Files it holds"
+        className="bg-muted/40 max-h-48 overflow-y-auto rounded-md px-3 py-2 font-mono text-xs"
+      >
+        {approval.included.map((path) => (
+          <li key={path} className="break-all">
+            {path}
+          </li>
+        ))}
+        {approval.truncated && (
+          <li className="text-muted-foreground font-sans">
+            and {approval.includedFiles - approval.included.length} more
+          </li>
+        )}
+      </ul>
+      <div>
+        <Button
+          type="button"
+          disabled={approving}
+          onClick={() => onApprove(approval)}
+        >
+          {approving ? "Approving…" : "Approve slice"}
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 /** Where a version stands, in a word, with why when it went wrong. */
 type Standing = {
   label: string;
@@ -225,6 +320,8 @@ export function SandboxGeneration({
   const [pending, setPending] = useState(false);
   // Asking for a slice, or cutting a version from it.
   const [slicing, setSlicing] = useState(false);
+  // Approving the slice its sizing waits on.
+  const [approving, setApproving] = useState(false);
   const [publishing, setPublishing] = useState(false);
   // Asking whether to take the sandbox from contributors.
   const [unpublishing, setUnpublishing] = useState(false);
@@ -423,6 +520,45 @@ export function SandboxGeneration({
       void queryClient.invalidateQueries({ queryKey: sliceKey });
     } finally {
       setSlicing(false);
+    }
+  }
+
+  /*
+    Approving a slice names exactly the run and request shown; the API
+    refuses anything else. The profile, measured already, is then ready,
+    and the cutter cuts a version from it and builds it: the versions are
+    read again until that draft shows.
+  */
+  async function approveSlice(
+    approval: NonNullable<SandboxSliceDto["approval"]>,
+  ) {
+    const sliceRunId = slice.data?.sliceRunId;
+    if (sliceRunId == null) return;
+    setApproving(true);
+    setError(null);
+    try {
+      const answer = await clients.sandbox.approveSandboxSlice(
+        organizationId,
+        sandboxId,
+        {
+          sliceRunId,
+          entryPoints: approval.entryPoints,
+          budget: approval.budget,
+          includeInferred: approval.includeInferred,
+        },
+      );
+      queryClient.setQueryData(sliceKey, answer);
+      if (answer.status === "ready") setAwaitingCut(latest?.id ?? "");
+      await queryClient.invalidateQueries({ queryKey: sliceKey });
+    } catch (failure) {
+      setError(
+        failure instanceof ApiError
+          ? failure.message
+          : "Could not reach the server.",
+      );
+      void queryClient.invalidateQueries({ queryKey: sliceKey });
+    } finally {
+      setApproving(false);
     }
   }
 
@@ -651,9 +787,11 @@ export function SandboxGeneration({
                 ? null
                 : slice.data.status === "ready"
                   ? " Its sizing's slice is ready: slice a version from it, and it is built and checked."
-                  : slice.data.status === "none"
-                    ? " Slice one: the scope agent picks the files the task needs from its repository, they are cut down to the task, then built and checked."
-                    : ` ${slice.data.reason ?? "It cannot be sliced yet."}`)}
+                  : slice.data.status === "awaiting_approval"
+                    ? " Its sizing's slice is wider than is cut unasked: approve it below, and a version is cut from it and built."
+                    : slice.data.status === "none"
+                      ? " Slice one: the scope agent picks the files the task needs from its repository, they are cut down to the task, then built and checked."
+                      : ` ${slice.data.reason ?? "It cannot be sliced yet."}`)}
       </p>
     );
   else {
@@ -936,12 +1074,14 @@ export function SandboxGeneration({
           : "Reading its slice…"
         : sliceUnderWay(sliceState)
           ? "Its sizing is still cutting the slice."
-          : sliceState.status === "failed" ||
-              sliceState.status === "unavailable"
-            ? (sliceState.reason ?? "It cannot be sliced yet.")
-            : latestFromSlice
-              ? "The latest version is already cut from this slice. Price it again to cut a new one."
-              : null);
+          : sliceState.status === "awaiting_approval"
+            ? "Approve the slice its sizing chose first."
+            : sliceState.status === "failed" ||
+                sliceState.status === "unavailable"
+              ? (sliceState.reason ?? "It cannot be sliced yet.")
+              : latestFromSlice
+                ? "The latest version is already cut from this slice. Price it again to cut a new one."
+                : null);
   const sliceBusy = slicing || generating;
   const sliceButton = slices && !versions.isPending && !versions.isError && (
     <DisabledReason reason={sliceBusy ? null : sliceHeld}>
@@ -977,6 +1117,15 @@ export function SandboxGeneration({
       </RunActivity>
     );
 
+  const sliceApproval = slices &&
+    sliceState?.status === "awaiting_approval" && (
+      <SliceApproval
+        slice={sliceState}
+        approving={approving}
+        onApprove={(approval) => void approveSlice(approval)}
+      />
+    );
+
   // On a page, the first version is the version card's one action.
   const firstOnCard = !flat && latest === null;
   const rowGenerate = !firstOnCard && makeButton;
@@ -984,6 +1133,7 @@ export function SandboxGeneration({
     <div className="flex flex-col gap-4" data-testid="sandbox-generation">
       {body}
       {sliceProgress}
+      {sliceApproval}
       {(openButton || rowGenerate) && (
         <div className="flex flex-wrap items-center gap-2">
           {openButton}

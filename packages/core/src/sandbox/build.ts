@@ -151,7 +151,11 @@ export interface BaselineStep {
 export interface PrivateTestOutcome {
   readonly path: string;
   readonly expected: "pass" | "fail";
-  readonly observed: "pass" | "fail" | "error";
+  /**
+   * `flaky` when two runs of the file disagreed on any test in it: like
+   * `error`, a test that judges nothing.
+   */
+  readonly observed: "pass" | "fail" | "error" | "flaky";
   readonly ok: boolean;
 }
 
@@ -167,7 +171,7 @@ export interface BaselineReport {
  * The baseline rule: install, build, the dev walkthrough and the public
  * tests must pass on the unfixed source, at least one hidden test must be
  * one that fails before the fix, and every hidden test must do what the
- * owner said it would. A build or harness failure is never accepted as "the
+ * owner said it would, the same way twice. A build or harness failure is never accepted as "the
  * test that fails before the fix".
  */
 export function baselineVerdict(input: {
@@ -201,6 +205,8 @@ export function baselineVerdict(input: {
   for (const outcome of input.privateTests)
     if (outcome.observed === "error")
       reasons.push(`${outcome.path} could not run.`);
+    else if (outcome.observed === "flaky")
+      reasons.push(`${outcome.path} gave different results on two runs.`);
     else if (!outcome.ok)
       reasons.push(
         `${outcome.path} was expected to ${outcome.expected} on the baseline and ${outcome.observed}ed.`,

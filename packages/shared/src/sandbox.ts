@@ -15,6 +15,7 @@ import {
   PRICED_BOUNTY_COMPLEXITIES,
   SANDBOX_COMMANDS,
   SANDBOX_STATUSES,
+  SLICE_APPROVAL_REASONS,
   TASK_DESCRIPTOR_SCHEMA_VERSION,
 } from "sandbox-factory";
 import { z } from "zod";
@@ -22,6 +23,8 @@ import {
   analysisRunDtoSchema,
   entryPointSchema,
   sandboxFixtureSchema,
+  SLICE_ENTRY_POINTS_MAX,
+  sliceBudgetSchema,
 } from "./analysis.js";
 import {
   contextVersionsDefault,
@@ -304,7 +307,9 @@ export const generateStarterResponseSchema = z.object({
  * slice the bounty's sizing took of its approved spec revision in the
  * sandbox's repository: `none` until it was asked for, then the sizing
  * profile's own steps, `ready` once its slice run has succeeded.
- * `unavailable` is a sandbox that cannot be sliced yet, with why.
+ * `awaiting_approval` is a slice wider than the sizing cuts unasked, until
+ * an owner or admin approves it. `unavailable` is a sandbox that cannot be
+ * sliced yet, with why.
  */
 export const SANDBOX_SLICE_STATUSES = [
   "unavailable",
@@ -312,6 +317,7 @@ export const SANDBOX_SLICE_STATUSES = [
   "queued",
   "scoping",
   "slicing",
+  "awaiting_approval",
   "ready",
   "failed",
 ] as const;
@@ -325,8 +331,39 @@ export const sandboxSliceDtoSchema = z.object({
   /** The scope agent's run, which picks what the slice holds. */
   scopeRunId: z.string().nullable(),
   sliceRunId: z.string().nullable(),
+  /**
+   * What an approval approves, while the slice awaits one: the request the
+   * scope agent chose, exactly as it was sliced, and the files it holds.
+   * Absent otherwise.
+   */
+  approval: z
+    .object({
+      reasons: z.array(z.enum(SLICE_APPROVAL_REASONS)),
+      entryPoints: z.array(z.string()),
+      budget: z.object({ maxFiles: z.number(), maxDepth: z.number() }),
+      includeInferred: z.boolean(),
+      includedFiles: z.number().int().nonnegative(),
+      /** The included files, as many as the slice's summary lists. */
+      included: z.array(z.string()),
+      truncated: z.boolean(),
+    })
+    .nullable()
+    .default(null),
 });
 export type SandboxSliceDto = z.infer<typeof sandboxSliceDtoSchema>;
+/**
+ * `POST .../sandboxes/:id/slice/approve`: the slice awaiting approval,
+ * named by its run and the request it was cut from, as the approver saw
+ * it. Anything else is refused, so an approval never covers a slice its
+ * approver was not shown.
+ */
+export const approveSliceSchema = z.strictObject({
+  sliceRunId: z.string().min(1),
+  entryPoints: z.array(entryPointSchema).min(1).max(SLICE_ENTRY_POINTS_MAX),
+  budget: sliceBudgetSchema,
+  includeInferred: z.boolean(),
+});
+export type ApproveSliceInput = z.input<typeof approveSliceSchema>;
 /** `GET .../sandboxes/:id/slice`. */
 export const sandboxSliceResponseSchema = z.object({
   slice: sandboxSliceDtoSchema,

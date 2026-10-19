@@ -254,6 +254,7 @@ export function createStarterAdapter(options: {
           version: projectVersion,
           starter,
           spec,
+          vocabulary: params.vocabulary ?? [],
         });
       let checks = 0;
       let runs = 0;
@@ -421,6 +422,7 @@ export function createStarterAdapter(options: {
           stack: params.stack,
           spec,
           context: "context" in task ? task.context : undefined,
+          vocabulary: params.vocabulary ?? [],
         }),
         tools: [pseudonymsTool, checkTool, runTool, submitTool],
         submitTool: "submit_starter",

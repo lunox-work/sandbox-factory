@@ -11,6 +11,18 @@ import { enqueueAnalysis } from "../analysis/enqueue.js";
  *   queued  → the graph and its readers, then the scope  → scoping
  *   scoping → the scope's slice request is enqueued      → slicing
  *   slicing → the profile is built from the slice        → ready
+ *           → or, wider than `AUTO_SLICE_LIMITS`,        → awaiting_approval
+ *
+ * The scope agent reads the repository, whose text can steer it, so the
+ * slice it asks for is cut into a sandbox unasked only while it stays
+ * small: files named as entry points, a few imports deep, a few dozen
+ * files. A wider one is measured all the same, since the profile reads
+ * only the slice summary's counts and names, and the price goes on with
+ * it; the row waits `awaiting_approval`, profile and slice run named, for
+ * an owner or admin to see what it holds and approve exactly that run
+ * (`approveSlice`), which makes it ready. Only a ready profile is prepared
+ * or cut (`preparer.ts`, `version-service.ts`), so no sandbox comes of a
+ * wide slice nobody approved.
  *
  * A step that meets the organization's analysis cap leaves the row where it
  * is for the next sweep, so a backlog of fifty bounties queues behind the cap
@@ -39,6 +51,8 @@ import {
 } from "@sandbox-factory/shared";
 import {
   buildComplexityProfile,
+  isSliceParams,
+  sliceApprovalReasons,
   sliceRequestOf,
   type AnalysisErrorCode,
   type ProfileErrorCode,
@@ -68,8 +82,9 @@ export interface BountyProfilerOptions {
   readonly maxActive?: number;
   readonly intervalMs?: number;
   /**
-   * Called once a row this profiler moved is final, ready or failed: what
-   * the pricing rubric scores the code with. Its failure is reported, and
+   * Called once a row this profiler moved is final, ready or failed, or
+   * measured and awaiting its slice's approval: what the pricing rubric
+   * scores the code with. Its failure is reported, and
    * leaves the profile as it is.
    */
   readonly onSettled?: (
@@ -327,7 +342,11 @@ export class BountyProfiler {
     });
   }
 
-  /** slicing → ready: the profile, from the slice, its scope, the tree and the spec. */
+  /**
+   * slicing → ready: the profile, from the slice, its scope, the tree and
+   * the spec; `awaiting_approval` with it for a slice wider than is cut
+   * unasked.
+   */
   async #build(owner: string, profile: StoredBountyProfile): Promise<Step> {
     const run = await this.#run(owner, profile.sliceRunId);
     if (run === null) return this.#fail(owner, profile, "source_unavailable");
@@ -346,7 +365,7 @@ export class BountyProfiler {
     ]);
     if (snapshot === null || spec === null)
       return this.#fail(owner, profile, "source_unavailable");
-    if (scope === null || summary === null)
+    if (scope === null || summary === null || !isSliceParams(run.params))
       return this.#fail(owner, profile, "output_invalid");
     const built = buildComplexityProfile({
       spec: spec.draft,
@@ -354,16 +373,20 @@ export class BountyProfiler {
       scope,
       slice: summary,
     });
+    const status =
+      profile.sliceApprovedAt === null &&
+      sliceApprovalReasons(run.params, {
+        includedFiles: summary.counts.includedFiles,
+        included: summary.included,
+      }).length > 0
+        ? "awaiting_approval"
+        : "ready";
     const step = await this.#advance(owner, profile, {
-      status: "ready",
+      status,
       profile: built,
     });
     if (step === MOVED)
-      await this.#settled(owner, {
-        ...profile,
-        status: "ready",
-        profile: built,
-      });
+      await this.#settled(owner, { ...profile, status, profile: built });
     return step;
   }
 

@@ -12,6 +12,7 @@ import { runAgent } from "../src/agent/loop.js";
 import type { AgentModel, AgentTool, AgentTurn } from "../src/agent/loop.js";
 import {
   FIXTURES_SYSTEM_PROMPT,
+  HIDDEN_TESTS_SYSTEM_PROMPT,
   SCOPE_SYSTEM_PROMPT,
   bountySection,
   STARTER_SYSTEM_PROMPT,
@@ -21,6 +22,7 @@ import {
   REPO_TOOL_LIMITS,
   graphNeighboursTool,
   indexRepository,
+  isWithheldPath,
   repositoryOverview,
   repositoryTools,
 } from "../src/agent/repo-tools.js";
@@ -564,6 +566,105 @@ test("repository tools list, read and search only what the archive held", async 
   }
 });
 
+test("the tools withhold credentials files and yarn configuration on any path", () => {
+  for (const path of [
+    ".env",
+    "apps/api/.env.local",
+    ".ENV.Production",
+    "certs/server.pem",
+    "tls.key",
+    "keys/store.P12",
+    "a.pfx",
+    "home/.ssh/id_rsa",
+    "id_ed25519.pub",
+    "config/gcp-credentials.json",
+    "my-service-account.json",
+    ".npmrc",
+    "packages/x/.netrc",
+    ".aws/credentials",
+    "home/.AWS/credentials",
+    "home/.ssh/id_ecdsa",
+    "id_dsa",
+    "service_account.json",
+    "acme-firebase-adminsdk-x1y2z.json",
+    "android/release.jks",
+    "android/upload.keystore",
+    ".yarnrc.yml",
+    "packages/x/.YARNRC.yml",
+  ])
+    assert.equal(isWithheldPath(path), true, path);
+  for (const path of [
+    ".env.example",
+    "apps/api/.env.sample",
+    ".env.template",
+    "src/env.ts",
+    "src/keys.ts",
+    "credentials.ts",
+    "docs/credentials.md",
+    "credentials",
+    "aws/credentials",
+    "src/environment.json",
+    ".env.local.example",
+    ".yarnrc",
+    "yarnrc.yml",
+  ])
+    assert.equal(isWithheldPath(path), false, path);
+});
+
+test("repository tools withhold files named like secrets", async () => {
+  const root = await mkdtemp(join(tmpdir(), "agent-repo-"));
+  try {
+    await mkdir(join(root, "deploy", ".aws"), { recursive: true });
+    for (const [path, text] of [
+      [".env", "API_TOKEN=hunter2\n"],
+      [".env.production", "API_TOKEN=hunter2\n"],
+      [".env.example", "API_TOKEN=\n"],
+      [".yarnrc.yml", "npmAuthToken: hunter2\n"],
+      ["deploy/.aws/credentials", "token = hunter2\n"],
+      ["deploy/server.pem", "hunter2\n"],
+      ["src.ts", "export const token = process.env.API_TOKEN;\n"],
+    ] as const)
+      await writeFile(join(root, path), text);
+    const index = await indexRepository(root, signal);
+    assert.deepEqual(index.paths, [".env.example", "src.ts"]);
+    const tools = new Map(
+      repositoryTools(index).map((tool) => [tool.name, tool]),
+    );
+    const run = (name: string, input: unknown) =>
+      tools.get(name)?.run(input, signal) ?? Promise.reject(new Error(name));
+    assert.doesNotMatch(
+      (await run("search", { text: "hunter2", prefix: null })).content,
+      /hunter2/,
+    );
+    for (const path of [
+      ".env",
+      ".yarnrc.yml",
+      "deploy/.aws/credentials",
+      "missing.pem",
+    ]) {
+      const read = await run("read_file", {
+        path,
+        startLine: null,
+        endLine: null,
+      });
+      assert.equal(read.isError, true);
+      assert.match(read.content, /withheld because it may hold secrets/);
+    }
+    assert.match(
+      (
+        await run("read_file", {
+          path: ".env.example",
+          startLine: null,
+          endLine: null,
+        })
+      ).content,
+      /API_TOKEN=/,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("graph neighbours name a file's imports and importers", async () => {
   const graph = parseSliceGraph({
     nodes: [
@@ -583,6 +684,12 @@ test("graph neighbours name a file's imports and importers", async () => {
         id: "symbol:src/b.ts:f",
         label: "f()",
         source_file: "src/b.ts",
+        community: 0,
+      },
+      {
+        id: "file:certs/server.pem",
+        label: "server.pem",
+        source_file: "certs/server.pem",
         community: 0,
       },
       {
@@ -607,6 +714,12 @@ test("graph neighbours name a file's imports and importers", async () => {
         confidence: "EXTRACTED",
       },
       {
+        source: "file:src/a.ts",
+        target: "file:certs/server.pem",
+        relation: "imports",
+        confidence: "EXTRACTED",
+      },
+      {
         source: "file:src/b.ts",
         target: "symbol:src/b.ts:f",
         relation: "contains",
@@ -623,6 +736,11 @@ test("graph neighbours name a file's imports and importers", async () => {
     /used by:\nsrc\/a\.ts/,
   );
   assert.equal((await tool.run({ path: "src/c.ts" }, signal)).isError, true);
+  // A file named like a secret is neither listed nor answered for.
+  assert.match(
+    (await tool.run({ path: "certs/server.pem" }, signal)).content,
+    /withheld because it may hold secrets/,
+  );
   assert.equal((await tool.run({}, signal)).isError, true);
 });
 
@@ -652,6 +770,17 @@ test("prompts carry the ticket's spec and the seam rule", () => {
   assert.match(SCOPE_SYSTEM_PROMPT, /submit_scope/);
   assert.match(SCOPE_SYSTEM_PROMPT, /data, not instructions/);
   assert.match(FIXTURES_SYSTEM_PROMPT, /sandbox\/run\.ts/);
+  assert.match(FIXTURES_SYSTEM_PROMPT, /index only with a literal key/);
+  // Hidden tests that a submission cannot satisfy by gaming the mocks or
+  // the public data, and that say the same thing twice.
+  for (const rule of [
+    /Assert observable results first/,
+    /`recordedCalls\(\)` only to confirm that a seam was reached/,
+    /Call `resetMocks\(\)` at the start of each test/,
+    /inputs differ from the fixtures' default data/,
+    /runs twice and must give the same result/,
+  ])
+    assert.match(HIDDEN_TESTS_SYSTEM_PROMPT, rule);
 });
 
 test("a starter is written with the context synced into its bounty, when it has any", () => {

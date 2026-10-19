@@ -299,6 +299,24 @@ test("a starter's name table renames its source, tests, walkthrough and spec, or
   assert.equal(renamed.starter.hiddenTests[0]?.expectedBaseline, "fail");
   assert.match(renamed.starter.scenario, /console\.log\(sum\(\[1\]\)\)/);
   assert.equal(renamed.spec?.feature, "the shop carts add up");
+  assert.equal(renamed.listing, null);
+  // The listing the README and the descriptor carry is renamed with it.
+  const listed = aliasStarter(withNames, named, {
+    listing: {
+      title: "Acme carts total",
+      specSummary: "Make Acme carts add up.",
+      tags: ["Acme", "carts"],
+    },
+  });
+  assert.deepEqual(listed.ok ? listed.listing : null, {
+    title: "the shop carts sum",
+    specSummary: "Make the shop carts add up.",
+    tags: ["the shop", "carts"],
+  });
+  assert.equal(
+    listed.ok ? listed.spec?.feature : null,
+    "the shop carts add up",
+  );
   // The table is the one given, and paths do not move.
   assert.deepEqual(renamed.starter.aliases, withNames.aliases);
   assert.deepEqual(
@@ -448,6 +466,30 @@ test("a starter becomes a standalone project with its tests and config", () => {
   assert.doesNotMatch(text("tsconfig.json"), /"jsx"/);
   assert.match(text("tests/public/spec.test.ts"), /s1: sums/);
   assert.match(text(".gitignore"), /src\/cart\.js/);
+  for (const file of project.files.filter((item) => item.public))
+    assert.doesNotMatch(file.text, /tests\/private/, file.path);
+  // A credential the agent wrote into a public file blocks the starter.
+  const key = ["AKIA", "Z3K7Q2M9W4X8C6V1"].join("");
+  const leaked = generateStarterProject({
+    version,
+    starter: {
+      ...starter,
+      files: [
+        ...starter.files,
+        { path: "src/aws.ts", text: `export const id = "${key}";\n` },
+      ],
+    },
+    acceptanceTests: starter.hiddenTests,
+    spec,
+  });
+  assert.deepEqual(leaked.blockers, [
+    {
+      code: "secret_found",
+      file: "src/aws.ts",
+      detail:
+        "A credential appears at src/aws.ts:1 (aws-access-key-id). Remove it or replace it with a fixture value.",
+    },
+  ]);
   assert.match(text("README.md"), /# Sum a cart/);
   assert.match(text("README.md"), /zod@3\.25\.76/);
   assert.deepEqual(project.descriptor.editablePaths, [

@@ -3,6 +3,7 @@ import { test } from "node:test";
 import type {
   EnqueueAnalysisResult,
   StoredAnalysisRun,
+  StoredArtifact,
   StoredBounty,
   StoredBountyProfile,
   StoredBountyProposal,
@@ -33,6 +34,7 @@ function profile(
     scopeRunId: "arn_scope",
     sliceRunId: "arn_slice",
     preparedRunId: null,
+    sliceApprovedAt: null,
     profile: null,
     createdAt: at,
     updatedAt: at,
@@ -43,6 +45,38 @@ function profile(
 const run = (status: StoredAnalysisRun["status"]) =>
   ({ id: "arn_prep", status }) as StoredAnalysisRun;
 
+/** The slice's summary, as its boundary contract's `meta` carries it. */
+function summaryOf(includedFiles: number) {
+  const included = Array.from(
+    { length: Math.min(includedFiles, 3) },
+    (_, index) => `src/f${index}.ts`,
+  );
+  return {
+    schemaVersion: 1,
+    language: "typescript",
+    stubCoverage: "full",
+    ready: true,
+    counts: {
+      includedFiles,
+      includedBytes: 900,
+      outboundModules: 0,
+      inboundModules: 0,
+      stubs: 0,
+      publicSymbols: 0,
+      externals: 0,
+      blockers: 0,
+    },
+    included,
+    outbound: [],
+    inbound: [],
+    externals: { packages: [], environment: [] },
+    blockers: [],
+    truncated: included.length < includedFiles,
+  };
+}
+const narrow = summaryOf(3);
+const measured = { version: "profile-v1" } as StoredBountyProfile["profile"];
+
 function harness(
   rows: StoredBountyProfile[],
   answer: () => EnqueueAnalysisResult = () => ({
@@ -50,9 +84,14 @@ function harness(
     created: true,
     run: run("queued"),
   }),
+  /** The slice run's summary; null for one that cannot be read. */
+  summary: object | null = narrow,
+  /** Whether the store holds a profile; false once it was approved since. */
+  holds = true,
 ) {
   const enqueued: { snapshotId: string; input: unknown }[] = [];
   const recorded: unknown[] = [];
+  const held: string[] = [];
   const errors: string[] = [];
   const removed: string[] = [];
   let launches = 0;
@@ -64,8 +103,25 @@ function harness(
         recorded.push({ owner, profileId, runId });
         return true;
       },
+      holdSlice: async (_owner, profileId) => {
+        held.push(profileId);
+        return holds;
+      },
     },
     runs: {
+      get: async (_owner, id) =>
+        id === "arn_slice"
+          ? ({
+              id,
+              params: {
+                deadlineMinutes: 30,
+                graphRunId: "arn_graph",
+                entryPoints: ["src/f0.ts"],
+                budget: { maxFiles: 200, maxDepth: 2 },
+                includeInferred: false,
+              },
+            } as unknown as StoredAnalysisRun)
+          : null,
       enqueue: async (_owner, snapshotId, input) => {
         enqueued.push({ snapshotId: snapshotId ?? "", input });
         return answer();
@@ -74,6 +130,12 @@ function harness(
         tool === "data_model"
           ? ({ id: "arn_model" } as StoredAnalysisRun)
           : null,
+    },
+    artifacts: {
+      list: async (_owner, runId) =>
+        runId === "arn_slice" && summary !== null
+          ? [{ kind: "boundary_contract", meta: summary } as StoredArtifact]
+          : [],
     },
     proposals: {
       get: async (_owner, id) =>
@@ -105,6 +167,7 @@ function harness(
     preparer,
     enqueued,
     recorded,
+    held,
     errors,
     removed,
     launches: () => launches,
@@ -204,11 +267,14 @@ test("one organization's trouble is reported and the pass goes on; the timer sta
         throw new Error("database blip");
       },
       recordPrepared: async () => true,
+      holdSlice: async () => true,
     },
     runs: {
+      get: async () => null,
       enqueue: async () => ({ ok: false, reason: "not-found" }),
       latestSucceeded: async () => null,
     },
+    artifacts: { list: async () => [] },
     proposals: { get: async () => null },
     bounties: { get: async () => null },
     organizationNames: async () => [],
@@ -230,4 +296,46 @@ test("one organization's trouble is reported and the pass goes on; the timer sta
   preparer.kick();
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(passes, before);
+});
+
+test("a wide slice nobody approved is not prepared, and one measured ready before approvals waits for one", async () => {
+  // Ready from a wide slice before approvals were asked for: held to wait,
+  // as it was measured, and nothing handed to an agent.
+  const wide = harness(
+    [profile({ profile: measured }), profile({ id: "bpf_2" })],
+    undefined,
+    summaryOf(41),
+  );
+  await wide.preparer.sweep();
+  assert.deepEqual(wide.enqueued, []);
+  assert.deepEqual(wide.held, ["bpf_1", "bpf_2"]);
+  assert.equal(wide.launches(), 0);
+
+  // Approved between the read and the hold: the store holds nothing, and
+  // this pass still prepares nothing from the stale read.
+  const raced = harness(
+    [profile({ profile: measured })],
+    undefined,
+    summaryOf(41),
+    false,
+  );
+  await raced.preparer.sweep();
+  assert.deepEqual(raced.held, ["bpf_1"]);
+  assert.deepEqual(raced.enqueued, []);
+
+  // A slice whose summary cannot be read cannot be told within the limits.
+  const unread = harness([profile()], undefined, null);
+  await unread.preparer.sweep();
+  assert.deepEqual(unread.enqueued, []);
+  assert.deepEqual(unread.held, []);
+
+  // Approved, it is prepared without its slice being read again.
+  const approved = harness(
+    [profile({ sliceApprovedAt: at })],
+    undefined,
+    summaryOf(41),
+  );
+  await approved.preparer.sweep();
+  assert.equal(approved.enqueued.length, 1);
+  assert.deepEqual(approved.held, []);
 });

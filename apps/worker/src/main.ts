@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { mkdir } from "node:fs/promises";
-import { homedir } from "node:os";
+import { chmod, mkdir } from "node:fs/promises";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   createAnalysisRunStore,
@@ -26,6 +26,7 @@ import { createAnthropicModel } from "./agent/anthropic.js";
 import type { AgentSettings } from "./agent/loop.js";
 import { createLocalProcessProvider } from "./evaluation/local-process.js";
 import { EVALUATION_JOBS_MAX, limitJobs } from "./evaluation/limit.js";
+import { jobIsolation, probeIsolation } from "./evaluation/isolation.js";
 import { createTaskReader } from "./tasks.js";
 import { createAbstractionsAdapter } from "./tools/abstractions.js";
 import { createBriefAdapter } from "./tools/brief.js";
@@ -75,13 +76,37 @@ const agent: AgentSettings = {
 // The caches below live under the worker user's own home, which no other
 // user can create first, at one name, so a restart on the same disk finds
 // them again rather than leaving them behind.
+// Only the worker's user reads them: a mode set on creation alone would
+// leave a directory an earlier run made open.
 const caches = join(homedir(), ".cache", "sandbox-factory");
 await mkdir(caches, { recursive: true, mode: 0o700 });
+await chmod(caches, 0o700);
+// A root worker runs each job as a uid of its own, with an npm cache
+// outside its home, which those uids cannot traverse: one uid per job the
+// limiter lets run, from the one count, so a job never finds them all held.
+const jobSlots = EVALUATION_JOBS_MAX;
+const isolation =
+  env.EVALUATION_PROVIDER === "local-process"
+    ? jobIsolation({
+        uid: process.getuid?.(),
+        base: env.EVALUATION_JOB_UID,
+        slots: jobSlots,
+        cacheRoot: join(tmpdir(), "sandbox-factory-jobs"),
+      })
+    : null;
+// A root worker that cannot switch to its job uids is misconfigured: it
+// stops here rather than fail every build, or run them as root.
+if (isolation !== null) await probeIsolation(isolation);
 const evaluation =
   env.EVALUATION_PROVIDER === "local-process"
     ? limitJobs(
-        createLocalProcessProvider({ npmCache: join(caches, "npm") }),
-        EVALUATION_JOBS_MAX,
+        createLocalProcessProvider({
+          npmCache: join(caches, "npm"),
+          lockfiles: join(caches, "lockfiles"),
+          isolation,
+          warn: (line) => console.warn(line),
+        }),
+        jobSlots,
       )
     : null;
 const objects = createObjectStore({

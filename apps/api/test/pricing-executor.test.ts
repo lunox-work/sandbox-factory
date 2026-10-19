@@ -291,6 +291,7 @@ function harness(options: {
   const categorized: { bountyId: string; categories: string[] }[] = [];
   const outcomes: unknown[] = [];
   const progresses: unknown[] = [];
+  const attached: string[] = [];
   const modelCalls: BountyRunModelCall[][] = [];
   const finishes: { status: string; details: unknown }[] = [];
   const proposalInputs: unknown[] = [];
@@ -362,6 +363,10 @@ function harness(options: {
       if (options.progressError !== undefined)
         return Promise.reject(options.progressError);
       progresses.push(progress);
+      return Promise.resolve(true);
+    },
+    attachBounty: (_org: string, _id: string, _lease: string, id: string) => {
+      attached.push(id);
       return Promise.resolve(true);
     },
     recordModelCalls: (
@@ -619,6 +624,7 @@ function harness(options: {
     categorized,
     outcomes,
     progresses,
+    attached,
     modelCalls,
     finishes,
     proposalInputs,
@@ -1747,6 +1753,8 @@ test("a run sizing one bounty previews the spec and the size as each returns", a
   await state.executor.execute("org_1", "brn_1");
 
   assert.equal(state.finishes[0]?.status, "succeeded");
+  // Named its bounty as it imported it, for the bounty's page to follow.
+  assert.equal(state.attached.length, 1);
   assert.equal(state.progresses.length, 2);
   assert.deepEqual(
     state.progresses.find((part) => "spec" in (part as object)),

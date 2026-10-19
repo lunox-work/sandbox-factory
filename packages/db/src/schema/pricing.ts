@@ -496,6 +496,14 @@ export const bountyProfile = pgTable(
       onDelete: "set null",
     }),
     profile: jsonb("profile").$type<ComplexityProfile>(),
+    // Who approved its slice, and when, for one wider than the profiler
+    // cuts unasked (`AUTO_SLICE_LIMITS`); null for one within them. Such a
+    // profile is measured all the same, `awaiting_approval` until then, so
+    // its price does not wait; nothing is cut or prepared from it before.
+    sliceApprovedBy: text("slice_approved_by").references(() => user.id, {
+      onDelete: "set null",
+    }),
+    sliceApprovedAt: ts("slice_approved_at"),
     // Each status the row has moved to, with when, oldest first. `queued`
     // is `created_at`; empty for a row that moved before this was kept.
     transitions: jsonb("transitions")
@@ -521,11 +529,12 @@ export const bountyProfile = pgTable(
     ),
     check(
       "bounty_profile_status_check",
-      sql`${table.status} in ('queued', 'scoping', 'slicing', 'ready', 'failed')`,
+      sql`${table.status} in ('queued', 'scoping', 'slicing', 'awaiting_approval', 'ready', 'failed')`,
     ),
+    // Measured: ready, or measured and awaiting its slice's approval.
     check(
       "bounty_profile_ready_check",
-      sql`(${table.status} = 'ready') = (${table.profile} IS NOT NULL)`,
+      sql`(${table.status} in ('awaiting_approval', 'ready')) = (${table.profile} IS NOT NULL)`,
     ),
     check(
       "bounty_profile_failed_check",
