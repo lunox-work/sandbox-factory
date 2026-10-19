@@ -381,7 +381,10 @@ try {
       ["build", true],
       ["dev", true],
       ["public-tests", true],
-      // One per hidden test: the one expected to fail did, as expected.
+      // Each hidden test runs twice, both rounds in order; the one expected
+      // to fail did, as expected, both times.
+      ["private-test", true],
+      ["private-test", true],
       ["private-test", true],
       ["private-test", true],
     ],
