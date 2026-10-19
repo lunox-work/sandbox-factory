@@ -10,6 +10,7 @@ import type {
   StoredVersionWithSource,
 } from "@sandbox-factory/db";
 import {
+  PSEUDONYM_PLACEHOLDERS,
   canonicalJson,
   descriptorPublic,
   resolveScope,
@@ -19,6 +20,7 @@ import {
 import type {
   AliasRule,
   EvaluationCommand,
+  GeneratedFile,
   EvaluationExecResult,
   EvaluationProvider,
   SandboxBuildManifest,
@@ -30,12 +32,14 @@ import type {
   AgentTurn,
 } from "../src/agent/loop.js";
 import { AnalysisError } from "../src/errors.js";
+import { HIDDEN_TESTS_SYSTEM_PROMPT } from "../src/agent/prompts.js";
 import {
-  FIXTURES_SYSTEM_PROMPT,
-  HIDDEN_TESTS_SYSTEM_PROMPT,
-  PSEUDONYMS_SYSTEM_PROMPT,
-} from "../src/agent/prompts.js";
-import { HIDDEN_TEST_RUNS_MAX } from "../src/tools/hidden-tests.js";
+  HIDDEN_TEST_RUNS_MAX,
+  PROMPT_PROJECT_CHARS,
+  hiddenTestScaffold,
+  quotedProject,
+} from "../src/tools/hidden-tests.js";
+import { unresolvedImportRules } from "../src/tools/pseudonyms.js";
 import {
   BUILD_TRANSFORM_PATH,
   buildArtifactKind,
@@ -48,7 +52,7 @@ import {
 import { stubModules } from "../src/tools/slice-run.js";
 import { sha256 } from "../src/tools/slice/hash.js";
 import type { ToolInputs, ToolRunInput } from "../src/tools/adapter.js";
-import { contextModel, contextRun } from "./context-fixtures.js";
+import type { contextRun } from "./context-fixtures.js";
 import { fixture, sha, slice, sliceRun, stamp } from "./fixture-slice.js";
 import type { SliceOutput } from "./fixture-slice.js";
 import { timingRecorder } from "../src/timing.js";
@@ -479,8 +483,11 @@ test("a build produces a standalone project, hidden tests apart, a verified base
   assert.ok(previews[0]?.paths.includes("project/src/app.ts"));
   assert.ok(previews[0]?.paths.includes("private/fix.test.ts"));
   assert.match(previews[0]?.text ?? "", /makeService/);
+  // Shown while the baseline ran, not after the build settled.
   assert.equal(
-    previews[0]?.logged.some((line) => /baseline/i.test(line)),
+    previews[0]?.logged.some((line) =>
+      /^Sandbox build (ready|completed)/.test(line),
+    ),
     false,
   );
   // The baseline's steps, each as long as the evaluator said it ran.
@@ -706,33 +713,7 @@ test("fixtures and the walkthrough are aliased with the version, generated, and 
   );
 });
 
-test("a sliced draft with no fixtures has an agent write them and the walkthrough, renamed with the project, and they settle with the build", async () => {
-  const fixture = {
-    module: "lib/helpers.ts",
-    symbol: "label",
-    member: null,
-    call: "call" as const,
-    implementation: '() => "fixture-label"',
-    reason: "a label the walkthrough can read",
-  };
-  const scenario =
-    'import { run } from "../src/app.js";\n// createService answers with a fixture.\nconsole.log(run({ name: "demo", retries: 1, nested: { enabled: true } }));\n';
-  const model = scripted([
-    // A module the slice does not cut does not compile.
-    turn([
-      call("check_fixtures", {
-        fixtures: [{ ...fixture, module: "lib/nowhere.ts" }],
-        scenario,
-      }),
-    ]),
-    turn([
-      call("submit_fixtures", {
-        fixtures: [fixture],
-        scenario,
-        summary: "Runs the app with a service that describes.",
-      }),
-    ]),
-  ]);
+test("a sliced draft with no fixtures is built without them, and no agent is asked for any", async () => {
   const rule: AliasRule = {
     before: "createService",
     after: "makeService",
@@ -740,107 +721,34 @@ test("a sliced draft with no fixtures has an agent write them and the walkthroug
     paths: [],
   };
   const fake = fakeProvider((argv) => (runsHiddenTest(argv) ? TAP_FAILED : {}));
-  const version = await versionFor({ aliasRules: [rule] });
+  // No turns: an agent asked for anything would keep nothing.
+  const model = scripted([]);
   const built = await runBuild(fake.provider, {
-    version,
+    version: await versionFor({ aliasRules: [rule] }),
     agent: { model, limits },
   });
   assert.deepEqual(built.manifest.blockers, []);
   assert.equal(built.manifest.ready, true);
-  // The agent read the bounty's spec and the slice's stubs.
-  assert.match(model.prompts[0] ?? "", /createService describes a thing/);
-  assert.match(model.prompts[0] ?? "", /lib\/service\.ts/);
-  assert.equal(model.results[0]?.[0]?.is_error, true);
-  // What it wrote is in the project, renamed by the table.
-  assert.match(
-    await built.read("project/lib/helpers.js"),
-    /fixture\("module:lib\/helpers\.ts\.label", \(\) => "fixture-label"\)/,
+  assert.deepEqual(model.prompts, []);
+  assert.ok(
+    built.messages.includes(
+      "No fixtures: the mocks answer with recording mocks and the walkthrough lists the entry points.",
+    ),
+  );
+  // Every mock still answers, and the default walkthrough runs.
+  assert.doesNotMatch(
+    await built.read("project/README.md"),
+    /mocked calls? ha(s|ve) default behaviour/,
   );
   assert.match(
     await built.read("project/sandbox/run.ts"),
-    /makeService answers with a fixture/,
+    /Object\.keys\(await import\(/,
   );
   assert.ok(fake.calls.some((argv) => argv.join(" ") === DEV));
-  // The set names the build that wrote it, and the transform covers it.
-  const fixtures: VersionFixtures = {
-    fixtureRunId: "arn_build",
-    fixtures: [fixture],
-    scenario,
-  };
-  const transformConfigSha256 = sha256(
-    canonicalJson(
-      transformConfigOf({
-        aliasRules: [rule],
-        dependencyChoices: {},
-        acceptanceTests: version.source.acceptanceTests,
-        fixtures,
-        starterSha256: null,
-      }),
-    ),
-  );
-  assert.equal(built.manifest.transformConfigSha256, transformConfigSha256);
-  const recorded: unknown[] = [];
-  await built.adapter.committed?.({
-    runId: "arn_build",
-    files: built.files,
-    inputs: {
-      getRun: async () => null,
-      listArtifacts: async () => [],
-      readArtifact: async () => undefined,
-      getVersion: async () => null,
-      getTask: async () => null,
-      recordBuildOutput: async (_versionId, _runId, output) => {
-        recorded.push(output.transform);
-        return true;
-      },
-      recordStarterOutput: async () => false,
-    },
-  });
-  assert.deepEqual(recorded, [
-    {
-      fixtures,
-      fromTransformConfigSha256: version.source.transformConfigSha256,
-      transformConfigSha256,
-    },
-  ]);
-
-  // With the snapshot's data model, the agent has it to read.
-  const modelled = scripted([]);
-  await runBuild(fakeProvider().provider, {
-    version,
-    params: { dataModelRunId: "arn_model" },
-    served: [contextRun("arn_model", "data_model", contextModel)],
-    agent: { model: modelled, limits },
-  });
-  assert.match(
-    modelled.prompts[0] ?? "",
-    new RegExp(`data model has ${contextModel.entities.length} entities`),
-  );
-
-  // An agent that gives up leaves the draft without, and the build goes on.
-  const gaveUp = await runBuild(fakeProvider().provider, {
-    version,
-    agent: { model: scripted([]), limits },
-  });
-  assert.ok(
-    gaveUp.messages.some((line) => line.startsWith("Fixtures agent stopped")),
-  );
+  // Nothing was written for the draft, so nothing settles on it.
   assert.equal(
-    gaveUp.files.some((file) => file.path === "build-transform.json"),
+    built.files.some((file) => file.path === BUILD_TRANSFORM_PATH),
     false,
-  );
-  // A draft that has fixtures, or a worker with no model, writes none.
-  const kept = scripted([]);
-  await runBuild(fakeProvider().provider, {
-    version: await versionFor({ aliasRules: [rule], fixtures }),
-    agent: { model: kept, limits },
-  });
-  assert.deepEqual(kept.prompts, []);
-  const unconfigured = await runBuild(fakeProvider().provider, { version });
-  assert.ok(
-    unconfigured.messages.includes(
-      "No agent model is configured; no fixtures are written.",
-    ),
   );
 });
 
@@ -1094,7 +1002,9 @@ test("alias collisions and scope blockers stop before any job runs; a failing ba
 
 test("a public file naming the workspace blocks the build before any job runs", async () => {
   const fake = fakeProvider();
+  // A table that does not rename it.
   const leaked = await runBuild(fake.provider, {
+    version: await versionFor({ aliasRules: named }),
     params: { vocabulary: ["Widget", "Nowhere Inc"] },
   });
   assert.equal(leaked.manifest.ready, false);
@@ -1162,7 +1072,7 @@ test("a private package's scope or name blocks the build until the table renames
   ]);
   const leaked = await runBuild(fakeProvider().provider, {
     slice: sliced,
-    version: await versionFor({ slice: sliced }),
+    version: await versionFor({ slice: sliced, aliasRules: named }),
   });
   assert.equal(leaked.manifest.baseline, null);
   assert.deepEqual(
@@ -1237,6 +1147,7 @@ test("a credential in a public file blocks the build before any job runs, naming
 test("a mocked package and an environment variable go by the names the table gives them", async () => {
   // Unrenamed, the variable's name reaches sandbox.env and the source.
   const leaked = await runBuild(fakeProvider().provider, {
+    version: await versionFor({ aliasRules: named }),
     params: { vocabulary: ["database_url"] },
   });
   assert.deepEqual(
@@ -1834,51 +1745,10 @@ test("a hidden test that disagrees with itself across two runs is flaky, and the
   );
 });
 
-test("a draft with no pseudonyms has an agent write them, checked as the build applies them, and they settle with the build", async () => {
+test("a draft with no pseudonyms has a table drafted by rule, checked as the build applies it, and it settles with the build", async () => {
   const fake = fakeProvider((argv) => (runsHiddenTest(argv) ? TAP_FAILED : {}));
-  const rules: AliasRule[] = [
-    { before: "Widget", after: "Gadget", kind: "identifier", paths: [] },
-    { before: "widget", after: "gadget", kind: "text", paths: [] },
-  ];
-  const model = scripted([
-    // Two names of one kind that differ only by case do not hold.
-    turn([
-      call("check_pseudonyms", {
-        aliases: [
-          { before: "Widget", after: "Gadget", kind: "text" },
-          { before: "widget", after: "gadget", kind: "text" },
-        ],
-      }),
-    ]),
-    // The title still names the workspace.
-    turn([
-      call("check_pseudonyms", {
-        aliases: [{ before: "Widget", after: "Gadget", kind: "identifier" }],
-      }),
-    ]),
-    // A rule that renames nothing is not kept.
-    turn([
-      call("check_pseudonyms", {
-        aliases: [
-          ...rules,
-          { before: "absentName", after: "otherName", kind: "identifier" },
-        ],
-      }),
-    ]),
-    turn([call("check_pseudonyms", { aliases: [] })]),
-    turn([
-      call("submit_pseudonyms", {
-        aliases: [rules[0]],
-        summary: "Renames the product.",
-      }),
-    ]),
-    turn([
-      call("submit_pseudonyms", {
-        aliases: rules,
-        summary: "Renames the product.",
-      }),
-    ]),
-  ]);
+  // No turns: an agent asked for anything would keep nothing.
+  const model = scripted([]);
   const version = await versionFor({ fixtures: given });
   const built = await runBuild(fake.provider, {
     version,
@@ -1887,23 +1757,27 @@ test("a draft with no pseudonyms has an agent write them, checked as the build a
   });
   assert.deepEqual(built.manifest.blockers, []);
   assert.equal(built.manifest.ready, true);
-  // The agent was told what the workspace is called, and where it leaks.
-  assert.match(model.prompts[0] ?? "", /no public file may carry: widget/);
-  assert.match(model.prompts[0] ?? "", /With no pseudonyms, the check says/);
-  const told = model.results.map((result) => result[0]);
-  assert.equal(told[0]?.is_error, true);
-  assert.match(told[0]?.content ?? "", /casing_variant/);
-  assert.match(told[1]?.content ?? "", /"widget" names the workspace/);
-  assert.match(told[2]?.content ?? "", /Rule 3 \(absentName\) renames nothing/);
-  assert.match(told[3]?.content ?? "", /Invalid input/);
-  assert.match(told[4]?.content ?? "", /does not hold/);
-  assert.equal(told[4]?.is_error, true);
-  // The project is renamed by the table, which the private side keeps.
-  assert.deepEqual(
-    JSON.parse(await built.read("private/pseudonym.lunox")).rules,
-    rules,
+  assert.deepEqual(model.prompts, []);
+  const rules = (
+    JSON.parse(await built.read("private/pseudonym.lunox")) as {
+      rules: AliasRule[];
+    }
+  ).rules;
+  assert.ok(rules.length > 0);
+  assert.ok(
+    built.messages.includes(
+      `The pseudonyms drafted by rule hold: ${rules.length} rule(s).`,
+    ),
   );
-  assert.match(await built.read("project/README.md"), /Fix the gadget/);
+  // The project is renamed by the table, which the private side keeps.
+  assert.doesNotMatch(await built.read("project/README.md"), /widget/i);
+  const transform = JSON.parse(await built.read(BUILD_TRANSFORM_PATH)) as {
+    aliasRules: AliasRule[];
+    pseudonyms: { usage: { turns: number } };
+  };
+  assert.deepEqual(transform.aliasRules, rules);
+  // Drafted by rule, the table cost no turn.
+  assert.equal(transform.pseudonyms.usage.turns, 0);
   const transformConfigSha256 = sha256(
     canonicalJson(
       transformConfigOf({
@@ -1948,19 +1822,92 @@ test("a draft with no pseudonyms has an agent write them, checked as the build a
       },
     },
   ]);
-});
-
-test("a draft whose agent keeps no table, or that has no model, is built without one and blocks on the names it leaks", async () => {
-  const fake = fakeProvider();
-  const gaveUp = await runBuild(fake.provider, {
-    params: { vocabulary: ["Widget"] },
+  // A slice that names nothing of the workspace needs no table at all.
+  const unnamed = await runBuild(fakeProvider().provider, {
+    version: await versionFor({ fixtures: given }),
     agent: { model: scripted([]), limits },
   });
+  assert.ok(
+    unnamed.messages.includes(
+      "No public file names the workspace; no pseudonyms are needed.",
+    ),
+  );
+  assert.equal(
+    unnamed.files.some((file) => file.path === BUILD_TRANSFORM_PATH),
+    false,
+  );
+});
+
+test("a table drafted by rule that does not hold goes to the agent, which starts from it, and one nobody settles leaves the build blocked", async () => {
+  // The walkthrough uses every placeholder but one: the term met first
+  // takes it, the other gets none, and the draft leaves that one to leak.
+  const version = await versionFor({
+    fixtures: {
+      ...given,
+      scenario: `console.log("demo");\n// The widget and the WIDGET walkthrough, for ${PSEUDONYM_PLACEHOLDERS.slice(0, -1).join(", ")}.\n`,
+    },
+  });
+  const vocabulary = ["Widget", "Thing"];
+  const rules: AliasRule[] = [
+    { before: "Widget", after: "Gadget", kind: "identifier", paths: [] },
+    { before: "widget", after: "gadget", kind: "text", paths: [] },
+    { before: "WIDGET", after: "GADGET", kind: "path", paths: [] },
+    { before: "Thing", after: "Item", kind: "identifier", paths: [] },
+    { before: "thing", after: "item", kind: "text", paths: [] },
+  ];
+  const model = scripted([
+    turn([
+      call("submit_pseudonyms", {
+        aliases: rules,
+        summary: "Renames the product.",
+      }),
+    ]),
+  ]);
+  const built = await runBuild(
+    fakeProvider((argv) => (runsHiddenTest(argv) ? TAP_FAILED : {})).provider,
+    { version, params: { vocabulary }, agent: { model, limits } },
+  );
+  assert.deepEqual(built.manifest.blockers, []);
+  assert.ok(
+    built.messages.some((line) =>
+      /^The pseudonyms drafted by rule do not hold \(\d+ problem\(s\)\); an agent amends the table\.$/.test(
+        line,
+      ),
+    ),
+    built.messages.join("\n"),
+  );
+  // The agent was told what the workspace is called and what was drafted.
+  assert.match(model.prompts[0] ?? "", /no public file may carry: widget/);
+  assert.match(model.prompts[0] ?? "", /A table was drafted by rule/);
+  assert.match(
+    model.prompts[0] ?? "",
+    new RegExp(`identifier Thing -> ${PSEUDONYM_PLACEHOLDERS.at(-1)}`, "i"),
+  );
+  assert.match(model.prompts[0] ?? "", /\\"widget\\" names the workspace/);
+  assert.match(
+    await built.read("project/sandbox/run.ts"),
+    /The gadget and the GADGET walkthrough/,
+  );
+  const transform = JSON.parse(await built.read(BUILD_TRANSFORM_PATH)) as {
+    aliasRules: AliasRule[];
+    pseudonyms: { usage: { turns: number } };
+  };
+  assert.deepEqual(transform.aliasRules, rules);
+  assert.equal(transform.pseudonyms.usage.turns, 1);
+
+  // An agent that keeps nothing, or none at all, leaves the leak to block.
+  const gaveUp = await runBuild(fakeProvider().provider, {
+    version,
+    params: { vocabulary },
+    agent: { model: scripted([]), limits },
+  });
+  // Both names leak: the one the draft had no placeholder for, and the
+  // one its rules would have renamed.
   assert.deepEqual(
-    gaveUp.manifest.blockers.map((blocker) => blocker.code),
+    [...new Set(gaveUp.manifest.blockers.map((blocker) => blocker.code))],
     ["vocabulary_leaked"],
   );
-  assert.equal(fake.calls.length, 0);
+  assert.equal(gaveUp.manifest.blockers.length, 2);
   assert.equal(
     gaveUp.files.some((file) => file.path === BUILD_TRANSFORM_PATH),
     false,
@@ -1970,6 +1917,8 @@ test("a draft whose agent keeps no table, or that has no model, is built without
     gaveUp.messages.join("\n"),
   );
   const unconfigured = await runBuild(fakeProvider().provider, {
+    version,
+    params: { vocabulary },
     agent: { model: null, limits },
   });
   assert.ok(
@@ -2024,6 +1973,37 @@ test("a draft with no hidden tests has an agent write them, and the build is the
   assert.equal(jobsOf(fake.calls), 3);
   // The agent read the developer's project and was told the spec.
   assert.match(model.prompts[0] ?? "", /createService describes a thing/);
+  // It starts with the project quoted: how it builds, the mocks' interface,
+  // the code and its stubs, never the mock runtimes or the lockfile.
+  for (const path of [
+    "package.json",
+    "tsconfig.json",
+    "sandbox/mock.d.ts",
+    "src/app.ts",
+    "lib/service.d.ts",
+  ])
+    assert.match(model.prompts[0] ?? "", new RegExp(`--- ${path}\\\\n`));
+  assert.doesNotMatch(model.prompts[0] ?? "", /--- sandbox\/mock\.js/);
+  assert.doesNotMatch(model.prompts[0] ?? "", /--- lib\/service\.js/);
+  // And a file per scenario, drafted by rule, importing the entry points
+  // and the mock runtime from where it lives.
+  assert.match(
+    model.prompts[0] ?? "",
+    /--- tests\/private\/s1-createservice-describes-a-thing\.test\.ts\\n/,
+  );
+  assert.match(
+    model.prompts[0] ?? "",
+    /import \* as app from \\"\.\.\/\.\.\/src\/app\.js\\";/,
+  );
+  assert.match(
+    model.prompts[0] ?? "",
+    /import \* as local from \\"\.\.\/\.\.\/src\/local\.js\\";/,
+  );
+  assert.match(
+    model.prompts[0] ?? "",
+    /from \\"\.\.\/\.\.\/sandbox\/mock\.js\\";/,
+  );
+  assert.match(model.prompts[0] ?? "", /\/\/ When createService runs/);
   assert.equal(model.results[0]?.[0]?.is_error, undefined);
   assert.match(model.results[0]?.[0]?.content ?? "", /createService/);
   assert.match(model.results[1]?.[0]?.content ?? "", /^The baseline passes\./);
@@ -2077,6 +2057,212 @@ test("a draft with no hidden tests has an agent write them, and the build is the
       },
     },
   ]);
+});
+
+test("a submission naming the last passing run keeps that run's set and baseline, with no further run", async () => {
+  const fake = fakeProvider((argv) => (runsHiddenTest(argv) ? TAP_FAILED : {}));
+  const efforts: string[] = [];
+  const model = scripted([
+    // Nothing has passed yet: the tests themselves are asked for.
+    turn([call("submit_hidden_tests", { tests: null, summary: "Early." })]),
+    turn([call("run_hidden_tests", { tests: [hiddenTest] })]),
+    turn([
+      call("submit_hidden_tests", {
+        tests: null,
+        summary: "Checks the described thing.",
+      }),
+    ]),
+  ]);
+  const asked = model.turn.bind(model);
+  model.turn = async (request, signal) => {
+    efforts.push(request.effort);
+    return asked(request, signal);
+  };
+  const built = await runBuild(fake.provider, {
+    version: await versionFor({
+      acceptance: false,
+      aliasRules: named,
+      fixtures: given,
+    }),
+    agent: { model, limits },
+  });
+  assert.equal(built.manifest.ready, true);
+  assert.match(
+    model.results[0]?.[0]?.content ?? "",
+    /submit the tests themselves/,
+  );
+  // The first baseline and the one run: the submission ran nothing.
+  assert.equal(jobsOf(fake.calls), 2);
+  assert.deepEqual(
+    built.manifest.baseline?.privateTests.map((outcome) => outcome.path),
+    [hiddenTest.path],
+  );
+  const transform = JSON.parse(await built.read(BUILD_TRANSFORM_PATH)) as {
+    acceptanceTests: unknown[];
+    hiddenTests: { summary: string };
+  };
+  assert.deepEqual(transform.acceptanceTests, [hiddenTest]);
+  assert.equal(transform.hiddenTests.summary, "Checks the described thing.");
+  assert.ok(
+    built.messages.includes("Hidden-tests agent wrote 1 hidden test(s)."),
+  );
+  // Its baseline decides, so the agent thinks at medium effort.
+  assert.deepEqual([...new Set(efforts)], ["medium"]);
+});
+
+test("a term inside a workspace import is renamed by rule all the way through the generated project", async () => {
+  // `@lib/alias` is the fixture's path alias to a cut module: the draft
+  // turns the import into the relative path of the stub, at the renamed
+  // path the segment gets, and the generator finds nothing left to rewrite.
+  const model = scripted([]);
+  const built = await runBuild(
+    fakeProvider((argv) => (runsHiddenTest(argv) ? TAP_FAILED : {})).provider,
+    {
+      version: await versionFor({ fixtures: given }),
+      params: { vocabulary: ["alias"] },
+      agent: { model, limits },
+    },
+  );
+  assert.deepEqual(built.manifest.blockers, [], model.prompts[0] ?? "");
+  assert.ok(
+    built.messages.some((line) =>
+      /^The pseudonyms drafted by rule hold: \d+ rule\(s\)\.$/.test(line),
+    ),
+    built.messages.join("\n"),
+  );
+  const app = await built.read("project/src/app.ts");
+  const imported = /from "\.\.\/lib\/([a-z]+)\.js"/.exec(app)?.[1];
+  assert.ok(imported !== undefined && imported !== "alias", app);
+  const paths = built.files.map((file) => file.path);
+  assert.ok(paths.includes(`project/lib/${imported}.d.ts`), paths.join("\n"));
+  assert.ok(paths.includes(`project/lib/${imported}.js`));
+  assert.doesNotMatch(app, /@lib\/alias|fromAlias/);
+  assert.deepEqual(
+    built.manifest.importRewrites.filter((rewrite) =>
+      /alias/i.test(rewrite.from),
+    ),
+    [],
+  );
+});
+
+test("an import rule that reaches no generated file is a problem of the table", () => {
+  const rule = (after: string, paths: string[] = ["src/app.ts"]) => ({
+    before: '"@acme/lib"',
+    after,
+    kind: "text" as const,
+    paths,
+  });
+  const files = [
+    { path: "src/app.ts" },
+    { path: "lib/service.ts" },
+    { path: "lib/types.d.ts" },
+    { path: "lib/types.js" },
+    { path: "sandbox/mock.js" },
+  ];
+  const problems = unresolvedImportRules(
+    [
+      rule('"../lib/service.js"'),
+      rule('"../lib/types.js"'),
+      rule("'../sandbox/mock.js'"),
+      rule('"../lib/gone.js"'),
+      // An unscoped rule, a package name and a directory scope are not
+      // import rules.
+      rule('"../lib/gone.js"', []),
+      rule('"@shop/lib"'),
+      rule('"../lib/gone.js"', ["src"]),
+      // A renamed importer resolves from its new path.
+      rule('"./service.js"', ["old/app.ts"]),
+    ],
+    [{ from: "old/app.ts", to: "lib/app.ts" }],
+    files,
+  );
+  assert.deepEqual(
+    problems.map((problem) => [problem.code, problem.file]),
+    [["import_unrewritable", "src/app.ts"]],
+  );
+  assert.match(problems[0]?.detail ?? "", /resolves to lib\/gone\.js/);
+});
+
+test("the hidden-tests scaffold names a file per scenario with imports that resolve from it", () => {
+  const spec = {
+    feature: "Retries",
+    background: ["a gateway"],
+    scenarios: [
+      {
+        id: "s1",
+        kind: "happy" as const,
+        title: 'Invoices are "retried" / twice!',
+        steps: [
+          { keyword: "When" as const, text: "the gateway fails" },
+          { keyword: "Then" as const, text: "the invoice is retried" },
+        ],
+        origin: "draft" as const,
+      },
+      {
+        id: "s2",
+        kind: "happy" as const,
+        title: "---",
+        steps: [],
+        origin: "draft" as const,
+      },
+    ],
+    openQuestions: [],
+    assumptions: [],
+  };
+  const [first, second] = hiddenTestScaffold({
+    spec,
+    entryPoints: ["src/billing/retry.ts", "src/retry.ts", "src/3d.ts"],
+  });
+  assert.equal(
+    first?.path,
+    "tests/private/s1-invoices-are-retried-twice.test.ts",
+  );
+  assert.equal(second?.path, "tests/private/s2-scenario.test.ts");
+  const lines = (first?.text ?? "").split("\n");
+  assert.deepEqual(lines.slice(0, 6), [
+    'import { beforeEach, test } from "node:test";',
+    'import assert from "node:assert/strict";',
+    'import { mockImplementation, recordedCalls, resetMocks } from "../../sandbox/mock.js";',
+    'import * as m3d from "../../src/3d.js";',
+    'import * as retry from "../../src/billing/retry.js";',
+    'import * as retry2 from "../../src/retry.js";',
+  ]);
+  assert.ok(
+    lines.includes('test("Invoices are \\"retried\\" / twice!", async () => {'),
+  );
+  assert.ok(lines.includes("  // Given a gateway"));
+  assert.ok(lines.includes("  // Then the invoice is retried"));
+  assert.deepEqual(hiddenTestScaffold({ spec: null, entryPoints: [] }), []);
+});
+
+test("the hidden-tests prompt quotes the project most needed first, within its room, and names what it leaves out", () => {
+  const file = (path: string, cls: GeneratedFile["class"], chars = 10) => ({
+    path,
+    text: "x".repeat(chars),
+    class: cls,
+    public: true,
+  });
+  const { quoted, unquoted } = quotedProject([
+    file("src/big.ts", "source", PROMPT_PROJECT_CHARS),
+    file("lib/a.d.ts", "stub"),
+    file("lib/a.js", "mock"),
+    file("tests/public/a.test.ts", "test-public"),
+    file("sandbox/mock.d.ts", "harness"),
+    file("sandbox/mock.js", "harness"),
+    file("package-lock.json", "config"),
+    file("package.json", "config"),
+    { ...file("tests/private/a.test.ts", "test-private"), public: false },
+  ]);
+  assert.deepEqual(
+    quoted.map((item) => item.path),
+    [
+      "package.json",
+      "sandbox/mock.d.ts",
+      "tests/public/a.test.ts",
+      "lib/a.d.ts",
+    ],
+  );
+  assert.deepEqual(unquoted, ["src/big.ts"]);
 });
 
 test("hidden tests that never pass their baseline are not kept, and the build stays diagnostic", async () => {
@@ -2367,116 +2553,6 @@ test("a draft with a preparation takes its fixtures, and its table when the buil
   assert.ok(
     !elsewhere.messages.some((line) => /sandbox's preparation/.test(line)),
   );
-});
-
-test("pseudonyms are drafted beside the fixtures agent, kept when they hold against its fixtures, and amended when they do not", async () => {
-  const fixture = {
-    module: "lib/helpers.ts",
-    symbol: "label",
-    member: null,
-    call: "call" as const,
-    implementation: '() => "fixture-label"',
-    reason: "a label the walkthrough can read",
-  };
-  const scenarioNaming = (name: string) =>
-    `import { run } from "../src/app.js";\n// The ${name} walkthrough.\nconsole.log(run({ name: "demo", retries: 1, nested: { enabled: true } }));\n`;
-  const rules: AliasRule[] = [
-    { before: "Widget", after: "Gadget", kind: "identifier", paths: [] },
-    { before: "widget", after: "gadget", kind: "text", paths: [] },
-  ];
-  const fixturesTurns = (scenario: string) => [
-    turn([
-      call("submit_fixtures", {
-        fixtures: [fixture],
-        scenario,
-        summary: "Runs the app.",
-      }),
-    ]),
-  ];
-  const submitRules = (aliases: readonly AliasRule[]) =>
-    turn([
-      call("submit_pseudonyms", {
-        aliases,
-        summary: "Renames the product.",
-      }),
-    ]);
-
-  // The walkthrough names the product, which the drafted table renames.
-  const held = routed({
-    [FIXTURES_SYSTEM_PROMPT]: fixturesTurns(scenarioNaming("widget")),
-    [PSEUDONYMS_SYSTEM_PROMPT]: [submitRules(rules)],
-  });
-  const kept = await runBuild(
-    fakeProvider((argv) => (runsHiddenTest(argv) ? TAP_FAILED : {})).provider,
-    {
-      params: { vocabulary: ["Widget"] },
-      agent: { model: held, limits },
-    },
-  );
-  assert.deepEqual(kept.manifest.blockers, []);
-  assert.equal(kept.manifest.ready, true);
-  assert.ok(
-    kept.messages.includes(
-      "The pseudonyms drafted beside the fixtures hold against them.",
-    ),
-  );
-  // One pseudonyms agent ran, beside the fixtures agent.
-  assert.equal(held.prompts[PSEUDONYMS_SYSTEM_PROMPT]?.length, 1);
-  assert.equal(held.prompts[FIXTURES_SYSTEM_PROMPT]?.length, 1);
-  assert.match(
-    await kept.read("project/sandbox/run.ts"),
-    /The gadget walkthrough/,
-  );
-  assert.deepEqual(
-    JSON.parse(await kept.read(BUILD_TRANSFORM_PATH)).aliasRules,
-    rules,
-  );
-
-  // The walkthrough names the workspace in a way the slice did not: the
-  // draft does not hold against it, and an agent amends it from the draft.
-  const acme: AliasRule = {
-    before: "Acme",
-    after: "Example",
-    kind: "text",
-    paths: [],
-  };
-  const amended = routed({
-    [FIXTURES_SYSTEM_PROMPT]: fixturesTurns(scenarioNaming("Acme")),
-    [PSEUDONYMS_SYSTEM_PROMPT]: [
-      submitRules(rules),
-      submitRules([...rules, acme]),
-    ],
-  });
-  const fixed = await runBuild(
-    fakeProvider((argv) => (runsHiddenTest(argv) ? TAP_FAILED : {})).provider,
-    {
-      params: { vocabulary: ["Widget", "Acme"] },
-      agent: { model: amended, limits },
-    },
-  );
-  assert.deepEqual(fixed.manifest.blockers, []);
-  assert.ok(
-    fixed.messages.some((line) =>
-      /drafted beside the fixtures do not hold against them/.test(line),
-    ),
-    fixed.messages.join("\n"),
-  );
-  const [draftPrompt, amendPrompt] =
-    amended.prompts[PSEUDONYMS_SYSTEM_PROMPT] ?? [];
-  assert.doesNotMatch(draftPrompt ?? "", /A table was drafted/);
-  assert.match(amendPrompt ?? "", /A table was drafted before the fixtures/);
-  assert.match(amendPrompt ?? "", /widget -> gadget/);
-  assert.match(
-    await fixed.read("project/sandbox/run.ts"),
-    /The Example walkthrough/,
-  );
-  const transform = JSON.parse(await fixed.read(BUILD_TRANSFORM_PATH)) as {
-    aliasRules: AliasRule[];
-    pseudonyms: { usage: { turns: number } };
-  };
-  assert.deepEqual(transform.aliasRules, [...rules, acme]);
-  // Both agents' turns are the table's spend.
-  assert.equal(transform.pseudonyms.usage.turns, 2);
 });
 
 test("the hidden-tests agent reads the project while the first baseline runs, and its tests are kept when that baseline lacks them", async () => {

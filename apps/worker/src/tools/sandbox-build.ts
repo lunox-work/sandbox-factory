@@ -13,13 +13,17 @@
  * commands plus every hidden test in a job the provider creates and
  * destroys. Logs stay fixed lines; the job's output is not stored.
  *
- * A sliced draft with no fixtures has an agent write them and the
- * walkthrough first (`writeFixtures`), from the slice as the workspace
- * wrote it, so they are renamed with the rest. A draft with no hidden tests
- * cannot judge a submission, so when its baseline fails for that alone, an
- * agent writes them (`hidden-tests.ts`) and the build is the one their
- * accepted baseline ran. What the build wrote settles on the draft when the
- * run commits, with the transform it hashes to.
+ * Nothing a model writes stands between the cut and the first baseline. A
+ * draft with no fixtures is built with the sandbox's preparation's when it
+ * has finished, else with none: every mock still answers, and the default
+ * walkthrough lists the entry points. A draft with no name table gets one
+ * drafted by rule (`draftPseudonyms`), and only one the build's check
+ * refuses goes to the pseudonyms agent, which starts from it. A draft with
+ * no hidden tests cannot judge a submission, so when its baseline fails for
+ * that alone, an agent writes them (`hidden-tests.ts`), started beside that
+ * baseline, and the build is the one their accepted baseline ran. What the
+ * build wrote settles on the draft when the run commits, with the transform
+ * it hashes to.
  */
 
 import { mkdir, readFile, writeFile } from "node:fs/promises";
@@ -44,6 +48,7 @@ import {
   withJsonLeaves,
   buildSummary,
   canonicalJson,
+  draftPseudonyms,
   generateProject,
   isSandboxBuildParams,
   packageNameOf,
@@ -82,13 +87,15 @@ import type { AgentSettings } from "../agent/loop.js";
 import { AnalysisError } from "../errors.js";
 import { snapshotOf } from "./adapter.js";
 import type { ArtifactFile, ToolAdapter, ToolRunInput } from "./adapter.js";
-import { loadDataModel } from "./context-runs.js";
-import { writeFixtures } from "./fixtures.js";
-import type { WrittenFixtures } from "./fixtures.js";
 import { writeHiddenTests } from "./hidden-tests.js";
 import { loadPreparation, packageVocabulary } from "./preparation.js";
 import type { Preparation } from "./preparation.js";
-import { settlePseudonyms, writePseudonyms } from "./pseudonyms.js";
+import {
+  ruledPseudonyms,
+  settlePseudonyms,
+  unresolvedImportRules,
+  writePseudonyms,
+} from "./pseudonyms.js";
 import type { WrittenPseudonyms } from "./pseudonyms.js";
 import { loadSliceRun, readIncludedSource } from "./slice-run.js";
 import { sha256 } from "./slice/hash.js";
@@ -870,21 +877,46 @@ export function createSandboxBuildAdapter(
         input.log("The draft's content does not match the hashes it carries.");
         throw new AnalysisError("tool_failed");
       }
-      const slice = await loadSliceRun(
-        input.inputs,
-        params.sliceRunId,
-        snapshot.snapshotId,
-      );
-      if (
-        slice.manifestSha256 !== params.manifestSha256 ||
-        slice.contractSha256 !== params.contractSha256
-      )
-        throw new AnalysisError("slice_unavailable");
+      // The slice and its source, the preparation and the repository's own
+      // names are read at once: none depends on another, and each is a
+      // round trip to the store or the checkout.
+      const [{ slice, included }, preparation, repositoryNames] =
+        await Promise.all([
+          (async () => {
+            const slice = await loadSliceRun(
+              input.inputs,
+              params.sliceRunId,
+              snapshot.snapshotId,
+            );
+            if (
+              slice.manifestSha256 !== params.manifestSha256 ||
+              slice.contractSha256 !== params.contractSha256
+            )
+              throw new AnalysisError("slice_unavailable");
+            input.signal.throwIfAborted();
+            // Source bytes at the pinned commit, verified against the slice.
+            const included = await readIncludedSource(
+              input.sourceDir,
+              slice.manifest,
+            );
+            return { slice, included };
+          })(),
+          // What the sandbox's preparation wrote for this slice, if one
+          // ran: fixtures and a name table the build takes when its own
+          // checks pass them.
+          params.preparedRunId === undefined ||
+          (source.fixtures !== null && source.aliasRules.length > 0)
+            ? Promise.resolve<Preparation>({ fixtures: null, pseudonyms: null })
+            : loadPreparation(
+                input.inputs,
+                params.preparedRunId,
+                params.sliceRunId,
+                snapshot.snapshotId,
+              ),
+          packageVocabulary(input.sourceDir),
+        ]);
       const { manifest, contract } = slice;
       const stubTexts = [...slice.stubs];
-      input.signal.throwIfAborted();
-      // Source bytes at the pinned commit, verified against the slice.
-      const included = await readIncludedSource(input.sourceDir, manifest);
       input.log(
         `Read ${included.length} source files and ${stubTexts.length} stubs.`,
       );
@@ -895,18 +927,6 @@ export function createSandboxBuildAdapter(
           : nearestCompilerOptions(input.sourceDir, first);
       const spec: SpecDraft | null = source.approvedTask.spec?.draft ?? null;
       const model = options.agent?.model ?? null;
-      // What the sandbox's preparation wrote for this slice, if it ran: the
-      // fixtures and the name table it would otherwise ask agents for.
-      const preparation: Preparation =
-        params.preparedRunId === undefined ||
-        (source.fixtures !== null && source.aliasRules.length > 0)
-          ? { fixtures: null, pseudonyms: null }
-          : await loadPreparation(
-              input.inputs,
-              params.preparedRunId,
-              params.sliceRunId,
-              snapshot.snapshotId,
-            );
       const agent =
         model === null || options.agent === undefined
           ? null
@@ -915,18 +935,12 @@ export function createSandboxBuildAdapter(
         source.fixtures === null ? preparation.fixtures : null;
       if (preparedFixtures !== null)
         input.log("Fixtures taken from the sandbox's preparation.");
-      const writesFixtures =
-        source.fixtures === null && preparedFixtures === null && spec !== null;
-      if (writesFixtures && agent === null)
-        input.log("No agent model is configured; no fixtures are written.");
-      const dataModel =
-        writesFixtures && agent !== null && params.dataModelRunId !== undefined
-          ? await loadDataModel(
-              input.inputs,
-              params.dataModelRunId,
-              snapshot.snapshotId,
-            )
-          : null;
+      else if (source.fixtures === null)
+        input.log(
+          "No fixtures: the mocks answer with recording mocks and the walkthrough lists the entry points.",
+        );
+      const versionFixtures: VersionFixtures | null =
+        preparedFixtures ?? source.fixtures;
       // Aliasing, with the inverse proof. The spec rides along unscoped.
       const symbols = symbolsOf(contract);
       const symbolLeaves = jsonLeaves(CONTRACT_PSEUDO_PATH, symbols);
@@ -975,199 +989,189 @@ export function createSandboxBuildAdapter(
         held, how to generate it with a set of hidden tests. Pure, so the
         pseudonyms agent's checks repeat it.
       */
-      const preparerFor = (written: VersionFixtures | null) => {
-        const fixtures = written?.fixtures ?? [];
-        const scenario = written?.scenario ?? null;
-        const fixtureLeaves = jsonLeaves(FIXTURES_PSEUDO_PATH, fixtures);
-        return (rules: readonly AliasRule[]) => {
-          const aliased = applyAliases(
-            [
-              ...included,
-              ...stubFiles,
-              ...symbolLeaves,
-              ...specLeaves,
-              ...fixtureLeaves,
-              ...listingLeaves,
-              ...nameLeaves,
-              ...(scenario === null
-                ? []
-                : [{ path: RUN_PATH, text: scenario }]),
-            ],
-            rules,
-          );
-          if (!aliased.ok)
-            return {
-              aliased,
-              blockers: aliased.problems.map((problem): ProjectBlocker => ({
-                code: "alias_failed",
-                file: problem.file,
-                detail: `${problem.code}${problem.rule === null ? "" : ` (rule ${problem.rule})`}: ${problem.detail}`,
-              })),
-              renames: [],
-              generate: null,
-              publicSpec: null,
-              publicListing: listing,
-            };
-          const sources: ProjectSource[] = included.map((file, index) => ({
-            originalPath: file.path,
-            path: aliased.files[index]?.path ?? file.path,
-            text: aliased.files[index]?.text ?? file.text,
-          }));
-          const stubs: ProjectStub[] = stubTexts.map((stub, index) => {
-            const file = aliased.files[included.length + index];
-            return {
-              module: stub.module,
-              path: file?.path ?? stub.module,
-              text: file?.text ?? stub.text,
-            };
-          });
-          // The leaves back, in the order they went in.
-          let at = included.length + stubTexts.length;
-          const textsOf = (count: number) => {
-            const texts = aliased.files
-              .slice(at, at + count)
-              .map((file) => file.text);
-            at += count;
-            return texts;
+      const fixtures = versionFixtures?.fixtures ?? [];
+      const scenario = versionFixtures?.scenario ?? null;
+      const fixtureLeaves = jsonLeaves(FIXTURES_PSEUDO_PATH, fixtures);
+      // Everything the table renames, in the order the leaves come back.
+      const aliasInputs = [
+        ...included,
+        ...stubFiles,
+        ...symbolLeaves,
+        ...specLeaves,
+        ...fixtureLeaves,
+        ...listingLeaves,
+        ...nameLeaves,
+        ...(scenario === null ? [] : [{ path: RUN_PATH, text: scenario }]),
+      ];
+      const prepare = (rules: readonly AliasRule[]) => {
+        const aliased = applyAliases(aliasInputs, rules);
+        if (!aliased.ok)
+          return {
+            aliased,
+            blockers: aliased.problems.map((problem): ProjectBlocker => ({
+              code: "alias_failed",
+              file: problem.file,
+              detail: `${problem.code}${problem.rule === null ? "" : ` (rule ${problem.rule})`}: ${problem.detail}`,
+            })),
+            renames: [],
+            generate: null,
+            publicSpec: null,
+            publicListing: listing,
           };
-          const aliasedContract = withSymbols(
-            contract,
-            withJsonLeaves(symbols, textsOf(symbolLeaves.length)),
-          );
-          const aliasedSpec =
-            spec === null
-              ? null
-              : withJsonLeaves(spec, textsOf(specLeaves.length));
-          const aliasedFixtures = withJsonLeaves(
-            fixtures,
-            textsOf(fixtureLeaves.length),
-          );
-          const aliasedListing = withJsonLeaves(
-            listing,
-            textsOf(listingLeaves.length),
-          );
-          const publicNames = withJsonLeaves(
-            privateNames,
-            textsOf(nameLeaves.length),
-          );
-          const packagePairs = privateNames.packages.map(
-            (name, index) =>
-              [name, publicNames.packages[index] ?? name] as const,
-          );
-          const environmentPairs = privateNames.environment.map(
-            (name, index) =>
-              [name, publicNames.environment[index] ?? name] as const,
-          );
-          const aliasedScenario =
-            scenario === null ? null : (aliased.files[at]?.text ?? scenario);
-          /*
+        const sources: ProjectSource[] = included.map((file, index) => ({
+          originalPath: file.path,
+          path: aliased.files[index]?.path ?? file.path,
+          text: aliased.files[index]?.text ?? file.text,
+        }));
+        const stubs: ProjectStub[] = stubTexts.map((stub, index) => {
+          const file = aliased.files[included.length + index];
+          return {
+            module: stub.module,
+            path: file?.path ?? stub.module,
+            text: file?.text ?? stub.text,
+          };
+        });
+        // The leaves back, in the order they went in.
+        let at = included.length + stubTexts.length;
+        const textsOf = (count: number) => {
+          const texts = aliased.files
+            .slice(at, at + count)
+            .map((file) => file.text);
+          at += count;
+          return texts;
+        };
+        const aliasedContract = withSymbols(
+          contract,
+          withJsonLeaves(symbols, textsOf(symbolLeaves.length)),
+        );
+        const aliasedSpec =
+          spec === null
+            ? null
+            : withJsonLeaves(spec, textsOf(specLeaves.length));
+        const aliasedFixtures = withJsonLeaves(
+          fixtures,
+          textsOf(fixtureLeaves.length),
+        );
+        const aliasedListing = withJsonLeaves(
+          listing,
+          textsOf(listingLeaves.length),
+        );
+        const publicNames = withJsonLeaves(
+          privateNames,
+          textsOf(nameLeaves.length),
+        );
+        const packagePairs = privateNames.packages.map(
+          (name, index) => [name, publicNames.packages[index] ?? name] as const,
+        );
+        const environmentPairs = privateNames.environment.map(
+          (name, index) =>
+            [name, publicNames.environment[index] ?? name] as const,
+        );
+        const aliasedScenario =
+          scenario === null ? null : (aliased.files[at]?.text ?? scenario);
+        /*
             A rule can still rename a value the shape depends on, such as a
             symbol's kind or a scenario's. What was valid before renaming must
             be valid after, or nothing is generated: a project built from a
             broken contract would carry the private names it failed to hide.
           */
-          const broken = [
-            stillReads(boundaryContractSchema, contract, aliasedContract)
-              ? null
-              : "contract",
-            stillReads(specDraftSchema, spec, aliasedSpec) ? null : "spec",
-            stillReads(fixtureListSchema, fixtures, aliasedFixtures)
-              ? null
-              : "fixtures",
-          ].filter((name) => name !== null);
-          const blockers = [
-            ...broken.map(
-              (name) =>
-                `The alias table renamed a value the ${name} needs, so it no longer reads as one.`,
-            ),
-            ...publicNameProblems(
-              "package",
-              packageNameProblem,
-              packagePairs,
-              packageNames,
-            ),
-            ...publicNameProblems(
-              "environment variable",
-              environmentNameProblem,
-              environmentPairs,
-              new Set(privateNames.environment),
-            ),
-          ].map((detail): ProjectBlocker => ({
-            code: "alias_failed",
-            file: null,
-            detail,
-          }));
-          if (blockers.length > 0)
-            return {
-              aliased,
-              blockers,
-              renames: aliased.renames,
-              generate: null,
-              publicSpec: null,
-              publicListing: aliasedListing,
-            };
-          const uses = packageUses(
-            new Map(
-              [...sources, ...stubs].map((file) => [file.path, file.text]),
-            ),
-            (specifier) =>
-              !specifier.startsWith(".") &&
-              !specifier.startsWith("/") &&
-              (packageNames.has(packageNameOf(specifier)) ||
-                packagePairs.some(
-                  ([, to]) => to === packageNameOf(specifier),
-                ) ||
-                isNodeBuiltin(specifier)),
-          );
-          const generate = (tests: readonly AcceptanceTest[]) => {
-            const project = generateProject({
-              version: {
-                sandboxId: version.sandboxId,
-                versionId: version.id,
-                version: version.version,
-                ...aliasedListing,
-                complexity: version.complexity,
-              },
-              manifest,
-              contract: aliasedContract,
-              sources,
-              stubs,
-              spec: aliasedSpec,
-              dependencies: source.scope.dependencies,
-              acceptanceTests: tests,
-              fixtures: aliasedFixtures,
-              scenario: aliasedScenario,
-              knownSpecifiers: NODE_BUILTINS,
-              packageModules: packageModules(uses, (specifier) =>
-                installedPackages.has(packageNameOf(specifier)),
-              ),
-              publicNames: {
-                packages: Object.fromEntries(packagePairs),
-                environment: Object.fromEntries(environmentPairs),
-              },
-              ...(compilerOptions === undefined ? {} : { compilerOptions }),
-            });
-            return {
-              files: [...project.files],
-              blockers: [...project.blockers],
-              importRewrites: project.importRewrites,
-            };
-          };
+        const broken = [
+          stillReads(boundaryContractSchema, contract, aliasedContract)
+            ? null
+            : "contract",
+          stillReads(specDraftSchema, spec, aliasedSpec) ? null : "spec",
+          stillReads(fixtureListSchema, fixtures, aliasedFixtures)
+            ? null
+            : "fixtures",
+        ].filter((name) => name !== null);
+        const blockers = [
+          ...broken.map(
+            (name) =>
+              `The alias table renamed a value the ${name} needs, so it no longer reads as one.`,
+          ),
+          ...publicNameProblems(
+            "package",
+            packageNameProblem,
+            packagePairs,
+            packageNames,
+          ),
+          ...publicNameProblems(
+            "environment variable",
+            environmentNameProblem,
+            environmentPairs,
+            new Set(privateNames.environment),
+          ),
+        ].map((detail): ProjectBlocker => ({
+          code: "alias_failed",
+          file: null,
+          detail,
+        }));
+        if (blockers.length > 0)
           return {
             aliased,
             blockers,
             renames: aliased.renames,
-            generate,
-            publicSpec: aliasedSpec,
+            generate: null,
+            publicSpec: null,
             publicListing: aliasedListing,
           };
+        const uses = packageUses(
+          new Map([...sources, ...stubs].map((file) => [file.path, file.text])),
+          (specifier) =>
+            !specifier.startsWith(".") &&
+            !specifier.startsWith("/") &&
+            (packageNames.has(packageNameOf(specifier)) ||
+              packagePairs.some(([, to]) => to === packageNameOf(specifier)) ||
+              isNodeBuiltin(specifier)),
+        );
+        const generate = (tests: readonly AcceptanceTest[]) => {
+          const project = generateProject({
+            version: {
+              sandboxId: version.sandboxId,
+              versionId: version.id,
+              version: version.version,
+              ...aliasedListing,
+              complexity: version.complexity,
+            },
+            manifest,
+            contract: aliasedContract,
+            sources,
+            stubs,
+            spec: aliasedSpec,
+            dependencies: source.scope.dependencies,
+            acceptanceTests: tests,
+            fixtures: aliasedFixtures,
+            scenario: aliasedScenario,
+            knownSpecifiers: NODE_BUILTINS,
+            packageModules: packageModules(uses, (specifier) =>
+              installedPackages.has(packageNameOf(specifier)),
+            ),
+            publicNames: {
+              packages: Object.fromEntries(packagePairs),
+              environment: Object.fromEntries(environmentPairs),
+            },
+            ...(compilerOptions === undefined ? {} : { compilerOptions }),
+          });
+          return {
+            files: [...project.files],
+            blockers: [...project.blockers],
+            importRewrites: project.importRewrites,
+          };
+        };
+        return {
+          aliased,
+          blockers,
+          renames: aliased.renames,
+          generate,
+          publicSpec: aliasedSpec,
+          publicListing: aliasedListing,
         };
       };
       // The workspace's own names, which the pseudonyms must rename out of
       // everything contributors read, its private packages' among them.
       const vocabulary = workspaceVocabulary([
         ...(params.vocabulary ?? []),
-        ...(await packageVocabulary(input.sourceDir)),
+        ...repositoryNames,
         ...privatePackageNames(manifest.requiredBuildInputs.packages),
       ]);
       const leaksOf = (generated: readonly GeneratedFile[]) =>
@@ -1175,95 +1179,27 @@ export function createSandboxBuildAdapter(
           generated.filter((file) => file.public),
           vocabulary,
         );
-      // The build's own check of a name table, as the agent is shown it,
-      // against a project with these fixtures.
-      const checkTableWith =
-        (written: VersionFixtures | null) => (rules: readonly AliasRule[]) => {
-          const candidate = preparerFor(written)(rules);
-          const project = candidate.generate?.(source.acceptanceTests);
-          return {
-            problems: [
-              ...candidate.blockers,
-              ...(project?.blockers ?? []),
-              ...vocabularyBlockers(leaksOf(project?.files ?? [])),
-            ].map(
-              (blocker) => `${blocker.file ?? blocker.code}: ${blocker.detail}`,
-            ),
-            applied: candidate.aliased.applied,
-          };
+      // The build's own check of a name table, as the agent is shown it.
+      const checkTable = (rules: readonly AliasRule[]) => {
+        const candidate = prepare(rules);
+        const project = candidate.generate?.(source.acceptanceTests);
+        return {
+          problems: [
+            ...candidate.blockers,
+            ...(project?.blockers ?? []),
+            ...(project === undefined
+              ? []
+              : unresolvedImportRules(rules, candidate.renames, project.files)),
+            ...vocabularyBlockers(leaksOf(project?.files ?? [])),
+          ].map(
+            (blocker) => `${blocker.file ?? blocker.code}: ${blocker.detail}`,
+          ),
+          applied: candidate.aliased.applied,
         };
-      const pseudonymsAgent = (
-        check: ReturnType<typeof checkTableWith>,
-        signal: AbortSignal,
-        drafted?: WrittenPseudonyms,
-      ) =>
-        agent === null
-          ? Promise.resolve(null)
-          : writePseudonyms({
-              ...agent,
-              task: {
-                title: version.title,
-                summary: version.specSummary,
-                spec,
-              },
-              files: [...included, ...stubFiles],
-              vocabulary,
-              check,
-              drafted,
-              signal,
-              log: input.log,
-              step: input.step,
-              timing: input.timing,
-            });
-      // Fixtures and a walkthrough, for a draft with none: written in the
-      // workspace's own names, so the pseudonyms rename them too. A table is
-      // drafted from the slice beside them, checked without them, and once
-      // both are there, checked against them.
-      const draftsPseudonyms =
-        writesFixtures &&
-        agent !== null &&
-        source.aliasRules.length === 0 &&
-        preparation.pseudonyms === null;
-      const [fixtureSet, drafted]: [
-        WrittenFixtures | null,
-        WrittenPseudonyms | null,
-      ] = await together(
-        input.signal,
-        (signal) =>
-          !writesFixtures || agent === null || spec === null
-            ? Promise.resolve(null)
-            : writeFixtures({
-                ...agent,
-                task: { issueKey: null, draft: spec },
-                sourceDir: input.sourceDir,
-                commitSha: snapshot.commitSha,
-                slice,
-                included,
-                dataModel,
-                signal,
-                log: input.log,
-                step: input.step,
-                timing: input.timing,
-              }),
-        (signal) =>
-          draftsPseudonyms
-            ? pseudonymsAgent(checkTableWith(source.fixtures), signal)
-            : Promise.resolve(null),
-      );
-      const versionFixtures: VersionFixtures | null =
-        preparedFixtures ??
-        (fixtureSet === null
-          ? source.fixtures
-          : {
-              fixtureRunId: input.runId ?? null,
-              fixtures: fixtureSet.fixtures,
-              scenario: fixtureSet.scenario,
-            });
-      const prepare = preparerFor(versionFixtures);
-      const checkTable = checkTableWith(versionFixtures);
+      };
       // Pseudonyms, for a draft with none: the preparation's table when it
-      // holds against this project, else the one drafted beside the
-      // fixtures when it does, else an agent's.
+      // holds against this project, else one drafted by rule when it does,
+      // else an agent's, started from that draft.
       let pseudonyms: WrittenPseudonyms | null = null;
       if (source.aliasRules.length === 0 && preparation.pseudonyms !== null) {
         const problems = checkTable(preparation.pseudonyms.rules).problems;
@@ -1272,20 +1208,51 @@ export function createSandboxBuildAdapter(
           input.log("Pseudonyms taken from the sandbox's preparation.");
         } else
           input.log(
-            `The prepared pseudonyms do not hold here (${problems.length} problem(s)); an agent writes the table.`,
+            `The prepared pseudonyms do not hold here (${problems.length} problem(s)); the table is drafted again.`,
           );
       }
-      if (source.aliasRules.length === 0 && pseudonyms === null) {
-        if (agent === null)
-          input.log("No agent model is configured; no pseudonyms are written.");
-        else
-          pseudonyms = await settlePseudonyms(
-            drafted,
-            (draft) => pseudonymsAgent(checkTable, input.signal, draft),
-            checkTable,
-            input.log,
-          );
-      }
+      if (source.aliasRules.length === 0 && pseudonyms === null)
+        pseudonyms = await settlePseudonyms(
+          ruledPseudonyms(
+            draftPseudonyms({
+              files: aliasInputs,
+              vocabulary,
+              imports: [...manifest.cuts.outbound, ...manifest.internalImports]
+                .filter((edge) => edge.specifier !== null)
+                .map((edge) => ({
+                  from: edge.from,
+                  specifier: edge.specifier ?? "",
+                  to: edge.to,
+                })),
+            }),
+          ),
+          async (drafted) => {
+            if (agent === null) {
+              input.log(
+                "No agent model is configured; no pseudonyms are written.",
+              );
+              return null;
+            }
+            return writePseudonyms({
+              ...agent,
+              task: {
+                title: version.title,
+                summary: version.specSummary,
+                spec,
+              },
+              files: [...included, ...stubFiles],
+              vocabulary,
+              check: checkTable,
+              drafted,
+              signal: input.signal,
+              log: input.log,
+              step: input.step,
+              timing: input.timing,
+            });
+          },
+          checkTable,
+          input.log,
+        );
       const aliasRules = pseudonyms?.rules ?? source.aliasRules;
       const prepared = prepare(aliasRules);
       const { generate, publicSpec, publicListing, renames } = prepared;
@@ -1336,9 +1303,30 @@ export function createSandboxBuildAdapter(
       // The early agent's own failure, which fails the build only if the
       // baseline turns out to need its tests.
       const early: { failed: boolean; error?: unknown } = { failed: false };
-      // Shown while the baseline below runs, as the version's files.
-      if (generate !== null && files.length > 0)
-        await previewProject(input, files, 1);
+      // Shown while the baseline below runs, as the version's files: the
+      // writing and the showing are not waited for before it starts, and a
+      // preview that cannot be shown never fails a build.
+      const previewed = (
+        generate !== null && files.length > 0
+          ? previewProject(input, files, 1)
+          : Promise.resolve()
+      ).catch(() => {
+        input.log("The generated files could not be shown for a preview.");
+      });
+      // The entry points, at the paths the project gives them: where the
+      // hidden tests' scaffold imports from.
+      const renamedPath = new Map(renames.map(({ from, to }) => [from, to]));
+      const entryPoints = included
+        .map((file) => file.path)
+        .filter(
+          (path) =>
+            /\.[cm]?tsx?$/.test(path) &&
+            !path.endsWith(".d.ts") &&
+            manifest.entryPoints.some(
+              (entry) => path === entry || path.startsWith(`${entry}/`),
+            ),
+        )
+        .map((path) => renamedPath.get(path) ?? path);
       const [firstBaseline, hiddenWritten] = await together(
         input.signal,
         async (signal) => {
@@ -1367,6 +1355,7 @@ export function createSandboxBuildAdapter(
                 summary: publicListing.specSummary,
                 spec: publicSpec,
               },
+              entryPoints,
               generate,
               baseline: (candidateFiles, candidateBlockers, tests) =>
                 reportedBaselineOf(provider, {
@@ -1396,6 +1385,7 @@ export function createSandboxBuildAdapter(
           }
         },
       );
+      await previewed;
       let baseline: BaselineReport | null = firstBaseline?.baseline ?? null;
       let evaluator: EvaluationEnvironment | null =
         firstBaseline?.evaluator ?? null;
@@ -1419,10 +1409,7 @@ export function createSandboxBuildAdapter(
       // What the draft's transform becomes once what the build wrote
       // settles on it.
       const wrote =
-        hidden !== null ||
-        pseudonyms !== null ||
-        fixtureSet !== null ||
-        preparedFixtures !== null;
+        hidden !== null || pseudonyms !== null || preparedFixtures !== null;
       const transformConfigSha256 = !wrote
         ? source.transformConfigSha256
         : sha256(
@@ -1480,15 +1467,6 @@ export function createSandboxBuildAdapter(
                     usage: pseudonyms.usage,
                   },
                 }),
-            ...(fixtureSet === null || versionFixtures === null
-              ? {}
-              : {
-                  fixtures: versionFixtures,
-                  fixturesAgent: {
-                    summary: fixtureSet.summary,
-                    usage: fixtureSet.usage,
-                  },
-                }),
             ...(preparedFixtures === null
               ? {}
               : { fixtures: preparedFixtures }),
@@ -1508,7 +1486,7 @@ export function createSandboxBuildAdapter(
           meta: {
             hiddenTests: hidden?.tests.length ?? 0,
             pseudonyms: pseudonyms?.rules.length ?? 0,
-            fixtures: (fixtureSet ?? preparedFixtures)?.fixtures.length ?? 0,
+            fixtures: preparedFixtures?.fixtures.length ?? 0,
           },
         });
         written.sort((a, b) => compare(a.path, b.path));

@@ -442,8 +442,6 @@ function fixture(
      * have no profiles at all.
      */
     profile: Partial<StoredBountyProfile> | null;
-    /** The snapshot has no succeeded data model for a build to name. */
-    noDataModel: boolean;
     /**
      * Versions as the store makes them under the sandbox's lock: each cut
      * a version of its own, except a cut asked to reuse the draft an
@@ -726,17 +724,6 @@ function fixture(
                         : owner === "org_1" && id === "arn_fixtures_elsewhere"
                           ? fixturesRunOf(id, "arn_other")
                           : null,
-      latestSucceeded: async (
-        owner: string,
-        snapshotId: string,
-        tool: string,
-      ) =>
-        owner === "org_1" &&
-        snapshotId === "rsn_1" &&
-        tool === "data_model" &&
-        overrides.noDataModel !== true
-          ? { ...sliceRun, id: "arn_model", tool: "data_model" }
-          : null,
       enqueue: async (_owner: string, snapshotId: string, input: unknown) => {
         enqueued.push({ snapshotId, ...(input as object) });
         return overrides.limit === true
@@ -1739,17 +1726,10 @@ test("a build queues a run carrying every hash and records it on the draft", asy
       approvedTaskSha256: "2".repeat(64),
       // The organization's names, then its repository's, once each.
       vocabulary: ["acme-corp", "acme", "ghr-1"],
-      // The snapshot's data model, for an agent writing fixtures.
-      dataModelRunId: "arn_model",
     },
     requestedBy: "user_1",
     maxActive: 3,
   });
-  // A snapshot with none names none.
-  const bare = fixture("owner", { noDataModel: true });
-  await bare.request("POST", "/versions/sbv_1/build");
-  const queued = bare.enqueued[0] as { params: Record<string, unknown> };
-  assert.equal("dataModelRunId" in queued.params, false);
   assert.deepEqual(f.builds[0], {
     versionId: "sbv_1",
     runId: "arn_build",

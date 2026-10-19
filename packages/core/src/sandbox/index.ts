@@ -13,6 +13,7 @@ export * from "./build.js";
 export * from "./confined.js";
 export * from "./descriptor.js";
 export * from "./project.js";
+export * from "./pseudonyms.js";
 export * from "./secrets.js";
 export * from "./expression.js";
 export * from "./fixtures.js";

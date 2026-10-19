@@ -479,7 +479,10 @@ function mockRuntimeFor(
     `// Generated runtime for the declarations in ${declarationPath(modulePath).split("/").pop() ?? ""}.`,
     "// Every value is a recording mock; see sandbox/mock.js and the README.",
     `import { ${fixtures.length === 0 ? "createMock" : "createMock, fixture"} } from "${relativeSpecifier(modulePath, MOCK_RUNTIME_PATH)}";`,
-    `const mock = createMock(${JSON.stringify(`module:${originalModule}`)});`,
+    // Named by its public path: the fixtures' keys were renamed with the
+    // table too, and a developer's `mockImplementation` and `recordedCalls`
+    // see this name, never the private one.
+    `const mock = createMock(${JSON.stringify(`module:${modulePath}`)});`,
   ];
   // Default behaviour the task gives some calls; tests can still override it.
   for (const item of [...fixtures].sort((a, b) =>

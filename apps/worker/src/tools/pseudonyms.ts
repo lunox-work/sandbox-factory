@@ -16,8 +16,13 @@
 
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
-import type { AgentUsage, AliasRule, SpecDraft } from "sandbox-factory";
+import { dirname, join, posix } from "node:path";
+import type {
+  AgentUsage,
+  AliasRule,
+  ProjectBlocker,
+  SpecDraft,
+} from "sandbox-factory";
 import { aliasRulesSchema } from "@sandbox-factory/shared";
 import { z } from "zod";
 import type {
@@ -52,6 +57,65 @@ export interface WrittenPseudonyms {
   readonly rules: readonly AliasRule[];
   readonly summary: string;
   readonly usage: AgentUsage;
+}
+
+/** A quoted relative specifier: what an import rule turns a package into. */
+const RELATIVE_LITERAL = /^(["'])(\.\.?\/.*)\1$/;
+/** The TypeScript sources a compiled path may come from. */
+const SOURCE_FORMS: readonly (readonly [string, readonly string[]])[] = [
+  [".mjs", [".mts", ".d.mts"]],
+  [".cjs", [".cts", ".d.cts"]],
+  [".js", [".ts", ".tsx", ".d.ts"]],
+];
+
+/**
+ * Import rules that point at nothing. `draftPseudonyms` turns an import of
+ * a workspace package into the relative path of the module it resolves to,
+ * scoped to the importing file; the generator then leaves that relative
+ * import as written, for the compiler to judge. Judged here instead: from
+ * the importer at its renamed path, the specifier must reach a file the
+ * project generates, as the compiled path or the source it is built from,
+ * or the table is refused before a baseline fails on it.
+ */
+export function unresolvedImportRules(
+  rules: readonly AliasRule[],
+  renames: readonly { readonly from: string; readonly to: string }[],
+  files: readonly { readonly path: string }[],
+): ProjectBlocker[] {
+  const generated = new Set(files.map((file) => file.path));
+  const renamed = new Map(renames.map(({ from, to }) => [from, to]));
+  const exists = (path: string) =>
+    generated.has(path) ||
+    SOURCE_FORMS.some(
+      ([compiled, sources]) =>
+        path.endsWith(compiled) &&
+        sources.some((source) =>
+          generated.has(`${path.slice(0, -compiled.length)}${source}`),
+        ),
+    );
+  const blockers: ProjectBlocker[] = [];
+  for (const rule of rules) {
+    if (rule.kind !== "text" || rule.paths.length === 0) continue;
+    const literal = RELATIVE_LITERAL.exec(rule.after);
+    const specifier = literal?.[2];
+    if (specifier === undefined) continue;
+    for (const importer of rule.paths) {
+      // A scope that is not a file of the project is a directory, which no
+      // import rule of the draft has.
+      const from = renamed.get(importer) ?? importer;
+      if (!renamed.has(importer) && !generated.has(importer)) continue;
+      const target = posix.normalize(
+        posix.join(posix.dirname(from), specifier),
+      );
+      if (!exists(target))
+        blockers.push({
+          code: "import_unrewritable",
+          file: importer,
+          detail: `${rule.before} is renamed to ${rule.after}, which resolves to ${target}, a file the project does not generate.`,
+        });
+    }
+  }
+  return blockers;
 }
 
 const aliasesProperty = {
@@ -141,9 +205,8 @@ export async function writePseudonyms(input: {
   /** The build's check of a table; pure, so cheap to repeat. */
   readonly check: (rules: readonly AliasRule[]) => PseudonymCheck;
   /**
-   * A table drafted before the fixtures were written, which this check
-   * refuses: the agent starts from it, told why, and what it spent counts
-   * toward this table's usage.
+   * A table drafted by rule, which this check refuses: the agent starts
+   * from it, told why, and what it spent counts toward this table's usage.
    */
   readonly drafted?: WrittenPseudonyms | undefined;
   readonly signal: AbortSignal;
@@ -248,6 +311,8 @@ export async function writePseudonyms(input: {
       tools: [...repositoryTools(index), checkTool, submitTool],
       submitTool: "submit_pseudonyms",
       limits: input.limits,
+      // It amends a drafted table, which the build's check then decides.
+      effort: "medium",
       signal: input.signal,
       log: input.log,
     });
@@ -284,26 +349,55 @@ function addUsage(first: AgentUsage, second: AgentUsage): AgentUsage {
 }
 
 /**
- * The table for a slice once its fixtures are written: one drafted beside
- * the fixtures agent when it holds against them too, else an agent's,
- * started from that draft. Null when no agent settles one.
+ * A table `draftPseudonyms` drafted, kept as an agent's is: what it renames,
+ * and no turns or tokens spent on it.
+ */
+export function ruledPseudonyms(
+  rules: readonly AliasRule[],
+): WrittenPseudonyms {
+  // Only an import rule is scoped: to the files that import the package.
+  const imports = rules.filter((rule) => rule.paths.length > 0).length;
+  return {
+    rules,
+    summary: `Drafted by rule: ${imports} import rule(s) turn the workspace's packages into relative paths, and ${rules.length - imports} rule(s) give its names placeholders.`,
+    usage: {
+      model: "rules",
+      turns: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+    },
+  };
+}
+
+/**
+ * The table for a slice: the one drafted by rule when the check holds it,
+ * none when it holds with no rules at all, else an agent's, started from
+ * the draft when there is one. Null when no table is needed or no agent
+ * settles one.
  */
 export async function settlePseudonyms(
-  drafted: WrittenPseudonyms | null,
+  drafted: WrittenPseudonyms,
   write: (
     drafted: WrittenPseudonyms | undefined,
   ) => Promise<WrittenPseudonyms | null>,
   check: (rules: readonly AliasRule[]) => PseudonymCheck,
   log: (line: string) => void,
 ): Promise<WrittenPseudonyms | null> {
-  if (drafted === null) return write(undefined);
   const problems = problemsOf(drafted.rules, check(drafted.rules));
   if (problems.length === 0) {
-    log("The pseudonyms drafted beside the fixtures hold against them.");
+    if (drafted.rules.length === 0) {
+      log("No public file names the workspace; no pseudonyms are needed.");
+      return null;
+    }
+    log(
+      `The pseudonyms drafted by rule hold: ${drafted.rules.length} rule(s).`,
+    );
     return drafted;
   }
   log(
-    `The pseudonyms drafted beside the fixtures do not hold against them (${problems.length} problem(s)); an agent amends the table.`,
+    `The pseudonyms drafted by rule do not hold (${problems.length} problem(s)); an agent ${drafted.rules.length === 0 ? "writes" : "amends"} the table.`,
   );
-  return write(drafted);
+  return write(drafted.rules.length === 0 ? undefined : drafted);
 }

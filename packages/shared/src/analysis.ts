@@ -161,8 +161,9 @@ export const fixturesParamsSchema = z.strictObject({
   sliceRunId: z.string().min(1),
   dataModelRunId: z.string().min(1).optional(),
   /**
-   * A sandbox's preparation: the run also writes the name table, checked
-   * against these names. Absent for a person's fixtures run.
+   * Legacy passthrough: a sandbox's preparation wrote the name table too.
+   * Nothing writes it since 2026-10-19; stored runs that carry it are still
+   * parsed by this schema when listed.
    */
   pseudonyms: z
     .strictObject({

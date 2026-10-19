@@ -25,6 +25,7 @@ import type {
   StoredArtifact,
   StoredBounty,
   StoredBountyProfile,
+  StoredBountyProposal,
   StoredSandbox,
   StoredVersionWithSource,
 } from "@sandbox-factory/db";
@@ -310,6 +311,46 @@ const starterInProgress = () =>
     },
     "conflict",
   );
+const taskNotReady = () =>
+  failure(
+    {
+      error: "A version is sliced for an approved price with a spec.",
+      code: "task_not_ready",
+    },
+    "conflict",
+  );
+
+/**
+ * Why no version can be cut for a bounty from its live proposal, told from
+ * the two of them alone: the proposal has no priced complexity, or the
+ * bounty's title cannot name a version (`sliceListing`). Null when they
+ * can name one. `slice` refuses with exactly this, so the preparer asks it
+ * before it makes the bounty's sandbox: a sandbox made and then refused
+ * would stay with no version, and nothing lists it again.
+ */
+export function cutRefusal(
+  bounty: Pick<StoredBounty, "title" | "description">,
+  proposal: Pick<StoredBountyProposal, "complexity"> | null,
+) {
+  if (
+    proposal === null ||
+    !PRICED_BOUNTY_COMPLEXITIES.some((size) => size === proposal.complexity)
+  )
+    return taskNotReady();
+  const listing = sliceListing(bounty);
+  const named = createSandboxVersionSchema
+    .pick({ title: true, specSummary: true })
+    .safeParse({ title: listing.title, specSummary: listing.summary });
+  return named.success
+    ? null
+    : failure(
+        {
+          error: "The bounty's title cannot name a version.",
+          code: "task_not_ready",
+        },
+        "conflict",
+      );
+}
 
 export function versionService(options: SandboxRouteOptions) {
   /**
@@ -881,14 +922,9 @@ export function versionService(options: SandboxRouteOptions) {
         "conflict",
       );
     const vocabulary = await workspaceNames(owner, stored.version.sandboxId);
-    // What a fixtures agent reads, should the build write the draft's.
-    const dataModel = await options.runs.latestSucceeded(
-      owner,
-      sourceSnapshotId,
-      "data_model",
-    );
     // What the sandbox's preparation wrote for this slice, which the build
-    // tries before asking agents: named only while it is there to read.
+    // takes when its checks hold it: named only while it is there to read,
+    // never waited for.
     const preparedRunId =
       stored.source.fixtures !== null && stored.source.aliasRules.length > 0
         ? null
@@ -896,8 +932,7 @@ export function versionService(options: SandboxRouteOptions) {
     const result = await options.runs.enqueue(owner, sourceSnapshotId, {
       tool: "sandbox_build",
       params: {
-        // A draft with no fixtures, pseudonyms or hidden tests has agents
-        // write them.
+        // A draft with no hidden tests has an agent write them.
         deadlineMinutes: AGENT_DEADLINE_MINUTES,
         sliceRunId,
         sandboxVersionId: stored.version.id,
@@ -906,7 +941,6 @@ export function versionService(options: SandboxRouteOptions) {
         transformConfigSha256: stored.source.transformConfigSha256,
         approvedTaskSha256: stored.source.approvedTaskSha256,
         vocabulary,
-        ...(dataModel === null ? {} : { dataModelRunId: dataModel.id }),
         ...(preparedRunId === null ? {} : { preparedRunId }),
       },
       requestedBy: actor,
@@ -1002,17 +1036,18 @@ export function versionService(options: SandboxRouteOptions) {
         "Slicing needs the worker that sizes bounties.",
       );
     const specRevision = proposal.specRevision;
-    const repo = (await options.repos.list(owner)).find(
-      ({ id }) => id === sandbox.sourceRepoId,
-    );
+    // Independent reads, so a click or the preparer waits for one round trip.
+    const [repos, profiles] = await Promise.all([
+      options.repos.list(owner),
+      options.profiles.forRevision(owner, proposal.id, specRevision),
+    ]);
+    const repo = repos.find(({ id }) => id === sandbox.sourceRepoId);
     // The snapshot its spec was drafted beside, which its profile reads.
     const touched = proposal.repositories.find(
       ({ repoId }) => repoId === sandbox.sourceRepoId,
     );
     const profile =
-      (
-        await options.profiles.forRevision(owner, proposal.id, specRevision)
-      ).find(
+      profiles.find(
         (item) =>
           (touched !== undefined && item.snapshotId === touched.snapshotId) ||
           (repo !== undefined && item.repository === repo.fullName),
@@ -1248,38 +1283,32 @@ export function versionService(options: SandboxRouteOptions) {
     )
       draft = latest;
     else {
-      const bounty = await options.bounties.get(owner, sandbox.bountyId);
-      if (bounty === null) return failure({ error: "Not found." }, "not-found");
-      const proposalId = await options.proposals.liveForBounty(
-        owner,
-        bounty.id,
-      );
-      const proposal =
-        proposalId === null
-          ? null
-          : await options.proposals.get(owner, proposalId);
-      const complexity = PRICED_BOUNTY_COMPLEXITIES.find(
-        (size) => size === proposal?.complexity,
-      );
-      if (proposal === null || complexity === undefined)
-        return failure(
-          {
-            error: "A version is sliced for an approved price with a spec.",
-            code: "task_not_ready",
-          },
-          "conflict",
+      const liveProposal = async () => {
+        const proposalId = await options.proposals.liveForBounty(
+          owner,
+          sandbox.bountyId,
         );
-      // The stack its repository was detected to use, and what it adds.
-      const repo = (await options.repos.list(owner)).find(
-        ({ id }) => id === sandbox.sourceRepoId,
-      );
-      const listing = sliceListing(bounty);
+        return proposalId === null
+          ? null
+          : options.proposals.get(owner, proposalId);
+      };
       // The preparation's fixtures, when it wrote them for this slice.
       const preparedRunId = state.profile?.preparedRunId ?? null;
-      const prepared =
-        preparedRunId === null
-          ? null
-          : await options.runs.get(owner, preparedRunId);
+      // Four independent reads, waited for together; the checks below
+      // keep their order, so a bounty gone is told before its price.
+      const [bounty, proposal, repos, prepared] = await Promise.all([
+        options.bounties.get(owner, sandbox.bountyId),
+        liveProposal(),
+        options.repos.list(owner),
+        preparedRunId === null ? null : options.runs.get(owner, preparedRunId),
+      ]);
+      if (bounty === null) return failure({ error: "Not found." }, "not-found");
+      if (proposal === null) return taskNotReady();
+      const refused = cutRefusal(bounty, proposal);
+      if (refused !== null) return refused;
+      // The stack its repository was detected to use, and what it adds.
+      const repo = repos.find(({ id }) => id === sandbox.sourceRepoId);
+      const listing = sliceListing(bounty);
       const input = createSandboxVersionSchema.safeParse({
         sliceRunId,
         title: listing.title,
@@ -1287,7 +1316,8 @@ export function versionService(options: SandboxRouteOptions) {
         ...(prepared?.status === "succeeded"
           ? { fixtureRunId: prepared.id }
           : {}),
-        complexity,
+        // Priced, as `cutRefusal` checked; the schema narrows it again.
+        complexity: proposal.complexity,
         tags: normalizeStack([...(repo?.stack ?? []), ...bounty.stack])
           .filter((name) => name.length <= GENERATED_TAG_MAX)
           .slice(0, GENERATED_TAGS_MAX),

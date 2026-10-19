@@ -1,26 +1,38 @@
 /**
- * Prepares approved bounties' sandboxes before anyone asks for one: once a
+ * Starts approved bounties' sandboxes before anyone asks for one: once a
  * profile is ready and its proposal approved at that spec revision, the
- * fixtures agent and the pseudonyms agent run on its slice (a `fixtures`
- * run with `pseudonyms`), and the profile names the run. A Sandbox click
- * then cuts the draft with the fixtures attached, and its build takes the
- * name table when its own check passes it (`version-service.ts`), so the
- * click waits for one baseline and the hidden tests only.
+ * bounty's sandbox is made and its first version cut and built, exactly as
+ * a Sandbox click starts one (`routes.ts`), as the person who approved the
+ * price. The build's one model step, the hidden tests, then runs while
+ * nobody waits for it, and a click finds the sandbox already there: its
+ * button is gone, and the bounty shows the build.
  *
- * It runs for every approved bounty in a workspace that has not turned
- * `prepareSandboxes` off, which is model spend for a sandbox that may never
- * be made; the setting is the workspace's to weigh. A pass is prompted by
+ * It runs for every approved bounty with no sandbox in a workspace that
+ * has not turned `prepareSandboxes` off, which is model spend for a sandbox
+ * that may never be published; the setting is the workspace's to weigh. A
+ * bounty whose step is held, whose work touches no single repository or
+ * whose price nobody approved is left for a person. A pass is prompted by
  * the profiler settling a profile and by an approval, and a timer catches
- * what this process did not see. A run refused at the organization's
- * analysis cap is asked for again on the next pass, one slot short of the
- * cap, as the profiler's are, so a person's own analysis is not refused.
+ * what this process did not see. A build refused at the organization's
+ * analysis cap is asked for again as a pending cut, which the cutter makes
+ * once a run is free (`cutter.ts`).
  *
- * The fixtures and pseudonyms agents read the slice, whose repository text
- * can steer them, so a slice wider than `AUTO_SLICE_LIMITS` is prepared
+ * What `slice` would refuse without a sandbox, a price that is not priced
+ * or a title that cannot name a version (`cutRefusal`), is checked before
+ * the sandbox is made: made and then refused, it would stay with no
+ * version, and `unprepared` never lists a bounty with a sandbox again.
+ *
+ * A profile left for a person stays listed, pass after pass, and reading
+ * its proposal, bounty and repositories again finds the same answer. A
+ * timer pass skips one skipped before at the same `updatedAt`; a prompted
+ * pass, which follows something that changed, reads them all again.
+ *
+ * The hidden-tests agent reads the generated project, whose repository
+ * text can steer it, so a slice wider than `AUTO_SLICE_LIMITS` is started
  * only once an owner or admin approved it. The profiler holds such a one
  * `awaiting_approval`, which this never lists; a profile measured `ready`
  * from one before approvals were asked for is checked here, and moved to
- * `awaiting_approval` rather than prepared (`holdsForApproval`).
+ * `awaiting_approval` rather than started (`holdsForApproval`).
  */
 
 import type {
@@ -29,43 +41,68 @@ import type {
   BountyProfileStore,
   BountyProposalStore,
   BountyStore,
+  SandboxStore,
   StoredBountyProfile,
+  StoredSandbox,
 } from "@sandbox-factory/db";
-import { organizationNames, workspaceVocabulary } from "sandbox-factory";
+import { stepHeldBy } from "sandbox-factory";
 
-import { enqueueAnalysis } from "../analysis/enqueue.js";
+import type { versionService } from "./version-service.js";
 import {
+  cutRefusal,
   holdsForApproval,
   sliceApprovalOf,
-  sliceListing,
 } from "./version-service.js";
 
 /** How often unprepared profiles are looked at without a prompt. */
 export const PREPARE_SWEEP_MS = 60_000;
-/** Two agents in one run: the fixtures', then the pseudonyms'. */
-export const PREPARATION_DEADLINE_MINUTES = 90;
+/**
+ * How many organizations one pass works on at once. Profiles within one
+ * stay in order: the pass stops at that organization's cap.
+ */
+export const PREPARE_CONCURRENCY = 4;
+
+type Slice = ReturnType<typeof versionService>["slice"];
 
 export interface SandboxPreparerOptions {
   readonly profiles: Pick<
     BountyProfileStore,
-    | "unprepared"
-    | "organizationsWithUnprepared"
-    | "recordPrepared"
-    | "holdSlice"
+    "unprepared" | "organizationsWithUnprepared" | "holdSlice"
   >;
-  readonly runs: Pick<AnalysisRunStore, "enqueue" | "get" | "latestSucceeded">;
-  /** The slice run's summary, which says whether it waits for approval. */
+  /** The slice run and its summary, which say whether it waits for approval. */
+  readonly runs: Pick<AnalysisRunStore, "get">;
   readonly artifacts: Pick<ArtifactStore, "list">;
   readonly proposals: Pick<BountyProposalStore, "get">;
   readonly bounties: Pick<BountyStore, "get">;
-  /** The organization's name and handle, which no public file may carry. */
-  readonly organizationNames: (organizationId: string) => Promise<string[]>;
-  readonly ensureWorker: () => Promise<void>;
-  /** A re-queued run's previous log, to remove from the bucket. */
-  readonly removeObject: (key: string) => Promise<void>;
-  readonly maxActive?: number;
+  readonly sandboxes: Pick<SandboxStore, "create" | "requestCut">;
+  /** The one repository the bounty's work touches, as a click finds it. */
+  readonly touchedSource: (
+    owner: string,
+    bountyId: string,
+  ) => Promise<string | null>;
+  readonly slice: (
+    owner: string,
+    actor: string,
+    sandbox: StoredSandbox,
+    now: Date,
+  ) => ReturnType<Slice>;
+  readonly now?: () => Date;
   readonly intervalMs?: number;
   readonly onError?: (code: string, error?: unknown) => void;
+}
+
+/** `task` on each item, at most `limit` at a time, taken in order. */
+async function forEachLimited<T>(
+  items: Iterable<T>,
+  limit: number,
+  task: (item: T) => Promise<void>,
+): Promise<void> {
+  const queue = items[Symbol.iterator]();
+  const worker = async () => {
+    for (let step = queue.next(); !step.done; step = queue.next())
+      await task(step.value);
+  };
+  await Promise.all(Array.from({ length: limit }, worker));
 }
 
 export class SandboxPreparer {
@@ -73,18 +110,26 @@ export class SandboxPreparer {
   #timer: ReturnType<typeof setInterval> | undefined;
   #pending: Promise<void> | undefined;
   #again = false;
+  #againPrompted = false;
   #stopped = false;
+  /**
+   * Profiles skipped by a pass, at the `updatedAt` they were skipped at.
+   * Only what the pass still lists is kept, so it does not grow with the
+   * profiles that left the listing.
+   */
+  #skipped = new Map<string, string>();
 
   constructor(options: SandboxPreparerOptions) {
     this.#options = options;
   }
 
+  /** The first pass reads everything; the timer's skip what was skipped. */
   start(): void {
     if (this.#timer !== undefined) return;
     this.#stopped = false;
     this.kick();
     this.#timer = setInterval(
-      () => this.kick(),
+      () => this.#run(false),
       this.#options.intervalMs ?? PREPARE_SWEEP_MS,
     );
   }
@@ -96,37 +141,38 @@ export class SandboxPreparer {
     await this.#pending?.catch(() => {});
   }
 
-  /** A pass now, or another straight after the one in progress. */
+  /** A prompted pass now, or another straight after the one in progress. */
   kick(): void {
+    this.#run(true);
+  }
+
+  #run(prompted: boolean): void {
     if (this.#stopped) return;
-    void this.sweep().catch((error: unknown) =>
+    void this.sweep(prompted).catch((error: unknown) =>
       this.#options.onError?.("sandbox_prepare_sweep_failed", error),
     );
   }
 
-  async sweep(): Promise<void> {
+  /**
+   * One pass over every organization with something unprepared. Prompted,
+   * it forgets what earlier passes skipped and reads every profile again;
+   * a timer pass leaves a profile skipped at the same `updatedAt` alone.
+   * Asked for during a pass, a prompted one makes the next pass prompted.
+   */
+  async sweep(prompted = true): Promise<void> {
     if (this.#pending !== undefined) {
       this.#again = true;
+      this.#againPrompted ||= prompted;
       return this.#pending;
     }
     const work = async () => {
+      let forget = prompted;
       do {
         this.#again = false;
-        let queued = false;
-        for (const owner of await this.#options.profiles.organizationsWithUnprepared()) {
-          try {
-            if (await this.#prepareOrganization(owner)) queued = true;
-          } catch (error) {
-            // Left for the next pass; the other organizations still move.
-            this.#options.onError?.("sandbox_prepare_failed", error);
-          }
-        }
-        if (queued)
-          await this.#options
-            .ensureWorker()
-            .catch((error: unknown) =>
-              this.#options.onError?.("analysis_worker_launch_failed", error),
-            );
+        this.#againPrompted = false;
+        if (forget) this.#skipped.clear();
+        await this.#pass();
+        forget = this.#againPrompted;
       } while (this.#again);
     };
     this.#pending = work();
@@ -137,23 +183,44 @@ export class SandboxPreparer {
     }
   }
 
-  /** Whether a run was queued; stops at the organization's cap. */
-  async #prepareOrganization(owner: string): Promise<boolean> {
-    let queued = false;
-    const names = await this.#options.organizationNames(owner);
+  async #pass(): Promise<void> {
+    const skipped = new Map<string, string>();
+    await forEachLimited(
+      await this.#options.profiles.organizationsWithUnprepared(),
+      PREPARE_CONCURRENCY,
+      async (owner) => {
+        try {
+          await this.#prepareOrganization(owner, skipped);
+        } catch (error) {
+          // Left for the next pass; the other organizations still move.
+          this.#options.onError?.("sandbox_prepare_failed", error);
+        }
+      },
+    );
+    this.#skipped = skipped;
+  }
+
+  /** Stops at the organization's cap. */
+  async #prepareOrganization(
+    owner: string,
+    skipped: Map<string, string>,
+  ): Promise<void> {
     for (const profile of await this.#options.profiles.unprepared(owner)) {
-      const outcome = await this.#prepare(owner, profile, names);
+      if (this.#skipped.get(profile.id) === profile.updatedAt) {
+        skipped.set(profile.id, profile.updatedAt);
+        continue;
+      }
+      const outcome = await this.#prepare(owner, profile);
       if (outcome === "full") break;
-      if (outcome === "queued") queued = true;
+      // Started or with a sandbox, it leaves the listing by itself.
+      if (outcome === "skipped") skipped.set(profile.id, profile.updatedAt);
     }
-    return queued;
   }
 
   async #prepare(
     owner: string,
     profile: StoredBountyProfile,
-    names: readonly string[],
-  ): Promise<"queued" | "found" | "full" | "skipped"> {
+  ): Promise<"started" | "full" | "skipped"> {
     if (profile.snapshotId === null || profile.sliceRunId === null)
       return "skipped";
     if (profile.sliceApprovedAt === null) {
@@ -162,11 +229,11 @@ export class SandboxPreparer {
         owner,
         profile.sliceRunId,
       );
-      // Unreadable, it cannot be told within the limits: not prepared.
+      // Unreadable, it cannot be told within the limits: not started.
       if (approval === null) return "skipped";
       if (holdsForApproval(profile, approval)) {
         // Held only while still unapproved: an approval that landed since
-        // this read stands, and the next pass prepares it.
+        // this read stands, and the next pass starts it.
         await this.#options.profiles.holdSlice(owner, profile.id);
         return "skipped";
       }
@@ -175,63 +242,51 @@ export class SandboxPreparer {
       owner,
       profile.proposalId,
     );
-    const bounty =
-      proposal === null
-        ? null
-        : await this.#options.bounties.get(owner, proposal.bountyId);
-    if (bounty === null) return "skipped";
-    const dataModel = await this.#options.runs.latestSucceeded(
-      owner,
-      profile.snapshotId,
-      "data_model",
-    );
-    let queued = false;
-    const result = await enqueueAnalysis(
-      {
-        runs: this.#options.runs,
-        removeObject: this.#options.removeObject,
-        onQueued: () => {
-          queued = true;
-        },
-      },
-      owner,
-      profile.snapshotId,
-      {
-        tool: "fixtures",
-        params: {
-          deadlineMinutes: PREPARATION_DEADLINE_MINUTES,
-          agent: "fixtures",
-          proposalId: profile.proposalId,
-          specRevision: profile.specRevision,
-          specHash: profile.specHash,
-          sliceRunId: profile.sliceRunId,
-          ...(dataModel === null ? {} : { dataModelRunId: dataModel.id }),
-          pseudonyms: {
-            // The names `workspaceNames` gives a build of this sandbox.
-            vocabulary: workspaceVocabulary([
-              ...organizationNames([
-                ...names,
-                ...(profile.repository?.split("/").slice(0, 1) ?? []),
-              ]),
-              ...(profile.repository?.split("/").slice(1) ?? []),
-            ]),
-            ...sliceListing(bounty),
-          },
-        },
-        requestedBy: null,
-        maxActive: Math.max(1, (this.#options.maxActive ?? 3) - 1),
-      },
-    );
-    if (!result.ok) {
-      if (result.reason === "run_limit") return "full";
-      this.#options.onError?.(`sandbox_prepare_${result.reason}`);
+    if (proposal === null || proposal.decidedBy === null) return "skipped";
+    const [bounty, sourceRepoId] = await Promise.all([
+      this.#options.bounties.get(owner, proposal.bountyId),
+      this.#options.touchedSource(owner, proposal.bountyId),
+    ]);
+    if (bounty === null || stepHeldBy("sandbox", bounty, proposal) !== null)
+      return "skipped";
+    // Several repositories, or none connected: a person picks.
+    if (sourceRepoId === null) return "skipped";
+    // What the cut would refuse is refused before there is a sandbox.
+    if (cutRefusal(bounty, proposal) !== null) return "skipped";
+    const made = await this.#options.sandboxes.create(owner, {
+      bountyId: bounty.id,
+      sourceRepoId,
+    });
+    if (!made.ok) {
+      // A click made it first.
+      if (made.reason !== "bounty_has_sandbox")
+        this.#options.onError?.(`sandbox_prepare_${made.reason}`);
       return "skipped";
     }
-    await this.#options.profiles.recordPrepared(
-      owner,
-      profile.id,
-      result.run.id,
+    const now = (this.#options.now ?? (() => new Date()))();
+    const actor = proposal.decidedBy;
+    const sliced = await this.#options.slice(owner, actor, made.sandbox, now);
+    if (sliced.ok) return "started";
+    const code = "code" in sliced.body ? sliced.body.code : undefined;
+    if (code === "run_limit") {
+      // The draft is cut; the cutter builds it once a run is free.
+      await this.#options.sandboxes.requestCut(
+        owner,
+        made.sandbox.id,
+        actor,
+        now,
+      );
+      return "full";
+    }
+    // Refused once made: the sandbox stays, with no version, for a person.
+    this.#options.onError?.(
+      `sandbox_prepare_${String(code)}`,
+      new Error(
+        `Sandbox ${made.sandbox.id} for bounty ${bounty.id} was made, but its version was refused: ${
+          "error" in sliced.body ? String(sliced.body.error) : String(code)
+        }`,
+      ),
     );
-    return queued ? "queued" : "found";
+    return "skipped";
   }
 }

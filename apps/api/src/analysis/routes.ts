@@ -70,7 +70,7 @@ const publicArtifact = ({ objectKey: _key, ...dto }: StoredArtifact) => dto;
 /**
  * Runs whose artifacts are a version's private sandbox: a build's hidden
  * tests and the table its names were changed by are among them, as is a
- * sandbox's preparation. They are
+ * legacy sandbox preparation. They are
  * read through the sandbox routes, owners and admins only, so here a member
  * is not shown them, and asking for one by id is answered as for any run
  * that is not there.
@@ -81,7 +81,10 @@ const SANDBOX_TOOLS: ReadonlySet<AnalysisTool> = new Set([
 ]);
 export const hiddenFrom = (role: string, run: StoredAnalysisRun) =>
   (SANDBOX_TOOLS.has(run.tool) || preparation(run)) && !isAtLeastAdmin(role);
-/** A sandbox's preparation writes a name table too, so it is one of them. */
+/**
+ * A legacy preparation run (a `fixtures` run with `pseudonyms`, queued
+ * before 2026-10-19) wrote a name table too, so it is one of them.
+ */
 const preparation = (run: StoredAnalysisRun) =>
   isFixturesParams(run.params) && run.params.pseudonyms !== undefined;
 /**

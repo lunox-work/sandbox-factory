@@ -27,10 +27,6 @@ import {
   createFixturesAdapter,
 } from "../src/tools/fixtures.js";
 import { SCOPE_CHECKS_MAX, createScopeAdapter } from "../src/tools/scope.js";
-import {
-  PREPARED_PSEUDONYMS_PATH,
-  preparationCheck,
-} from "../src/tools/preparation.js";
 import { readSeamsIndex } from "../src/tools/abstractions/seams.js";
 import { readIncludedSource } from "../src/tools/slice-run.js";
 import { contextIndex, contextModel, contextRun } from "./context-fixtures.js";
@@ -572,107 +568,6 @@ test("the fixtures agent records a set only once it compiles", async () => {
   assert.ok(lines.includes("Fixture set recorded: 1 fixtures."));
 });
 
-test("a sandbox's preparation writes the name table after the set, checked against the workspace's names", async () => {
-  const preparation = {
-    ...fixturesParams,
-    pseudonyms: {
-      vocabulary: ["Acmecorp"],
-      title: "Acmecorp labels",
-      summary: "Label things for Acmecorp.",
-    },
-  };
-  const table = [{ before: "Acmecorp", after: "Example", kind: "text" }];
-  const model = scripted([
-    turn([
-      call("submit_fixtures", {
-        fixtures: [passing],
-        scenario,
-        summary: "Shows run labelling a thing.",
-      }),
-    ]),
-    turn([
-      call("check_pseudonyms", {
-        aliases: [{ before: "label", after: "tag", kind: "identifier" }],
-      }),
-    ]),
-    turn([
-      call("submit_pseudonyms", {
-        aliases: table,
-        summary: "Renames the company.",
-      }),
-    ]),
-  ]);
-  const { files, texts, lines } = await runTool(
-    createFixturesAdapter({ model, limits }),
-    preparation,
-  );
-  assert.deepEqual(
-    files.map((file) => [file.path, file.kind]),
-    [
-      ["fixture-set.json", "fixture_set"],
-      [PREPARED_PSEUDONYMS_PATH, "pseudonyms"],
-    ],
-  );
-  // The listing a cut would give the version is checked with the rest.
-  assert.match(model.prompts[1] ?? "", /The bounty's title: Acmecorp labels/);
-  assert.match(
-    contentOf((model.results[0] ?? [])[0]).content,
-    /"acmecorp" names the workspace/,
-  );
-  const written = JSON.parse(texts[1] ?? "{}") as {
-    rules: unknown[];
-    sliceRunId: string;
-  };
-  assert.deepEqual(written.rules, [{ ...table[0], paths: [] }]);
-  assert.equal(written.sliceRunId, sliceRun.id);
-  assert.deepEqual(files[1]?.meta, { rules: 1 });
-  assert.ok(lines.includes("Pseudonyms agent wrote 1 pseudonym(s)."));
-
-  // A table its agent could not settle leaves the set alone.
-  const gaveUp = await runTool(
-    createFixturesAdapter({
-      model: scripted([
-        turn([
-          call("submit_fixtures", {
-            fixtures: [passing],
-            scenario,
-            summary: "Shows run labelling a thing.",
-          }),
-        ]),
-      ]),
-      limits,
-    }),
-    preparation,
-  );
-  assert.deepEqual(
-    gaveUp.files.map((file) => file.kind),
-    ["fixture_set"],
-  );
-});
-
-test("a preparation's check renames what contributors read and finds what it leaves", () => {
-  const check = preparationCheck({
-    files: [{ path: "src/acme.ts", text: "export const acmecorp = 1;" }],
-    spec: null,
-    fixtures: [],
-    scenario: "console.log('Acmecorp');",
-    listing: { title: "Acmecorp", summary: "For Acmecorp." },
-    vocabulary: ["acmecorp"],
-  });
-  assert.match(check([]).problems.join("\n"), /"acmecorp" names the workspace/);
-  const clean = check([
-    { before: "acmecorp", after: "example", kind: "identifier", paths: [] },
-    { before: "Acmecorp", after: "Example", kind: "text", paths: [] },
-  ]);
-  assert.deepEqual(clean.problems, []);
-  assert.deepEqual(clean.applied, [1, 3]);
-  const refused = check([
-    { before: "Acmecorp", after: "Example", kind: "text", paths: [] },
-    { before: "acmecorp", after: "example", kind: "text", paths: [] },
-  ]);
-  assert.match(refused.problems.join("\n"), /casing_variant/);
-});
-
 test("the fixtures agent runs out of checks and refuses a missing model, task or slice", async () => {
   const greedy = scripted([
     turn(
@@ -760,6 +655,12 @@ test("with the context builders, the scope agent names an accessor module as a d
       }),
     ]),
   ]);
+  const efforts: string[] = [];
+  const asked = model.turn.bind(model);
+  model.turn = async (request, signal) => {
+    efforts.push(request.effort);
+    return asked(request, signal);
+  };
   const { files, texts } = await runTool(
     createScopeAdapter({ model, limits }),
     {
@@ -771,6 +672,13 @@ test("with the context builders, the scope agent names an accessor module as a d
   );
   const prompt = model.prompts[0] ?? "";
   assert.match(prompt, /The abstractions index describes 2 modules/);
+  // Where to start reading, by the spec's words, before any turn.
+  assert.match(
+    prompt,
+    /share the most words with the spec[^]*- lib\/service\.ts \(imported by \d+\): shares [^;]*service/,
+  );
+  // `check_scope` decides, so the agent thinks at medium effort.
+  assert.deepEqual([...new Set(efforts)], ["medium"]);
   assert.match(prompt, /where a `database` seam belongs/);
   assert.match(prompt, /lib\/service\.ts: owners, things/);
   const [overview, surface, entity] = (model.results[0] ?? []).map(contentOf);

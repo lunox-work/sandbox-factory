@@ -285,8 +285,8 @@ by an agent during the build (`fixtures.ts` via `writeFixtures`,
 and settled on the draft when the run commits (`build-transform.json`; a
 set written here names the build run as its `fixtureRunId`).
 A set an agent could not settle leaves the draft without, and the build
-goes on. A preparation run's set and table (`preparedRunId`, below) are
-taken first.
+goes on. An older preparation run's set and table (`preparedRunId`, below)
+are taken first.
 
 The baseline runs in a fresh job from the evaluation provider: trusted
 preparation pins the lockfile (`npm install --package-lock-only`), then
@@ -374,14 +374,12 @@ the project each fixture is its mock path's default behaviour
 it), the walkthrough is `sandbox/run.ts`, and every baseline runs
 `npm run dev` after the build.
 
-A sandbox's **preparation** (`src/tools/preparation.ts`) is a `fixtures` run
-with `pseudonyms` in its parameters, queued by the API once a bounty's
-profile is ready and its price approved and named on
-`bounty_profile.prepared_run_id`. After the set it writes a name table,
-checked as far as it can be without a version. Output, beside the set:
-`pseudonym-table.json` (kind `pseudonyms`). A build given the run as
-`preparedRunId` takes its fixtures and, when its own check passes it, its
-table.
+A sandbox's **preparation** (`src/tools/preparation.ts`) was a `fixtures`
+run with `pseudonyms` in its parameters, queued by the API before 2026-10-19
+and named on `bounty_profile.prepared_run_id`; nothing queues one now. Beside
+the set it wrote `pseudonym-table.json` (kind `pseudonyms`). A build given
+the run as `preparedRunId` still takes its fixtures and, when its own check
+passes it, its table.
 
 ### Starter
 

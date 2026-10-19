@@ -789,7 +789,8 @@ test("a sandbox build's run and artifacts are not a member's to read", async () 
     assert.equal((await admin.request("artifacts/art_1/url")).status, 200);
   }
 });
-test("a sandbox's preparation is kept from members, as a build is; a person's fixtures run is not", async () => {
+test("a legacy sandbox preparation is kept from members, as a build is; a person's fixtures run is not", async () => {
+  // A preparation run as stored before 2026-10-19; nothing queues one now.
   const fixturesRun = (pseudonyms: boolean): StoredAnalysisRun => ({
     ...run,
     tool: "fixtures",
@@ -824,7 +825,7 @@ test("a sandbox's preparation is kept from members, as a build is; a person's fi
     );
   }
 });
-test("a sandbox's preparation and its artifacts never reach a member through ?with=artifacts", async () => {
+test("a legacy sandbox preparation and its artifacts never reach a member through ?with=artifacts", async () => {
   const prepared: StoredAnalysisRun = {
     ...run,
     id: "arn_prepared",
