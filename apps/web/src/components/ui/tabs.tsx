@@ -16,14 +16,40 @@ import { cn } from "@/lib/utils";
 
 function Tabs({
   className,
+  onValueChange,
   ...props
 }: React.ComponentProps<typeof TabsPrimitive.Root>) {
+  const change = useOnceAChange(onValueChange);
   return (
     <TabsPrimitive.Root
       data-slot="tabs"
       className={cn("flex flex-col gap-2", className)}
+      onValueChange={change}
       {...props}
     />
+  );
+}
+
+/**
+ * Hands on one change once. A click on a trigger focuses it before it picks
+ * it, and the focus picks it too (tabs activate on focus), both before React
+ * renders the new value — so a controlled Radix Tabs reports the same choice
+ * twice in one event. Callers push the choice into the address, and twice
+ * left two history entries for one click. The repeat is dropped until the
+ * event is over, so a later pick of the same value still goes through.
+ */
+function useOnceAChange(onValueChange: ((value: string) => void) | undefined) {
+  const pending = React.useRef<string | null>(null);
+  return React.useCallback(
+    (next: string) => {
+      if (pending.current === next) return;
+      pending.current = next;
+      queueMicrotask(() => {
+        pending.current = null;
+      });
+      onValueChange?.(next);
+    },
+    [onValueChange],
   );
 }
 
