@@ -27,6 +27,7 @@ import {
   isNodeBuiltin,
   loadConfig,
   packageNameOf,
+  sanitizeDeclaration,
   stubPathFor,
 } from "../src/tools/slice/typescript.js";
 import type { ToolInputs, ToolRunInput } from "../src/tools/adapter.js";
@@ -323,7 +324,9 @@ test("a TypeScript slice gets compilable stubs, a public surface and a pinned ma
     const serviceStub = await read("stubs/lib/service.d.ts");
     assert.match(serviceStub, /export declare class Service \{/);
     assert.match(serviceStub, /describe\(label: string\): Thing;/);
-    assert.match(serviceStub, /private secret;/);
+    // Private members stay only as one nameless brand.
+    assert.match(serviceStub, /#private;/);
+    assert.doesNotMatch(serviceStub, /secret|options;|private /);
     assert.doesNotMatch(serviceStub, /return |unused/);
     assert.match(serviceStub, /import type \{ Config \} from "\.\/types\.js";/);
     // The nested type a kept interface needs arrives; the unrelated one does not.
@@ -342,11 +345,10 @@ test("a TypeScript slice gets compilable stubs, a public surface and a pinned ma
       files.some((file) => file.path === "stubs/lib/star.d.ts"),
       false,
     );
-    // A namespace import keeps the whole module; a path alias resolves.
-    assert.match(
-      await read("stubs/lib/helpers.d.ts"),
-      /label\(\): string;[\s\S]*other\(\): void;/,
-    );
+    // A namespace import read only as `helpers.label` asks for `label`
+    // alone; a path alias resolves.
+    assert.match(await read("stubs/lib/helpers.d.ts"), /label\(\): string;/);
+    assert.doesNotMatch(await read("stubs/lib/helpers.d.ts"), /other/);
     assert.match(await read("stubs/lib/alias.d.ts"), /fromAlias/);
     assert.deepEqual(
       contract.inbound.map((module) => [module.module, module.importedBy]),
@@ -489,7 +491,7 @@ test("unresolved and dynamic imports block readiness and the compile reports the
   }
 });
 
-test("an import of the repository's own workspace package is marked, not left unpinned", async () => {
+test("an import of the repository's own workspace package is marked, and the registry each other comes from recorded", async () => {
   const [out, source] = await Promise.all([
     scratch("workspace"),
     scratch("workspace-src"),
@@ -499,9 +501,21 @@ test("an import of the repository's own workspace package is marked, not left un
       await mkdir(dirname(join(source, path)), { recursive: true });
       await writeFile(join(source, path), text);
     };
+    await write("package.json", JSON.stringify({ private: true }));
     await write(
-      "package.json",
-      JSON.stringify({ private: true, workspaces: ["apps/*", "packages/*"] }),
+      "pnpm-workspace.yaml",
+      "packages:\n  - apps/*\n  - packages/**\n",
+    );
+    await write(".npmrc", "@payflow:registry=https://npm.payflow.dev/\n");
+    await write(
+      "package-lock.json",
+      JSON.stringify({
+        packages: {
+          "node_modules/zod": {
+            resolved: "https://registry.npmjs.org/zod/-/zod-4.0.0.tgz",
+          },
+        },
+      }),
     );
     await write(
       "packages/shared/package.json",
@@ -511,12 +525,16 @@ test("an import of the repository's own workspace package is marked, not left un
       "apps/web/package.json",
       JSON.stringify({
         name: "web",
-        dependencies: { "@acme/shared": "*", zod: "^4.0.0" },
+        dependencies: {
+          "@acme/shared": "*",
+          "@payflow/ui": "^1.0.0",
+          zod: "^4.0.0",
+        },
       }),
     );
     await write(
       "apps/web/src/index.ts",
-      'import { greet } from "@acme/shared";\nimport { z } from "zod";\nexport const hello = greet(z.string().parse("x"));\n',
+      'import { greet } from "@acme/shared";\nimport { button } from "@payflow/ui";\nimport { z } from "zod";\nexport const hello = greet(z.string().parse(button));\n',
     );
     const { manifest, contract } = await runSlice(
       out,
@@ -529,6 +547,11 @@ test("an import of the repository's own workspace package is marked, not left un
               "apps/web/src/index.ts",
               "dependency:apps/web/src/index.ts:external:@acme/shared",
               "@acme/shared",
+            ],
+            [
+              "apps/web/src/index.ts",
+              "dependency:apps/web/src/index.ts:external:@payflow/ui",
+              "@payflow/ui",
             ],
             [
               "apps/web/src/index.ts",
@@ -547,7 +570,18 @@ test("an import of the repository's own workspace package is marked, not left un
         declaredIn: "apps/web/package.json",
         workspace: true,
       },
-      { name: "zod", version: "^4.0.0", declaredIn: "apps/web/package.json" },
+      {
+        name: "@payflow/ui",
+        version: "^1.0.0",
+        declaredIn: "apps/web/package.json",
+        registry: { source: "private", evidence: ".npmrc" },
+      },
+      {
+        name: "zod",
+        version: "^4.0.0",
+        declaredIn: "apps/web/package.json",
+        registry: { source: "public", evidence: "package-lock.json" },
+      },
     ]);
     assert.equal(
       contract.blockers.some((b) => b.code === "missing_build_input"),
@@ -670,6 +704,7 @@ test("declaration filtering keeps requested exports and what they reference", ()
     "export declare function used(value: typeof inner): Spare;",
     "export declare function unused(): void;",
     "export default class Main {}",
+    "export declare function viaNamespace(): ns.Thing;",
     "declare enum Local { A }",
     "export { Local as Renamed };",
     'export type Alias = import("./other.js").Other;',
@@ -727,10 +762,30 @@ test("declaration filtering keeps requested exports and what they reference", ()
       (item) => item.specifier === "./legacy" && item.names === "*",
     ),
   );
-  assert.ok(
-    all.imports.some(
-      (item) => item.specifier === "./ns.js" && item.names === "*",
-    ),
+  // A namespace read only through `ns.Thing` asks for `Thing`; one that
+  // escapes (`typeof m`) asks for the whole module.
+  assert.deepEqual(
+    all.imports
+      .filter((item) => item.specifier === "./ns.js")
+      .map((item) => (item.names === "*" ? "*" : [...item.names])),
+    [["Thing"]],
+  );
+  assert.deepEqual(
+    filterDeclaration(
+      'import d, * as m from "./m.js";\nexport declare const whole: typeof m;\nexport declare const one: m.One;\n',
+      new Set(["one"]),
+    ).imports.map((item) => [
+      item.specifier,
+      item.names === "*" ? "*" : [...item.names].sort(),
+    ]),
+    [["./m.js", ["One", "default"]]],
+  );
+  assert.deepEqual(
+    filterDeclaration(
+      'import * as m from "./m.js";\nexport declare const whole: typeof m;\n',
+      "*",
+    ).imports.map((item) => item.names),
+    ["*"],
   );
   const equals = filterDeclaration(
     "declare function f(): void;\nexport = f;\n",
@@ -802,6 +857,10 @@ test("import facts cover every import syntax, and helpers name paths and package
       'type T = import("./h.js").Deep.Thing;',
       'type U = import("./i.js");',
       "const dynamic = (n: string) => import(n);",
+      "const one = all.one + { all: 1 }.all;",
+      "type Two = all.Two;",
+      'import * as esc from "./j.js";',
+      "console.log(esc);",
     ].join("\n"),
     ts.ScriptTarget.Latest,
     true,
@@ -815,10 +874,11 @@ test("import facts cover every import syntax, and helpers name paths and package
     [
       ["./effect.js", [], 1],
       ["./a.js", ["default", "named"], 2],
-      ["./b.js", "*", 3],
+      ["./b.js", ["Two", "one"], 3],
       ["./c.js", ["re"], 4],
       ["./d.js", "*", 5],
       ["./e", "*", 6],
+      ["./j.js", "*", 14],
       ["./f.js", "*", 7],
       ["./g.js", "*", 8],
       ["./h.js", ["Deep"], 9],
@@ -1033,6 +1093,244 @@ test("React code checks against shimmed packages: their names are types too, and
     );
   } finally {
     await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("stubs carry no literal values, comments or private members, and credential files block", async () => {
+  const [out, source] = await Promise.all([
+    scratch("private"),
+    scratch("private-src"),
+  ]);
+  // Assembled at run time so the repository holds no key whole.
+  const key = ["sk_", "live_", "123"].join("");
+  try {
+    const write = async (path: string, text: string) => {
+      await mkdir(dirname(join(source, path)), { recursive: true });
+      await writeFile(join(source, path), text);
+    };
+    await write(
+      "src/app.ts",
+      [
+        'import { API_KEY, LIMIT, ENABLED, Mode, Client, Keys, CONFIG, HOSTS, TIER, BIG } from "./b.js";',
+        'import * as util from "./u.js";',
+        'import * as whole from "./w.js";',
+        "export const run = () => [API_KEY, LIMIT, ENABLED, Mode.Live, new Client().send(), Keys.KEY, new Keys().inst, CONFIG.url, HOSTS, TIER, BIG, util.pick(), whole];",
+        "",
+      ].join("\n"),
+    );
+    await write(
+      "src/b.ts",
+      [
+        "/** The gateway key for acme-internal: rotate it quarterly. */",
+        `export const API_KEY = "${key}";`,
+        "export const LIMIT = -5;",
+        "export const ENABLED = true;",
+        'export enum Mode { Live = "live", Off = "off" }',
+        "export class Client {",
+        "  /** Sends through relay.acme-internal */",
+        "  send(): string { return this.token + this.#vault; }",
+        '  private token = "t";',
+        "  private rotateHiddenCredential(): void {}",
+        "  #vault = 1;",
+        "  /** @internal */",
+        '  debugDump(): string { return ""; }',
+        "}",
+        "export class Keys {",
+        `  static readonly KEY = "${key}";`,
+        '  readonly inst = "internal.acme-internal";',
+        '  readonly typed: "acme-typed" = "acme-typed";',
+        "}",
+        "export const CONFIG = {",
+        '  url: "https://relay.acme-internal",',
+        "  ports: [8443, -1],",
+        "  on: true,",
+        '  nested: { region: "acme-eu" },',
+        "} as const;",
+        'export const HOSTS = ["db.acme-internal", "cache.acme-internal"] as const;',
+        'export const TIER: "acme-gold" = "acme-gold";',
+        "export const BIG = 9007199254740993n;",
+        "/** @internal */",
+        "export function internalHelper(): void {}",
+        "",
+      ].join("\n"),
+    );
+    await write(
+      "src/u.ts",
+      "export function pick(): number { return 1; }\nexport function spare(): void {}\n",
+    );
+    await write(
+      "src/w.ts",
+      "export const one = 1;\nexport function two(): void {}\n",
+    );
+    await write("keys/service-account.json", '{ "type": "service_account" }\n');
+    const { manifest, contract, read } = await runSlice(
+      out,
+      ["src/app.ts", "keys/service-account.json"],
+      {
+        sourceDir: source,
+        budget: { maxFiles: 2, maxDepth: 1 },
+        graph: graphOf(
+          [
+            ["src/app.ts", "src/b.ts", "./b.js"],
+            ["src/app.ts", "src/u.ts", "./u.js"],
+            ["src/app.ts", "src/w.ts", "./w.js"],
+            ["src/app.ts", "keys/service-account.json"],
+          ],
+          { "0": ["src/app.ts"] },
+        ),
+      },
+    );
+    assert.deepEqual(
+      manifest.included.map((file) => file.path),
+      ["keys/service-account.json", "src/app.ts"],
+    );
+    assert.deepEqual(
+      contract.blockers.filter((b) => b.code === "secret_file"),
+      [
+        {
+          code: "secret_file",
+          file: "keys/service-account.json",
+          location: null,
+          detail:
+            "keys/service-account.json is a credentials file; a slice may not include it. Import fixture values instead.",
+        },
+      ],
+    );
+    const stub = await read("stubs/src/b.d.ts");
+    assert.match(stub, /export declare const API_KEY: string;/);
+    assert.match(stub, /export declare const LIMIT: number;/);
+    assert.match(stub, /export declare const ENABLED: boolean;/);
+    // Class properties, `as const` values and literal annotations are
+    // widened through objects and tuples, as constants are.
+    assert.match(stub, /static readonly KEY: string;/);
+    assert.match(stub, /readonly inst: string;/);
+    assert.match(stub, /readonly typed: string;/);
+    assert.match(stub, /readonly url: string;/);
+    assert.match(stub, /readonly ports: readonly \[\s*number,\s*number\s*\];/);
+    assert.match(stub, /readonly on: boolean;/);
+    assert.match(stub, /readonly region: string;/);
+    assert.match(stub, /HOSTS: readonly \[\s*string,\s*string\s*\];/);
+    assert.match(stub, /export declare const TIER: string;/);
+    assert.match(stub, /export declare const BIG: bigint;/);
+    // A string enum stays one, its members named for themselves.
+    assert.match(stub, /Live = "Live"/);
+    assert.match(stub, /Off = "Off"/);
+    assert.match(stub, /#private;\n\s+send\(\): string;/);
+    // An `@internal` member of a kept class stays, without its comment;
+    // an `@internal` export nothing asks for is filtered out.
+    assert.match(stub, /debugDump\(\): string;/);
+    assert.doesNotMatch(
+      stub,
+      /sk_live|acme|relay|8443|9007199254740993|"live"|rotate|token|vault|Credential|internalHelper|\/\*|\/\//,
+    );
+    const declarations = contract.outbound
+      .flatMap((module) => module.symbols)
+      .map((symbol) => symbol.declaration ?? "");
+    assert.ok(declarations.includes("export declare const API_KEY: string;"));
+    assert.equal(JSON.stringify(contract).includes(key), false);
+    // Read only as `util.pick`, the namespace asks for `pick`; passed on
+    // as a value, `whole` asks for the whole module.
+    assert.match(await read("stubs/src/u.d.ts"), /pick/);
+    assert.doesNotMatch(await read("stubs/src/u.d.ts"), /spare/);
+    assert.match(await read("stubs/src/w.d.ts"), /one[\s\S]*two/);
+  } finally {
+    await Promise.all([
+      rm(out, { recursive: true, force: true }),
+      rm(source, { recursive: true, force: true }),
+    ]);
+  }
+});
+
+test("only a value's type is widened: an API's literal types, null and numeric enums stay", () => {
+  const text = sanitizeDeclaration(
+    [
+      'export type Event = { kind: "click" } | { kind: "key" };',
+      'export interface Shape { readonly kind: "circle"; }',
+      'export declare function pick(mode: "fast" | "slow"): void;',
+      'export declare const run: (mode: "a") => "b";',
+      'export declare const box: Map<"k", 1>;',
+      "export declare const none: null;",
+      "export declare const prefixed: `acme-${string}`;",
+      'export declare const optional: [first?: "x", ...rest: "y"[]];',
+      'export declare const pair: ["x"?, ..."y"[]];',
+      'export declare const mixed: { a: "x" } & ({ b: 1 } | null);',
+      "export declare enum Level { Low = 1, High = 2 }",
+      'export declare enum Named { "two words" = "acme" }',
+      "export declare const plain: string;",
+      "",
+    ].join("\n"),
+  );
+  assert.match(text, /kind: "click"/);
+  assert.match(text, /readonly kind: "circle"/);
+  assert.match(text, /mode: "fast" \| "slow"/);
+  assert.match(text, /\(mode: "a"\) => "b"/);
+  assert.match(text, /Map<"k", 1>/);
+  assert.match(text, /none: null/);
+  assert.match(text, /prefixed: string/);
+  assert.match(text, /\[\s*first\?: string,\s*\.\.\.rest: string\[\]\s*\]/);
+  assert.match(text, /\[\s*string\?,\s*\.\.\.string\[\]\s*\]/);
+  assert.match(text, /\{\s*a: string;\s*\} & \(\{\s*b: number;\s*\} \| null\)/);
+  assert.match(text, /Low = 1,\s*High = 2/);
+  assert.match(text, /"two words" = "two words"/);
+  assert.doesNotMatch(text, /acme/);
+});
+
+test("an @internal declaration the slice imports or a kept declaration names is stubbed across the cut", async () => {
+  const [out, source] = await Promise.all([
+    scratch("internal"),
+    scratch("internal-src"),
+  ]);
+  try {
+    const write = async (path: string, text: string) => {
+      await mkdir(dirname(join(source, path)), { recursive: true });
+      await writeFile(join(source, path), text);
+    };
+    await write(
+      "src/app.ts",
+      [
+        'import { internalHelper, make } from "./b.js";',
+        "export const run = () => [internalHelper(), make().depth];",
+        "",
+      ].join("\n"),
+    );
+    await write(
+      "src/b.ts",
+      [
+        "/** @internal Only the app reaches this. */",
+        "export function internalHelper(): number { return 1; }",
+        "/** @internal */",
+        "export interface Hidden { depth: number }",
+        "export function make(): Hidden { return { depth: 1 }; }",
+        "/** @internal */",
+        "export function unused(): void {}",
+        "",
+      ].join("\n"),
+    );
+    const { contract, read } = await runSlice(out, ["src/app.ts"], {
+      sourceDir: source,
+      budget: { maxFiles: 1, maxDepth: 1 },
+      graph: graphOf([["src/app.ts", "src/b.ts", "./b.js"]], {
+        "0": ["src/app.ts"],
+      }),
+    });
+    assert.deepEqual(
+      contract.blockers.filter(
+        (b) =>
+          b.code === "declaration_incomplete" || b.code === "compile_error",
+      ),
+      [],
+    );
+    const stub = await read("stubs/src/b.d.ts");
+    assert.match(stub, /export declare function internalHelper\(\): number;/);
+    assert.match(stub, /export interface Hidden/);
+    assert.match(stub, /export declare function make\(\): Hidden;/);
+    // What nothing asks for or names is not stubbed, and no comment is.
+    assert.doesNotMatch(stub, /unused|@internal|\/\*/);
+  } finally {
+    await Promise.all([
+      rm(out, { recursive: true, force: true }),
+      rm(source, { recursive: true, force: true }),
+    ]);
   }
 });
 

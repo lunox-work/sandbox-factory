@@ -13,8 +13,12 @@
  *
  * An import the source makes through a compiler alias is rewritten to a
  * relative path and recorded; a bare specifier that neither a package nor
- * a cut module explains is a blocker, never a guess. Bodies of editable
- * source are never rewritten beyond those specifiers.
+ * a cut module explains is a blocker, never a guess. A mocked package and
+ * an environment variable go by the public names the version's table gave
+ * them (`publicNames`), in the files generated for them and in the source's
+ * imports and `process.env` reads, which take the name the table gave the
+ * rest of the project even under a rule scoped elsewhere. Bodies of
+ * editable source are never rewritten beyond those specifiers and reads.
  */
 
 import type { SpecDraft } from "../pricing/spec.js";
@@ -37,6 +41,7 @@ import {
 import {
   fixtureMockPath,
   fixtureProblems,
+  scenarioProblems,
   type SandboxFixture,
 } from "./fixtures.js";
 import {
@@ -45,6 +50,7 @@ import {
   type PathClass,
   type ResolvedDependency,
 } from "./provenance.js";
+import { scanSecrets, secretBlockers } from "./secrets.js";
 
 export const HARNESS_DIR = "sandbox";
 export const MOCKS_DIR = "mocks";
@@ -102,6 +108,92 @@ export interface ProjectInput {
   readonly fixtures?: readonly SandboxFixture[];
   /** The walkthrough `npm run dev` runs, in place of the generated one. */
   readonly scenario?: string | null;
+  /**
+   * What the version's name table renames a mocked package or an
+   * environment variable to, by its private name. An approved package
+   * keeps its own: the registry knows it by no other.
+   */
+  readonly publicNames?: PublicNames;
+}
+
+export interface PublicNames {
+  readonly packages?: Readonly<Record<string, string>>;
+  readonly environment?: Readonly<Record<string, string>>;
+}
+
+/**
+ * `process.env.NAME` and `process.env["NAME"]`, optional chaining (`?.`)
+ * included, by the name read.
+ */
+const ENV_READ =
+  /(\bprocess\.env\??\.)([A-Za-z_$][\w$]*)(?![\w$])|(\bprocess\.env(?:\?\.)?\[\s*(['"]))([^'"\n]+)(\4\s*\])/g;
+/**
+ * A flat object pattern destructured from `process.env` itself, a type
+ * annotation allowed: `const { A, B: b, C = "d" }: Env = process.env`.
+ * Nested patterns, and a member of `process.env`, are not matched.
+ */
+const ENV_DESTRUCTURE =
+  /\{([^{}]*)\}(\s*(?::[^={};]*)?=\s*process\.env)(?![\w$]|\s*(?:\?\.|\.|\[))/g;
+/**
+ * A property at the start of a pattern's entry, and what follows it: `:`
+ * for a rename, `=` for a default (not `==` or `=>`), or the entry's end
+ * for a shorthand.
+ */
+const DESTRUCTURED_KEY =
+  /(^|,)(\s*)(?:(['"])([^'"\n]+)\3|([A-Za-z_$][\w$]*))(?=\s*(:|=(?![=>])|,|$))/g;
+
+/**
+ * `text` with each `process.env` read of a renamed variable renamed; only
+ * the name changes, the read around it is kept as written. A destructured
+ * shorthand keeps its binding: `{ A }` becomes `{ B: A }`.
+ */
+function renameEnvironmentReads(
+  text: string,
+  renamed: ReadonlyMap<string, string>,
+): string {
+  if (renamed.size === 0) return text;
+  const destructured = text.replace(
+    ENV_DESTRUCTURE,
+    (_whole, entries: string, assignment: string) =>
+      `{${entries.replace(
+        DESTRUCTURED_KEY,
+        (
+          key,
+          lead: string,
+          space: string,
+          quote: string | undefined,
+          quoted: string | undefined,
+          bare: string | undefined,
+          next: string,
+        ) => {
+          const to = renamed.get(quoted ?? bare ?? "");
+          if (to === undefined) return key;
+          if (quote !== undefined)
+            return next === ":" ? `${lead}${space}${quote}${to}${quote}` : key;
+          return next === ":"
+            ? `${lead}${space}${to}`
+            : `${lead}${space}${to}: ${bare ?? ""}`;
+        },
+      )}}${assignment}`,
+  );
+  return destructured.replace(
+    ENV_READ,
+    (
+      whole,
+      dottedRead: string | undefined,
+      dotted: string | undefined,
+      indexedRead: string | undefined,
+      _quote: string | undefined,
+      indexed: string | undefined,
+      closing: string | undefined,
+    ) => {
+      const to = renamed.get(dotted ?? indexed ?? "");
+      if (to === undefined) return whole;
+      return dotted === undefined
+        ? `${indexedRead ?? ""}${to}${closing ?? ""}`
+        : `${dottedRead ?? ""}${to}`;
+    },
+  );
 }
 
 export interface GeneratedFile {
@@ -129,6 +221,7 @@ export interface ProjectBlocker {
     | "fixture_invalid"
     | "starter_invalid"
     | "vocabulary_leaked"
+    | "secret_found"
     | "baseline_failed";
   readonly file: string | null;
   readonly detail: string;
@@ -241,6 +334,17 @@ export const SANDBOX_RUN_ARGV = {
     `${PUBLIC_TESTS_DIR}/**/*.test.js`,
   ],
 } as const;
+
+/** One hidden test, run on its own with a TAP report to read its outcome. */
+export function privateTestArgv(path: string): readonly string[] {
+  return [
+    "node",
+    `--env-file=${ENV_FILE}`,
+    "--test",
+    "--test-reporter=tap",
+    runtimePath(path),
+  ];
+}
 
 /** One command line, a glob quoted so node expands it rather than a shell. */
 const commandLine = (argv: readonly string[]) =>
@@ -855,9 +959,27 @@ export function generateProject(input: ProjectInput): GeneratedProject {
     aliasedPaths.set(source.originalPath, source.path);
   for (const stub of input.stubs) aliasedPaths.set(stub.module, stub.path);
   const aliasedOf = (original: string) => aliasedPaths.get(original) ?? null;
+  // A mocked package by its public name; an approved one keeps its own.
+  const publicPackage = new Map<string, string>();
+  for (const dependency of input.dependencies) {
+    const to = input.publicNames?.packages?.[dependency.name];
+    if (
+      dependency.kind === "package" &&
+      dependency.resolution === "runtime-mock" &&
+      to !== undefined &&
+      to !== dependency.name
+    )
+      publicPackage.set(dependency.name, to);
+  }
+  const publicNameOf = (name: string) => publicPackage.get(name) ?? name;
+  const publicEnvironment = new Map(
+    Object.entries(input.publicNames?.environment ?? {}).filter(
+      ([from, to]) => from !== to,
+    ),
+  );
   const known = new Set(input.knownSpecifiers.map(packageNameOf));
   for (const dependency of input.dependencies)
-    if (dependency.kind === "package") known.add(dependency.name);
+    if (dependency.kind === "package") known.add(publicNameOf(dependency.name));
   // Every import the slice resolved, inside it or across a cut, by
   // importer and the specifier as written.
   const targetOf = new Map<string, string>();
@@ -886,6 +1008,13 @@ export function generateProject(input: ProjectInput): GeneratedProject {
           if (onCommentLine(all, offset)) return whole;
           const relative =
             specifier.startsWith(".") || specifier.startsWith("/");
+          // A mocked package the table renamed, imported by its private
+          // name. Not recorded: the README lists rewrites, and this one's
+          // `from` is the name the table hides.
+          const name = packageNameOf(specifier);
+          const renamed = relative ? undefined : publicPackage.get(name);
+          if (renamed !== undefined)
+            return `${prefix}${quote}${renamed}${specifier.slice(name.length)}${quote}`;
           if (
             specifier.startsWith("node:") ||
             (!relative && known.has(packageNameOf(specifier)))
@@ -917,6 +1046,8 @@ export function generateProject(input: ProjectInput): GeneratedProject {
           return `${prefix}${quote}${to}${quote}`;
         },
       );
+    if (isScript(source.path))
+      text = renameEnvironmentReads(text, publicEnvironment);
     else if (/\.[cm]?jsx?$/.test(source.originalPath))
       blockers.push({
         code: "language_unsupported",
@@ -1008,17 +1139,22 @@ export function generateProject(input: ProjectInput): GeneratedProject {
       });
       dependencies[dependency.name] = dependency.version;
     } else if (dependency.resolution === "runtime-mock") {
-      mockedPackages.push(dependency.name);
-      const dir = `${MOCKS_DIR}/${dependency.name}`;
-      dependencies[dependency.name] = `file:${dir}`;
-      const names = [...(namedImports.get(dependency.name) ?? [])].sort(
-        compare,
-      );
+      const name = publicNameOf(dependency.name);
+      mockedPackages.push(name);
+      const dir = `${MOCKS_DIR}/${name}`;
+      dependencies[name] = `file:${dir}`;
+      // The source may import it by either name; both are this package.
+      const names = [
+        ...new Set([
+          ...(namedImports.get(dependency.name) ?? []),
+          ...(namedImports.get(name) ?? []),
+        ]),
+      ].sort(compare);
       add({
         path: `${dir}/package.json`,
         text: `${JSON.stringify(
           {
-            name: dependency.name,
+            name,
             version: "0.0.0-sandbox",
             private: true,
             type: "module",
@@ -1034,9 +1170,9 @@ export function generateProject(input: ProjectInput): GeneratedProject {
       add({
         path: `${dir}/index.js`,
         text: `${[
-          `// Mock of the ${dependency.name} package. Values are recording mocks.`,
+          `// Mock of the ${name} package. Values are recording mocks.`,
           `import { createMock } from "${relativeSpecifier(`${dir}/index.js`, MOCK_RUNTIME_PATH)}";`,
-          `const mock = createMock(${JSON.stringify(`package:${dependency.name}`)});`,
+          `const mock = createMock(${JSON.stringify(`package:${name}`)});`,
           "export default mock;",
           ...names.map(
             (name) => `export const ${name} = mock[${JSON.stringify(name)}];`,
@@ -1102,7 +1238,10 @@ export function generateProject(input: ProjectInput): GeneratedProject {
   const scenario = input.scenario ?? null;
   add({
     path: RUN_PATH,
-    text: scenario ?? runScript(entries),
+    text:
+      scenario === null
+        ? runScript(entries)
+        : renameEnvironmentReads(scenario, publicEnvironment),
     class: "harness",
     public: true,
   });
@@ -1147,7 +1286,7 @@ export function generateProject(input: ProjectInput): GeneratedProject {
 
   // Configuration.
   const environment = input.manifest.externals.environment.map(
-    (item) => item.name,
+    (item) => publicEnvironment.get(item.name) ?? item.name,
   );
   add({
     path: "package.json",
@@ -1203,9 +1342,16 @@ export function generateProject(input: ProjectInput): GeneratedProject {
     class: "config",
     public: true,
   });
-  // The walkthrough imports the task by relative path; each must land on
-  // a generated file once the version's aliases have moved things.
-  if (scenario !== null)
+  // The walkthrough keeps the fixture rules, and imports the task by
+  // relative path; each must land on a generated file once the version's
+  // aliases have moved things.
+  if (scenario !== null) {
+    for (const problem of scenarioProblems(scenario))
+      blockers.push({
+        code: "fixture_invalid",
+        file: RUN_PATH,
+        detail: problem.detail,
+      });
     for (const specifier of unresolvedScenarioImports(scenario, (path) =>
       files.has(path),
     ))
@@ -1214,8 +1360,11 @@ export function generateProject(input: ProjectInput): GeneratedProject {
         file: RUN_PATH,
         detail: `${specifier} does not resolve to a file in the project.`,
       });
+  }
+  // Only public scripts name their output: a hidden test's path would
+  // tell the contributor what it checks.
   const emitted = [...files.values()]
-    .filter((file) => isScript(file.path))
+    .filter((file) => file.public && isScript(file.path))
     .map((file) => runtimePath(file.path))
     .filter((path) => !files.has(path))
     .sort(compare);
@@ -1271,6 +1420,10 @@ export function generateProject(input: ProjectInput): GeneratedProject {
     class: "config",
     public: true,
   });
+  // Nothing a contributor reads may carry a credential the source held.
+  blockers.push(
+    ...secretBlockers(scanSecrets([...files.values()].filter((f) => f.public))),
+  );
   return {
     files: [...files.values()].sort((a, b) => compare(a.path, b.path)),
     importRewrites: rewrites.sort((a, b) =>

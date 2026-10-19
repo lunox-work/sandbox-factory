@@ -21,6 +21,7 @@ import {
   FIXTURE_SET_SCHEMA_VERSION,
   canonicalJson,
   isFixturesParams,
+  privatePackageNames,
   workspaceVocabulary,
 } from "sandbox-factory";
 import type {
@@ -328,6 +329,9 @@ export function createFixturesAdapter(settings: AgentSettings): ToolAdapter {
               vocabulary: workspaceVocabulary([
                 ...params.pseudonyms.vocabulary,
                 ...(await packageVocabulary(input.sourceDir)),
+                ...privatePackageNames(
+                  slice.manifest.requiredBuildInputs.packages,
+                ),
               ]),
               signal: input.signal,
               log: input.log,

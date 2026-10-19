@@ -7,7 +7,11 @@ import {
 } from "sandbox-factory";
 import { runAgent } from "../src/agent/loop.js";
 import type { AgentModel, AgentTool, AgentTurn } from "../src/agent/loop.js";
-import { progressRecorder } from "../src/progress.js";
+import {
+  PHASED_UNITS,
+  phasedProgress,
+  progressRecorder,
+} from "../src/progress.js";
 import { describeCheck } from "../src/tools/scope.js";
 
 const at = () => new Date("2026-10-09T00:00:00.000Z");
@@ -198,4 +202,79 @@ test("a slice check reads as the slice it tried", () => {
   );
   assert.equal(describeCheck(report({})), null);
   assert.equal(describeCheck("not json"), null);
+});
+
+test("a fraction is written at once, then held to one write a second, and its end at once", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
+  const written: AnalysisProgress[] = [];
+  const recorder = progressRecorder(async (progress) => {
+    written.push(progress);
+    return true;
+  }, at);
+  recorder.advance(1, 10);
+  await recorder.settled();
+  assert.deepEqual(written.at(-1)?.fraction, { done: 1, total: 10 });
+  recorder.advance(2, 10);
+  recorder.advance(3, 10);
+  await Promise.resolve();
+  assert.equal(written.length, 1);
+  t.mock.timers.tick(1_000);
+  await recorder.settled();
+  assert.equal(written.length, 2);
+  assert.deepEqual(written.at(-1)?.fraction, { done: 3, total: 10 });
+  // The same fraction again writes nothing; the end is never held.
+  recorder.advance(3, 10);
+  recorder.advance(10, 10);
+  await recorder.settled();
+  assert.equal(written.length, 3);
+  assert.deepEqual(written.at(-1), {
+    count: 0,
+    steps: [],
+    fraction: { done: 10, total: 10 },
+  });
+});
+
+test("a fraction held when the run ends is written by settling", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
+  const written: AnalysisProgress[] = [];
+  const recorder = progressRecorder(async (progress) => {
+    written.push(progress);
+    return true;
+  }, at);
+  recorder.advance(1, 10);
+  await recorder.settled();
+  recorder.advance(5, 10);
+  await recorder.settled();
+  assert.deepEqual(written.at(-1)?.fraction, { done: 5, total: 10 });
+  // A count with nothing to count, or out of its range, is kept in it.
+  recorder.advance(3, 0);
+  t.mock.timers.tick(1_000);
+  recorder.advance(12, 10);
+  await recorder.settled();
+  assert.deepEqual(written.at(-1)?.fraction, { done: 10, total: 10 });
+});
+
+test("a phased bar fills each pass's share, and never moves back", () => {
+  const shown: number[] = [];
+  const bar = phasedProgress(
+    (done, total) => {
+      assert.equal(total, PHASED_UNITS);
+      shown.push(done);
+    },
+    { a: 3, b: 1 },
+  );
+  bar.a(1, 2);
+  bar.a(2, 2);
+  bar.a(1, 2);
+  bar.b(1, 2);
+  bar.b(0, 0);
+  bar.b(1, 1);
+  assert.deepEqual(shown, [375, 750, 875, 1_000]);
+  // With nothing weighed, the passes share the bar evenly; with no one
+  // following, nothing is said.
+  const even: number[] = [];
+  const empty = phasedProgress((done) => even.push(done), { a: 0, b: 0 });
+  empty.a(1, 1);
+  assert.deepEqual(even, [500]);
+  phasedProgress(undefined, { a: 1 }).a(1, 1);
 });

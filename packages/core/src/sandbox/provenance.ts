@@ -115,14 +115,6 @@ export interface ScopeInput {
 
 const compare = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
 
-/**
- * Resolves every dependency of the slice. Cut modules with full declaration
- * coverage become runtime mocks generated from their declarations; service
- * packages the externals pass named default to runtime mocks; every other
- * pinned package is approved for installation; an unpinned package
- * blocks unless it is mocked, by default or by choice. Dynamic and unresolved imports are blockers the
- * slice already carries, and they stay blockers here.
- */
 /** Choices naming a package the slice does not require: a typo, never applied. */
 export function unknownDependencyChoices(
   manifest: Pick<SliceManifest, "requiredBuildInputs">,
@@ -136,6 +128,19 @@ export function unknownDependencyChoices(
     .sort();
 }
 
+/**
+ * Resolves every dependency of the slice. Cut modules with full declaration
+ * coverage become runtime mocks generated from their declarations; service
+ * packages the externals pass named default to runtime mocks; a pinned
+ * package the repository shows comes from the public registry is approved
+ * for installation, and any other defaults to a runtime mock, since a
+ * private registry's name is anyone's on the public one. An owner may
+ * approve a package the repository says nothing of, never one it fetches
+ * from another registry or its own workspace's. An unpinned package blocks
+ * unless it is mocked, by default or by choice. Dynamic and unresolved
+ * imports are blockers the slice already carries, and they stay blockers
+ * here.
+ */
 export function resolveScope(input: ScopeInput): ScopeRecord {
   const { manifest, contract } = input;
   const choices = input.choices ?? {};
@@ -181,9 +186,26 @@ export function resolveScope(input: ScopeInput): ScopeRecord {
         });
       continue;
     }
+    const registry = item.registry?.source ?? null;
+    if (registry === "private" && choices[item.name] === "approved-package") {
+      dependencies.push({
+        name: item.name,
+        kind: "package",
+        version: item.version,
+        resolution: "unresolved",
+        detail: `Fetched from another registry (${item.registry?.evidence ?? ""}), not the public one.`,
+      });
+      blockers.push({
+        code: "dependency_unresolved",
+        detail: `${item.name} comes from another registry and cannot be installed by its name; mock it.`,
+      });
+      continue;
+    }
     const resolution: DependencyResolution =
       choices[item.name] ??
-      (services.has(item.name) ? "runtime-mock" : "approved-package");
+      (services.has(item.name) || registry !== "public"
+        ? "runtime-mock"
+        : "approved-package");
     // A mock needs no version; only an install does.
     if (item.version === null && resolution === "approved-package") {
       dependencies.push({
@@ -227,9 +249,13 @@ export function resolveScope(input: ScopeInput): ScopeRecord {
       version: item.version,
       resolution,
       detail:
-        resolution === "runtime-mock"
-          ? "Replaced by a generated recording mock package."
-          : `Installed at the version ${item.declaredIn ?? "the source"} pins.`,
+        resolution === "approved-package"
+          ? `Installed at the version ${item.declaredIn ?? "the source"} pins.`
+          : choices[item.name] !== undefined || services.has(item.name)
+            ? "Replaced by a generated recording mock package."
+            : registry === "private"
+              ? `Fetched from another registry (${item.registry?.evidence ?? ""}), so replaced by a generated recording mock package.`
+              : "No lockfile shows it comes from the public registry, so replaced by a generated recording mock package. Approve it if it does.",
     });
   }
   for (const module of contract.outbound) {

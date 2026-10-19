@@ -25,38 +25,154 @@ const readJson = (path: string): unknown => {
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === "object" && !Array.isArray(value);
 
+/** Directories a workspace glob walks before it stops looking. */
+const WORKSPACE_DIRECTORIES_MAX = 20_000;
+
+/**
+ * The `packages:` list of a `pnpm-workspace.yaml`, block or flow style.
+ * Read by line: the file is a list of globs, and the worker has no YAML
+ * parser to spare.
+ */
+export function pnpmWorkspacePatterns(text: string): string[] {
+  const unquote = (value: string) =>
+    value
+      .trim()
+      .replace(/^(['"])(.*)\1$/, "$2")
+      .trim();
+  const lines = text.split(/\r?\n/);
+  const start = lines.findIndex((line) => /^packages\s*:/.test(line));
+  if (start === -1) return [];
+  const inline = /^packages\s*:\s*\[(.*)\]\s*(#.*)?$/.exec(lines[start] ?? "");
+  if (inline !== null)
+    return (inline[1] ?? "").split(",").map(unquote).filter(Boolean);
+  const patterns: string[] = [];
+  for (const line of lines.slice(start + 1)) {
+    if (/^\s*(#.*)?$/.test(line)) continue;
+    const item = /^\s*-\s*(.+?)\s*(#.*)?$/.exec(line);
+    if (item === null || (!/^\s/.test(line) && !line.startsWith("-"))) break;
+    patterns.push(unquote(item[1] ?? ""));
+  }
+  return patterns.filter(Boolean);
+}
+
+/** Whether one path segment matches one glob segment (`*`, `pkg-*`, `?`). */
+function segmentMatches(glob: string, name: string): boolean {
+  const pattern = glob
+    .split("")
+    .map((char) =>
+      char === "*"
+        ? "[^/]*"
+        : char === "?"
+          ? "[^/]"
+          : char.replace(/[.+^${}()|[\]\\]/g, "\\$&"),
+    )
+    .join("");
+  return new RegExp(`^${pattern}$`).test(name);
+}
+
+/**
+ * The directories a workspace glob names under `root`: `*` and `?` within
+ * one level's name, `**` for any number of levels. `node_modules` and hidden
+ * directories are never walked; a walk past `WORKSPACE_DIRECTORIES_MAX`
+ * directories stops where it is.
+ */
+function globDirectories(root: string, pattern: string): string[] {
+  const segments = pattern
+    .replace(/^\.\//, "")
+    .split("/")
+    .filter((segment) => segment !== "" && segment !== ".");
+  const found = new Set<string>();
+  let walked = 0;
+  const children = (dir: string) => {
+    walked += 1;
+    if (walked > WORKSPACE_DIRECTORIES_MAX) return [];
+    try {
+      // Sorted, so the first of two packages with one name is always the same.
+      return readdirSync(dir, { withFileTypes: true })
+        .filter(
+          (entry) =>
+            entry.isDirectory() &&
+            entry.name !== "node_modules" &&
+            !entry.name.startsWith("."),
+        )
+        .map((entry) => entry.name)
+        .sort();
+    } catch {
+      return [];
+    }
+  };
+  const visit = (dir: string, at: number) => {
+    if (!isInside(root, dir)) return;
+    if (at === segments.length) {
+      found.add(dir);
+      return;
+    }
+    const segment = segments[at] ?? "";
+    if (segment === "**") {
+      visit(dir, at + 1);
+      for (const name of children(dir)) visit(join(dir, name), at);
+    } else if (segment === "..") {
+      visit(dirname(dir), at + 1);
+    } else if (!/[*?]/.test(segment)) {
+      const next = join(dir, segment);
+      if (existsSync(next)) visit(next, at + 1);
+    } else
+      for (const name of children(dir))
+        if (segmentMatches(segment, name)) visit(join(dir, name), at + 1);
+  };
+  visit(root, 0);
+  return [...found];
+}
+
+/**
+ * The globs that say where the repository's workspace packages live: the
+ * root `package.json`'s `workspaces` (npm and Yarn, a list or
+ * `{ packages }`), `pnpm-workspace.yaml`'s `packages` and `lerna.json`'s
+ * `packages`.
+ */
+function workspacePatterns(root: string): string[] {
+  const manifest = readJson(join(root, "package.json"));
+  const declared = isRecord(manifest) ? manifest["workspaces"] : undefined;
+  const lerna = readJson(join(root, "lerna.json"));
+  let pnpm = "";
+  try {
+    pnpm = readFileSync(join(root, "pnpm-workspace.yaml"), "utf8");
+  } catch {
+    pnpm = "";
+  }
+  return [
+    ...(Array.isArray(declared)
+      ? declared
+      : isRecord(declared) && Array.isArray(declared["packages"])
+        ? declared["packages"]
+        : []),
+    ...pnpmWorkspacePatterns(pnpm),
+    ...(isRecord(lerna) && Array.isArray(lerna["packages"])
+      ? lerna["packages"]
+      : []),
+  ].filter((pattern): pattern is string => typeof pattern === "string");
+}
+
 /**
  * The repository's own workspace packages, by name, to their directories.
  * A shared base (`@scope/tsconfig/react.json`) is usually one of them, and a
- * snapshot has no node_modules to find it in. Read from the root
- * `package.json`'s `workspaces`, as npm and Yarn write it: exact
- * directories, and directories ending in one `*` level.
+ * snapshot has no node_modules to find it in; and an import of one is the
+ * repository's own code, which the slice must never fetch by its name.
+ * Every directory a workspace glob names (`workspacePatterns`) that holds a
+ * named `package.json`, less those a `!` glob excludes.
  */
 export function workspacePackages(root: string): Map<string, string> {
-  const manifest = readJson(join(root, "package.json"));
-  const declared = isRecord(manifest) ? manifest["workspaces"] : undefined;
-  const patterns = Array.isArray(declared)
-    ? declared
-    : isRecord(declared) && Array.isArray(declared["packages"])
-      ? declared["packages"]
-      : [];
-  const directories: string[] = [];
-  for (const pattern of patterns) {
-    if (typeof pattern !== "string") continue;
-    if (pattern.endsWith("/*")) {
-      const parent = resolve(root, pattern.slice(0, -2));
-      if (!isInside(root, parent) || !existsSync(parent)) continue;
-      // Sorted, so the first of two packages with one name is always the same.
-      const entries = readdirSync(parent, { withFileTypes: true })
-        .filter((entry) => entry.isDirectory())
-        .map((entry) => entry.name)
-        .sort();
-      for (const name of entries) directories.push(join(parent, name));
-    } else if (!pattern.includes("*")) directories.push(resolve(root, pattern));
+  const included: string[] = [];
+  const excluded = new Set<string>();
+  for (const pattern of workspacePatterns(root)) {
+    if (pattern.startsWith("!"))
+      for (const directory of globDirectories(root, pattern.slice(1)))
+        excluded.add(directory);
+    else included.push(...globDirectories(root, pattern));
   }
   const packages = new Map<string, string>();
-  for (const directory of directories) {
-    if (!isInside(root, directory)) continue;
+  for (const directory of included) {
+    if (excluded.has(directory)) continue;
     const own = readJson(join(directory, "package.json"));
     const name = isRecord(own) ? own["name"] : undefined;
     if (typeof name === "string" && !packages.has(name))

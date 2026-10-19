@@ -24,15 +24,21 @@ export const ANALYSIS_ERROR_CODES = [
 ] as const;
 export type AnalysisErrorCode = (typeof ANALYSIS_ERROR_CODES)[number];
 /**
- * What an agent run has done so far, written as it works, so a page
- * following the run shows its steps rather than a spinner. Each step is a
- * line the worker writes about one tool call, never the model's prose. Only
- * the newest `ANALYSIS_PROGRESS_STEPS_MAX` are kept; `count` is how many
- * there have been.
+ * What a run has done so far, written as it works, so a page following the
+ * run shows its steps rather than a spinner. Each step is a line the worker
+ * writes about one tool call, never the model's prose. Only the newest
+ * `ANALYSIS_PROGRESS_STEPS_MAX` are kept; `count` is how many there have
+ * been. A context builder writes how far it has got instead, for a bar.
  */
 export interface AnalysisProgress {
   readonly count: number;
   readonly steps: readonly AnalysisProgressStep[];
+  /** Units done of a total the builder counts: files read, stages ended. */
+  readonly fraction?: AnalysisProgressFraction;
+}
+export interface AnalysisProgressFraction {
+  readonly done: number;
+  readonly total: number;
 }
 export interface AnalysisProgressStep {
   /** When it was done, as an ISO timestamp. */
@@ -232,15 +238,15 @@ export function snapshotBuilt(
   );
 }
 /** Bumped when the slice walk, extractor or artifact shapes change meaning. */
-export const SLICE_TOOL_VERSION = "slice@2";
+export const SLICE_TOOL_VERSION = "slice@3";
 /** Bumped when the generated project, harness or baseline rules change meaning. */
-export const SANDBOX_BUILD_RUN_VERSION = "sandbox_build@7";
+export const SANDBOX_BUILD_RUN_VERSION = "sandbox_build@8";
 /** Bumped when the scope agent's tools, prompt or proposal shape change meaning. */
-export const SCOPE_TOOL_VERSION = "scope@4";
+export const SCOPE_TOOL_VERSION = "scope@5";
 /** Bumped when the fixtures agent's tools, prompt or set shape change meaning. */
-export const FIXTURES_TOOL_VERSION = "fixtures@2";
+export const FIXTURES_TOOL_VERSION = "fixtures@3";
 /** Bumped when the starter agent's tools, prompt, set or project change meaning. */
-export const STARTER_TOOL_VERSION = "sandbox_starter@3";
+export const STARTER_TOOL_VERSION = "sandbox_starter@4";
 /** Tools that read a repository snapshot; every other one runs without source. */
 export function readsSource(tool: AnalysisTool): boolean {
   return tool !== "sandbox_starter";
@@ -445,6 +451,12 @@ export interface StarterParams extends GraphifyParams {
   readonly sandboxVersionId: string;
   readonly approvedTaskSha256: string;
   readonly stack: readonly string[];
+  /**
+   * The names the workspace goes by, which no public file of the starter
+   * may carry (`workspaceVocabulary`). Absent on a run queued before the
+   * check.
+   */
+  readonly vocabulary?: readonly string[];
 }
 export type AnalysisParams =
   | GraphifyParams

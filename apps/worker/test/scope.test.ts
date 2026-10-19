@@ -18,6 +18,7 @@ import type { AgentTask, ToolInputs } from "../src/tools/adapter.js";
 import {
   FIXTURE_CHECK_PATH,
   checkFixtures,
+  confinedAstProblems,
   fixtureCheckSource,
   isSingleFunctionExpression,
 } from "../src/tools/fixtures-check.js";
@@ -397,7 +398,7 @@ test("fixtures are type-checked against the declarations they stand in for", asy
   assert.equal(failed.ok, false);
   assert.match(
     failed.problems.join("\n"),
-    /Fixture 1 \(module:lib\/service\.ts\.createService\): TS2739 .*missing the following properties/,
+    /Fixture 1 \(module:lib\/service\.ts\.createService\): TS2741 Property '#private' is missing/,
   );
   assert.match(failed.problems.join("\n"), /Walkthrough line 5: TS2345/);
   const invalid = checkFixtures({
@@ -451,6 +452,79 @@ test("fixtures are type-checked against the declarations they stand in for", asy
     scenario,
   });
   assert.match(injected.problems.join("\n"), /exactly one function expression/);
+  // Code that reaches outside the fixture rules is refused before compiling.
+  const escaping = checkFixtures({
+    ...base,
+    fixtures: [{ ...passing, implementation: "() => process.env.HOME" }],
+    scenario: `${scenario}import { readFileSync } from "node:fs";\n`,
+  });
+  assert.deepEqual(escaping.problems, [
+    "Fixture 0: `process` is not allowed.",
+    "Walkthrough: node:fs is not a relative import; the walkthrough imports only the project's own files.",
+  ]);
+});
+
+test("the parser reads the fixture rules as the token check does, escapes decoded", () => {
+  for (const text of [
+    "() => 1",
+    "async (id) => ({ id, at: new Date('2024-01-02'), first: [1][0], key: { a: 1 }['a'] })",
+    "(rows) => rows.find((row) => row.id === 1)",
+    "(o) => { const { 'id': i } = o; return i; }",
+    "(id) => { switch (id) { case 'random': return 1; default: return 0; } }",
+  ])
+    assert.deepEqual(confinedAstProblems(text, "fixture"), [], text);
+  for (const [text, reason] of [
+    ["() => \\u0070rocess.exit()", /`process`/],
+    ["() => globalThis", /`globalThis`/],
+    ["() => import('node:fs')", /`import`/],
+    ["() => import.meta.url", /`import`/],
+    ["() => Date.now()", /`Date` is allowed only/],
+    ["() => new Date()", /`Date` is allowed only/],
+    ["() => new Date(...[])", /`Date` is allowed only/],
+    ["() => new Intl.DateTimeFormat().format()", /`Intl`/],
+    ["(k) => Math[k]", /computed member/],
+    ["(o) => o[`id`]", /computed member/],
+    // A quoted key reads or defines what it names, escapes decoded.
+    [
+      '() => { const { "constructor": F } = () => 0; return F("return 1")(); }',
+      /`constructor`/,
+    ],
+    ['() => { const { "random": r } = Math; return r(); }', /`random`/],
+    [
+      '() => { const { "\\x63onstructor": F } = () => 0; return F; }',
+      /`constructor`/,
+    ],
+    ["() => ({ get 'constructor'() { return 1; } })", /`constructor`/],
+    ["() => Math['ran' + 'dom']", /computed member/],
+    ["() => ({ ['a' + 'b']: 1 })", /computed member/],
+    ["() => ({ 'constructor': 1 })", /`constructor`/],
+    ["() => ({})['__proto__']", /computed member/],
+    ["function () { with (Math) return 1; }", /`with`/],
+    ["() => (() => 1).constructor", /`constructor`/],
+  ] as const)
+    assert.ok(
+      confinedAstProblems(text, "fixture").some((problem) =>
+        reason.test(problem),
+      ),
+      text,
+    );
+  assert.deepEqual(confinedAstProblems(scenario, "walkthrough"), []);
+  assert.deepEqual(
+    confinedAstProblems(
+      'import fs from "node:fs";\nimport x = require("y");\nexport { a } from "pkg";\nexport {};\nconst m = await import("./x.js");\n',
+      "walkthrough",
+    ),
+    [
+      "node:fs is not a relative import; the walkthrough imports only the project's own files.",
+      "That import is not a relative import; the walkthrough imports only the project's own files.",
+      "pkg is not a relative import; the walkthrough imports only the project's own files.",
+      "`import` is not allowed.",
+    ],
+  );
+  assert.deepEqual(
+    confinedAstProblems('import { x } from "./x.js";', "fixture"),
+    ["`import` is not allowed."],
+  );
 });
 
 test("the fixtures agent records a set only once it compiles", async () => {
@@ -485,9 +559,9 @@ test("the fixtures agent records a set only once it compiles", async () => {
   );
   assert.match(model.prompts[0] ?? "", /lib\/helpers\.ts/);
   const first = (model.results[0] ?? []).map(contentOf);
-  assert.match(first[0]?.content ?? "", /TS2739/);
+  assert.match(first[0]?.content ?? "", /TS2741/);
   assert.match(first[1]?.content ?? "", /Invalid input/);
-  assert.match(contentOf((model.results[1] ?? [])[0]).content, /TS2739/);
+  assert.match(contentOf((model.results[1] ?? [])[0]).content, /TS2741/);
   assert.match(contentOf((model.results[2] ?? [])[0]).content, /Invalid input/);
   assert.equal(files[0]?.kind, "fixture_set");
   const set = JSON.parse(texts[0] ?? "{}") as FixtureSet;

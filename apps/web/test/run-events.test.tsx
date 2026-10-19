@@ -1,7 +1,11 @@
 import { act, cleanup, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 
-import { nextRunChange, resetRunStreams } from "../src/data/events";
+import {
+  nextRunChange,
+  reopenRunStreams,
+  resetRunStreams,
+} from "../src/data/events";
 import {
   analysisTopic,
   observeUntil,
@@ -313,4 +317,34 @@ test("a dropped connection the browser retries itself opens nothing new", () => 
   vi.advanceTimersByTime(120_000);
   expect(FakeEventSource.opened).toHaveLength(1);
   stop();
+});
+
+test("a stream the browser closed without a word is opened anew when asked, and reads again once open", async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  const read = vi.fn(async () => running);
+  follow(read);
+  await waitFor(() => expect(FakeEventSource.opened).toHaveLength(1));
+  const [stream] = FakeEventSource.opened;
+  act(() => stream?.emit("ready"));
+  // Open, it is left alone.
+  reopenRunStreams();
+  expect(FakeEventSource.opened).toHaveLength(1);
+  // As `window.stop()` leaves it: closed, with no error said.
+  if (stream !== undefined) stream.readyState = 2;
+  act(() => reopenRunStreams());
+  expect(FakeEventSource.opened).toHaveLength(2);
+  const reopened = FakeEventSource.opened[1];
+  expect(reopened?.url).toBe("/api/v1/orgs/org_1/events");
+  // Ready, it reads again what it follows, and changes come through it.
+  act(() => reopened?.emit("ready"));
+  await waitFor(() => expect(read).toHaveBeenCalledTimes(2));
+  act(() => reopened?.change("analysis", "arn_1"));
+  await waitFor(() => expect(read).toHaveBeenCalledTimes(3));
+  // One given up on and waiting for its retry is opened now instead.
+  if (reopened !== undefined) reopened.readyState = 2;
+  act(() => reopened?.emit("error"));
+  act(() => reopenRunStreams());
+  expect(FakeEventSource.opened).toHaveLength(3);
+  await act(() => vi.advanceTimersByTimeAsync(5_000));
+  expect(FakeEventSource.opened).toHaveLength(3);
 });

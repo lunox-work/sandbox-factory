@@ -105,6 +105,7 @@ export type {
   BountyProfileStore,
   NewBountyProfile,
   ProfileTransition,
+  SliceApproval,
   StoredBountyProfile,
 } from "./bounty-profiles.js";
 export {

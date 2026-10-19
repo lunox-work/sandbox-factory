@@ -13,7 +13,7 @@
     "smoke": "node scripts/smoke.mjs"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.133.0",
+    "@anthropic-ai/sdk": "^0.134.0",
     "@sandbox-factory/db": "*",
     "@sandbox-factory/github": "*",
     "@sandbox-factory/shared": "*",

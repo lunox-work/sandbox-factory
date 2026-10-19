@@ -19,6 +19,8 @@ import {
  */
 
 import type {
+  AnalysisRunStore,
+  ArtifactStore,
   StoredAnalysisRun,
   StoredArtifact,
   StoredBounty,
@@ -28,8 +30,10 @@ import type {
 } from "@sandbox-factory/db";
 import { generateId } from "@sandbox-factory/db";
 import {
+  type approveSliceSchema,
   createSandboxVersionSchema,
   fixtureSetSchema,
+  sliceBoundarySummarySchema,
   workRepositories,
   type SandboxSliceDto,
 } from "@sandbox-factory/shared";
@@ -52,6 +56,8 @@ import {
   fixtureProblems,
   isFixturesParams,
   isPublicationLive,
+  isSliceParams,
+  sliceApprovalReasons,
   SLICE_PUBLISHED_REASON,
   normalizeStack,
   PRICED_BOUNTY_COMPLEXITIES,
@@ -60,6 +66,7 @@ import {
   starterTaskReadiness,
   transformConfigOf,
   unknownDependencyChoices,
+  organizationNames,
   validateAliasRules,
   workspaceVocabulary,
 } from "sandbox-factory";
@@ -233,8 +240,66 @@ const sliceOf = (
   specRevision: null,
   scopeRunId: null,
   sliceRunId: null,
+  approval: null,
   ...fields,
 });
+
+/**
+ * What approving a measured profile's slice approves: its run's request
+ * and the files its summary lists, with why it waits (`reasons`, empty for
+ * a slice within `AUTO_SLICE_LIMITS`). Null when the run or its summary is
+ * no longer readable, which leaves nothing to approve.
+ */
+export async function sliceApprovalOf(
+  stores: {
+    readonly runs: Pick<AnalysisRunStore, "get">;
+    readonly artifacts: Pick<ArtifactStore, "list">;
+  },
+  owner: string,
+  sliceRunId: string | null,
+): Promise<SandboxSliceDto["approval"]> {
+  const run =
+    sliceRunId === null ? null : await stores.runs.get(owner, sliceRunId);
+  if (run === null || !isSliceParams(run.params)) return null;
+  const summary = sliceBoundarySummarySchema.safeParse(
+    (await stores.artifacts.list(owner, run.id)).find(
+      (artifact) => artifact.kind === "boundary_contract",
+    )?.meta,
+  );
+  if (!summary.success) return null;
+  const { entryPoints, budget, includeInferred } = run.params;
+  const included = {
+    includedFiles: summary.data.counts.includedFiles,
+    included: summary.data.included,
+  };
+  return {
+    reasons: sliceApprovalReasons(run.params, included),
+    entryPoints: [...entryPoints],
+    budget: { ...budget },
+    includeInferred,
+    ...included,
+    truncated: summary.data.included.length < summary.data.counts.includedFiles,
+  };
+}
+
+/**
+ * Whether nothing may be cut or prepared from a measured profile's slice
+ * yet: it waits for approval, or it was measured ready before approvals
+ * were asked for and is wider than `AUTO_SLICE_LIMITS`, which nobody has
+ * approved. A ready one whose slice cannot be read is not held here: the
+ * cut reads that same slice and refuses it itself (the preparer, which
+ * would hand it to a worker, skips it instead).
+ */
+export function holdsForApproval(
+  profile: Pick<StoredBountyProfile, "status" | "sliceApprovedAt">,
+  approval: SandboxSliceDto["approval"],
+): boolean {
+  if (profile.sliceApprovedAt !== null) return false;
+  return (
+    profile.status === "awaiting_approval" ||
+    (approval !== null && approval.reasons.length > 0)
+  );
+}
 
 const starterInProgress = () =>
   failure(
@@ -277,8 +342,9 @@ export function versionService(options: SandboxRouteOptions) {
 
   /**
    * The names the workspace goes by, which no public file of a build may
-   * carry: the organization's name and handle, and the owner and name of
-   * the repository the sandbox is sliced from.
+   * carry: the organization's name and handle and the repository's owner,
+   * word by word too, and the name of the repository the sandbox is sliced
+   * from, whole.
    */
   async function workspaceNames(
     owner: string,
@@ -291,9 +357,13 @@ export function versionService(options: SandboxRouteOptions) {
         : (await options.repos.list(owner)).find(
             ({ id }) => id === sandbox.sourceRepoId,
           );
+    const [repoOwner, repoName] = repo?.fullName.split("/") ?? [];
     return workspaceVocabulary([
-      ...((await options.organizationNames?.(owner)) ?? []),
-      ...(repo?.fullName.split("/") ?? []),
+      ...organizationNames([
+        ...((await options.organizationNames?.(owner)) ?? []),
+        ...(repoOwner === undefined ? [] : [repoOwner]),
+      ]),
+      ...(repoName === undefined ? [] : [repoName]),
     ]);
   }
 
@@ -693,6 +763,7 @@ export function versionService(options: SandboxRouteOptions) {
         sandboxVersionId: versionId,
         approvedTaskSha256,
         stack,
+        vocabulary: await workspaceNames(owner, sandbox.id),
       },
       requestedBy: actor,
       maxActive: options.maxActive ?? 3,
@@ -981,10 +1052,126 @@ export function versionService(options: SandboxRouteOptions) {
         profile,
         request: null,
       };
+    // A measured profile's slice held for approval is shown with what it
+    // holds; one that can no longer be read cannot be approved, and is
+    // priced again like a failed one.
+    const approval =
+      profile.status === "awaiting_approval" ||
+      (profile.status === "ready" && profile.sliceApprovedAt === null)
+        ? await sliceApprovalOf(options, owner, profile.sliceRunId)
+        : null;
+    if (holdsForApproval(profile, approval))
+      return {
+        slice:
+          approval === null
+            ? sliceOf("failed", {
+                ...runs(profile),
+                code: "slice_unavailable",
+                reason:
+                  "Its sizing's slice waits for approval, but what it holds can no longer be read. Price it again to slice a new spec.",
+              })
+            : sliceOf("awaiting_approval", { ...runs(profile), approval }),
+        profile,
+        request: null,
+      };
     return {
-      slice: sliceOf(profile.status, runs(profile)),
+      slice: sliceOf(
+        // Approved: the store makes it ready as it approves it.
+        profile.status === "awaiting_approval" ? "ready" : profile.status,
+        runs(profile),
+      ),
       profile,
       request: null,
+    };
+  }
+
+  /**
+   * Approves the slice a linked sandbox's sizing awaits approval for, as
+   * the actor: only the slice run and request the body names, which must be
+   * the ones `sliceState` showed. The profile, measured already, becomes
+   * ready, and the cutter cuts and builds a version from it as though the
+   * approver had asked to slice one. Asked again for a slice already
+   * approved, the first approval stands and the cut is asked for again, as
+   * its approver, so a retry after a failure past the approval still has
+   * it cut. A live publication is refused first, as slicing refuses it.
+   */
+  async function approveSlice(
+    owner: string,
+    actor: string,
+    sandbox: StoredSandbox,
+    input: z.output<typeof approveSliceSchema>,
+    now: Date,
+  ) {
+    if (isPublicationLive(sandbox, now))
+      return failure(
+        { error: SLICE_PUBLISHED_REASON, code: "published" },
+        "conflict",
+      );
+    const state = await sliceState(owner, sandbox);
+    const profile = state.profile;
+    const again =
+      state.slice.status === "ready" &&
+      profile !== null &&
+      profile.sliceApprovedAt !== null &&
+      profile.sliceRunId === input.sliceRunId;
+    const approval =
+      state.slice.status === "awaiting_approval"
+        ? state.slice.approval
+        : again
+          ? await sliceApprovalOf(options, owner, profile.sliceRunId)
+          : null;
+    if (
+      profile === null ||
+      approval === null ||
+      options.profiles?.approveSlice === undefined
+    )
+      return failure(
+        {
+          error: "The slice is not waiting for an approval.",
+          code: "slice_not_awaiting_approval",
+        },
+        "conflict",
+      );
+    const shown = canonicalJson({
+      sliceRunId: state.slice.sliceRunId,
+      entryPoints: approval.entryPoints,
+      budget: approval.budget,
+      includeInferred: approval.includeInferred,
+    });
+    // What was shown is checked first; the store then holds the run fixed.
+    const approved =
+      canonicalJson({
+        ...input,
+        entryPoints: [...new Set(input.entryPoints)].sort(),
+      }) === shown
+        ? await options.profiles.approveSlice(
+            owner,
+            profile.id,
+            input.sliceRunId,
+            actor,
+          )
+        : null;
+    if (approved === null)
+      return failure(
+        {
+          error:
+            "The slice changed since it was shown. Reload it and try again.",
+          code: "slice_changed",
+        },
+        "conflict",
+      );
+    // Cut as whoever approved first, so two approving at once do not cut
+    // it as someone other than the approval it stands on.
+    await options.cuts?.requestCut(
+      owner,
+      sandbox.id,
+      approved.approvedBy ?? actor,
+      now,
+    );
+    options.onSliceApproved?.();
+    return {
+      ok: true as const,
+      slice: (await sliceState(owner, sandbox)).slice,
     };
   }
 
@@ -1162,5 +1349,6 @@ export function versionService(options: SandboxRouteOptions) {
     build,
     sliceState,
     slice,
+    approveSlice,
   };
 }

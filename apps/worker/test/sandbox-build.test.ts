@@ -14,6 +14,7 @@ import {
   descriptorPublic,
   resolveScope,
   transformConfigOf,
+  workspaceVocabulary,
 } from "sandbox-factory";
 import type {
   AliasRule,
@@ -42,12 +43,14 @@ import {
   nearestCompilerOptions,
   packageVocabulary,
   privateTestOutcome,
+  tapPoints,
 } from "../src/tools/sandbox-build.js";
 import { stubModules } from "../src/tools/slice-run.js";
 import { sha256 } from "../src/tools/slice/hash.js";
 import type { ToolInputs, ToolRunInput } from "../src/tools/adapter.js";
 import { contextModel, contextRun } from "./context-fixtures.js";
-import { fixture, slice, sliceRun, stamp } from "./fixture-slice.js";
+import { fixture, sha, slice, sliceRun, stamp } from "./fixture-slice.js";
+import type { SliceOutput } from "./fixture-slice.js";
 import { timingRecorder } from "../src/timing.js";
 
 /**
@@ -58,6 +61,13 @@ const TAP_FAILED = {
   exitCode: 1,
   stdout:
     "TAP version 13\nnot ok 1 - fails\n  failureType: 'testCodeFailure'\n1..1\n# tests 1\n# pass 0\n# fail 1\n",
+};
+
+/** What Node 22's runner reports for a file whose one test passed. */
+const TAP_PASSED = {
+  exitCode: 0,
+  stdout:
+    "TAP version 13\n# Subtest: passes\nok 1 - passes\n  ---\n  duration_ms: 0.27\n  type: 'test'\n  ...\n1..1\n# tests 1\n# suites 0\n# pass 1\n# fail 0\n# cancelled 0\n# skipped 0\n# todo 0\n# duration_ms 40.13\n",
 };
 
 /** A hidden test's run: the public tests run without a TAP reporter. */
@@ -125,9 +135,10 @@ async function versionFor(
     blocked: boolean;
     stale: boolean;
     fixtures: VersionFixtures | null;
+    slice: SliceOutput;
   }> = {},
 ): Promise<StoredVersionWithSource> {
-  const { artifacts, manifest, contract } = await slice();
+  const { artifacts, manifest, contract } = overrides.slice ?? (await slice());
   const manifestSha =
     artifacts.find((a) => a.kind === "slice_manifest")?.sha256 ?? "";
   const contractSha =
@@ -264,9 +275,11 @@ async function runBuild(
     agent: AgentSettings;
     /** Context builders' runs the build can read, beside the slice. */
     served: readonly ReturnType<typeof contextRun>[];
+    /** The slice run's outputs, when not the fixture's own. */
+    slice: SliceOutput;
   }> = {},
 ) {
-  const { artifacts, objects } = await slice();
+  const { artifacts, objects } = options.slice ?? (await slice());
   const served = options.served ?? [];
   const version =
     options.version === undefined ? await versionFor() : options.version;
@@ -572,6 +585,8 @@ test("a build produces a standalone project, hidden tests apart, a verified base
       // Built once: the walkthrough and the public tests run what their
       // scripts run after building.
       "node --env-file=sandbox.env sandbox/run.js",
+      "node --env-file=sandbox.env --test",
+      // The hidden test, twice: once each round.
       "node --env-file=sandbox.env --test",
       "node --env-file=sandbox.env --test",
     ],
@@ -1028,7 +1043,9 @@ test("alias collisions and scope blockers stop before any job runs; a failing ba
       ?.observed,
     "error",
   );
-  const unexpected = fakeProvider();
+  const unexpected = fakeProvider((argv) =>
+    runsHiddenTest(argv) ? TAP_PASSED : {},
+  );
   assert.deepEqual(
     (await runBuild(unexpected.provider)).manifest.baseline?.privateTests[0],
     {
@@ -1037,6 +1054,12 @@ test("alias collisions and scope blockers stop before any job runs; a failing ba
       observed: "pass",
       ok: false,
     },
+  );
+  // An exit 0 with no report says nothing passed.
+  assert.equal(
+    (await runBuild(fakeProvider().provider)).manifest.baseline?.privateTests[0]
+      ?.observed,
+    "error",
   );
   const prepareFails = fakeProvider((argv) =>
     argv[1] === "install" ? { exitCode: 1 } : {},
@@ -1102,7 +1125,241 @@ test("a public file naming the workspace blocks the build before any job runs", 
   );
 });
 
-test("a repository's package.json names its scope or package, and its author", async () => {
+/** The fixture's slice, its manifest requiring `packages` besides its own. */
+async function sliceRequiring(
+  packages: SliceOutput["manifest"]["requiredBuildInputs"]["packages"],
+): Promise<SliceOutput> {
+  const sliced = await slice();
+  const manifest = {
+    ...sliced.manifest,
+    requiredBuildInputs: {
+      ...sliced.manifest.requiredBuildInputs,
+      packages: [...sliced.manifest.requiredBuildInputs.packages, ...packages],
+    },
+  };
+  const bytes = Buffer.from(JSON.stringify(manifest));
+  const objects = new Map(sliced.objects);
+  const artifacts = sliced.artifacts.map((artifact) => {
+    if (artifact.kind !== "slice_manifest") return artifact;
+    objects.set(artifact.objectKey, bytes);
+    return { ...artifact, sha256: sha(bytes), sizeBytes: bytes.byteLength };
+  });
+  return { ...sliced, artifacts, objects, manifest };
+}
+
+test("a private package's scope or name blocks the build until the table renames it", async () => {
+  const pkg = (name: string) => ({
+    name,
+    version: "1.0.0",
+    declaredIn: "package.json",
+  });
+  const privateRegistry = { source: "private" as const, evidence: ".npmrc" };
+  const sliced = await sliceRequiring([
+    { ...pkg("@acmeinc/ledger"), workspace: true },
+    { ...pkg("payflow-sdk"), registry: privateRegistry },
+    // Mocked by default, a public package's name names no one.
+    pkg("left-pad"),
+  ]);
+  const leaked = await runBuild(fakeProvider().provider, {
+    slice: sliced,
+    version: await versionFor({ slice: sliced }),
+  });
+  assert.equal(leaked.manifest.baseline, null);
+  assert.deepEqual(
+    leaked.manifest.blockers.map((blocker) => blocker.code),
+    ["vocabulary_leaked", "vocabulary_leaked"],
+  );
+  assert.match(
+    leaked.manifest.blockers[0]?.detail ?? "",
+    /^"acmeinc" names the workspace .*package\.json/,
+  );
+  assert.match(
+    leaked.manifest.blockers[1]?.detail ?? "",
+    /^"payflow-sdk" names the workspace /,
+  );
+  // Renamed, the scope is gone from every public file, the mock included.
+  const scoped = await sliceRequiring([
+    { ...pkg("@acmeinc/ledger"), workspace: true },
+  ]);
+  const renamed = await runBuild(fakeProvider().provider, {
+    slice: scoped,
+    version: await versionFor({
+      slice: scoped,
+      aliasRules: [
+        {
+          before: "acmeinc",
+          after: "northwind",
+          kind: "identifier",
+          paths: [],
+        },
+      ],
+    }),
+  });
+  assert.deepEqual(
+    renamed.manifest.blockers.map((blocker) => blocker.code),
+    ["baseline_failed"],
+  );
+  const pkgJson = JSON.parse(await renamed.read("project/package.json")) as {
+    dependencies: Record<string, string>;
+  };
+  assert.equal(
+    pkgJson.dependencies["@northwind/ledger"],
+    "file:mocks/@northwind/ledger",
+  );
+});
+
+test("a credential in a public file blocks the build before any job runs, naming its line, not its value", async () => {
+  const key = ["AKIA", "Z3K7Q2M9W4X8C6V1"].join("");
+  const fake = fakeProvider();
+  const leaked = await runBuild(fake.provider, {
+    version: await versionFor({
+      fixtures: {
+        fixtureRunId: "arn_fixtures",
+        fixtures: [],
+        scenario: `import { run } from "../src/app.js";\nconst region = "${key}";\nconsole.log(run({ name: region, retries: 1, nested: { enabled: true } }));\n`,
+      },
+    }),
+  });
+  assert.equal(leaked.manifest.ready, false);
+  assert.equal(leaked.manifest.baseline, null);
+  assert.equal(fake.calls.length, 0);
+  assert.deepEqual(leaked.manifest.blockers, [
+    {
+      code: "secret_found",
+      file: "sandbox/run.ts",
+      detail:
+        "A credential appears at sandbox/run.ts:2 (aws-access-key-id). Remove it or replace it with a fixture value.",
+    },
+  ]);
+  assert.equal(JSON.stringify(leaked.manifest).includes(key), false);
+});
+
+test("a mocked package and an environment variable go by the names the table gives them", async () => {
+  // Unrenamed, the variable's name reaches sandbox.env and the source.
+  const leaked = await runBuild(fakeProvider().provider, {
+    params: { vocabulary: ["database_url"] },
+  });
+  assert.deepEqual(
+    leaked.manifest.blockers.map((blocker) => blocker.code),
+    ["vocabulary_leaked"],
+  );
+  assert.match(
+    leaked.manifest.blockers[0]?.detail ?? "",
+    /public files: README\.md, sandbox\.env, src\/app\.ts\./,
+  );
+  // The table renames them everywhere a developer reads, mocks included.
+  const renamed = await runBuild(fakeProvider().provider, {
+    version: await versionFor({
+      aliasRules: [
+        { before: "pg", after: "store", kind: "identifier", paths: [] },
+        {
+          before: "DATABASE_URL",
+          after: "STORE_URL",
+          kind: "identifier",
+          paths: [],
+        },
+      ],
+    }),
+    params: { vocabulary: ["database_url"] },
+  });
+  // The fake job passes every test, which a hidden one was not to.
+  assert.deepEqual(
+    renamed.manifest.blockers.map((blocker) => blocker.code),
+    ["baseline_failed"],
+  );
+  const app = await renamed.read("project/src/app.ts");
+  assert.match(app, /import store from "store";/);
+  assert.match(app, /process\.env\.STORE_URL/);
+  const pkg = JSON.parse(await renamed.read("project/package.json")) as {
+    dependencies: Record<string, string>;
+  };
+  assert.deepEqual(pkg.dependencies, { store: "file:mocks/store" });
+  assert.match(
+    await renamed.read("project/mocks/store/package.json"),
+    /"name": "store"/,
+  );
+  assert.match(
+    await renamed.read("project/sandbox.env"),
+    /^STORE_URL=sandbox-fixture-store-url$/m,
+  );
+  const paths = renamed.files.map((file) => file.path);
+  assert.equal(
+    paths.some((path) => path.startsWith("project/mocks/pg/")),
+    false,
+  );
+  // A rename that is no longer a name of its kind is refused.
+  const broken = await runBuild(fakeProvider().provider, {
+    version: await versionFor({
+      aliasRules: [
+        { before: "pg", after: "Store", kind: "identifier", paths: [] },
+        {
+          before: "DATABASE_URL",
+          after: "store url",
+          kind: "text",
+          paths: [],
+        },
+      ],
+    }),
+  });
+  assert.deepEqual(
+    broken.manifest.blockers.map((blocker) => blocker.detail),
+    [
+      "The alias table renames the package pg to Store, which is not a valid package name.",
+      "The alias table renames the environment variable DATABASE_URL to store url, which is not a valid environment variable name.",
+    ],
+  );
+  // So is a name Node keeps for itself: its own module, which it loads in
+  // place of the mock, or a variable sandbox.env would set for it.
+  const reserved = await runBuild(fakeProvider().provider, {
+    version: await versionFor({
+      aliasRules: [
+        { before: "pg", after: "events", kind: "identifier", paths: [] },
+        {
+          before: "DATABASE_URL",
+          after: "NODE_OPTIONS",
+          kind: "identifier",
+          paths: [],
+        },
+      ],
+    }),
+  });
+  assert.deepEqual(
+    reserved.manifest.blockers.map((blocker) => [blocker.code, blocker.detail]),
+    [
+      [
+        "alias_failed",
+        "The alias table renames the package pg to events, which is a module Node provides, which it loads in place of the mock.",
+      ],
+      [
+        "alias_failed",
+        "The alias table renames the environment variable DATABASE_URL to NODE_OPTIONS, which is a variable Node or npm reads, which sandbox.env would set for them.",
+      ],
+    ],
+  );
+  const long = `store${"x".repeat(210)}`;
+  const tooLong = await runBuild(fakeProvider().provider, {
+    version: await versionFor({
+      aliasRules: [
+        { before: "pg", after: long, kind: "identifier", paths: [] },
+        {
+          before: "DATABASE_URL",
+          after: "npm_config_registry",
+          kind: "identifier",
+          paths: [],
+        },
+      ],
+    }),
+  });
+  assert.deepEqual(
+    tooLong.manifest.blockers.map((blocker) => blocker.detail),
+    [
+      `The alias table renames the package pg to ${long}, which is longer than the 214 characters a package name may have.`,
+      "The alias table renames the environment variable DATABASE_URL to npm_config_registry, which is a variable Node or npm reads, which sandbox.env would set for them.",
+    ],
+  );
+});
+
+test("a repository's package.json names its scope or package, its author and their address", async () => {
   const dir = await mkdtemp(join(tmpdir(), "package-vocabulary-"));
   const names = async (manifest: unknown) => {
     await writeFile(
@@ -1116,13 +1373,31 @@ test("a repository's package.json names its scope or package, and its author", a
     assert.deepEqual(
       await names({
         name: "@acme/monorepo",
-        author: "Jo Doe <jo@acme.dev> (https://acme.dev)",
+        author: "Jo Doe <jo@payflow.dev> (https://acme.dev)",
       }),
-      ["acme", "Jo Doe"],
+      [
+        { name: "acme", kind: "name" },
+        { name: "Jo Doe", kind: "name" },
+        { name: "jo", kind: "name" },
+        // An address at the organization's own domain names it.
+        { name: "payflow.dev", kind: "organization" },
+      ],
     );
     assert.deepEqual(
-      await names({ name: "storefront", author: { name: "Acme Corp" } }),
-      ["storefront", "Acme Corp"],
+      await names({
+        name: "storefront",
+        author: { name: "Acme Corp", email: "acme.builds@gmail.com" },
+      }),
+      [
+        { name: "storefront", kind: "name" },
+        { name: "Acme Corp", kind: "name" },
+        // A public provider's domain says nothing of whose code it is.
+        { name: "acme.builds", kind: "name" },
+      ],
+    );
+    assert.deepEqual(
+      workspaceVocabulary(await names({ author: "Jo <jo@payflowhq.io>" })),
+      ["payflowhq-io", "payflowhq"],
     );
     assert.deepEqual(await names({ name: "@", author: { email: "x" } }), []);
     assert.deepEqual(await names({ author: 7 }), []);
@@ -1338,7 +1613,7 @@ test("a hidden test that never ran is an error, not the failure it was expected 
   assert.equal(privateTestOutcome(exited, ""), "error");
   assert.equal(
     privateTestOutcome({ exitCode: 0, timedOut: false }, ""),
-    "pass",
+    "error",
   );
   assert.equal(
     privateTestOutcome({ exitCode: 2, timedOut: false }, failed),
@@ -1347,6 +1622,215 @@ test("a hidden test that never ran is an error, not the failure it was expected 
   assert.equal(
     privateTestOutcome({ exitCode: null, timedOut: true }, failed),
     "error",
+  );
+});
+
+/** A report as Node's runner writes it: points, the plan, then the counts. */
+function tap(
+  points: readonly string[],
+  counts: Partial<Record<string, number>>,
+): string {
+  const all = {
+    tests: 0,
+    suites: 0,
+    pass: 0,
+    fail: 0,
+    cancelled: 0,
+    skipped: 0,
+    todo: 0,
+    ...counts,
+  };
+  return [
+    "TAP version 13",
+    ...points,
+    `1..${points.filter((line) => /^(?:not )?ok /.test(line)).length}`,
+    ...Object.entries(all).map(([name, value]) => `# ${name} ${value}`),
+    "# duration_ms 38.6",
+    "",
+  ].join("\n");
+}
+
+test("an exit 0 is a pass only when the report says every test ran and passed", () => {
+  const exited0 = { exitCode: 0, timedOut: false };
+  const exited1 = { exitCode: 1, timedOut: false };
+  const point = (line: string) => [
+    `# Subtest: ${line.replace(/^(?:not )?ok \d+ - /, "")}`,
+    line,
+    "  ---",
+    "  duration_ms: 0.3",
+    "  type: 'test'",
+    "  ...",
+  ];
+  // One test, or nested ones, that ran and passed.
+  assert.equal(privateTestOutcome(exited0, TAP_PASSED.stdout), "pass");
+  assert.equal(
+    privateTestOutcome(exited0, tap(point("ok 1 - a"), { tests: 3, pass: 3 })),
+    "pass",
+  );
+  // The file ended the process early: `process.exit(0)` at load or inside a
+  // test, or code under test calling it. The runner reports the file as one
+  // passing point named after it.
+  const early = tap(point("ok 1 - tests/private/fix.test.js"), {
+    tests: 1,
+    pass: 1,
+  });
+  assert.equal(privateTestOutcome(exited0, early), "error");
+  // So does a file that declares no test at all.
+  assert.equal(
+    privateTestOutcome(
+      exited0,
+      tap(point("ok 1 - /tmp/job/tests/private/empty.test.js"), {
+        tests: 1,
+        pass: 1,
+      }),
+    ),
+    "error",
+  );
+  // Only todo or skipped tests, or some of them beside a pass.
+  assert.equal(
+    privateTestOutcome(
+      exited0,
+      tap([...point("not ok 1 - a # TODO"), ...point("ok 2 - b # SKIP")], {
+        tests: 2,
+        skipped: 1,
+        todo: 1,
+      }),
+    ),
+    "error",
+  );
+  assert.equal(
+    privateTestOutcome(
+      exited0,
+      tap([...point("ok 1 - a"), ...point("ok 2 - c # SKIP")], {
+        tests: 2,
+        pass: 1,
+        skipped: 1,
+      }),
+    ),
+    "error",
+  );
+  // Counts the file printed itself come before the runner's, escaped or
+  // not; only the trailing block is read.
+  const forged = [
+    "TAP version 13",
+    "# pass 5",
+    "# \\# fail 0",
+    ...point("not ok 1 - a"),
+    "1..1",
+    "# tests 1",
+    "# pass 0",
+    "# fail 1",
+    "",
+  ].join("\n");
+  assert.equal(privateTestOutcome(exited1, forged), "fail");
+  assert.equal(privateTestOutcome(exited0, forged), "error");
+  // A report whose counts are followed by anything else, or that has none.
+  assert.equal(
+    privateTestOutcome(exited0, `${TAP_PASSED.stdout}ok 2 - more\n`),
+    "error",
+  );
+  assert.equal(
+    privateTestOutcome(exited0, "TAP version 13\n1..1\n# pass 1\n"),
+    "error",
+  );
+  // A cancelled test (a timeout) is not a failed one.
+  assert.equal(
+    privateTestOutcome(
+      exited1,
+      tap([...point("ok 1 - a"), ...point("not ok 2 - b")], {
+        tests: 2,
+        pass: 1,
+        cancelled: 1,
+      }),
+    ),
+    "error",
+  );
+  // Work left running after a test failed the file as a whole.
+  assert.equal(
+    privateTestOutcome(
+      exited1,
+      tap(
+        [
+          ...point("ok 1 - a"),
+          "# Subtest: tests/private/fix.test.js",
+          "not ok 2 - tests/private/fix.test.js",
+          "  exitCode: 1",
+          "  code: 'ERR_TEST_FAILURE'",
+        ],
+        { tests: 2, pass: 1, fail: 1 },
+      ),
+    ),
+    "error",
+  );
+  // A path with a space in it is still the file's point; a test named
+  // with a space and no directory is a test.
+  assert.equal(
+    privateTestOutcome(
+      exited0,
+      tap(point("ok 1 - /tmp/my job/tests/private/fix it.test.js"), {
+        tests: 1,
+        pass: 1,
+      }),
+    ),
+    "error",
+  );
+  assert.equal(
+    privateTestOutcome(
+      exited0,
+      tap(point("ok 1 - reads fix.test.js"), { tests: 1, pass: 1 }),
+    ),
+    "pass",
+  );
+  assert.deepEqual(tapPoints(early), ["ok 1 - tests/private/fix.test.js"]);
+});
+
+test("a hidden test that disagrees with itself across two runs is flaky, and the baseline fails", async () => {
+  let runs = 0;
+  const flaky = fakeProvider((argv) => {
+    if (!runsHiddenTest(argv)) return {};
+    runs += 1;
+    return runs === 1 ? TAP_FAILED : TAP_PASSED;
+  });
+  const { manifest } = await runBuild(flaky.provider);
+  assert.equal(runs, 2);
+  assert.deepEqual(manifest.baseline?.privateTests, [
+    {
+      path: "tests/private/fix.test.ts",
+      expected: "fail",
+      observed: "flaky",
+      ok: false,
+    },
+  ]);
+  assert.match(
+    manifest.baseline?.reasons.join(" ") ?? "",
+    /fix\.test\.ts gave different results on two runs/,
+  );
+  assert.deepEqual(
+    manifest.baseline?.steps
+      .filter((step) => step.name === "private-test")
+      .map((step) => step.ok),
+    [false, false],
+  );
+  assert.equal(manifest.ready, false);
+  // Same outcome, different tests failing: still flaky.
+  let second = 0;
+  const shifting = fakeProvider((argv) => {
+    if (!runsHiddenTest(argv)) return {};
+    second += 1;
+    return {
+      exitCode: 1,
+      stdout: tap(
+        second === 1
+          ? ["not ok 1 - a", "ok 2 - b"]
+          : ["ok 1 - a", "not ok 2 - b"],
+        { tests: 2, pass: 1, fail: 1 },
+      ),
+    };
+  });
+  assert.equal(
+    (await runBuild(shifting.provider)).manifest.baseline?.privateTests[0]
+      ?.observed,
+    "flaky",
   );
 });
 

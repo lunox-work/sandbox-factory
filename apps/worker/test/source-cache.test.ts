@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
 import {
+  chmod,
   mkdir,
   mkdtemp,
   readdir,
   readFile,
   rm,
+  stat,
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -31,7 +33,10 @@ function filler(bytes = 10) {
 test("a commit is filled once and read from disk after", async () => {
   const directory = await root();
   try {
+    // Only the worker's user reads private source, however it was left.
+    await chmod(directory, 0o755);
     const cache = await createSourceCache({ root: directory });
+    assert.equal((await stat(directory)).mode & 0o777, 0o700);
     const { fill, calls } = filler();
     const first = await cache.checkout("ghr_1@a", fill);
     assert.equal(first.hit, false);

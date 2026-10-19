@@ -273,6 +273,7 @@ export async function executeRun(
           if (lines.length < 100) lines.push(line);
         },
         step: progress.step,
+        advance: progress.advance,
         preview,
         timing,
       }),

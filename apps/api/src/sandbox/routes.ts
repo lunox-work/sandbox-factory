@@ -32,6 +32,7 @@ import type {
 } from "@sandbox-factory/db";
 import {
   analysisRunResponseSchema,
+  approveSliceSchema,
   createSandboxSchema,
   createSandboxVersionSchema,
   generateStarterResponseSchema,
@@ -449,6 +450,37 @@ export function mountSandboxRoutes(
       }),
       sliced.result === null ? 202 : 201,
     );
+  });
+  /**
+   * Approves the slice a linked sandbox's sizing waits on: one wider than
+   * the profiler cuts unasked, named exactly as `GET .../slice` showed it.
+   * The profile is then built from it and a version cut and built, as the
+   * approver. Owners and admins only.
+   */
+  app.post(`${base}/:id/slice/approve`, async (c) => {
+    if (!isAtLeastAdmin(c.get("member").role))
+      return c.json(
+        { error: "Only owners and admins can approve a slice." },
+        403,
+      );
+    const owner = c.get("member").organizationId;
+    const sandbox = await options.sandboxes.get(owner, c.req.param("id"));
+    if (sandbox === null) return c.json({ error: "Not found." }, 404);
+    const refusal = await held(owner, sandbox.bountyId);
+    if (refusal !== null) return c.json(refusal, 409);
+    const body = approveSliceSchema.safeParse(
+      await c.req.json().catch(() => null),
+    );
+    if (!body.success) return c.json({ error: "Invalid slice approval." }, 400);
+    const approved = await service.approveSlice(
+      owner,
+      c.get("user").id,
+      sandbox,
+      body.data,
+      now(),
+    );
+    if (!approved.ok) return failed(c, approved);
+    return c.json(sandboxSliceResponseSchema.parse({ slice: approved.slice }));
   });
   app.get(base, async (c) =>
     c.json(

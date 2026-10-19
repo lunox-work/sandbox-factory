@@ -6,12 +6,14 @@
  * anything the archive did not contain are refused before a byte is read.
  * Search is a literal, case-insensitive substring match: a model-supplied
  * regular expression would be a denial-of-service waiting to happen. Every
- * answer is capped, so one call cannot fill the context window.
+ * answer is capped, so one call cannot fill the context window. Files named
+ * like secrets (`isWithheldPath`) are left out of the index, so no tool sends
+ * them to the model provider.
  */
 
 import { readdir, readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
-import { fileOf, isTraversed } from "sandbox-factory";
+import { fileOf, isSecretPath, isTraversed } from "sandbox-factory";
 import type { SliceGraph } from "sandbox-factory";
 import { z } from "zod";
 import { inputText, type AgentTool, type AgentToolResult } from "./loop.js";
@@ -30,6 +32,20 @@ export const REPO_TOOL_LIMITS = {
 
 const SKIPPED_DIRECTORIES = new Set([".git", "node_modules"]);
 const compare = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
+
+/**
+ * Whether the agent's tools withhold a repository-relative path: a
+ * credentials file (`isSecretPath`), or `.yarnrc.yml`, which may carry an
+ * `npmAuthToken`. A slice may include `.yarnrc.yml`, since a build scans its
+ * text for tokens; the model provider is sent text unscanned, so it is not.
+ */
+export function isWithheldPath(path: string): boolean {
+  const lower = path.toLowerCase();
+  return (
+    isSecretPath(path) ||
+    lower.slice(lower.lastIndexOf("/") + 1) === ".yarnrc.yml"
+  );
+}
 
 export interface RepositoryIndex {
   readonly root: string;
@@ -51,7 +67,7 @@ export async function indexRepository(
       if (entry.isDirectory()) {
         if (!SKIPPED_DIRECTORIES.has(entry.name))
           await walk(join(dir, entry.name), path);
-      } else if (entry.isFile())
+      } else if (entry.isFile() && !isWithheldPath(path))
         sizes.set(path, (await stat(join(dir, entry.name))).size);
     }
   };
@@ -68,6 +84,10 @@ const error = (content: string): AgentToolResult => ({
   content,
   isError: true,
 });
+const withheld = (path: string): AgentToolResult =>
+  error(
+    `${path} is withheld because it may hold secrets; it is not readable here.`,
+  );
 const isText = (bytes: Buffer) => !bytes.subarray(0, 8_192).includes(0);
 
 /** A short picture of the repository for the first prompt. */
@@ -194,6 +214,7 @@ export function repositoryTools(index: RepositoryIndex): AgentTool[] {
         const parsed = readInput.safeParse(raw);
         if (!parsed.success) return invalidInput(parsed.error.issues);
         const { path } = parsed.data;
+        if (isWithheldPath(path)) return withheld(path);
         if (!index.sizes.has(path))
           return error(`${path} is not a file in this repository.`);
         const text = await readText(path);
@@ -301,6 +322,7 @@ export function graphNeighboursTool(graph: SliceGraph): AgentTool {
       const parsed = pathInput.safeParse(raw);
       if (!parsed.success) return invalidInput(parsed.error.issues);
       const { path } = parsed.data;
+      if (isWithheldPath(path)) return withheld(path);
       const uses = new Set<string>();
       const usedBy = new Set<string>();
       let known = false;
@@ -314,8 +336,14 @@ export function graphNeighboursTool(graph: SliceGraph): AgentTool {
         if (source === undefined || target === undefined) continue;
         const from = fileOf(source);
         const to = fileOf(target) ?? `package ${target.label}`;
-        if (from === path && to !== path) uses.add(to);
-        if (to === path && from !== null && from !== path) usedBy.add(from);
+        if (from === path && to !== path && !isWithheldPath(to)) uses.add(to);
+        if (
+          to === path &&
+          from !== null &&
+          from !== path &&
+          !isWithheldPath(from)
+        )
+          usedBy.add(from);
       }
       const list = (items: Set<string>) =>
         items.size === 0

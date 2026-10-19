@@ -13,6 +13,7 @@
  * check live in the worker.
  */
 
+import { confinedCodeProblems } from "./confined.js";
 import { isFunctionExpressionText } from "./expression.js";
 import type { AgentUsage } from "../analysis.js";
 import type { BoundaryModule } from "../slice/manifest.js";
@@ -138,6 +139,9 @@ export function fixtureProblems(
       report("The implementation must be one function expression.");
     if (IMPORTING.test(fixture.implementation))
       report("The implementation must not import anything.");
+    // The rules the prompt states, held by the text itself (`confined.ts`).
+    for (const problem of confinedCodeProblems(fixture.implementation))
+      report(problem);
     const path = fixtureMockPath(fixture);
     if (seen.has(path)) report(`${path} is given behaviour twice.`);
     seen.add(path);
@@ -156,5 +160,8 @@ export function scenarioProblems(scenario: string): FixtureProblem[] {
         detail: `The scenario is longer than ${FIXTURE_LIMITS.scenarioChars} characters.`,
       },
     ];
-  return [];
+  // It runs with `npm run dev` on every contributor's machine.
+  return confinedCodeProblems(scenario, { staticImports: true }).map(
+    (detail) => ({ fixture: null, detail }),
+  );
 }

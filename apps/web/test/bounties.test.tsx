@@ -3857,9 +3857,9 @@ function generatingServer(input: {
     ],
   ]);
 }
-async function sandboxPart() {
+async function sandboxPart(role = "owner") {
   window.history.replaceState(null, "", "/bounties/acme/bty_7?tab=sandbox");
-  render(<Shell {...inAcme("owner")} />);
+  render(<Shell {...inAcme(role)} />);
   return within(await screen.findByTestId("bounty-detail")).getByRole(
     "region",
     { name: "Sandbox" },
@@ -4480,6 +4480,208 @@ test("with no slice yet, Slice asks its sizing for one and follows it", async ()
   expect(state.calls.filter(({ method }) => method === "POST")).toHaveLength(1);
 });
 
+test("a slice wider than is cut unasked shows what it holds, and an admin approves exactly that", async () => {
+  let approved: unknown = null;
+  const approval = {
+    reasons: ["directory_entry_point", "too_many_files"],
+    entryPoints: ["src/invitations"],
+    budget: { maxFiles: 120, maxDepth: 3 },
+    includeInferred: false,
+    includedFiles: 52,
+    included: ["src/invitations/send.ts", "src/invitations/retry.ts"],
+    truncated: true,
+  };
+  // The cutter cuts the draft once the slice is approved.
+  const state = slicingServer({
+    versions: () => (approved === null ? [] : [generatedVersion]),
+    slice: () =>
+      approved === null
+        ? sliceOf({ status: "awaiting_approval", approval })
+        : sliceOf(),
+    routes: [
+      [
+        "POST",
+        "/sandboxes/sbx_1/slice/approve",
+        (body) => {
+          approved = body;
+          return json({ slice: sliceOf() });
+        },
+      ],
+    ],
+  });
+  vi.stubGlobal("fetch", state.fetchMock);
+  const part = await sandboxPart();
+  const panel = await within(part).findByTestId("slice-approval");
+  expect(
+    within(panel).getByText(
+      /chose starts from a directory rather than named files and holds more files than are cut unasked\./,
+    ),
+  ).toBeDefined();
+  expect(within(panel).getByText("src/invitations")).toBeDefined();
+  expect(within(panel).getByText("src/invitations/retry.ts")).toBeDefined();
+  expect(within(panel).getByText("and 50 more")).toBeDefined();
+  // Nothing is sliced from it until it is approved.
+  expect(
+    (within(part).getByRole("button", { name: "Slice" }) as HTMLButtonElement)
+      .disabled,
+  ).toBe(true);
+  await userEvent.click(
+    within(panel).getByRole("button", { name: "Approve slice" }),
+  );
+  await waitFor(() =>
+    expect(approved).toEqual({
+      sliceRunId: "arn_slice",
+      entryPoints: ["src/invitations"],
+      budget: { maxFiles: 120, maxDepth: 3 },
+      includeInferred: false,
+    }),
+  );
+  // Measured already, it is ready at once; the versions are read again
+  // until the draft the cutter cuts from it shows.
+  expect(
+    await within(part).findByText("Building", {}, { timeout: 10_000 }),
+  ).toBeDefined();
+  expect(within(part).queryByTestId("slice-approval")).toBeNull();
+});
+
+test.each([
+  [
+    ["directory_entry_point", "too_many_files", "too_deep"],
+    /named files, holds more files than are cut unasked, and follows imports deeper than are cut unasked\./,
+  ],
+  [[], /chose is wider than is cut unasked\./],
+])(
+  "a slice's reasons for waiting read as one sentence: %j",
+  async (reasons, said) => {
+    const approval = {
+      reasons,
+      entryPoints: ["src/invitations"],
+      budget: { maxFiles: 120, maxDepth: 4 },
+      includeInferred: false,
+      includedFiles: 2,
+      included: ["src/invitations/send.ts", "src/invitations/retry.ts"],
+      truncated: false,
+    };
+    vi.stubGlobal(
+      "fetch",
+      slicingServer({
+        versions: () => [],
+        slice: () => sliceOf({ status: "awaiting_approval", approval }),
+      }).fetchMock,
+    );
+    const part = await sandboxPart();
+    const panel = await within(part).findByTestId("slice-approval");
+    expect(within(panel).getByText(said)).toBeDefined();
+  },
+);
+
+/** A slice waiting on its approval, as the approval tests show it. */
+const waitingApproval = {
+  reasons: ["too_many_files"],
+  entryPoints: ["src/invitations"],
+  budget: { maxFiles: 120, maxDepth: 3 },
+  includeInferred: false,
+  includedFiles: 52,
+  included: ["src/invitations/send.ts"],
+  truncated: true,
+};
+
+test.each([
+  [
+    409,
+    "slice_changed",
+    "The slice changed since it was shown. Reload it and try again.",
+  ],
+  [
+    409,
+    "slice_not_awaiting_approval",
+    "The slice is not waiting for an approval.",
+  ],
+  [403, "forbidden", "Only owners and admins can do this."],
+])(
+  "an approval refused with %i %s says why, reads the slice again and can be tried again",
+  async (status, code, error) => {
+    const state = slicingServer({
+      versions: () => [],
+      slice: () =>
+        sliceOf({ status: "awaiting_approval", approval: waitingApproval }),
+      routes: [
+        [
+          "POST",
+          "/sandboxes/sbx_1/slice/approve",
+          () => json({ error, code }, status),
+        ],
+      ],
+    });
+    vi.stubGlobal("fetch", state.fetchMock);
+    const part = await sandboxPart();
+    const panel = await within(part).findByTestId("slice-approval");
+    const reads = () =>
+      state.calls.filter(
+        ({ method, url }) =>
+          method === "GET" && url.endsWith("/sandboxes/sbx_1/slice"),
+      ).length;
+    const before = reads();
+    await userEvent.click(
+      within(panel).getByRole("button", { name: "Approve slice" }),
+    );
+    expect((await within(part).findByRole("alert")).textContent).toBe(error);
+    await waitFor(() => expect(reads()).toBeGreaterThan(before));
+    const again = within(
+      await within(part).findByTestId("slice-approval"),
+    ).getByRole("button", { name: "Approve slice" }) as HTMLButtonElement;
+    expect(again.disabled).toBe(false);
+    await userEvent.click(again);
+    await waitFor(() =>
+      expect(
+        state.calls.filter(
+          ({ method, url }) =>
+            method === "POST" && url.endsWith("/sandboxes/sbx_1/slice/approve"),
+        ),
+      ).toHaveLength(2),
+    );
+  },
+);
+
+test("a member sees no slice to approve, and does not read it", async () => {
+  const state = slicingServer({
+    versions: () => [],
+    slice: () =>
+      sliceOf({ status: "awaiting_approval", approval: waitingApproval }),
+  });
+  vi.stubGlobal("fetch", state.fetchMock);
+  const part = await sandboxPart("member");
+  expect(
+    await within(part).findByText(/An owner or admin can slice one/),
+  ).toBeDefined();
+  expect(within(part).queryByTestId("slice-approval")).toBeNull();
+  expect(
+    within(part).queryByRole("button", { name: "Approve slice" }),
+  ).toBeNull();
+  expect(
+    state.calls.some(({ url }) => url.endsWith("/sandboxes/sbx_1/slice")),
+  ).toBe(false);
+});
+
+test("a slice waiting for approval whose files cannot be read says so, with nothing to approve", async () => {
+  vi.stubGlobal(
+    "fetch",
+    slicingServer({
+      versions: () => [],
+      slice: () => sliceOf({ status: "awaiting_approval", approval: null }),
+    }).fetchMock,
+  );
+  const part = await sandboxPart();
+  expect(
+    await within(part).findByText(
+      /what it holds could not be read back\. Price it again to slice a new spec\./,
+    ),
+  ).toBeDefined();
+  expect(
+    within(part).queryByRole("button", { name: "Approve slice" }),
+  ).toBeNull();
+});
+
 test("a slice that failed says why, and a refused slice says why too", async () => {
   vi.stubGlobal(
     "fetch",
@@ -4653,139 +4855,143 @@ test("a bounty's page splits into tabs, each one in the address", async () => {
   ).toBeDefined();
 });
 
-test("a proposal waiting on its code is read again once the code is measured, and shows the rubric's size", async () => {
-  const spec = {
-    feature: "Invitations",
-    background: [],
-    scenarios: [
-      {
-        id: "s1",
-        kind: "happy",
-        title: "One invitation",
-        steps: [{ keyword: "Then", text: "one email" }],
-        origin: "draft",
-        weight: "heavy",
+// Measured awaiting its slice's approval has settled for the price too.
+test.each(["ready", "awaiting_approval"])(
+  "a proposal waiting on its code is read again once the code is measured (%s), and shows the rubric's size",
+  async (status) => {
+    const spec = {
+      feature: "Invitations",
+      background: [],
+      scenarios: [
+        {
+          id: "s1",
+          kind: "happy",
+          title: "One invitation",
+          steps: [{ keyword: "Then", text: "one email" }],
+          origin: "draft",
+          weight: "heavy",
+        },
+      ],
+      openQuestions: [],
+      assumptions: [],
+    } as const;
+    const measured = {
+      version: COMPLEXITY_PROFILE_VERSION,
+      slice: {
+        files: 2,
+        bytes: 2_000,
+        modules: ["src/mailer"],
+        stubCoverage: "full",
+        blockers: 0,
+        ready: true,
       },
-    ],
-    openQuestions: [],
-    assumptions: [],
-  } as const;
-  const measured = {
-    version: COMPLEXITY_PROFILE_VERSION,
-    slice: {
-      files: 2,
-      bytes: 2_000,
-      modules: ["src/mailer"],
-      stubCoverage: "full",
-      blockers: 0,
-      ready: true,
-    },
-    touchedModules: ["src/mailer"],
-    externals: { services: [], environment: 0, seams: 0 },
-    spec: {
-      scenarios: 1,
-      kinds: {
-        happy: 1,
-        boundary: 0,
-        unhappy: 0,
-        recovery: 0,
-        permission: 0,
-        concurrency: 0,
-        "non-functional": 0,
+      touchedModules: ["src/mailer"],
+      externals: { services: [], environment: 0, seams: 0 },
+      spec: {
+        scenarios: 1,
+        kinds: {
+          happy: 1,
+          boundary: 0,
+          unhappy: 0,
+          recovery: 0,
+          permission: 0,
+          concurrency: 0,
+          "non-functional": 0,
+        },
+        openQuestions: 0,
+        assumptions: 0,
       },
-      openQuestions: 0,
-      assumptions: 0,
-    },
-    tests: { files: 1, untestedModules: [] },
-    pattern: null,
-    nonFunctional: { scenarios: 0, migrations: false, ci: false },
-    risks: [],
-  } as const;
-  // Sized by the model at M, the code still to measure...
-  const waiting = proposal({
-    specRevision: 1,
-    rubric: assessRubric({ spec, code: { status: "pending" } }),
-  });
-  // ...then, the code measured, sized by the rubric: 4 + 1 = 5 points, XS+.
-  const sized = proposal({
-    specRevision: 1,
-    revision: 2,
-    sizedBy: "rubric",
-    complexity: "XS+",
-    amountMinor: 100,
-    rubric: assessRubric({
-      spec,
-      code: {
-        status: "measured",
-        profiles: [{ repository: "acme/app", profile: measured }],
-        specRevision: 1,
-      },
-    }),
-  });
-  let settled = false;
-  const detailFor = (body: unknown) =>
-    json({
-      proposal: body,
-      freshness: { freshness: "current", checkedAt: stamp },
-      liveSpec: null,
-      writebackOperations: [],
+      tests: { files: 1, untestedModules: [] },
+      pattern: null,
+      nonFunctional: { scenarios: 0, migrations: false, ci: false },
+      risks: [],
+    } as const;
+    // Sized by the model at M, the code still to measure...
+    const waiting = proposal({
+      specRevision: 1,
+      rubric: assessRubric({ spec, code: { status: "pending" } }),
     });
-  const { fetchMock, calls } = server([
-    [
-      "GET",
-      "/bounties/bty_7",
-      () => json({ bounty: detail({ proposal: liveProposal() }) }),
-    ],
-    [
-      "GET",
-      "/profile",
-      () => {
-        settled = true;
-        return json({
-          profiles: [
-            {
-              id: "bpf_1",
-              proposalId: "bpr_9",
-              specRevision: 1,
-              repository: "acme/app",
-              status: "ready",
-              errorCode: null,
-              runErrorCode: null,
-              snapshotId: "rsn_1",
-              scopeRunId: "arn_1",
-              sliceRunId: "arn_2",
-              profile: measured,
-              createdAt: stamp,
-              updatedAt: stamp,
-            },
-          ],
-        });
-      },
-    ],
-    ["GET", "/spec", () => json({ spec: null })],
-    ["GET", "/proposals/bpr_9", () => detailFor(settled ? sized : waiting)],
-  ]);
-  vi.stubGlobal("fetch", fetchMock);
-  window.history.replaceState(null, "", "/bounties/acme/bty_7?tab=price");
-  render(<Shell {...inAcme("admin")} />);
-  const page = await screen.findByTestId("bounty-detail");
-  const rubric = await within(page).findByRole("region", {
-    name: "Why this price",
-  });
-  await waitFor(
-    () =>
-      expect(within(rubric).getByTestId("rubric-source").textContent).toBe(
-        "The rubric set this size.",
-      ),
-    { timeout: 4_000 },
-  );
-  expect(within(page).getByText("set by the rubric")).toBeDefined();
-  expect(within(page).getByText("The model's read: M")).toBeDefined();
-  const reads = calls.filter(
-    ({ method, url }) => method === "GET" && /\/proposals\/bpr_9$/.test(url),
-  );
-  expect(reads.length).toBeGreaterThanOrEqual(2);
-});
+    // ...then, the code measured, sized by the rubric: 4 + 1 = 5 points, XS+.
+    const sized = proposal({
+      specRevision: 1,
+      revision: 2,
+      sizedBy: "rubric",
+      complexity: "XS+",
+      amountMinor: 100,
+      rubric: assessRubric({
+        spec,
+        code: {
+          status: "measured",
+          profiles: [{ repository: "acme/app", profile: measured }],
+          specRevision: 1,
+        },
+      }),
+    });
+    let settled = false;
+    const detailFor = (body: unknown) =>
+      json({
+        proposal: body,
+        freshness: { freshness: "current", checkedAt: stamp },
+        liveSpec: null,
+        writebackOperations: [],
+      });
+    const { fetchMock, calls } = server([
+      [
+        "GET",
+        "/bounties/bty_7",
+        () => json({ bounty: detail({ proposal: liveProposal() }) }),
+      ],
+      [
+        "GET",
+        "/profile",
+        () => {
+          settled = true;
+          return json({
+            profiles: [
+              {
+                id: "bpf_1",
+                proposalId: "bpr_9",
+                specRevision: 1,
+                repository: "acme/app",
+                status,
+                errorCode: null,
+                runErrorCode: null,
+                snapshotId: "rsn_1",
+                scopeRunId: "arn_1",
+                sliceRunId: "arn_2",
+                profile: measured,
+                createdAt: stamp,
+                updatedAt: stamp,
+              },
+            ],
+          });
+        },
+      ],
+      ["GET", "/spec", () => json({ spec: null })],
+      ["GET", "/proposals/bpr_9", () => detailFor(settled ? sized : waiting)],
+    ]);
+    vi.stubGlobal("fetch", fetchMock);
+    window.history.replaceState(null, "", "/bounties/acme/bty_7?tab=price");
+    render(<Shell {...inAcme("admin")} />);
+    const page = await screen.findByTestId("bounty-detail");
+    const rubric = await within(page).findByRole("region", {
+      name: "Why this price",
+    });
+    await waitFor(
+      () =>
+        expect(within(rubric).getByTestId("rubric-source").textContent).toBe(
+          "The rubric set this size.",
+        ),
+      { timeout: 4_000 },
+    );
+    expect(within(page).getByText("set by the rubric")).toBeDefined();
+    expect(within(page).getByText("The model's read: M")).toBeDefined();
+    const reads = calls.filter(
+      ({ method, url }) => method === "GET" && /\/proposals\/bpr_9$/.test(url),
+    );
+    expect(reads.length).toBeGreaterThanOrEqual(2);
+  },
+);
 
 test("a proposal whose code is being measured offers no re-analysis or approval until it is", async () => {
   const spec = {

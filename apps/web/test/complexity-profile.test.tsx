@@ -278,6 +278,17 @@ test("a failed profile gives its reason and the run's own code", async () => {
   expect(status.textContent).toContain("(agent_unavailable)");
 });
 
+test("a profile whose slice awaits approval shows what it measured, and where the slice is approved", async () => {
+  answer({ profiles: [stored({ status: "awaiting_approval" })] });
+  render(<Wired />);
+  const notice = await screen.findByText(
+    /approves the slice on the Sandbox tab/,
+  );
+  expect(notice.textContent).toContain("once the price is approved");
+  expect(screen.getByTestId("profile-rows")).toBeTruthy();
+  expect(screen.queryByText(/could not be measured/)).toBeNull();
+});
+
 test("never profiled shows nothing; a read that fails says so", async () => {
   answer({ profiles: [] });
   const { container, unmount } = render(<Wired />);

@@ -83,9 +83,30 @@ private bucket (`sources/<repoId>/<sha>.tar.gz`) before GitHub and written
 there once unpacked; the bucket expires them after 30 days, and removing
 the repository removes them (`src/fetch-source.ts`).
 
-The local evaluation provider shares one npm cache across jobs, outside any
-job's directory, and keeps the lockfile it prepares for each set of
-dependencies, keyed by what `package.json` asks to install.
+The local evaluation provider gives each job a private home and temporary
+directory (npm logs there too) and an npm cache outside its directory: one per
+job uid on a root worker, of which only `_cacache` outlives a job, one for
+every job otherwise. Installs reuse it, checked against the lockfile's sha512
+integrity; the lockfile preparation step resolves in an empty cache of its own
+instead. The worker keeps the lockfile that step
+produced for each set of dependencies, keyed by what `package.json` asks to
+install, and reuses it only while its root entry matches that manifest and
+every package is its own `registry.npmjs.org` tarball with a sha512
+integrity (`src/evaluation/lockfiles.ts`); on a root worker the store's
+directory is one jobs cannot write. A root worker checks at startup that it
+can run processes as each job uid, then runs each job as a uid of its own
+from `EVALUATION_JOB_UID` (at least 10000, one per concurrent job, the range
+clear of 65534) and, after the job, kills everything that uid runs, confirmed
+by a `/proc` scan, and removes what it owns under `/tmp`, `/var/tmp` and
+`/dev/shm`; a uid it fails to clear is held back until a later sweep succeeds.
+That keeps the worker's process environment, caches and other jobs' files from
+a job, not what is world-readable or the network. In compose the worker mounts
+the checkout read-only where job uids cannot enter and runs a root-owned copy
+of what it builds from (`/repo`, without `.git`, env files, keys or build
+output, made at each start; see the `worker` service in
+`docker-compose.yml`): a job reads that copy but cannot change it, and reaches
+Postgres and SeaweedFS with their development credentials. Any other worker
+runs jobs as itself and warns once (`src/evaluation/isolation.ts`).
 
 ## Output contract
 
@@ -185,7 +206,18 @@ inheritance and use relations until the budget is spent: files inside are
 _included_, dependency edges that leave the set are _cuts_, and outside
 files' imports of included modules are the _public surface_. For
 TypeScript and JavaScript the cut modules get declaration stubs from the
-compiler's own emitter and the whole is type-checked in memory with the
+compiler's own emitter, without comments, literal values (constants, class
+properties, `as const` objects and tuples and literal annotations, widened
+to `string`, `number`, `bigint` or `boolean`; a string enum member's value
+becomes its name) or private member names (one `#private` brand), narrowed
+to the names asked for and what they reference (a namespace import's reads
+unless it escapes). `@internal` declarations are kept when asked for or
+referenced, without their comments; the contract's declarations are the
+same text. A slice that
+includes a credentials file (`isSecretPath` in
+`packages/core/src/sandbox/secrets.ts`: env files, private keys, keystores
+and credential configs, never their `.example`/`.sample`/`.template`) is
+blocked `secret_file`. The whole is type-checked in memory with the
 source's nearest `tsconfig.json`, packages declared untyped; other languages
 get the cut modules by name and `stubCoverage: "names-only"`.
 
@@ -200,7 +232,11 @@ every symbol has a declaration and the fixture compiled; `partial` and
 `names-only`, and any blocker (unknown entry point, unresolved or dynamic
 import, missing build input, incomplete declaration, compile error), are
 diagnostic and cannot advance to publishing. Externals are listed by import
-specifier and environment variable name; values are never read.
+specifier and environment variable name; values are never read. Each
+package records whether it is a workspace package (`package.json`
+`workspaces`, `pnpm-workspace.yaml`, `lerna.json`; `*` and `**` globs) and
+the registry its lockfile and npm or Yarn configuration say it comes from
+(`src/tools/package-registry.ts`).
 
 ### Sandbox build
 
@@ -217,12 +253,15 @@ and source bytes that differ from the manifest (`source_unavailable`).
 
 The alias table is applied with the inverse proof from
 `packages/core/src/sandbox/aliases.ts` to the source, stubs, contract, spec
-and fixtures, paths included; a collision, an irreversible rule or a value
-that no longer reads as its schema is an `alias_failed` blocker and nothing
-is generated. The project generator (`packages/core/src/sandbox/project.ts`)
-writes the aliased source with compiler-alias imports rewritten to relative
-paths, a `.d.ts` stub and a recording-mock `.js` per cut module, a local
-`file:` mock package per service under `mocks/`, the harness
+and fixtures, paths included, and to the names of mocked packages and
+environment variables; a collision, an irreversible rule, a value that no
+longer reads as its schema or a renamed package or variable that is no
+longer a valid name is an `alias_failed` blocker and nothing is generated.
+The project generator (`packages/core/src/sandbox/project.ts`) writes the
+aliased source with compiler-alias imports rewritten to relative paths, a
+`.d.ts` stub and a recording-mock `.js` per cut module, a local `file:` mock
+package per mocked package under `mocks/` by its renamed name (imports and
+`process.env` reads follow), the harness
 (`sandbox/mock.js`, `sandbox/run.ts`), public tests under `tests/public`,
 hidden tests under `tests/private`, `package.json` pinning the approved
 packages, `tsconfig.json`, `.nvmrc`, `.npmrc`, `sandbox.env` with fixture
@@ -230,9 +269,15 @@ values for every environment variable the slice reads, `README.md` and
 `sandbox-task.json`. The local contract is `npm ci`, `npm run dev`,
 `npm run build`, `npm test` on Node 22+, fixed in `packages/core`. Only
 registry versions are installed: a dependency pinned to a URL, a path or an
-alias is `dependency_unresolved`. Every build scans the public files for the
-workspace's names (`packages/core/src/sandbox/vocabulary.ts`) and blocks
-`vocabulary_leaked`.
+alias is `dependency_unresolved`. A package installs by its real name only
+when a lockfile resolves it from the public registry and no configuration
+sends its scope elsewhere; any other is mocked by default, and one from
+another registry can never be approved. Every build scans the public files
+for the workspace's names (`packages/core/src/sandbox/vocabulary.ts`; an
+organization's distinctive words too, and the scope, or multi-word name, of each workspace or private-registry package the slice imports) and blocks `vocabulary_leaked`, and for
+credentials (`packages/core/src/sandbox/secrets.ts`) and blocks `secret_found`
+by file, line and rule, never the value. Starters are scanned the same way.
+`.gitignore` names only public files' output.
 
 A sliced draft with no fixtures, hidden tests or pseudonyms has each written
 by an agent during the build (`fixtures.ts` via `writeFixtures`,
@@ -246,17 +291,21 @@ taken first.
 The baseline runs in a fresh job from the evaluation provider: trusted
 preparation pins the lockfile (`npm install --package-lock-only`), then
 `npm ci`, `npm run build`, `npm run dev`, `npm test`, and each hidden test
-on its own, reported as TAP. At least one hidden test must be expected to
-fail, and each must do what its `expectedBaseline` says; a build or harness
-failure, or a test file that fails before any test ran, is never accepted
-as that baseline. The job is destroyed on every path and its execution
+on its own, reported as TAP, then every hidden test once more. At least one
+hidden test must be expected to fail, and each must do what its
+`expectedBaseline` says, with the same result for every test on both runs
+(else `flaky`); a build or harness failure, or a test file that fails before
+any test ran, is never accepted as that baseline. A pass is read from the
+report's closing counts, not the exit code (`privateTestOutcome`, which
+grading reuses). The job is destroyed on every path and its execution
 record (provider, job id, environment, input hash, state, teardown) is kept
 in the report. The provider contract is
 [`packages/core/src/sandbox/build.ts`](../../packages/core/src/sandbox/build.ts).
 The worker ships `local-process` (`src/evaluation/local-process.ts`): a
 temporary directory and child processes with a scrubbed environment. It is
 the development provider, **not an isolation boundary**, used only with
-`EVALUATION_PROVIDER=local-process` (the compose file sets it). The default,
+`EVALUATION_PROVIDER=local-process` (the compose file sets it) and refused
+at startup with `NODE_ENV=production`. The default,
 `none`, fails every build `evaluation_failed` before anything is generated.
 Hosted execution of untrusted contributor code needs an isolated provider;
 none is implemented.
@@ -314,7 +363,8 @@ request and the token usage), also carried whole in its artifact row's
 A `fixtures` run (`src/tools/fixtures.ts`) names a succeeded slice run, a
 proposal and a spec revision, and `dataModelRunId` when the snapshot has
 one. `check_fixtures` parses each implementation (exactly one function
-expression), types it against the declaration it stands in for, and
+expression that keeps the fixture rules of `packages/core/src/sandbox/confined.ts`,
+which every build also applies, the walkthrough included), types it against the declaration it stands in for, and
 compiles the walkthrough as `sandbox/run.ts` beside the included source
 with the generated project's compiler options; `submit_fixtures` is
 accepted only when that compiles. Output: `fixture-set.json` (fixtures with
@@ -350,8 +400,11 @@ its pseudonyms (`set_pseudonyms`; identifier and text rules only, at least
 one, applied with the inverse proof to everything it wrote). `check_starter`
 type-checks the project in memory, `run_starter` runs its baseline in a
 fresh job and shows the agent the failing steps' output, and
-`submit_starter` is accepted when the baseline passes; once the runs are
-spent, the last answer is kept as a build that is not ready. Outputs:
+`submit_starter` is accepted when the baseline passes. A public file, the
+listing in the README and descriptor included, that still carries a
+workspace name (`params.vocabulary`) fails the check as `vocabulary_leaked`
+does a build. Once the runs are spent, the last answer is kept as a build
+that is not ready. Outputs:
 `starter-set.json` (the answer, its pseudonyms, the stack and the usage;
 its hash is the version's `starterSha256`) and the same `build-manifest.json`,
 `baseline.json`, `project/` and `private/` files a build writes. After the

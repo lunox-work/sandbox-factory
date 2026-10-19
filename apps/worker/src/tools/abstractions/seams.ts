@@ -48,6 +48,8 @@ export async function readSeamsIndex(input: {
   readonly graphRunId: string;
   readonly graphSha256: string;
   readonly signal: AbortSignal;
+  /** Hears how many of its files have been read, of how many. */
+  readonly progress?: ((done: number, total: number) => void) | undefined;
 }): Promise<SeamsIndex> {
   const paths = seamsFiles(input.graph);
   // Each text is reduced to its entry as it is read, so the checkout is
@@ -63,6 +65,7 @@ export async function readSeamsIndex(input: {
         ),
       )),
     );
+    input.progress?.(files.length, paths.length);
   }
   return buildSeamsIndex({
     files,

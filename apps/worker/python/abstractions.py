@@ -12,6 +12,7 @@ import importlib.metadata
 import json
 import os
 import stat
+import sys
 from pathlib import Path
 
 from tree_sitter import Language, Parser
@@ -438,10 +439,26 @@ def read(root, path):
         os.close(descriptor)
 
 
+class Progress:
+    """How far the run has got, as `@@progress done total` lines on stderr: at most one per percent."""
+
+    def __init__(self, total):
+        self.total, self.shown = max(total, 1), -1
+
+    def __call__(self, done):
+        percent = done * 100 // self.total
+        if percent != self.shown:
+            self.shown = percent
+            print(f"@@progress {done} {self.total}", file=sys.stderr, flush=True)
+
+
 def run(source, listing):
     root = source.resolve()
     modules, omissions = [], []
-    for entry in sorted(json.loads(listing.read_text(encoding="utf-8")), key=lambda item: item["path"]):
+    entries = sorted(json.loads(listing.read_text(encoding="utf-8")), key=lambda item: item["path"])
+    progress = Progress(len(entries))
+    for index, entry in enumerate(entries):
+        progress(index)
         path, language = entry["path"], entry["language"]
         extract = EXTRACTORS.get(language)
         parser = parser_for(language, path) if extract is not None else None
@@ -464,6 +481,7 @@ def run(source, listing):
         if tree.root_node.has_error:
             omissions.append({"code": "parse_failed", "file": path, "detail": "The grammar recovered from a syntax error; signatures near it may be missing."})
         modules.append({"path": path, "language": language, "exports": module.exports})
+    progress(len(entries))
     return {"version": version(), "modules": modules, "omissions": omissions}
 
 

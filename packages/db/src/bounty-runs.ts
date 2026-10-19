@@ -14,6 +14,7 @@ import {
   eq,
   gt,
   inArray,
+  isNull,
   lt,
   notInArray,
   or,
@@ -85,8 +86,9 @@ export interface BountyRunStore {
   ): Promise<StoredBountyRun | null>;
   /**
    * The run sizing a bounty for its first proposal, if one is in flight:
-   * at most one, by `bounty_run_bounty_active_unique`. What the bounty's
-   * page follows, so a reload mid-sizing still shows it at work.
+   * its own run (at most one, by `bounty_run_bounty_active_unique`), or a
+   * board's run for its one issue once that has named it. What the
+   * bounty's page follows, so a reload mid-sizing still shows it at work.
    */
   activeForBounty(
     organizationId: string,
@@ -148,6 +150,17 @@ export interface BountyRunStore {
     runId: string,
     leaseToken: string,
     progress: BountyRunProgress,
+  ): Promise<boolean>;
+  /**
+   * Names the bounty a run sizing one board issue has just imported it
+   * as, so the bounty's page can follow the rest of the sizing. Once, and
+   * guarded by the lease like progress. False when the lease is gone.
+   */
+  attachBounty(
+    organizationId: string,
+    runId: string,
+    leaseToken: string,
+    bountyId: string,
   ): Promise<boolean>;
   /**
    * Writes the model calls an ended run made, in place of any it had.
@@ -509,10 +522,11 @@ export function createBountyRunStore(db: Database): BountyRunStore {
           and(
             eq(bountyRun.organizationId, organizationId),
             eq(bountyRun.bountyId, bountyId),
-            eq(bountyRun.kind, "bounty"),
+            inArray(bountyRun.kind, ["bounty", "issue"]),
             inArray(bountyRun.status, ["queued", "running"]),
           ),
         )
+        .orderBy(desc(bountyRun.createdAt))
         .limit(1)) as BountyRunRow[];
       return rows[0] === undefined ? null : toDto(rows[0]);
     },
@@ -635,6 +649,28 @@ export function createBountyRunStore(db: Database): BountyRunStore {
           ),
         )
         .returning()) as BountyRunRow[];
+      if (rows.length === 0) return false;
+      await changed(organizationId, runId);
+      return true;
+    },
+
+    async attachBounty(organizationId, runId, leaseToken, bountyId) {
+      const now = new Date();
+      const rows = (await db
+        .update(bountyRun)
+        .set({ bountyId, updatedAt: now })
+        .where(
+          and(
+            eq(bountyRun.organizationId, organizationId),
+            eq(bountyRun.id, runId),
+            eq(bountyRun.kind, "issue"),
+            isNull(bountyRun.bountyId),
+            eq(bountyRun.status, "running"),
+            eq(bountyRun.leaseToken, leaseToken),
+            gt(bountyRun.leaseExpiresAt, now),
+          ),
+        )
+        .returning({ id: bountyRun.id })) as { id: string }[];
       if (rows.length === 0) return false;
       await changed(organizationId, runId);
       return true;

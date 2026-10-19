@@ -7,8 +7,9 @@ import { SEAM_KINDS } from "sandbox-factory";
  * with the very computation the slice tool runs. Its answer is accepted
  * only when that computation agrees: every seam it names is a module the
  * request cuts. The proposal is recorded with the deterministic verdict on
- * exactly that request, for a person to review in the slice picker; this
- * tool never starts a slice itself.
+ * exactly that request; this tool never starts a slice itself. The API's
+ * profiler slices it, and holds a slice wider than `AUTO_SLICE_LIMITS` for
+ * an owner or admin to approve before anything is cut from it.
  */
 
 import { mkdir, writeFile } from "node:fs/promises";

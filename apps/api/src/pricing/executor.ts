@@ -1252,6 +1252,12 @@ export class BountyExecutor {
       return { value: { ...read.value.failed, status: "failed" } };
     }
     const { bounty, content, specHash, base } = read.value;
+    // A ticket someone picked is followed on its bounty's page from here,
+    // as it is imported: the page opens on it, not on the proposal.
+    if (run.kind === "issue" && run.planned.length === 1)
+      await this.#options.runs
+        .attachBounty(organizationId, run.id, leaseToken, bounty.id)
+        .catch(() => false);
     /*
       A ticket picked on onboarding is sized beside the code without the
       person syncing it first: its scope takes the repositories' documents

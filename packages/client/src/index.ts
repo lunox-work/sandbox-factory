@@ -44,6 +44,7 @@ import {
   startSandboxResponseSchema,
 } from "@sandbox-factory/shared";
 import type {
+  ApproveSliceInput,
   BuildAllInput,
   CreateSandboxInput,
   CreateSandboxVersionInput,
@@ -370,6 +371,23 @@ export class SandboxClient extends GithubAnalysisClient {
         { method: "POST" },
       ),
     );
+  }
+  /**
+   * Approves the slice a linked sandbox's sizing awaits approval for,
+   * named by its run and request as `sandboxSlice` showed it. The version
+   * is then cut and built from it as the approver's.
+   */
+  async approveSandboxSlice(
+    owner: string,
+    sandboxId: string,
+    input: ApproveSliceInput,
+  ) {
+    return sandboxSliceResponseSchema.parse(
+      await this.request(
+        `${this.#sandboxes(owner)}/${encodeURIComponent(sandboxId)}/slice/approve`,
+        { method: "POST", body: JSON.stringify(input) },
+      ),
+    ).slice;
   }
   /** A draft version cut from a succeeded slice run. */
   async createSandboxVersion(

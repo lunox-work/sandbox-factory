@@ -250,8 +250,18 @@ const manifest: SliceManifest = {
   requiredBuildInputs: {
     configs: ["package.json"],
     packages: [
-      { name: "pg", version: "^8.11.0", declaredIn: "package.json" },
-      { name: "zod", version: "^4.0.0", declaredIn: "package.json" },
+      {
+        name: "pg",
+        version: "^8.11.0",
+        declaredIn: "package.json",
+        registry: { source: "public", evidence: "package-lock.json" },
+      },
+      {
+        name: "zod",
+        version: "^4.0.0",
+        declaredIn: "package.json",
+        registry: { source: "public", evidence: "package-lock.json" },
+      },
       { name: "left-pad", version: null, declaredIn: null },
     ],
   },
@@ -459,6 +469,69 @@ test("the repository's own package is mocked, never installed by its name", () =
   );
 });
 
+test("only a package shown to come from the public registry is installed by default", () => {
+  const withPackage = (
+    registry: { source: "public" | "private"; evidence: string } | null,
+    choices?: Record<string, "runtime-mock" | "approved-package">,
+  ) =>
+    resolveScope({
+      manifest: {
+        ...manifest,
+        requiredBuildInputs: {
+          ...manifest.requiredBuildInputs,
+          packages: [
+            {
+              name: "@acme/ui",
+              version: "^1.0.0",
+              declaredIn: "package.json",
+              ...(registry === null ? {} : { registry }),
+            },
+          ],
+        },
+      },
+      contract,
+      ...(choices === undefined ? {} : { choices }),
+    });
+  const dependency = (scope: ReturnType<typeof withPackage>) =>
+    scope.dependencies.find((d) => d.name === "@acme/ui");
+  // Public evidence installs it.
+  const shown = withPackage({ source: "public", evidence: "yarn.lock" });
+  assert.deepEqual(shown.blockers, []);
+  assert.equal(dependency(shown)?.resolution, "approved-package");
+  // No evidence mocks it, and says why; an owner may still approve it.
+  const unknown = withPackage(null);
+  assert.deepEqual(unknown.blockers, []);
+  assert.equal(dependency(unknown)?.resolution, "runtime-mock");
+  assert.match(dependency(unknown)?.detail ?? "", /No lockfile shows/);
+  const approved = withPackage(null, { "@acme/ui": "approved-package" });
+  assert.deepEqual(approved.blockers, []);
+  assert.equal(dependency(approved)?.resolution, "approved-package");
+  // Another registry mocks it, and no choice installs it by its name.
+  const hidden = withPackage({ source: "private", evidence: ".npmrc" });
+  assert.deepEqual(hidden.blockers, []);
+  assert.equal(dependency(hidden)?.resolution, "runtime-mock");
+  assert.match(
+    dependency(hidden)?.detail ?? "",
+    /another registry \(\.npmrc\)/,
+  );
+  const refused = withPackage(
+    { source: "private", evidence: "package-lock.json" },
+    { "@acme/ui": "approved-package" },
+  );
+  assert.equal(refused.blockers[0]?.code, "dependency_unresolved");
+  assert.equal(dependency(refused)?.resolution, "unresolved");
+  // A mock by choice says only that.
+  assert.equal(
+    dependency(
+      withPackage(
+        { source: "private", evidence: ".npmrc" },
+        { "@acme/ui": "runtime-mock" },
+      ),
+    )?.detail,
+    "Replaced by a generated recording mock package.",
+  );
+});
+
 test("only a registry version is installed; a URL, a path or an alias blocks", () => {
   const pinnedTo = (version: string) =>
     resolveScope({
@@ -524,15 +597,12 @@ test("scope resolution classifies every dependency and blocks what it cannot sat
     [
       ["lib/alias.ts", "module", "runtime-mock"],
       ["lib/service.ts", "module", "runtime-mock"],
-      ["left-pad", "package", "unresolved"],
+      ["left-pad", "package", "runtime-mock"],
       ["pg", "package", "runtime-mock"],
       ["zod", "package", "runtime-mock"],
     ],
   );
-  assert.deepEqual(
-    scope.blockers.map((b) => b.code),
-    ["dependency_unresolved"],
-  );
+  assert.deepEqual(scope.blockers, []);
   const partial = resolveScope({
     manifest: {
       ...manifest,
@@ -564,7 +634,6 @@ test("scope resolution classifies every dependency and blocks what it cannot sat
     [
       "slice_not_ready",
       "partial_signature_coverage",
-      "dependency_unresolved",
       "dependency_unresolved",
       "dependency_unresolved",
     ],
@@ -1034,7 +1103,12 @@ test("the generated project is standalone: rewritten imports, stubs beside mocks
     scripts: Record<string, string>;
     engines: { node: string };
   };
-  assert.deepEqual(pkg.dependencies, { pg: "file:mocks/pg", zod: "^4.0.0" });
+  // Nothing shows left-pad comes from the public registry, so it is mocked.
+  assert.deepEqual(pkg.dependencies, {
+    "left-pad": "file:mocks/left-pad",
+    pg: "file:mocks/pg",
+    zod: "^4.0.0",
+  });
   assert.deepEqual(pkg.devDependencies, {
     typescript: SANDBOX_TOOLCHAIN.typescript,
   });
@@ -1088,8 +1162,11 @@ test("the generated project is standalone: rewritten imports, stubs beside mocks
   );
   assert.match(
     byPath.get(".gitignore")?.text ?? "",
-    /^node_modules\/\nsandbox\/run\.js\nsrc\/app\.js\ntests\/private\/fix\.test\.js\ntests\/public\/interface\.test\.js\ntests\/public\/spec\.test\.js\n$/,
+    /^node_modules\/\nsandbox\/run\.js\nsrc\/app\.js\ntests\/public\/interface\.test\.js\ntests\/public\/spec\.test\.js\n$/,
   );
+  // A hidden test's path never reaches a file the contributor reads.
+  for (const file of result.files.filter((item) => item.public))
+    assert.doesNotMatch(file.text, /tests\/private/, file.path);
   // Tests: public interface and scenarios, private ones only where allowed.
   const iface = byPath.get("tests/public/interface.test.ts");
   assert.equal(iface?.public, true);
@@ -1294,6 +1371,141 @@ test("imports inside the slice follow path aliases and moved files; JavaScript s
   assert.match(
     result.files.find((f) => f.path === "tsconfig.json")?.text ?? "",
     /"\*\*\/\*\.tsx"/,
+  );
+});
+
+test("mocked packages and environment variables go by the table's public names", () => {
+  const result = project({
+    manifest: {
+      ...manifest,
+      externals: {
+        ...manifest.externals,
+        environment: [
+          { name: "ACME_LEDGER_URL", files: ["src/app.ts"] },
+          { name: "DATABASE_URL", files: ["src/app.ts"] },
+        ],
+      },
+    },
+    sources: [
+      {
+        originalPath: "src/app.ts",
+        path: "src/app.ts",
+        text: [
+          'import { post } from "@acme/ledger";',
+          'import { sub } from "@acme/ledger/sub";',
+          'import { ui } from "@acme/sdk";',
+          'import { other } from "@nimbus/ledger";',
+          "export const a = process.env.ACME_LEDGER_URL;",
+          'export const b = process.env["ACME_LEDGER_URL"];',
+          "export const c = process.env.ACME_LEDGER_URL_OLD;",
+          "export const d = process.env.DATABASE_URL;",
+          "export const e = process.env?.ACME_LEDGER_URL;",
+          "export const f = process.env?.['ACME_LEDGER_URL'];",
+          "const { ACME_LEDGER_URL } = process.env;",
+          "const { ACME_LEDGER_URL: g, DATABASE_URL } = process.env;",
+          'let { DATABASE_URL: h, ACME_LEDGER_URL = "x, ACME_LEDGER_URL" } = process.env;',
+          "const { 'ACME_LEDGER_URL': i, ...rest }: Env = process.env;",
+          "const { ACME_LEDGER_URL: j } = process.env.NESTED;",
+          "const k = { ACME_LEDGER_URL };",
+          "export function run() { return [post, sub, ui, other]; }",
+        ].join("\n"),
+      },
+    ],
+    stubs: [],
+    contract: { ...contract, outbound: [], inbound: [] },
+    dependencies: [
+      {
+        name: "@acme/ledger",
+        kind: "package",
+        version: "*",
+        resolution: "runtime-mock",
+        detail: "",
+      },
+      {
+        name: "@acme/sdk",
+        kind: "package",
+        version: "1.0.0",
+        resolution: "approved-package",
+        detail: "",
+      },
+    ],
+    acceptanceTests: [],
+    scenario: 'console.log("walkthrough");\n',
+    publicNames: {
+      packages: {
+        "@acme/ledger": "@nimbus/ledger",
+        "@acme/sdk": "@nimbus/sdk",
+      },
+      environment: {
+        ACME_LEDGER_URL: "LEDGER_URL",
+        DATABASE_URL: "DATABASE_URL",
+      },
+    },
+  });
+  const byPath = new Map(result.files.map((file) => [file.path, file.text]));
+  const app = byPath.get("src/app.ts") ?? "";
+  assert.match(app, /import \{ post \} from "@nimbus\/ledger";/);
+  assert.match(app, /import \{ sub \} from "@nimbus\/ledger\/sub";/);
+  // An approved package keeps the name the registry knows it by.
+  assert.match(app, /import \{ ui \} from "@acme\/sdk";/);
+  assert.match(app, /const a = process\.env\.LEDGER_URL;/);
+  assert.match(app, /const b = process\.env\["LEDGER_URL"\];/);
+  assert.match(app, /const c = process\.env\.ACME_LEDGER_URL_OLD;/);
+  assert.match(app, /const d = process\.env\.DATABASE_URL;/);
+  assert.match(app, /const e = process\.env\?\.LEDGER_URL;/);
+  assert.match(app, /const f = process\.env\?\.\['LEDGER_URL'\];/);
+  // Destructured, the binding stays the source's; only the key is read.
+  assert.match(
+    app,
+    /^const \{ LEDGER_URL: ACME_LEDGER_URL \} = process\.env;$/m,
+  );
+  assert.match(
+    app,
+    /^const \{ LEDGER_URL: g, DATABASE_URL \} = process\.env;$/m,
+  );
+  assert.match(
+    app,
+    /^let \{ DATABASE_URL: h, LEDGER_URL: ACME_LEDGER_URL = "x, ACME_LEDGER_URL" \} = process\.env;$/m,
+  );
+  assert.match(
+    app,
+    /^const \{ 'LEDGER_URL': i, \.\.\.rest \}: Env = process\.env;$/m,
+  );
+  // Neither a member of process.env nor an object literal is a read.
+  assert.match(app, /const \{ ACME_LEDGER_URL: j \} = process\.env\.NESTED;/);
+  assert.match(app, /const k = \{ ACME_LEDGER_URL \};/);
+  assert.deepEqual(result.blockers, []);
+  // The rewrite is not listed: its `from` is the name the table hides.
+  assert.deepEqual(result.importRewrites, []);
+  const pkg = JSON.parse(byPath.get("package.json") ?? "{}") as {
+    dependencies: Record<string, string>;
+  };
+  assert.deepEqual(pkg.dependencies, {
+    "@acme/sdk": "1.0.0",
+    "@nimbus/ledger": "file:mocks/@nimbus/ledger",
+  });
+  const mockPackage = byPath.get("mocks/@nimbus/ledger/package.json") ?? "";
+  assert.match(mockPackage, /"name": "@nimbus\/ledger"/);
+  const mockIndex = byPath.get("mocks/@nimbus/ledger/index.js") ?? "";
+  assert.match(mockIndex, /Mock of the @nimbus\/ledger package/);
+  assert.match(mockIndex, /createMock\("package:@nimbus\/ledger"\)/);
+  assert.match(mockIndex, /export const other = mock\["other"\];/);
+  assert.match(mockIndex, /export const post = mock\["post"\];/);
+  assert.equal(
+    [...byPath.keys()].some((path) => path.includes("@acme/ledger")),
+    false,
+  );
+  assert.equal(
+    byPath.get("sandbox.env"),
+    "# Fixture values for the environment the task reads. Safe to commit;\n# nothing here reaches a real service.\nLEDGER_URL=sandbox-fixture-ledger-url\nDATABASE_URL=sandbox-fixture-database-url\n",
+  );
+  const readmeText = byPath.get("README.md") ?? "";
+  assert.match(readmeText, /- `@nimbus\/ledger`/);
+  assert.match(readmeText, /- `LEDGER_URL`/);
+  assert.doesNotMatch(readmeText, /ACME_LEDGER_URL|@acme\/ledger/);
+  assert.match(
+    byPath.get("sandbox/ambient.d.ts") ?? "",
+    /declare module "@nimbus\/ledger";/,
   );
 });
 
@@ -1552,6 +1764,20 @@ test("fixtures give mocked calls default behaviour, and a walkthrough replaces t
       "import_unrewritable sandbox/run.ts: ../../outside.js does not resolve to a file in the project.",
     ],
   );
+  // The walkthrough runs on contributors' machines: it keeps the fixture
+  // rules, and imports only the project's own files.
+  assert.deepEqual(
+    project({
+      scenario:
+        'import { run } from "../src/app.js";\nimport { readFileSync } from "node:fs";\nconsole.log(run(), Date.now());\n',
+    })
+      .blockers.filter((blocker) => blocker.code === "fixture_invalid")
+      .map((blocker) => `${blocker.file}: ${blocker.detail}`),
+    [
+      "sandbox/run.ts: node:fs is not a relative import; the walkthrough imports only the project's own files.",
+      "sandbox/run.ts: `Date` is allowed only as `new Date(value)`, never the current time.",
+    ],
+  );
 });
 
 test("a submission passes only when every public and hidden test passed", () => {
@@ -1618,4 +1844,46 @@ test("a package declared as a module of what is read of it takes the place of it
     ambientDeclarations(["@acme/shared"]),
     /declare module "@acme\/shared";/,
   );
+});
+
+test("a credential in any public file blocks the project, by file and line", () => {
+  const key = ["sk_", "live_", "q7Rf2Lk9Zp3Wm8Xc4Vb6Nt1Hs5Jd0Gy"].join("");
+  assert.equal(
+    project().blockers.some((blocker) => blocker.code === "secret_found"),
+    false,
+  );
+  const leaked = project({
+    sources: [
+      {
+        originalPath: "src/app.ts",
+        path: "src/app.ts",
+        text: "export function run() { return 1; }\n",
+      },
+      {
+        originalPath: "src/keys.json",
+        path: "src/keys.json",
+        text: `{\n  "stripe": "${key}"\n}\n`,
+      },
+    ],
+    acceptanceTests: [
+      {
+        path: "tests/private/fix.test.ts",
+        text: `const hidden = "${key}";\n`,
+        expectedBaseline: "fail",
+      },
+    ],
+  });
+  // The data file is public and scanned; the hidden test never ships.
+  assert.deepEqual(
+    leaked.blockers.filter((blocker) => blocker.code === "secret_found"),
+    [
+      {
+        code: "secret_found",
+        file: "src/keys.json",
+        detail:
+          "A credential appears at src/keys.json:2 (stripe-live-key). Remove it or replace it with a fixture value.",
+      },
+    ],
+  );
+  assert.equal(JSON.stringify(leaked.blockers).includes(key), false);
 });

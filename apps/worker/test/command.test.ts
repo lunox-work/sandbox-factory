@@ -23,6 +23,24 @@ test("parser environment excludes platform credentials", async () => {
   );
   assert.deepEqual(JSON.parse(extended), { seed: "0", extra: "1" });
 });
+test("progress lines on stderr are heard, split across chunks or not", async () => {
+  const heard: [number, number][] = [];
+  await command(
+    process.execPath,
+    [
+      "-e",
+      "process.stderr.write('@@progress 1 4\\nnoise\\n@@progr');setTimeout(()=>process.stderr.write('ess 4 4\\n@@progress x 4\\n'),20)",
+    ],
+    {
+      signal: new AbortController().signal,
+      progress: (done, total) => heard.push([done, total]),
+    },
+  );
+  assert.deepEqual(heard, [
+    [1, 4],
+    [4, 4],
+  ]);
+});
 test("command failures, missing executables and excessive output reject", async () => {
   const options = { signal: new AbortController().signal };
   await assert.rejects(

@@ -147,8 +147,10 @@ adds no redirect. HEAD requests and API calls are unaffected.
 ## Container dependencies
 
 `api-dev`, `web-dev` and `worker` each run `npm ci` for the entire workspace.
-Each must shadow **every** workspace's `node_modules` with an anonymous volume,
-including new workspaces, so Linux dependencies cannot overwrite host binaries.
+`api-dev` and `web-dev` must shadow **every** workspace's `node_modules` with an
+anonymous volume, including new workspaces, so Linux dependencies cannot
+overwrite host binaries. `worker` mounts the checkout read-only and installs
+into its own copy (`docker-compose.yml`).
 If the host tree is damaged, run `npm ci` on the host. App Dockerfiles build
 from the repository root to include workspace packages.
 

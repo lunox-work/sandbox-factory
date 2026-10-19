@@ -63,6 +63,7 @@ import type {
   ResolvedDependency,
   ScopeRecord,
 } from "./provenance.js";
+import { scanSecrets, secretBlockers } from "./secrets.js";
 
 /** 2 adds the name table. */
 export const STARTER_SET_SCHEMA_VERSION = 2;
@@ -341,6 +342,14 @@ function starterFileProblems(
  * file of its own, so an unscoped rule renames it with the source.
  */
 const SPEC_PSEUDO_PATH = "__approved_spec__.json";
+/** The version's listing, which the README and the descriptor carry. */
+const LISTING_PSEUDO_PATH = "__listing__.json";
+
+/** What a version is listed as: the bounty's own words until renamed. */
+export type StarterListing = Pick<
+  ProjectVersion,
+  "title" | "specSummary" | "tags"
+>;
 
 export type AliasedStarter =
   | {
@@ -348,12 +357,14 @@ export type AliasedStarter =
       /** The starter in public names; its name table is the one given. */
       readonly starter: StarterSubmission;
       readonly spec: SpecDraft | null;
+      /** The listing given, in public names. */
+      readonly listing: StarterListing | null;
     }
   | { readonly ok: false; readonly problems: readonly string[] };
 
 /**
  * The starter as contributors read it: its name table applied to its
- * source, tests, walkthrough and spec, and proved to map back. A rule that
+ * source, tests, walkthrough, spec and listing, and proved to map back. A rule that
  * renames nothing is refused, as a table that hides nothing would pass for
  * one that does.
  */
@@ -368,8 +379,12 @@ export function aliasStarter(
      * the part, and was checked when the starter was accepted.
      */
     readonly requireUse?: boolean;
+    /** The version's title, summary and tags, renamed with the rest. */
+    readonly listing?: StarterListing;
   } = {},
 ): AliasedStarter {
+  const listing = options.listing ?? null;
+  const specLeaves = spec === null ? [] : jsonLeaves(SPEC_PSEUDO_PATH, spec);
   const groups = [
     starter.files,
     starter.publicTests,
@@ -380,7 +395,8 @@ export function aliasStarter(
     { path: RUN_PATH, text: starter.scenario },
     // The spec's text, leaf by leaf: renaming it as one serialized string
     // renamed its keys as well (`jsonLeaves`).
-    ...(spec === null ? [] : jsonLeaves(SPEC_PSEUDO_PATH, spec)),
+    ...specLeaves,
+    ...(listing === null ? [] : jsonLeaves(LISTING_PSEUDO_PATH, listing)),
   ];
   const aliased = applyAliases(inputs, starter.aliases);
   if (!aliased.ok)
@@ -414,17 +430,20 @@ export function aliasStarter(
     text: textOf(test.text),
   }));
   const scenario = textOf(starter.scenario);
+  const leaves = aliased.files.map((file) => file.text);
   const renamedSpec =
     spec === null
       ? null
-      : withJsonLeaves(
-          spec,
-          aliased.files.slice(at).map((file) => file.text),
-        );
+      : withJsonLeaves(spec, leaves.slice(at, at + specLeaves.length));
+  const renamedListing =
+    listing === null
+      ? null
+      : withJsonLeaves(listing, leaves.slice(at + specLeaves.length));
   return {
     ok: true,
     starter: { ...starter, files, publicTests, hiddenTests, scenario },
     spec: renamedSpec,
+    listing: renamedListing,
   };
 }
 
@@ -723,8 +742,10 @@ export function generateStarterProject(
       file: RUN_PATH,
       detail: `${specifier} does not resolve to a file in the project.`,
     });
+  // Only public scripts name their output: a hidden test's path would
+  // tell the contributor what it checks.
   const emitted = [...files.values()]
-    .filter((file) => isScript(file.path))
+    .filter((file) => file.public && isScript(file.path))
     .map((file) => runtimePath(file.path))
     .filter((path) => !files.has(path))
     .sort(compare);
@@ -774,6 +795,9 @@ export function generateStarterProject(
     class: "config",
     public: true,
   });
+  blockers.push(
+    ...secretBlockers(scanSecrets([...files.values()].filter((f) => f.public))),
+  );
   return {
     files: [...files.values()].sort((a, b) => compare(a.path, b.path)),
     importRewrites: [],
