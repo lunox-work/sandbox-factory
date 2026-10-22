@@ -22,6 +22,7 @@ import {
   STARTER_RUNS_MAX,
   STEP_OUTPUT_CHARS,
   createStarterAdapter,
+  refusedCheckLog,
 } from "../src/tools/starter.js";
 
 const stamp = "2026-10-05T00:00:00.000Z";
@@ -248,9 +249,38 @@ test("a starter type-checks as its build would, and says where it does not", asy
       pathRule.problems[0] ?? "",
       /renames identifier and text names, not paths/,
     );
+    // Each refusal says where it stopped: only a type error is "types".
+    const stages = [broken, misplaced, unresolved, nameless, idle].map(
+      (checked) => (checked.ok ? "ok" : checked.stage),
+    );
+    assert.deepEqual(stages, ["types", "rules", "project", "rules", "names"]);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test("a refused check is logged with its problems, a hidden test's only counted", () => {
+  const long = `src/a.ts:1 TS2322 ${"x".repeat(400)}`;
+  const log = refusedCheckLog("check_starter", "types", [
+    long,
+    ...Array.from(
+      { length: 11 },
+      (_, index) => `src/b.ts:${index} TS1005 ';' expected.`,
+    ),
+    "tests/private/total.test.ts:3 TS2339 Property 'secret' does not exist.",
+  ]);
+  const lines = log.split("\n");
+  assert.equal(lines[0], "check_starter refused (types): 13 problems.");
+  // Long problems are cut, and at most ten are shown.
+  assert.equal(lines[1], `  ${long.slice(0, 300)}…`);
+  assert.equal(lines.length, 1 + 10 + 2);
+  assert.equal(lines[11], "  and 2 more");
+  assert.equal(lines[12], "  and 1 in hidden tests, not shown");
+  assert.doesNotMatch(log, /secret/);
+  assert.equal(
+    refusedCheckLog("run_starter", "names", ["Name 1: renames nothing."]),
+    "run_starter refused (names): 1 problem.\n  Name 1: renames nothing.",
+  );
 });
 
 const usage = {
@@ -440,6 +470,7 @@ async function runStarter(
 ) {
   const out = await mkdtemp(join(tmpdir(), "starter-run-"));
   const lines: string[] = [];
+  const steps: string[] = [];
   const files = await adapter.run({
     sourceDir: out,
     outDir: join(out, "out"),
@@ -448,12 +479,13 @@ async function runStarter(
     inputs: toolInputs,
     signal: new AbortController().signal,
     log: (line) => lines.push(line),
+    step: (line) => steps.push(line),
   });
   const read = async (path: string) => {
     const file = files.find((item) => item.path === path);
     return file === undefined ? null : readFile(file.absolutePath, "utf8");
   };
-  return { out, files, lines, read };
+  return { out, files, lines, steps, read };
 }
 const isCode = (code: string) => (error: unknown) =>
   error instanceof AnalysisError && error.code === code;
@@ -506,6 +538,8 @@ test("a starter naming the workspace anywhere a developer reads is refused until
     // A name the table leaves in the source is refused the same way.
     const inSource = check(["acme"], submission.aliases.slice(1));
     assert.equal(inSource.ok, false);
+    // A leak alone is the name table's to fix.
+    assert.equal(leaked.ok ? "ok" : leaked.stage, "names");
     assert.match(
       inSource.problems.join("\n"),
       /"acme" names the workspace .*: README\.md, sandbox-task\.json, src\/cart\.ts\./,
@@ -533,7 +567,7 @@ test("the starter agent checks, runs and submits a starter that is built as the 
     now: () => new Date(stamp),
   });
   const recorded: unknown[] = [];
-  const { out, files, lines, read } = await runStarter(
+  const { out, files, lines, steps, read } = await runStarter(
     adapter,
     inputs(stored, recorded),
   );
@@ -625,6 +659,30 @@ test("the starter agent checks, runs and submits a starter that is built as the 
       "starter_set",
     );
     assert.ok(lines.includes("Starter agent started."));
+    // A refused check says where it stopped, not that it does not compile,
+    // and the run log keeps its problems.
+    assert.equal(
+      steps[0],
+      "Checked the starter: its files break the starter's rules",
+    );
+    assert.ok(
+      steps.includes("Checked the starter: 3 files compile"),
+      steps.join("\n"),
+    );
+    assert.ok(!steps.some((step) => step.includes("does not compile")));
+    // A candidate that does not parse is refused before any check.
+    assert.ok(
+      steps.includes("Checked the starter: it was refused"),
+      steps.join("\n"),
+    );
+    const refused = lines.filter((line) =>
+      line.startsWith("check_starter refused"),
+    );
+    assert.equal(refused.length, 1, lines.join("\n"));
+    assert.match(
+      refused[0] ?? "",
+      /^check_starter refused \(rules\): 1 problem\.\n {2}.*needs a name table/,
+    );
     // Once committed, the starter settles on the version.
     await adapter.committed?.({
       runId: "arn_starter",
@@ -651,6 +709,11 @@ test("the starter agent checks, runs and submits a starter that is built as the 
             harnessSha256: manifest.harnessSha256,
             toolchainDigest: manifest.toolchainDigest,
           },
+          // The descriptor's public counts, which the version shows.
+          testSummary: [
+            { label: "public", count: 1 },
+            { label: "scenarios", count: 0 },
+          ],
         },
       },
     ]);

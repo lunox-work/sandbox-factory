@@ -61,8 +61,11 @@ export interface DraftedSpec {
  * `draft-v7` has the covered weight, for a scenario that adds no code.
  * `draft-v8` is shown each repository's brief, its stack, layout, tests,
  * most imported modules, entities and README, where it was an outline.
+ * `draft-v9` is told its repositories' labels are the one place it names
+ * a repository, which the rule against naming one in the spec had read as
+ * forbidding, and that behaviour a briefed repository has changes it.
  */
-export const DRAFT_SPEC_PROMPT_VERSION = "draft-v8";
+export const DRAFT_SPEC_PROMPT_VERSION = "draft-v9";
 
 /*
   The parts of the prompt a draft and a revision share, so the two tell
@@ -105,7 +108,7 @@ export const DRAFT_SPEC_SYSTEM_PROMPT = `You turn one Jira ticket into a behavio
 
 You see the ticket the application supplies: its summary, description and components. ${SEES_NO_CODE}
 
-${REPOSITORY_BRIEFS_SECTION} Weigh each scenario by what it needs of the code the briefs describe, such as a scenario that changes a stored entity, one that spans several modules, or one that has to change two repositories that must agree. In repositories, give the label of every briefed repository the work changes, and only those: none when there are no briefs, or when the work changes none of them.
+${REPOSITORY_BRIEFS_SECTION} Weigh each scenario by what it needs of the code the briefs describe, such as a scenario that changes a stored entity, one that spans several modules, or one that has to change two repositories that must agree. In repositories, give the label of every briefed repository the work changes, and only those: none when there are no briefs, or when the work changes none of them. The labels are the one place you name a repository: the rule against naming one is about the spec. A ticket that changes behaviour a briefed repository has, or adds behaviour beside it, changes that repository.
 
 ${SOURCE_CONTEXT_SECTION} Where the difference would change a scenario, ask it as an open question.
 

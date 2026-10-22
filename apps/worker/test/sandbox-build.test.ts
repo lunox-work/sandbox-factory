@@ -1352,6 +1352,10 @@ test("after commit, a ready build records its harness and toolchain on the draft
       output: {
         harnessSha256: ready.manifest.harnessSha256,
         toolchainDigest: ready.manifest.toolchainDigest,
+        testSummary: [
+          { label: "public", count: 2 },
+          { label: "scenarios", count: 1 },
+        ],
       },
     },
   ]);
@@ -1814,6 +1818,10 @@ test("a draft with no pseudonyms has a table drafted by rule, checked as the bui
       output: {
         harnessSha256: built.manifest.harnessSha256,
         toolchainDigest: built.manifest.toolchainDigest,
+        testSummary: [
+          { label: "public", count: 2 },
+          { label: "scenarios", count: 1 },
+        ],
         transform: {
           aliasRules: rules,
           fromTransformConfigSha256: version.source.transformConfigSha256,
@@ -2049,6 +2057,10 @@ test("a draft with no hidden tests has an agent write them, and the build is the
       output: {
         harnessSha256: built.manifest.harnessSha256,
         toolchainDigest: built.manifest.toolchainDigest,
+        testSummary: [
+          { label: "public", count: 2 },
+          { label: "scenarios", count: 1 },
+        ],
         transform: {
           acceptanceTests: [hiddenTest],
           fromTransformConfigSha256: version.source.transformConfigSha256,
