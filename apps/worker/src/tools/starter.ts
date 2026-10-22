@@ -20,6 +20,7 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
+  PRIVATE_TESTS_DIR,
   STARTER_SET_SCHEMA_VERSION,
   STARTER_TOOL_VERSION,
   aliasStarter,
@@ -60,12 +61,14 @@ import {
 import { invalidInput } from "../agent/repo-tools.js";
 import type { ArtifactFile, ToolAdapter, ToolRunInput } from "./adapter.js";
 import {
+  descriptorTestSummary,
   previewProject,
   reportedBaselineOf,
   writeBuildOutputs,
 } from "./sandbox-build.js";
 import { sha256 } from "./slice/hash.js";
 import { checkStarter } from "./starter-check.js";
+import type { StarterCheckStage } from "./starter-check.js";
 
 /** Candidates one run may type-check, and run for real, before it must submit. */
 export const STARTER_CHECKS_MAX = 16;
@@ -175,17 +178,64 @@ function starterFiles(input: unknown): string {
   return `${files} ${files === 1 ? "file" : "files"}`;
 }
 
+/** What a step says of a candidate its check refused, by where it stopped. */
+const REFUSED_STEP: Record<StarterCheckStage, string> = {
+  rules: "its files break the starter's rules",
+  names: "its names need fixing",
+  project: "its project does not generate yet",
+  types: "it does not compile yet",
+};
+
+/** Problems the run log shows of one refused check, at most. */
+const LOGGED_PROBLEMS_MAX = 10;
+const LOGGED_PROBLEM_CHARS = 300;
+
+/**
+ * A refused check, as the run log keeps it: where it stopped and its
+ * problems, so a run that loops on checks says why. A problem in a hidden
+ * test is only counted: like a hidden test's output, it reads the test.
+ */
+export function refusedCheckLog(
+  tool: string,
+  stage: StarterCheckStage,
+  problems: readonly string[],
+): string {
+  const hidden = problems.filter((problem) =>
+    problem.startsWith(`${PRIVATE_TESTS_DIR}/`),
+  ).length;
+  const shown = problems
+    .filter((problem) => !problem.startsWith(`${PRIVATE_TESTS_DIR}/`))
+    .map((problem) =>
+      problem.length <= LOGGED_PROBLEM_CHARS
+        ? problem
+        : `${problem.slice(0, LOGGED_PROBLEM_CHARS)}…`,
+    );
+  const kept = shown.slice(0, LOGGED_PROBLEMS_MAX);
+  const lines = [
+    `${tool} refused (${stage}): ${problems.length} problem${problems.length === 1 ? "" : "s"}.`,
+    ...kept.map((problem) => `  ${problem}`),
+    ...(shown.length > kept.length
+      ? [`  and ${shown.length - kept.length} more`]
+      : []),
+    ...(hidden > 0 ? [`  and ${hidden} in hidden tests, not shown`] : []),
+  ];
+  return lines.join("\n");
+}
+
 /** A run of a candidate, as a step: whether it built, and its baseline. */
 function ranStarter(
   verb: string,
   input: unknown,
   result: AgentToolResult,
+  refused: StarterCheckStage | undefined,
 ): string | null {
   if (result.content.startsWith("No runs are left")) return null;
   if (result.content.startsWith("The baseline passes."))
     return `${verb} the starter's ${starterFiles(input)}: the baseline passes`;
   if (result.content.startsWith("The baseline does not pass."))
     return `${verb} the starter's ${starterFiles(input)}: the baseline does not pass yet`;
+  if (refused !== undefined)
+    return `${verb} the starter: ${REFUSED_STEP[refused]}`;
   return result.isError === true
     ? `${verb} the starter: it does not build yet`
     : null;
@@ -258,11 +308,32 @@ export function createStarterAdapter(options: {
         });
       let checks = 0;
       let runs = 0;
+      // Where each refused candidate stopped, for its step to say.
+      const refusedAt = new WeakMap<AgentToolResult, StarterCheckStage>();
+      const refuse = (
+        tool: string,
+        checked: {
+          readonly stage: StarterCheckStage;
+          readonly problems: readonly string[];
+        },
+      ): AgentToolResult => {
+        input.log(refusedCheckLog(tool, checked.stage, checked.problems));
+        const result = { content: checked.problems.join("\n"), isError: true };
+        refusedAt.set(result, checked.stage);
+        return result;
+      };
       const build = async (
         starter: StarterSubmission,
-      ): Promise<StarterBuild | { problems: readonly string[] }> => {
+      ): Promise<
+        | StarterBuild
+        | {
+            readonly stage: StarterCheckStage;
+            readonly problems: readonly string[];
+          }
+      > => {
         const checked = check(starter);
-        if (!checked.ok) return { problems: checked.problems };
+        if (!checked.ok)
+          return { stage: checked.stage, problems: checked.problems };
         runs += 1;
         const files = [...checked.project.files];
         const blockers = [...checked.project.blockers];
@@ -315,10 +386,17 @@ export function createStarterAdapter(options: {
       };
       const checkTool: AgentTool = {
         name: "check_starter",
-        describe: (input, result) =>
-          result.isError === true
-            ? "Checked the starter: it does not compile yet"
-            : `Checked the starter: ${starterFiles(input)} compile`,
+        describe: (input, result) => {
+          const refused = refusedAt.get(result);
+          if (refused !== undefined)
+            return `Checked the starter: ${REFUSED_STEP[refused]}`;
+          // Out of checks, or a candidate that did not parse.
+          if (result.isError === true)
+            return result.content.startsWith("No checks are left")
+              ? null
+              : "Checked the starter: it was refused";
+          return `Checked the starter: ${starterFiles(input)} compile`;
+        },
         description: `Type-check the starter as \`npm run build\` would, and check where each file lives. At most ${STARTER_CHECKS_MAX} checks per run.`,
         inputSchema: {
           properties: candidateProperties,
@@ -341,12 +419,13 @@ export function createStarterAdapter(options: {
           });
           return result.ok
             ? { content: "The starter compiles." }
-            : { content: result.problems.join("\n"), isError: true };
+            : refuse("check_starter", result);
         },
       };
       const runTool: AgentTool = {
         name: "run_starter",
-        describe: (input, result) => ranStarter("Ran", input, result),
+        describe: (input, result) =>
+          ranStarter("Ran", input, result, refusedAt.get(result)),
         description: `Build and run the starter in a fresh job: install, build, the walkthrough, the public tests and each hidden test. Shows each step, and the output of those that failed. Runs are shared with submit_starter: ${STARTER_RUNS_MAX} per run in all.`,
         inputSchema: {
           properties: candidateProperties,
@@ -367,8 +446,7 @@ export function createStarterAdapter(options: {
             summary: "-",
             aliases: pseudonyms,
           });
-          if ("problems" in result)
-            return { content: result.problems.join("\n"), isError: true };
+          if ("problems" in result) return refuse("run_starter", result);
           return { content: result.report, isError: !result.baseline.ok };
         },
       };
@@ -381,7 +459,7 @@ export function createStarterAdapter(options: {
         describe: (input, result) =>
           result.accepted === true
             ? `Submitted the starter: ${starterFiles(input)}`
-            : ranStarter("Submitted", input, result),
+            : ranStarter("Submitted", input, result, refusedAt.get(result)),
         description:
           "Submit the starter. It is checked and run once more, and accepted when the baseline passes.",
         inputSchema: {
@@ -401,8 +479,7 @@ export function createStarterAdapter(options: {
           if (!parsed.success) return invalidInput(parsed.error.issues);
           const starter = { ...parsed.data, aliases: pseudonyms };
           const result = await build(starter);
-          if ("problems" in result)
-            return { content: result.problems.join("\n"), isError: true };
+          if ("problems" in result) return refuse("submit_starter", result);
           // A failing baseline is sent back while runs remain; after that,
           // the answer is kept as it is, as a build that is not ready.
           if (!result.baseline.ok && runs < STARTER_RUNS_MAX)
@@ -527,6 +604,7 @@ export function createStarterAdapter(options: {
       // against the spec when the starter was accepted.
       const renamed = aliasStarter(set, null, { requireUse: false });
       if (!renamed.ok) throw new AnalysisError("tool_failed");
+      const testSummary = await descriptorTestSummary(files);
       await inputs.recordStarterOutput(set.sandboxVersionId, runId, {
         starterSha256: sha256(setText),
         aliasRules: set.aliases,
@@ -539,6 +617,7 @@ export function createStarterAdapter(options: {
               toolchainDigest: manifest.toolchainDigest,
             }
           : null,
+        ...(testSummary === undefined ? {} : { testSummary }),
       });
     },
   };

@@ -33,8 +33,19 @@ import { compileFixture } from "./slice/fixture.js";
 
 const PROBLEMS_MAX = 40;
 
+/**
+ * Where a starter stopped: its own rules, its name table, the project it
+ * generates (a blocker or a workspace name left in a public file), or the
+ * type check. Only `types` is a starter that does not compile.
+ */
+export type StarterCheckStage = "rules" | "names" | "project" | "types";
+
 export type StarterCheck =
-  | { readonly ok: false; readonly problems: readonly string[] }
+  | {
+      readonly ok: false;
+      readonly stage: StarterCheckStage;
+      readonly problems: readonly string[];
+    }
   | {
       readonly ok: true;
       readonly problems: readonly [];
@@ -54,7 +65,11 @@ export function checkStarter(input: {
 }): StarterCheck {
   const ruled = starterProblems(input.starter);
   if (ruled.length > 0)
-    return { ok: false, problems: ruled.slice(0, PROBLEMS_MAX) };
+    return {
+      ok: false,
+      stage: "rules",
+      problems: ruled.slice(0, PROBLEMS_MAX),
+    };
   const aliased = aliasStarter(input.starter, input.spec, {
     listing: {
       title: input.version.title,
@@ -63,7 +78,11 @@ export function checkStarter(input: {
     },
   });
   if (!aliased.ok)
-    return { ok: false, problems: aliased.problems.slice(0, PROBLEMS_MAX) };
+    return {
+      ok: false,
+      stage: "names",
+      problems: aliased.problems.slice(0, PROBLEMS_MAX),
+    };
   const starter = aliased.starter;
   const project = generateStarterProject({
     version: { ...input.version, ...aliased.listing },
@@ -71,23 +90,27 @@ export function checkStarter(input: {
     acceptanceTests: starter.hiddenTests,
     spec: aliased.spec,
   });
-  const problems = [
-    ...project.blockers,
-    ...vocabularyBlockers(
-      vocabularyLeaks(
-        project.files.filter((file) => file.public),
-        input.vocabulary,
-      ),
+  const blockers = project.blockers.filter(
+    (blocker) => blocker.code !== "starter_invalid",
+  );
+  const leaks = vocabularyBlockers(
+    vocabularyLeaks(
+      project.files.filter((file) => file.public),
+      input.vocabulary,
     ),
-  ]
-    .filter((blocker) => blocker.code !== "starter_invalid")
-    .map((blocker) =>
-      blocker.file === null
-        ? blocker.detail
-        : `${blocker.file}: ${blocker.detail}`,
-    );
+  );
+  const problems = [...blockers, ...leaks].map((blocker) =>
+    blocker.file === null
+      ? blocker.detail
+      : `${blocker.file}: ${blocker.detail}`,
+  );
+  // A workspace name left behind is the name table's to fix, not the project's.
   if (problems.length > 0)
-    return { ok: false, problems: problems.slice(0, PROBLEMS_MAX) };
+    return {
+      ok: false,
+      stage: blockers.length === 0 ? "names" : "project",
+      problems: problems.slice(0, PROBLEMS_MAX),
+    };
   const files = new Map(project.files.map((file) => [file.path, file.text]));
   const tsconfig = JSON.parse(files.get("tsconfig.json") ?? "{}") as {
     compilerOptions?: Record<string, unknown>;
@@ -107,5 +130,9 @@ export function checkStarter(input: {
   );
   return diagnostics.length === 0
     ? { ok: true, problems: [], project, starter }
-    : { ok: false, problems: diagnostics.slice(0, PROBLEMS_MAX) };
+    : {
+        ok: false,
+        stage: "types",
+        problems: diagnostics.slice(0, PROBLEMS_MAX),
+      };
 }

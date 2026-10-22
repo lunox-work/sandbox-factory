@@ -1358,11 +1358,7 @@ export class BountyExecutor {
             request,
           );
           spent.push(draft.usage);
-          touched = outlines.flatMap(({ repoId, snapshotId }, index) =>
-            draft.result.repositories.includes(repositoryLabel(index))
-              ? [{ repoId, snapshotId }]
-              : [],
-          );
+          touched = touchedRepositories(outlines, draft.result.repositories);
           drafted = {
             specHash,
             specHashVersion: BOUNTY_SPEC_HASH_VERSION,
@@ -1591,6 +1587,33 @@ export class BountyExecutor {
       },
     };
   }
+}
+
+/**
+ * The outlined repositories a draft says its work changes. A label is read
+ * as `repositoryLabel` writes it, whatever its case or spacing; anything
+ * else, a repository's own name among them, names none. A workspace with
+ * one repository briefed has its bounties' work there: a draft naming none
+ * of it still touches it, so its sandbox is cut from that repository and
+ * its code is measured, not left to the model's reading of the ticket.
+ */
+export function touchedRepositories(
+  outlines: readonly Pick<RepositoryOutlineRead, "repoId" | "snapshotId">[],
+  labels: readonly string[],
+): ProposalRepository[] {
+  const named = new Set(
+    labels.flatMap((label) => {
+      const match = /^repository\s*(\d+)$/i.exec(label.trim());
+      return match?.[1] === undefined ? [] : [Number(match[1]) - 1];
+    }),
+  );
+  const touched = outlines.flatMap(({ repoId, snapshotId }, index) =>
+    named.has(index) ? [{ repoId, snapshotId }] : [],
+  );
+  const [only] = outlines;
+  return touched.length === 0 && outlines.length === 1 && only !== undefined
+    ? [{ repoId: only.repoId, snapshotId: only.snapshotId }]
+    : touched;
 }
 
 /**

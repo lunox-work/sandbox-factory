@@ -350,7 +350,9 @@ adds (`bounty.stack`), and sizing drafts each spec beside an outline of every
 built repository at the commit the scope holds (`apps/api/src/sizing/outline.ts`,
 neutral labels, one shared line cap). The draft names the repositories the work
 touches, recorded on `bounty_proposal.repositories` with the snapshot each was
-outlined at; a re-price says them again and a spec change keeps them.
+outlined at; a re-price says them again and a spec change keeps them. With one
+repository outlined, a draft naming none still touches it
+(`touchedRepositories` in `apps/api/src/pricing/executor.ts`).
 
 ## Sandboxes
 
@@ -506,8 +508,8 @@ another scenario's code already has, so an exhaustive draft can still be XS.
 Manual resize sets a new base at step zero; respec keeps base and settings
 without a sizing call; reprice starts fresh on the current card.
 
-**The rubric sizes a proposal once its code is measured**
-(`packages/core/src/pricing/rubric.ts`, `rubric-v4`): scenarios by weight plus
+**The rubric sizes a proposal from its draft, and again once its code is
+measured** (`packages/core/src/pricing/rubric.ts`, `rubric-v4`): scenarios by weight plus
 open questions, test cases, and code from the complexity profiles, minus
 discounts for an analogous pattern, tests in the touched modules and CI; the
 points per factor are `RUBRIC_POINTS` and the band edges sit beside them, and

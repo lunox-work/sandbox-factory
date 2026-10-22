@@ -617,6 +617,24 @@ test("a starter run's output settles on its draft only while the draft still poi
   );
   assert.equal(unready.calls[1]?.values?.["harnessSha256"], null);
   assert.equal(unready.calls[1]?.values?.["toolchainDigest"], null);
+  // Without a summary the version row is left alone: the next write is the touch.
+  assert.deepEqual(fake.calls[2]?.values, { updatedAt: now });
+  // The descriptor's public test counts become the version's, in the same write.
+  const testSummary = [
+    { label: "public", count: 1 },
+    { label: "scenarios", count: 5 },
+  ];
+  const summarized = createSequencedFakeDb([[current], [], [], []]);
+  await createSandboxStore(summarized.db).recordStarterOutput(
+    "owner",
+    "sbv_1",
+    "arn_starter",
+    { ...output, testSummary },
+    now,
+  );
+  assert.equal(summarized.calls[1]?.values?.["testSummary"], undefined);
+  assert.deepEqual(summarized.calls[2]?.values, { testSummary });
+  assert.deepEqual(summarized.calls[3]?.values, { updatedAt: now });
   for (const rows of [
     [],
     [{ ...current, source: generatedRow({ starterRunId: "arn_other" }) }],
@@ -925,6 +943,19 @@ test("a build's output is kept only while the draft still points at that build",
   assert.equal(fake.calls[0]?.lock, "update");
   assert.deepEqual(fake.calls[1]?.values, { ...output, updatedAt: now });
   assert.deepEqual(fake.calls[2]?.values, { updatedAt: now });
+  // A ready build's descriptor counts become the version's test summary.
+  const testSummary = [{ label: "public", count: 2 }];
+  const summarized = createSequencedFakeDb([[current], [], [], []]);
+  await createSandboxStore(summarized.db).recordBuildOutput(
+    "owner",
+    "sbv_1",
+    "arn_build",
+    { ...output, testSummary },
+    now,
+  );
+  assert.deepEqual(summarized.calls[1]?.values, { ...output, updatedAt: now });
+  assert.deepEqual(summarized.calls[2]?.values, { testSummary });
+  assert.deepEqual(summarized.calls[3]?.values, { updatedAt: now });
   for (const rows of [
     [],
     [{ ...current, source: sourceRow({ buildRunId: "arn_newer" }) }],

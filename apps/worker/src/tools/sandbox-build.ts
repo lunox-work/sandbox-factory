@@ -42,6 +42,7 @@ import {
   SANDBOX_RUN_ARGV,
   SANDBOX_BUILD_SCHEMA_VERSION,
   SANDBOX_TOOLCHAIN,
+  TASK_DESCRIPTOR_PATH,
   applyAliases,
   baselineVerdict,
   jsonLeaves,
@@ -82,7 +83,9 @@ import {
   boundaryContractSchema,
   sandboxFixtureSchema,
   specDraftSchema,
+  taskDescriptorSchema,
 } from "@sandbox-factory/shared";
+import type { TaskDescriptorDto } from "@sandbox-factory/shared";
 import type { AgentSettings } from "../agent/loop.js";
 import { AnalysisError } from "../errors.js";
 import { snapshotOf } from "./adapter.js";
@@ -686,6 +689,31 @@ function outputPath(file: GeneratedFile): string {
   return file.public
     ? `project/${file.path}`
     : `private/${file.path.replace(`${PRIVATE_TESTS_DIR}/`, "")}`;
+}
+
+/**
+ * The public test counts a run's descriptor carries, which the version
+ * shows beside its files; none when the run wrote no descriptor or it
+ * does not read.
+ */
+export async function descriptorTestSummary(
+  files: readonly Pick<ArtifactFile, "path" | "absolutePath">[],
+): Promise<TaskDescriptorDto["testSummary"] | undefined> {
+  const file = files.find(
+    (item) => item.path === `project/${TASK_DESCRIPTOR_PATH}`,
+  );
+  if (file === undefined) return undefined;
+  try {
+    const raw = JSON.parse(await readFile(file.absolutePath, "utf8")) as {
+      testSummary?: unknown;
+    };
+    const read = taskDescriptorSchema.shape.testSummary.safeParse(
+      raw.testSummary,
+    );
+    return read.success ? read.data : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /**
@@ -1506,6 +1534,7 @@ export function createSandboxBuildAdapter(
     async committed({ runId, files, inputs }) {
       const file = files.find((item) => item.path === "build-manifest.json");
       if (file === undefined) return;
+      const testSummary = await descriptorTestSummary(files);
       const manifest = JSON.parse(
         await readFile(file.absolutePath, "utf8"),
       ) as SandboxBuildManifest;
@@ -1526,6 +1555,7 @@ export function createSandboxBuildAdapter(
       await inputs.recordBuildOutput(manifest.sandboxVersionId, runId, {
         harnessSha256: manifest.harnessSha256,
         toolchainDigest: manifest.toolchainDigest,
+        ...(testSummary === undefined ? {} : { testSummary }),
         ...(transform === undefined
           ? {}
           : {

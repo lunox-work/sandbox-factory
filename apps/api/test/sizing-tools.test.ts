@@ -255,7 +255,7 @@ test("a size result that is wrong says which field", () => {
 test("the draft tool's prompt names every kind and its own limits", () => {
   assert.equal(draftSpecTool.name, "draft_spec");
   assert.equal(draftSpecTool.promptVersion, DRAFT_SPEC_PROMPT_VERSION);
-  assert.equal(draftSpecTool.promptVersion, "draft-v8");
+  assert.equal(draftSpecTool.promptVersion, "draft-v9");
   // A bounty has no issue type or labels to show.
   assert.match(
     draftSpecTool.system,

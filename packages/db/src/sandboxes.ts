@@ -172,6 +172,8 @@ export interface BuildOutput {
   readonly toolchainDigest: string;
   /** What the build wrote into a draft's transform that it lacked. */
   readonly transform?: BuildTransform;
+  /** The descriptor's public test counts, which the version shows. */
+  readonly testSummary?: readonly { label: string; count: number }[];
 }
 /**
  * Fixtures, hidden tests and pseudonyms a sliced build wrote for a draft
@@ -203,6 +205,8 @@ export interface StarterOutput {
   readonly scope: ScopeRecord;
   readonly transformConfigSha256: string;
   readonly build: BuildOutput | null;
+  /** The descriptor's public test counts, which the version shows. */
+  readonly testSummary?: readonly { label: string; count: number }[];
 }
 export type CreateSandboxResult =
   | { readonly ok: true; readonly sandbox: StoredSandbox }
@@ -1102,6 +1106,11 @@ export function createSandboxStore(db: Database): SandboxStore {
             updatedAt: now,
           })
           .where(eq(sandboxVersionSource.sandboxVersionId, versionId));
+        if (output.testSummary !== undefined)
+          await tx
+            .update(sandboxVersion)
+            .set({ testSummary: [...output.testSummary] })
+            .where(eq(sandboxVersion.id, versionId));
         await touch(tx, current.version.sandboxId, now);
         return true;
       });
@@ -1136,6 +1145,11 @@ export function createSandboxStore(db: Database): SandboxStore {
             updatedAt: now,
           })
           .where(eq(sandboxVersionSource.sandboxVersionId, versionId));
+        if (output.testSummary !== undefined)
+          await tx
+            .update(sandboxVersion)
+            .set({ testSummary: [...output.testSummary] })
+            .where(eq(sandboxVersion.id, versionId));
         await touch(tx, current.version.sandboxId, now);
         return true;
       });

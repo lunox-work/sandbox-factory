@@ -1027,7 +1027,7 @@ test("a run drafts the spec first and stores it with the proposal", async () => 
     draft,
     origin: "draft",
     actualModel: "drafting-model",
-    promptVersion: "draft-v8",
+    promptVersion: "draft-v9",
   });
 });
 
@@ -1123,6 +1123,44 @@ test("a label the outline did not hold names no repository", async () => {
   assert.deepEqual(
     (state.proposalInputs[0] as { repositories: unknown }).repositories,
     [{ repoId: "ghr_1", snapshotId: "rsn_1" }],
+  );
+});
+
+test("a label is read whatever its case or spacing, and a workspace's only repository is touched when the draft names none", async () => {
+  const loose = harness({
+    outlinesFor: () => Promise.resolve(outlines),
+    touched: [" repository  2 ", "REPOSITORY 1"],
+  });
+  await loose.executor.execute("org_1", "brn_1");
+  assert.deepEqual(
+    (loose.proposalInputs[0] as { repositories: unknown }).repositories,
+    [
+      { repoId: "ghr_1", snapshotId: "rsn_1" },
+      { repoId: "ghr_2", snapshotId: "rsn_2" },
+    ],
+  );
+  // One repository briefed: a draft naming none of it still touches it.
+  for (const touched of [[], ["Repository 2"], ["acme/app"]]) {
+    const only = harness({
+      outlinesFor: () => Promise.resolve(outlines.slice(0, 1)),
+      touched,
+    });
+    await only.executor.execute("org_1", "brn_1");
+    assert.deepEqual(
+      (only.proposalInputs[0] as { repositories: unknown }).repositories,
+      [{ repoId: "ghr_1", snapshotId: "rsn_1" }],
+      JSON.stringify(touched),
+    );
+  }
+  // Several briefed, the draft's none stands.
+  const several = harness({
+    outlinesFor: () => Promise.resolve(outlines),
+    touched: [],
+  });
+  await several.executor.execute("org_1", "brn_1");
+  assert.deepEqual(
+    (several.proposalInputs[0] as { repositories: unknown }).repositories,
+    [],
   );
 });
 
