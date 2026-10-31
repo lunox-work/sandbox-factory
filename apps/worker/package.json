@@ -20,7 +20,7 @@
     "libpg-query": "18.1.5",
     "sandbox-factory": "*",
     "typescript-compiler": "npm:typescript@5.9.3",
-    "zod": "^4.1.12"
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@sandbox-factory/coverage": "*",
