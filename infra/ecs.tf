@@ -13,6 +13,19 @@ resource "aws_ecs_cluster" "main" {
   }
 }
 
+# Spot for the API: ~70% off on-demand Fargate. AWS can reclaim a Spot task
+# with two minutes' notice; the service then starts a replacement, and with
+# one task that is a one- to two-minute gap while the new task boots and
+# discovery.tf repoints the origin record. Accepted for this traffic level.
+# Workers (RunTask with launchType FARGATE in apps/api/src/github/launcher.ts)
+# and CD's one-off migration tasks stay on-demand: an interrupted run is worse
+# than a brief API gap. No default strategy is set, so RunTask callers must
+# keep naming their launch type.
+resource "aws_ecs_cluster_capacity_providers" "main" {
+  cluster_name       = aws_ecs_cluster.main.name
+  capacity_providers = ["FARGATE", "FARGATE_SPOT"]
+}
+
 resource "aws_cloudwatch_log_group" "api" {
   name              = "/ecs/${local.name}-api"
   retention_in_days = var.log_retention_days
@@ -73,16 +86,16 @@ resource "aws_ecs_task_definition" "api" {
       # apply that did not pass -var api_image_tag=<sha>.
       #
       # ORIGIN_VERIFY is checked by the middleware in apps/api/src/routes.ts.
-      # Not worth a Secrets Manager entry: it is already visible in the
+      # Not worth a parameter: it is already visible in the
       # CloudFront distribution's origin config.
       { name = "ORIGIN_VERIFY", value = random_password.origin_verify.result },
     ]
 
     # Resolved by the ECS agent before the container starts, so the values never
     # appear in the task definition, the console, or `describe-tasks` output.
-    secrets = [for k, s in aws_secretsmanager_secret.app : {
+    secrets = [for k, p in aws_ssm_parameter.app : {
       name      = k
-      valueFrom = s.arn
+      valueFrom = p.arn
     }]
 
     logConfiguration = {
@@ -120,7 +133,16 @@ resource "aws_ecs_service" "api" {
   cluster         = aws_ecs_cluster.main.id
   task_definition = aws_ecs_task_definition.api.arn
   desired_count   = var.api_desired_count
-  launch_type     = "FARGATE"
+
+  # Replaces launch_type; see aws_ecs_cluster_capacity_providers above. Going
+  # from launch_type to a strategy replaces the service in Terraform, so the
+  # live service was moved with `aws ecs update-service
+  # --capacity-provider-strategy` first and this block then matched it.
+  capacity_provider_strategy {
+    capacity_provider = "FARGATE_SPOT"
+    weight            = 1
+  }
+  force_new_deployment = true
 
   network_configuration {
     subnets = aws_subnet.public[*].id
@@ -151,6 +173,8 @@ resource "aws_ecs_service" "api" {
   lifecycle {
     ignore_changes = [task_definition, desired_count]
   }
+
+  depends_on = [aws_ecs_cluster_capacity_providers.main]
 }
 
 variable "worker_image_tag" {
@@ -196,7 +220,7 @@ resource "aws_ecs_task_definition" "worker" {
       # onto the active revision, since container definitions are ignored here.
       { name = "AGENT_MODEL", value = "claude-opus-5-5" },
     ]
-    secrets          = [for key in ["DATABASE_URL", "GITHUB_APP_ID", "GITHUB_APP_PRIVATE_KEY", "ANTHROPIC_API_KEY"] : { name = key, valueFrom = aws_secretsmanager_secret.app[key].arn }]
+    secrets          = [for key in ["DATABASE_URL", "GITHUB_APP_ID", "GITHUB_APP_PRIVATE_KEY", "ANTHROPIC_API_KEY"] : { name = key, valueFrom = aws_ssm_parameter.app[key].arn }]
     logConfiguration = { logDriver = "awslogs", options = { "awslogs-group" = aws_cloudwatch_log_group.worker.name, "awslogs-region" = var.region, "awslogs-stream-prefix" = "worker" } }
   }])
 }

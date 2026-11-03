@@ -92,7 +92,7 @@ until an owner approves it, which the script reports as "cannot see the repo".
 ### `--secrets`: the production app secrets
 
 Rotates every key of `app_secrets` in `infra/secrets.tf`, as `.env.production` holds them, — what the API reads through AWS
-Secrets Manager. It asks for each key in turn and **skips any you leave blank**,
+SSM Parameter Store. It asks for each key in turn and **skips any you leave blank**,
 showing a redacted current value and where that provider mints the replacement.
 
 Then, each step behind its own prompt:
@@ -103,10 +103,10 @@ Then, each step behind its own prompt:
 2. **Validates** with `secrets-check.sh`, the same check the API applies at
    boot. A file that fails is never pushed.
 3. **Pushes** via `secrets-push.sh`, naming only the keys this run changed. Keys
-   you skipped are left alone in Secrets Manager, which keeps a partial rotation
+   you skipped are left alone in Parameter Store, which keeps a partial rotation
    safe if your local file has drifted.
 4. **Restarts the API** with `--force-new-deployment`. Not optional: ECS reads
-   Secrets Manager when a task _starts_, so a running task keeps its old values.
+   Parameter Store when a task _starts_, so a running task keeps its old values.
 
 Answering no at any step stops there and prints the command to finish by hand.
 

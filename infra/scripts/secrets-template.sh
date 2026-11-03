@@ -57,10 +57,10 @@ TOKEN_KEY="$(openssl rand -base64 32)"
 #
 #   make secrets-template   regenerates this file
 #   make secrets-check      validates it the way the API does at boot
-#   make secrets-push       writes the active values to AWS Secrets Manager
+#   make secrets-push       writes the active values to AWS SSM Parameter Store
 #
-# Gitignored, like .env.development. Nothing reads it at runtime — Secrets
-# Manager does.
+# Gitignored, like .env.development. Nothing reads it at runtime — Parameter
+# Store does.
 # It follows the shape of .env.example section for section, so the two diff
 # cleanly; keys this environment does not set are commented with the reason.
 
@@ -193,7 +193,7 @@ DEEPSEEK_SIZING_MODEL=$(value_of DEEPSEEK_SIZING_MODEL)
 # Not set here, and correctly so. In production the bucket and region are
 # plain ECS environment (infra/ecs.tf), there is no endpoint, so the SDK talks
 # to AWS, and there are no keys: the task role grants access (infra/iam.tf).
-# None of these is a secret, so none is in Secrets Manager, and a value here
+# None of these is a secret, so none is in Parameter Store, and a value here
 # would never reach the task.
 
 # S3_ENDPOINT=

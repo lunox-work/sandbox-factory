@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 #
-# Push secret values from a local .env.production into AWS Secrets Manager.
+# Push secret values from a local .env.production into AWS SSM Parameter Store.
 #
 #   ./infra/scripts/secrets-push.sh [path-to-env-file] [--only KEY]...
 #
-# Terraform (secrets.tf) creates the containers; this fills them, so no secret
-# value ever reaches terraform.tfstate. Defaults to the gitignored
+# Terraform (secrets.tf) creates the parameters; this fills them, so no secret
+# value ever passes through a Terraform variable or plan. Defaults to the gitignored
 # .env.production at the repo root. Safe to re-run: overwriting is how a value
 # is rotated.
 
@@ -34,8 +34,8 @@ while [[ $# -gt 0 ]]; do
 done
 ENV_FILE="${ENV_FILE:-$(git rev-parse --show-toplevel)/.env.production}"
 
-# Exactly the keys secrets.tf creates; a key with no matching secret fails the
-# push. Keep in step with SECRET_KEYS in scripts/rotate-token.sh.
+# Exactly the keys secrets.tf creates; a key with no matching parameter fails
+# the push. Keep in step with SECRET_KEYS in scripts/rotate-token.sh.
 KEYS=(
   DATABASE_URL
   BETTER_AUTH_SECRET
@@ -123,7 +123,7 @@ read_value() {
   printf '%s' "$value"
 }
 
-echo "Pushing secrets to AWS Secrets Manager"
+echo "Pushing secrets to AWS SSM Parameter Store"
 echo "  account: $(aws sts get-caller-identity --query Account --output text)"
 echo "  region:  $REGION"
 echo "  source:  $ENV_FILE"
@@ -133,7 +133,7 @@ missing=()
 pushed=0
 
 # Two passes: validate everything, then write. Writing while reading would
-# leave Secrets Manager half-rotated when a later value turns out missing.
+# leave Parameter Store half-rotated when a later value turns out missing.
 declare -a values=()
 for key in "${KEYS[@]}"; do
   if ! value="$(read_value "$key")" || [[ -z "$value" ]]; then
@@ -197,18 +197,29 @@ for i in "${!KEYS[@]}"; do
     continue
   fi
 
-  # Mirrors the naming in secrets.tf: BETTER_AUTH_SECRET -> better-auth-secret.
-  secret_id="${PROJECT}/$(echo "$key" | tr '[:upper:]_' '[:lower:]-')"
+  # Mirrors the naming in secrets.tf: BETTER_AUTH_SECRET -> /sandbox-factory/better-auth-secret.
+  param_name="/${PROJECT}/$(echo "$key" | tr '[:upper:]_' '[:lower:]-')"
+
+  # Terraform creates the parameter; a missing one is a missing apply, not
+  # something to create here (put-parameter would, and the next apply would
+  # then fail on the name).
+  if ! aws ssm get-parameter --name "$param_name" --region "$REGION" \
+      --query Name --output text >/dev/null 2>&1; then
+    printf '  %-26s FAILED — no such parameter. Run terraform apply first.\n' "$key"
+    exit 1
+  fi
 
   # file:///dev/stdin keeps the value out of the process list (`ps`).
-  if printf '%s' "$value" | aws secretsmanager put-secret-value \
-      --secret-id "$secret_id" \
-      --secret-string file:///dev/stdin \
+  if printf '%s' "$value" | aws ssm put-parameter \
+      --name "$param_name" \
+      --type SecureString \
+      --overwrite \
+      --value file:///dev/stdin \
       --region "$REGION" >/dev/null 2>&1; then
     printf '  %-26s ok (%d chars)\n' "$key" "${#value}"
     pushed=$((pushed + 1))
   else
-    printf '  %-26s FAILED — does the secret exist? Run terraform apply first.\n' "$key"
+    printf '  %-26s FAILED — put-parameter was refused (over 4 KB?).\n' "$key"
     exit 1
   fi
 done

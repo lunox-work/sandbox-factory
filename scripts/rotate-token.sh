@@ -12,7 +12,7 @@
 #                      here stops main deploying, quietly.
 #
 #   .env.production    the application secrets, which reach the API
-#                      through AWS Secrets Manager. A dead one here crash-loops
+#                      through AWS SSM Parameter Store. A dead one here crash-loops
 #                      the task on its next boot, loudly.
 #
 #   ./scripts/rotate-token.sh                    # the GitHub token; prompts
@@ -244,7 +244,7 @@ Rotating application secrets in .env.production.
 Each key is asked in turn. Press Enter to keep the current value — only the
 ones you paste are changed. Input is hidden.
 
-These reach the API through AWS Secrets Manager, not from this file directly,
+These reach the API through AWS SSM Parameter Store, not from this file directly,
 so nothing takes effect until the push step at the end.
 
 EOF
@@ -346,7 +346,7 @@ EOF
   if [[ "$ASSUME_YES" -eq 1 ]]; then
     reply=y
   else
-    printf 'Push to AWS Secrets Manager now? [y/N] '
+    printf 'Push to AWS SSM Parameter Store now? [y/N] '
     read -r reply
   fi
 
@@ -365,20 +365,20 @@ EOF
   aws sts get-caller-identity >/dev/null 2>&1 || die "aws CLI is not authenticated for $REGION"
 
   # Push only what changed. Other values in .env.production may have drifted
-  # from Secrets Manager, and pushing them would overwrite live credentials.
+  # from Parameter Store, and pushing them would overwrite live credentials.
   declare -a push_args=()
   for key in "${changed_keys[@]}"; do
     push_args+=(--only "$key")
   done
 
-  info "Pushing to AWS Secrets Manager: ${changed_keys[*]}"
+  info "Pushing to AWS SSM Parameter Store: ${changed_keys[*]}"
   "$PUSH_SCRIPT" "${push_args[@]}" \
     || die "push failed; .env.production still holds the new values"
   ok "pushed"
 
   # ---- restart -------------------------------------------------------------
 
-  # ECS reads Secrets Manager when a task starts, so a running task keeps its
+  # ECS reads Parameter Store when a task starts, so a running task keeps its
   # old values until it is replaced.
   echo
   if [[ "$ASSUME_YES" -eq 1 ]]; then

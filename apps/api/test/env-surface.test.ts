@@ -129,7 +129,7 @@ function stripComments(source: string): string {
  * Four files list the secrets that reach production, and nothing but a comment
  * keeps them in step:
  *
- *   infra/secrets.tf              creates them in AWS Secrets Manager
+ *   infra/secrets.tf              creates them in AWS SSM Parameter Store
  *   infra/scripts/secrets-push.sh writes values to them
  *   scripts/rotate-token.sh       rotates one or all of them
  *   apps/api/src/env.ts           reads them

@@ -252,11 +252,10 @@ resource "aws_iam_role_policy_attachment" "github_plan_readonly" {
   policy_arn = "arn:aws:iam::aws:policy/ReadOnlyAccess"
 }
 
-# Secret *values* are deliberately out of reach: with GetSecretValue, any PR
+# Secret *values* are deliberately out of reach: with GetParameter, any PR
 # could print production credentials by adding a workflow step. Plan loses
-# nothing, because the secret versions carry `ignore_changes = [secret_string]`
-# (secrets.tf) and a refreshed value would be discarded. The secret containers
-# are still planned; ReadOnlyAccess covers DescribeSecret.
+# nothing, because the parameters carry `ignore_changes = [value]`
+# (secrets.tf) and a refreshed value would be discarded.
 
 # Addresses the plan role may not refresh. The plan workflow drops them from a
 # local copy of the state before planning (never the bucket, which this role
@@ -264,7 +263,7 @@ resource "aws_iam_role_policy_attachment" "github_plan_readonly" {
 # .github/workflows/terraform.yml.
 output "plan_unrefreshable_resources" {
   description = "Resources the read-only plan role cannot refresh, because it is denied their values. The plan workflow excludes them explicitly."
-  value       = ["aws_secretsmanager_secret_version.app"]
+  value       = ["aws_ssm_parameter.app"]
 }
 
 # Defence in depth: an explicit deny overrides any allow a future policy
@@ -273,7 +272,7 @@ data "aws_iam_policy_document" "github_plan_deny_secret_values" {
   statement {
     sid       = "DenyReadingProjectSecretValues"
     effect    = "Deny"
-    actions   = ["secretsmanager:GetSecretValue"]
+    actions   = ["ssm:GetParameter", "ssm:GetParameters", "ssm:GetParametersByPath", "ssm:GetParameterHistory", "secretsmanager:GetSecretValue"]
     resources = ["*"]
   }
 }

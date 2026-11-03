@@ -96,56 +96,10 @@ variable "billing_alarm_threshold" {
   default     = 60
 }
 
-# ---- external uptime probe -------------------------------------------------
-#
-# A Route53 health check probes from outside, so it covers DNS, CloudFront, the
-# certificate and origin routing as well as the task. That is why this exists
-# rather than switching Container Insights on.
-#
-# GET /health is unauthenticated (routes.ts exempts it from origin
-# verification) and its CloudFront behaviour is uncached, so the probe reads
-# live state.
-resource "aws_route53_health_check" "platform" {
-  type              = "HTTPS"
-  fqdn              = var.domain_name
-  port              = 443
-  resource_path     = "/health"
-  request_interval  = 30
-  failure_threshold = 3
-
-  # CloudFront needs SNI to serve the right certificate.
-  enable_sni = true
-
-  tags = merge(local.tags, {
-    Name = "${local.name}-platform"
-  })
-}
-
-# Health check metrics publish to us-east-1 only, hence the aliased provider.
-#
-# Missing data is "breaching" here, unlike the other alarms: this probe runs
-# every 30 seconds forever, so silence means the monitoring itself has stopped.
-resource "aws_cloudwatch_metric_alarm" "platform_down" {
-  provider = aws.us_east_1
-
-  alarm_name          = "${local.name}-platform-down"
-  alarm_description   = "platform.lunox.work is not answering /health. The platform is down."
-  namespace           = "AWS/Route53"
-  metric_name         = "HealthCheckStatus"
-  statistic           = "Minimum"
-  period              = 60
-  evaluation_periods  = 2
-  threshold           = 1
-  comparison_operator = "LessThanThreshold"
-  treat_missing_data  = "breaching"
-
-  dimensions = {
-    HealthCheckId = aws_route53_health_check.platform.id
-  }
-
-  alarm_actions = [aws_sns_topic.alarms.arn]
-  ok_actions    = [aws_sns_topic.alarms.arn]
-}
+# No Route53 health check: it was ~$1.30/month for an alarm the CloudFront
+# 5xx alarm above mostly duplicates. An external uptime probe (UptimeRobot or
+# similar, free tier) on https://platform.lunox.work/health covers DNS, the
+# certificate and CloudFront from outside AWS at no cost.
 
 resource "aws_cloudwatch_event_rule" "worker_failed" {
   name        = "${local.name}-worker-failed"

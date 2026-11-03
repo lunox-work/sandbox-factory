@@ -44,15 +44,15 @@ registers the _private_ IP, which CloudFront cannot reach.
 
 ## Cost
 
-About **$15/month**, from live Pricing API rates:
+About **$10/month**:
 
-|                                             | Monthly |
-| ------------------------------------------- | ------- |
-| Fargate ARM 0.25 vCPU / 0.5 GB              | $7.21   |
-| Public IPv4 address                         | $3.65   |
-| Neon Postgres (free tier)                   | $0.00   |
-| CloudFront, S3, ECR, Secrets, Route53, logs | ~$4.40  |
-| Route53 health check + 4 alarms             | ~$0.90  |
+|                                         | Monthly |
+| --------------------------------------- | ------- |
+| Fargate Spot ARM 0.25 vCPU / 0.5 GB     | ~$2.20  |
+| Public IPv4 address                     | $3.65   |
+| Neon Postgres (free tier)               | $0.00   |
+| SSM Parameter Store (standard), alarms  | $0.00   |
+| CloudFront, S3, ECR, Route53 zone, logs | ~$4     |
 
 Three things are deliberately absent, and together they are most of the saving:
 
@@ -138,7 +138,7 @@ CD run pushes a real image and the service recovers.
 make secrets-template   # writes .env.production, mode 600
 # paste the Neon connection string into DATABASE_URL
 make secrets-check      # validates it the way the API does at boot
-make secrets-push       # writes every app_secrets key into Secrets Manager
+make secrets-push       # writes every app_secrets key into SSM Parameter Store
 ```
 
 `secrets-template` copies the OAuth values and the sizing-model keys from
@@ -146,9 +146,9 @@ make secrets-push       # writes every app_secrets key into Secrets Manager
 present and generates a fresh `BETTER_AUTH_SECRET` — production should not share
 a signing key with a dev machine.
 
-`.env.production` is gitignored. Values go straight from your machine to Secrets
-Manager, never through Terraform, so never into `terraform.tfstate`. Nothing
-reads the file at runtime; it is the copy you keep.
+`.env.production` is gitignored. Values go straight from your machine to
+Parameter Store, never through a Terraform variable or plan. Nothing reads the
+file at runtime; it is the copy you keep.
 
 `secrets-push` depends on `secrets-check`, so a malformed connection string or a
 short signing secret is caught before it reaches AWS rather than as a

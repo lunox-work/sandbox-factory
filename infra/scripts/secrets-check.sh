@@ -136,7 +136,7 @@ if (( github_set == ${#github_keys[@]} )); then
     note "$k" "ok (${#v} chars)"
   done
   # The key is parsed at boot; a PEM pasted without base64 is accepted there
-  # too, but cannot be pushed through Secrets Manager with its newlines.
+  # too, but a 4 KB standard parameter cannot hold it with its newlines.
   key="$(read_value GITHUB_APP_PRIVATE_KEY)"
   if ! printf %s "$key" | base64 -d 2>/dev/null | grep -q "PRIVATE KEY"; then
     note GITHUB_APP_PRIVATE_KEY "BAD — not base64 of a PEM private key"; fail=1
