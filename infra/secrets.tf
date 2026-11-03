@@ -1,6 +1,12 @@
-# Secrets. Terraform creates the containers, never the values: no credential is
-# a Terraform variable, so none reaches terraform.tfstate, a plan output, or
-# this public repository.
+# Secrets, as SSM Parameter Store SecureString parameters. Terraform creates
+# each parameter with a placeholder, never a value: no credential is a
+# Terraform variable, so none reaches a plan output or this public repository.
+#
+# Parameter Store rather than Secrets Manager: standard parameters are free,
+# Secrets Manager is $0.40 per secret per month, and nothing here rotates on
+# a schedule. ECS resolves both the same way (valueFrom in ecs.tf), with a
+# 4 KB limit per standard parameter; the largest value, the GitHub App key,
+# is about 2 KB.
 #
 # `make secrets-push` (scripts/secrets-push.sh) pushes values from a local
 # .env.production. Rotation is an AWS-side operation that Terraform neither
@@ -8,7 +14,7 @@
 # connection string is a credential like any other.
 
 locals {
-  # Each key becomes one secret, injected into the task as the environment
+  # Each key becomes one parameter, injected into the task as the environment
   # variable of the same name.
   app_secrets = {
     DATABASE_URL            = "Neon Postgres connection string. Must include ?sslmode=require"
@@ -48,32 +54,22 @@ locals {
   }
 }
 
-resource "aws_secretsmanager_secret" "app" {
+resource "aws_ssm_parameter" "app" {
   for_each = local.app_secrets
 
-  name        = "${local.name}/${lower(replace(each.key, "_", "-"))}"
+  name        = "/${local.name}/${lower(replace(each.key, "_", "-"))}"
   description = each.value
+  type        = "SecureString"
+  tier        = "Standard"
 
-  # The shortest recovery window AWS allows; 0 deletes immediately with no
-  # way back. After a destroy the name stays reserved for these seven days.
-  recovery_window_in_days = 7
-}
-
-# A placeholder version, written once so the secret is never empty. Keep this
-# resource after creation rather than removing it: removal would schedule the
-# *secret* for deletion.
-resource "aws_secretsmanager_secret_version" "app" {
-  for_each = local.app_secrets
-
-  secret_id = aws_secretsmanager_secret.app[each.key].id
   # Deliberately invalid: apps/api/src/env.ts validates each of these at boot,
   # so the task crash-loops with a readable Zod error until real values arrive
   # rather than serving a sign-in that fails later.
-  secret_string = "REPLACE_ME"
+  value = "REPLACE_ME"
 
   lifecycle {
     # Load-bearing: without it every apply would reset the real credentials
     # to the placeholder above.
-    ignore_changes = [secret_string]
+    ignore_changes = [value]
   }
 }

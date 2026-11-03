@@ -28,11 +28,13 @@ resource "aws_iam_role_policy_attachment" "task_execution" {
   policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
 }
 
-# Only this project's secrets, not a wildcard.
+# Only this project's parameters, not a wildcard. They are SecureString under
+# the account's default aws/ssm key, which needs no kms:Decrypt grant; a
+# customer-managed key would.
 data "aws_iam_policy_document" "read_secrets" {
   statement {
-    actions   = ["secretsmanager:GetSecretValue"]
-    resources = [for s in aws_secretsmanager_secret.app : s.arn]
+    actions   = ["ssm:GetParameters"]
+    resources = [for p in aws_ssm_parameter.app : p.arn]
   }
 }
 

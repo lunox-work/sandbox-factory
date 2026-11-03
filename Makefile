@@ -218,7 +218,7 @@ secrets-template: ## Generate .env.production (OAuth from .env.development, fres
 secrets-check: ## Validate .env.production before pushing it
 	./infra/scripts/secrets-check.sh
 
-secrets-push: secrets-check ## Push .env.production values into AWS Secrets Manager
+secrets-push: secrets-check ## Push .env.production values into AWS SSM Parameter Store
 	./infra/scripts/secrets-push.sh
 
 ## ---- deployment ---------------------------------------------------------

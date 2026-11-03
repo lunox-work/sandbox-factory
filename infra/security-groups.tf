@@ -37,7 +37,7 @@ resource "aws_vpc_security_group_ingress_rule" "tasks_http" {
 # Unrestricted by necessity; the description lists what the task reaches.
 resource "aws_vpc_security_group_egress_rule" "tasks_all" {
   security_group_id = aws_security_group.tasks.id
-  description       = "ECR, Secrets Manager, CloudWatch, Neon, OAuth providers"
+  description       = "ECR, SSM Parameter Store, CloudWatch, Neon, OAuth providers"
   cidr_ipv4         = "0.0.0.0/0"
   ip_protocol       = "-1"
 }
