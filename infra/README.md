@@ -46,13 +46,13 @@ registers the _private_ IP, which CloudFront cannot reach.
 
 About **$10/month**:
 
-|                                            | Monthly |
-| ------------------------------------------ | ------- |
-| Fargate Spot ARM 0.25 vCPU / 0.5 GB        | ~$2.20  |
-| Public IPv4 address                        | $3.65   |
-| Neon Postgres (free tier)                  | $0.00   |
-| SSM Parameter Store (standard), alarms     | $0.00   |
-| CloudFront, S3, ECR, Route53 zone, logs    | ~$4     |
+|                                         | Monthly |
+| --------------------------------------- | ------- |
+| Fargate Spot ARM 0.25 vCPU / 0.5 GB     | ~$2.20  |
+| Public IPv4 address                     | $3.65   |
+| Neon Postgres (free tier)               | $0.00   |
+| SSM Parameter Store (standard), alarms  | $0.00   |
+| CloudFront, S3, ECR, Route53 zone, logs | ~$4     |
 
 Three things are deliberately absent, and together they are most of the saving:
 

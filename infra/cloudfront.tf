@@ -41,6 +41,14 @@ resource "aws_cloudfront_cache_policy" "web" {
   }
 }
 
+resource "aws_cloudfront_function" "spa" {
+  name    = "${local.name}-spa-rewrite"
+  runtime = "cloudfront-js-2.0"
+  comment = "Extension-less paths serve the app shell; see spa-rewrite.js"
+  publish = true
+  code    = file("${path.module}/spa-rewrite.js")
+}
+
 resource "aws_cloudfront_distribution" "main" {
   enabled             = true
   is_ipv6_enabled     = true
@@ -102,6 +110,11 @@ resource "aws_cloudfront_distribution" "main" {
     # behaviour: the root request (/ via default_root_object) would not match
     # it, and it is the one that matters.
     cache_policy_id = aws_cloudfront_cache_policy.web.id
+
+    function_association {
+      event_type   = "viewer-request"
+      function_arn = aws_cloudfront_function.spa.arn
+    }
   }
 
   # ---- api behaviour -------------------------------------------------------
@@ -169,10 +182,12 @@ resource "aws_cloudfront_distribution" "main" {
 
   # ---- SPA routing ---------------------------------------------------------
   #
-  # nginx's `try_files $uri /index.html`, in CloudFront terms. A deep link such
-  # as /settings is not an object in the bucket, and S3 behind an OAC answers
-  # 403 rather than 404, so both are rewritten to the app shell. 200, not 302,
-  # so the typed URL survives.
+  # nginx's `try_files $uri /index.html`, in CloudFront terms, as the fallback.
+  # spa-rewrite.js turns an extension-less path such as /settings into
+  # /index.html before the cache lookup, so these only catch what it lets
+  # through: a path with an extension that is not in the bucket. S3 behind an
+  # OAC answers 403 rather than 404, so both map to the shell. 200, not 302,
+  # so the typed URL survives. Held 60 s per edge like the shell.
 
   custom_error_response {
     error_code            = 403
