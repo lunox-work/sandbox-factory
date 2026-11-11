@@ -27,3 +27,4 @@ export * from "./context/index.js";
 export * from "./sandbox/index.js";
 
 export * from "./roles.js";
+export * from "./scopes.js";
