@@ -31,6 +31,7 @@ const SandboxFilesPage = lazy(() =>
     default: SandboxFilesPage,
   })),
 );
+import { DeviceApprovalPage } from "./features/developers/DeviceApproval";
 import { newBountyUrl } from "./features/onboarding/prefill";
 import { setupComplete } from "./features/onboarding/setup";
 import { useWorkspaceSetup } from "./features/onboarding/useWorkspaceSetup";
@@ -43,6 +44,7 @@ import {
   pathForScreen,
   repositoryForPath,
   sandboxFilesForPath,
+  deviceCodeForPath,
   type ConnectionTab,
   screenForPath,
   slugForPath,
@@ -52,9 +54,11 @@ import { useOrganizations } from "./useOrganizations";
 
 export function App() {
   const { data: session, isPending } = useSession();
-  const { pathname } = useLocation();
+  const { pathname, search } = useLocation();
   // A version's files open in a tab of their own, outside the shell.
   const sandboxFiles = sandboxFilesForPath(pathname);
+  // So does approving a command-line client's sign-in.
+  const deviceCode = deviceCodeForPath(pathname, search);
 
   // Three states, not two: rendering sign-in while the session resolves would
   // flash it at a signed-in user on every reload.
@@ -79,7 +83,9 @@ export function App() {
   return (
     <ServerDataProvider key={session.user.id} userId={session.user.id}>
       <Leaving />
-      {sandboxFiles !== undefined ? (
+      {deviceCode !== undefined ? (
+        <DeviceApprovalPage initialCode={deviceCode} />
+      ) : sandboxFiles !== undefined ? (
         <Suspense
           fallback={
             <main className="grid min-h-dvh place-items-center">

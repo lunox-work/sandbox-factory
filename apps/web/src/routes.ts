@@ -213,6 +213,21 @@ export function sandboxFilesPath(
     : `${page}?${new URLSearchParams({ path }).toString()}`;
 }
 
+/** Where a command-line client's device sign-in is approved. */
+export const DEVICE_PATH = "/device";
+
+/**
+ * The code a device-approval address carries, `""` when it carries none,
+ * or undefined for any other address.
+ */
+export function deviceCodeForPath(
+  pathname: string,
+  search: string,
+): string | undefined {
+  if (pathname.replace(/\/+$/, "") !== DEVICE_PATH) return undefined;
+  return new URLSearchParams(search).get("user_code") ?? "";
+}
+
 /** The version whose files a path is: `/sandboxes/:workspace/:versionId`. */
 export function sandboxFilesForPath(
   pathname: string,
