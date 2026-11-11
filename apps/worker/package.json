@@ -17,6 +17,7 @@
     "@sandbox-factory/db": "*",
     "@sandbox-factory/github": "*",
     "@sandbox-factory/shared": "*",
+    "e2b": "2.63.0",
     "libpg-query": "18.1.5",
     "sandbox-factory": "*",
     "typescript-compiler": "npm:typescript@5.9.3",

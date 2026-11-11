@@ -24,6 +24,7 @@ import { executeRun } from "./run.js";
 import { createSourceCache } from "./source-cache.js";
 import { createAnthropicModel } from "./agent/anthropic.js";
 import type { AgentSettings } from "./agent/loop.js";
+import { createE2BProvider, e2bClient } from "./evaluation/e2b.js";
 import { createLocalProcessProvider } from "./evaluation/local-process.js";
 import { EVALUATION_JOBS_MAX, limitJobs } from "./evaluation/limit.js";
 import { jobIsolation, probeIsolation } from "./evaluation/isolation.js";
@@ -69,9 +70,10 @@ const agent: AgentSettings = {
       : null,
   limits: { maxTurns: env.AGENT_MAX_TURNS, maxTokens: env.AGENT_TOKEN_BUDGET },
 };
-// Development provider: a fresh directory and scrubbed processes, not an
-// isolation boundary, so only a worker that opts in runs builds with it. A
-// hosted provider replaces it once qualified.
+// `e2b` runs each job in a fresh E2B sandbox, the hosted provider.
+// `local-process` is the development provider: a fresh directory and
+// scrubbed processes, not an isolation boundary, so only a worker that opts
+// in runs builds with it, and never one with NODE_ENV=production.
 // Two jobs at once at most: the agent slots can hold three builds, each
 // with a baseline to run.
 // The caches below live under the worker user's own home, which no other
@@ -109,7 +111,18 @@ const evaluation =
         }),
         jobSlots,
       )
-    : null;
+    : env.EVALUATION_PROVIDER === "e2b" && env.E2B_API_KEY !== undefined
+      ? limitJobs(
+          createE2BProvider({
+            client: e2bClient(env.E2B_API_KEY),
+            ...(env.E2B_TEMPLATE === undefined
+              ? {}
+              : { template: env.E2B_TEMPLATE }),
+            budgetMs: env.E2B_JOB_TIMEOUT_SECONDS * 1000,
+          }),
+          jobSlots,
+        )
+      : null;
 const objects = createObjectStore({
   bucket: env.S3_BUCKET,
   region: env.S3_REGION,

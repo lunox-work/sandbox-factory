@@ -548,9 +548,13 @@ async function runBaseline(
     privateTests,
     declared: input.acceptanceTests.map((test) => test.expectedBaseline),
   });
+  // Whether the job's network was cut, when its provider controls it.
+  const egressCut = job.egressCut?.();
   return {
     baseline: {
-      executions: [execution],
+      executions: [
+        egressCut === undefined ? execution : { ...execution, egressCut },
+      ],
       steps,
       privateTests,
       ok: verdict.ok,

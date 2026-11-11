@@ -301,14 +301,30 @@ grading reuses). The job is destroyed on every path and its execution
 record (provider, job id, environment, input hash, state, teardown) is kept
 in the report. The provider contract is
 [`packages/core/src/sandbox/build.ts`](../../packages/core/src/sandbox/build.ts).
-The worker ships `local-process` (`src/evaluation/local-process.ts`): a
-temporary directory and child processes with a scrubbed environment. It is
-the development provider, **not an isolation boundary**, used only with
-`EVALUATION_PROVIDER=local-process` (the compose file sets it) and refused
-at startup with `NODE_ENV=production`. The default,
-`none`, fails every build `evaluation_failed` before anything is generated.
-Hosted execution of untrusted contributor code needs an isolated provider;
-none is implemented.
+Two providers ship, picked by `EVALUATION_PROVIDER`; the default, `none`,
+fails every build `evaluation_failed` before anything is generated.
+
+- `e2b` (`src/evaluation/e2b.ts`) is the hosted one: one fresh E2B sandbox
+  per job from `E2B_TEMPLATE` (default `base`; it must have Node 22.12 or
+  later, checked at creation, and no start command), killed on every path
+  and alive at E2B for at most the job's budget
+  (`E2B_JOB_TIMEOUT_SECONDS`, default 1,200) plus a minute. Commands run
+  as the template's `user` with a fixed environment and the command's
+  fixture values: no worker variable, credential or `E2B_API_KEY` enters
+  the sandbox. Egress is `registry.npmjs.org` only (and the DNS server E2B
+  opens beside it) while the trusted lockfile preparation and clean install
+  run with scripts off, and is cut to nothing before any other command; a
+  failed cut fails the job. The execution record's `egressCut` says
+  whether it happened. Each command has its own timeout and output cap,
+  then whatever the job's user left running is killed; a command cut
+  short by the budget fails the job. Each hidden test runs in a fresh copy
+  of the job's files as they stood before the first. The worker needs
+  `E2B_API_KEY` with this provider and refuses to start without it.
+- `local-process` (`src/evaluation/local-process.ts`): a temporary
+  directory and child processes with a scrubbed environment. It is the
+  development provider, **not an isolation boundary**, used only with
+  `EVALUATION_PROVIDER=local-process` (the compose file sets it) and
+  refused at startup with `NODE_ENV=production`.
 
 Outputs: `build-manifest.json` (every generated file hashed and classified
 public or private; harness, test and project hashes; the toolchain and its
@@ -450,5 +466,5 @@ changes go through CD.
 
 The worker's own dependencies are Zod for boot configuration,
 `typescript-compiler` (an npm alias pinned to TypeScript 5.9.3) for its
-compiler API and `libpg-query` for migration replay; the API adds the ECS SDK
-to launch it.
+compiler API, `libpg-query` for migration replay and `e2b` (pinned) for the
+hosted evaluator; the API adds the ECS SDK to launch it.

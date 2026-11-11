@@ -102,6 +102,12 @@ export interface EvaluationJob {
   /** A text file the job produced, such as the lockfile; null when absent. */
   read(path: string): Promise<string | null>;
   destroy(): Promise<void>;
+  /**
+   * Whether the job's network egress was cut before any command but the
+   * trusted lockfile preparation and install ran. Absent for a provider that
+   * does not control egress, such as `local-process`.
+   */
+  egressCut?(): boolean;
 }
 
 export interface EvaluationProvider {
@@ -133,6 +139,8 @@ export interface StageExecution {
   readonly startedAt: string;
   readonly finishedAt: string | null;
   readonly teardown: "destroyed" | "failed" | "pending";
+  /** `EvaluationJob.egressCut` when the job ended; absent when it has none. */
+  readonly egressCut?: boolean;
 }
 
 export interface BaselineStep {

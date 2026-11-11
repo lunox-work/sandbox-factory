@@ -56,6 +56,9 @@ import type { contextRun } from "./context-fixtures.js";
 import { fixture, sha, slice, sliceRun, stamp } from "./fixture-slice.js";
 import type { SliceOutput } from "./fixture-slice.js";
 import { timingRecorder } from "../src/timing.js";
+import { createE2BProvider } from "../src/evaluation/e2b.js";
+import { fakeE2B } from "./e2b-fake.js";
+import type { FakeOutcome } from "./e2b-fake.js";
 
 /**
  * What the test runner reports for a hidden test that failed as one should:
@@ -1426,6 +1429,131 @@ test("provider failures are evaluation failures and the job is still torn down",
     (error: unknown) =>
       error instanceof AnalysisError && error.code === "evaluation_failed",
   );
+});
+
+/** An E2B provider on a fake client that answers commands like `fakeProvider`. */
+function fakeE2BProvider(
+  script: (command: string) => FakeOutcome | Error | undefined = () =>
+    undefined,
+  options: Parameters<typeof fakeE2B>[1] & { budgetMs?: number } = {},
+) {
+  const fake = fakeE2B(script, {
+    ...options,
+    // The lockfile npm prepares, as `fakeProvider` reads it back.
+    files: { "/home/user/job/work/package-lock.json": '{"lockfileVersion":3}' },
+  });
+  return {
+    fake,
+    provider: createE2BProvider({
+      client: fake.client,
+      now: fake.now,
+      ...(options.budgetMs === undefined ? {} : { budgetMs: options.budgetMs }),
+    }),
+  };
+}
+
+test("an e2b job reports the baseline a scripted job does, its egress cut on the record", async () => {
+  const local = await runBuild(
+    fakeProvider((argv) => (runsHiddenTest(argv) ? TAP_FAILED : {})).provider,
+  );
+  const { fake, provider } = fakeE2BProvider((command) =>
+    command.includes("'--test-reporter=tap'") ? TAP_FAILED : undefined,
+  );
+  const hosted = await runBuild(provider);
+  const { executions: localRuns, ...localReport } = local.manifest.baseline ?? {
+    executions: [],
+  };
+  const { executions: hostedRuns, ...hostedReport } = hosted.manifest
+    .baseline ?? { executions: [] };
+  assert.deepEqual(hostedReport, localReport);
+  assert.equal(hosted.manifest.ready, true);
+  assert.deepEqual(
+    hosted.files.map((file) => file.path).sort(),
+    local.files.map((file) => file.path).sort(),
+  );
+  assert.equal(
+    await hosted.read("project/package-lock.json"),
+    await local.read("project/package-lock.json"),
+  );
+  const [record] = hostedRuns;
+  const [fakeRecord] = localRuns;
+  assert.deepEqual(
+    { ...record, environment: null, jobId: null },
+    { ...fakeRecord, environment: null, jobId: null, egressCut: true },
+  );
+  assert.equal(record?.jobId, "sbx_1");
+  assert.equal(record?.environment.provider, "e2b");
+  assert.equal(hosted.manifest.evaluator?.provider, "e2b");
+  assert.equal(fake.killed(), 1);
+  // Each hidden test ran twice, each time from a fresh copy.
+  assert.equal(
+    fake.runs.filter((run) => run.command.includes("'--test-reporter=tap'"))
+      .length,
+    2,
+  );
+  assert.ok(
+    fake.runs
+      .filter((run) => run.command.includes("'--test-reporter=tap'"))
+      .every((run) => run.cwd === "/home/user/job/fresh"),
+  );
+});
+
+test("an e2b job is torn down after success, failure, a timeout, a thrown error and a spent budget", async () => {
+  // A failing step: recorded, not ready, torn down.
+  const failing = fakeE2BProvider((command) =>
+    command.startsWith("exec 'npm' 'run' 'build'")
+      ? { exitCode: 2, stderr: "error TS2304" }
+      : undefined,
+  );
+  const failed = await runBuild(failing.provider);
+  assert.equal(failed.manifest.ready, false);
+  assert.match(
+    failed.manifest.baseline?.reasons.join(" ") ?? "",
+    /build exited with 2/,
+  );
+  assert.equal(failing.fake.killed(), 1);
+  // A step past its own timeout.
+  const slow = fakeE2BProvider((command) =>
+    command.startsWith("exec 'npm' 'ci'") ? { timedOut: true } : undefined,
+  );
+  const timedOut = await runBuild(slow.provider);
+  assert.match(
+    timedOut.manifest.baseline?.reasons.join(" ") ?? "",
+    /install timed out/,
+  );
+  assert.equal(timedOut.manifest.baseline?.executions[0]?.egressCut, false);
+  assert.equal(slow.fake.killed(), 1);
+  // The SDK throwing mid-job, and the budget running out: the job failed.
+  for (const { fake, provider } of [
+    fakeE2BProvider((command) =>
+      command.startsWith("exec 'npm' 'run' 'build'")
+        ? new Error("sandbox unreachable")
+        : undefined,
+    ),
+    fakeE2BProvider(
+      (command) =>
+        command.startsWith("exec 'npm' 'ci'")
+          ? { timedOut: true, advanceMs: 10_000 }
+          : undefined,
+      { budgetMs: 5_000 },
+    ),
+  ]) {
+    await assert.rejects(
+      runBuild(provider),
+      (error: unknown) =>
+        error instanceof AnalysisError && error.code === "evaluation_failed",
+    );
+    assert.equal(fake.killed(), 1);
+  }
+  // A teardown that fails is recorded as such.
+  const stuck = fakeE2BProvider(
+    (command) =>
+      command.includes("'--test-reporter=tap'") ? TAP_FAILED : undefined,
+    { killFails: true },
+  );
+  const kept = await runBuild(stuck.provider);
+  assert.equal(kept.manifest.baseline?.executions[0]?.teardown, "failed");
+  assert.equal(kept.manifest.ready, true);
 });
 
 test("the nearest tsconfig's raw compiler options are carried, and none when there is no tsconfig", async () => {
