@@ -5,6 +5,7 @@
 
 import { serve } from "@hono/node-server";
 import {
+  createApiTokenStore,
   createBountyRunStore,
   createAnalysisRunStore,
   createArtifactStore,
@@ -31,6 +32,7 @@ import {
   createSandboxStore,
   createTokenCipher,
   createFlowWaitStore,
+  createUsageStore,
   createWorkspaceSetupStore,
   parseRunChange,
   RUN_CHANGED_CHANNEL,
@@ -701,6 +703,8 @@ const app = createApp({
   },
   setup: createWorkspaceSetupStore(connection.db),
   flows: { waits: createFlowWaitStore(connection.db) },
+  apiTokens: createApiTokenStore(connection.db),
+  usage: createUsageStore(connection.db),
   buildInfo: build,
   originVerify: env.ORIGIN_VERIFY,
 });

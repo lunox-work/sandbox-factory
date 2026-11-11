@@ -15,8 +15,10 @@ import {
   githubGrantDtoSchema,
   githubAvailableInstallationDtoSchema,
   githubInstallationRepositoryDtoSchema,
+  repoSnapshotDetailDtoSchema,
 } from "./github.js";
 import {
+  jiraBoardDtoSchema,
   jiraBoardSummarySchema,
   jiraIssueDtoSchema,
   jiraIssueDetailDtoSchema,
@@ -66,6 +68,15 @@ export const proposalListResponseSchema = z.object({
 });
 export const accountResponseSchema = z.object({
   user: z.object({ id: z.string(), username: z.string().nullable() }),
+});
+/** `GET /api/v1/me` in full: the account behind the credential. */
+export const meResponseSchema = z.object({
+  user: z.object({
+    id: z.string(),
+    email: z.string(),
+    name: z.string(),
+    username: z.string().nullable(),
+  }),
 });
 export const provenEmailListSchema = z.object({
   emails: z.array(
@@ -214,4 +225,22 @@ export const invitationCreatedResponseSchema = z.object({
 export const activeRunConflictSchema = z.object({
   code: z.literal("run_active"),
   runId: z.string(),
+});
+
+/** `GET .../github/snapshots/:id`: one snapshot with its tree facts. */
+export const repoSnapshotResponseSchema = z.object({
+  snapshot: repoSnapshotDetailDtoSchema,
+});
+/** `GET .../jira/connections/:id/boards`: the boards a site's grant can see. */
+export const jiraSiteBoardListSchema = z.object({
+  boards: z.array(jiraBoardDtoSchema),
+});
+/** `POST .../writebacks/:id/retry`: the operation, queued again. */
+export const writebackOperationResponseSchema = z.object({
+  operation: bountyWritebackDtoSchema,
+});
+/** `POST .../writebacks/:id/reconcile` when Jira already held the write. */
+export const writebackReconcileResponseSchema = z.object({
+  status: z.literal("adopted"),
+  operation: bountyWritebackDtoSchema,
 });

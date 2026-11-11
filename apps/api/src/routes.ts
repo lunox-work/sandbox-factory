@@ -23,11 +23,19 @@ import type { ErrorHandler } from "hono";
 
 import { NotFoundError, RepositoryInUseError } from "@sandbox-factory/db";
 import type {
+  ApiTokenStore,
   EmailStore,
   OrganizationStore,
+  UsageStore,
   UserProfileStore,
   WorkspaceSetupStore,
 } from "@sandbox-factory/db";
+
+import { mountApiTokenRoutes } from "./api-tokens/routes.js";
+import { credentialGuard } from "./credentials.js";
+import { isBound } from "./principal.js";
+import { buildOpenApiDocument } from "./public-api/openapi.js";
+import { mountUsageRoutes } from "./usage/routes.js";
 
 import type { Auth } from "./auth.js";
 import {
@@ -144,6 +152,16 @@ export interface AppOptions {
 
   /** The build record to report. Defaults to the unknown record. */
   buildInfo?: BuildInfoDto | undefined;
+
+  /**
+   * Workspace API tokens. Without it every `lnx_` token is refused and the
+   * token routes are not mounted, as in a test with no database.
+   */
+  apiTokens?: ApiTokenStore | undefined;
+  /** Run counts for `/usage`; not mounted without it. */
+  usage?: UsageStore | undefined;
+  /** The clock tokens expire by. Tests only. */
+  now?: (() => Date) | undefined;
 }
 
 /** Shared by the app, the error handler and the factory's return type. */
@@ -167,6 +185,9 @@ export function createApp({
   flows,
   buildInfo = unknownBuildInfo,
   originVerify,
+  apiTokens,
+  usage,
+  now,
 }: AppOptions): Hono<AppEnv> {
   const app = new Hono<AppEnv>();
 
@@ -208,6 +229,17 @@ export function createApp({
    */
   app.get("/version", (c) => c.json(buildInfo));
 
+  /**
+   * The public API's OpenAPI document, built from the registry once.
+   * Sessionless: it describes routes, not anyone's data. Registered before
+   * the credential guard, which therefore never runs for it.
+   */
+  let openApi: Record<string, unknown> | undefined;
+  app.get("/api/v1/openapi.json", (c) => {
+    openApi ??= buildOpenApiDocument(undefined, buildInfo.version);
+    return c.json(openApi);
+  });
+
   if (auth === undefined) {
     // No auth configured: serve health and version only. 503 rather than 404
     // says "this server is misconfigured", not "wrong URL".
@@ -247,23 +279,24 @@ export function createApp({
   }
 
   /**
-   * Everything under /api/v1 requires a session. Resolving it from the headers
-   * covers both the cookie (web) and the bearer token (extension).
+   * Everything under /api/v1 requires a credential: a session (the web
+   * app's cookie, the extension's bearer session token) or a workspace API
+   * token (`Bearer lnx_…`). A token reaches only the public registry's
+   * routes, with their scopes; see `credentials.ts`.
    */
-  app.use("/api/v1/*", async (c, next) => {
-    const session = await auth.api.getSession({ headers: c.req.raw.headers });
-    if (session === null) {
-      return c.json({ error: "Authentication required." }, 401);
-    }
-    c.set("user", {
-      id: session.user.id,
-      email: session.user.email,
-      name: session.user.name,
-    });
-    c.set("sessionId", session.session.id);
-    await next();
-    return;
-  });
+  app.use(
+    "/api/v1/*",
+    credentialGuard({
+      auth,
+      apiTokens,
+      roleOf:
+        organizations === undefined
+          ? undefined
+          : (userId, organizationId) =>
+              organizations.roleOf(userId, organizationId),
+      now,
+    }),
+  );
 
   /**
    * Who am I? `id` is the account: permanent, and what anything durable must
@@ -408,7 +441,14 @@ export function createApp({
      * field on `/api/v1/me`.
      */
     app.get("/api/v1/me/orgs", async (c) => {
-      const listed = await organizations.listForUser(c.get("user").id);
+      const principal = c.get("principal");
+      // A token is one workspace's: it does not see the others its
+      // creator belongs to.
+      const listed = (
+        await organizations.listForUser(principal.user.id)
+      ).filter(
+        ({ id }) => !isBound(principal) || id === principal.organizationId,
+      );
       if (setup === undefined) return c.json({ organizations: listed });
       // Counted for the workspaces just listed, so only the caller's own.
       const counts = await setup.forOrganizations(listed.map(({ id }) => id));
@@ -494,7 +534,15 @@ export function createApp({
      */
     app.use("/api/v1/orgs/:orgId/*", async (c, next) => {
       const organizationId = c.req.param("orgId");
-      const role = await organizations.roleOf(c.get("user").id, organizationId);
+      const principal = c.get("principal");
+      // A bound credential names its own organization or none: another's
+      // id is as missing as one that does not exist.
+      if (isBound(principal) && principal.organizationId !== organizationId) {
+        throw new NotFoundError(organizationId);
+      }
+      const role =
+        principal.role ??
+        (await organizations.roleOf(principal.user.id, organizationId));
       if (role === undefined) {
         throw new NotFoundError(organizationId);
       }
@@ -505,6 +553,15 @@ export function createApp({
 
     if (events !== undefined) mountEventRoutes(app, events);
     if (flows !== undefined) mountFlowRoutes(app, flows);
+    if (apiTokens !== undefined)
+      mountApiTokenRoutes(app, {
+        tokens: apiTokens,
+        // The device session's bearer token is in the headers; signing out
+        // with them deletes that session.
+        endSession: (headers) => auth.api.signOut({ headers }),
+        now,
+      });
+    if (usage !== undefined) mountUsageRoutes(app, { usage, now });
 
     /** The organization, plus the caller's role in it. Members only. */
     app.get("/api/v1/orgs/:orgId", async (c) => {

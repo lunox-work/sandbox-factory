@@ -27,6 +27,11 @@ product proposals and historical explainers are optional design context.
 - The available evaluator is opt-in `local-process`, for development; it is
   not an isolation boundary. With the default provider `none`, builds fail
   closed.
+- `/api/v1` is the public API for workspace API tokens (`lnx_…`, scoped,
+  one workspace each) on the routes its registry lists, described at
+  `GET /api/v1/openapi.json`. Command-line clients sign in by device flow
+  and mint their own token. Not built: the OAuth provider, MCP, webhooks
+  and the developer portal pages.
 - The VS Code extension can run a local task. Its sign-in flow is not built.
 - Not built: contributor submission, adjudication, escrow, payouts,
   reputation, merge-back, Slack and knowledge integrations. See the
@@ -38,6 +43,7 @@ product proposals and historical explainers are optional design context.
 | ----------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Setup and daily development   | [Run it](../README.md#run-it), [development](./development.md)                                                                            | `Makefile`, `docker-compose.yml`, `package.json`                                                                                                   |
 | Auth and ownership            | [Auth](./architecture.md#auth), [organizations](./architecture.md#organizations)                                                          | `apps/api/src/auth.ts`, `apps/api/src/routes.ts`, `packages/db/src/schema.ts`                                                                      |
+| Public API and tokens         | [Auth](./architecture.md#auth)                                                                                                            | `apps/api/src/credentials.ts`, `apps/api/src/public-api/`, `apps/api/src/api-tokens/`, `packages/core/src/scopes.ts`                               |
 | Bounties and Jira             | [Bounties](./architecture.md#bounties)                                                                                                    | `apps/api/src/bounties/routes.ts`, `apps/api/src/jira/`, `packages/core/src/bounty.ts`                                                             |
 | Pricing and specs             | [Pricing](./architecture.md#pricing)                                                                                                      | `packages/core/src/sizing.ts`, `packages/core/src/pricing/`, `apps/api/src/sizing/`, `apps/api/src/pricing/`                                       |
 | GitHub snapshots              | [GitHub](./architecture.md#github), [App setup](./github-apps.md)                                                                         | `apps/api/src/github/`, `packages/github/`                                                                                                         |

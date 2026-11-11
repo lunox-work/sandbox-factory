@@ -98,10 +98,10 @@ development proves nothing about IAM.
 
 Better Auth, configured in `apps/api/src/auth.ts` and mounted at
 `/api/auth/*`. Google, GitHub and Atlassian only; `emailAndPassword` is never
-enabled. The seven auth tables are bundled as `authSchema` in
-`packages/db/src/auth-schema.ts`. Two naming rules fail at runtime, not
-compile time, because the adapter resolves names by string: exported consts
-are singular, column properties are camelCase.
+enabled. The eight auth tables (with the device plugin's `device_code`) are
+bundled as `authSchema` in `packages/db/src/auth-schema.ts`. Two naming rules
+fail at runtime, not compile time, because the adapter resolves names by
+string: exported consts are singular, column properties are camelCase.
 
 - **Account linking is implicit; `trustedProviders` makes it safe.** A
   provider whose verified email matches an existing verified account merges
@@ -116,9 +116,35 @@ are singular, column properties are camelCase.
   cookie; the extension sends `Authorization: Bearer` through the `bearer()`
   plugin. The guard in `routes.ts` hands Better Auth the whole header set.
   `packages/client` sends `credentials: "include"`.
-- **`/api/v1` requires a session**; `/health`, `/version` and `/api/auth/*` do
-  not. `createApp` without `auth` serves 503 on `/api/*`, so a deploy missing
-  the auth environment fails closed.
+- **`/api/v1` requires a credential**; `/health`, `/version`,
+  `/api/auth/*` and `GET /api/v1/openapi.json` do not. `createApp` without
+  `auth` serves 503 on `/api/*`, so a deploy missing the auth environment
+  fails closed.
+- **Every credential is one `Principal`** (`principal.ts`): user,
+  organization, scopes and `via`, one of `session`, `token`, `device` and
+  `oauth` (reserved). The guard is `credentials.ts`.
+  - _Session_: cookie or `bearer()` token, no organization, every scope; roles
+    decide, as before.
+  - _Workspace API token_: `Authorization: Bearer lnx_…`, table `api_token`
+    (SHA-256 only; secret shown once). Bound to one organization, any other
+    `:orgId` is 404. Acts as its creator, who must still be owner or admin
+    there on every use; `last_used_at` is written at most once a minute.
+  - _Device session_: from Better Auth's `device-authorization` plugin
+    (`duediligence`, `carveout`, approved at the web app's `/device`);
+    `session.device_client_id` marks it. It reaches only `GET /me`,
+    `GET /me/orgs` and `POST /orgs/:orgId/tokens/cli`, which mints that
+    client's token (90 days, scopes within `CLI_CLIENTS`) and ends the
+    session.
+- **Tokens are deny by default.** A bound credential reaches only routes in
+  `apps/api/src/public-api/registry.ts`, matched by Hono pattern, holding the
+  scope listed there (`API_SCOPES` in `packages/core/src/scopes.ts`). An
+  unlisted route is 403 `not_public`; a missing scope 403
+  `insufficient_scope`. A scope never widens a role. Token management
+  (`/orgs/:orgId/tokens`) is session-only, for owners and admins; tokens
+  never manage tokens. Each registry entry names its request and response
+  schemas from `packages/shared`; `public-api/openapi.ts` serves them as
+  OpenAPI 3.1, and `apps/api/test/public-api.test.ts` fails on an entry
+  without schemas or a mounted route a token can reach outside the registry.
 - **A session says who is asking, not what they may read.** Every store
   method takes the owner first and puts it in the query. Another owner's id
   returns 404, not 403, so ids cannot be enumerated.
@@ -210,7 +236,7 @@ page is `/o/:slug/repositories/:repoId`; settings are `/o/:slug/settings`.
 ## API structure
 
 `apps/api/src/http-context.ts` and `access.ts` hold request context and access
-rules. `pricing/start-run.ts`, `pricing/approve-proposal.ts` and
+rules; `credentials.ts` admits each credential (see [Auth](#auth)). `pricing/start-run.ts`, `pricing/approve-proposal.ts` and
 `sandbox/version-service.ts` take explicit owner, input and dependencies;
 routes keep membership checks, parsing and HTTP mapping. `analysis/enqueue.ts`
 shares queue and log cleanup. Provider wiring is in `server.ts`: Anthropic
@@ -659,3 +685,4 @@ Migrations are generated; these are the ones later readers ask about.
 | 0056–0057 | `bounty_context` versions; `bounty.categories`                                    |
 | 0059      | Dropped `bounty.repo_id` and `jira_board.source_repo_id`; `proposal.repositories` |
 | 0065–0067 | Cut requests, `repo_snapshot.built_at`, sandbox preparation                       |
+| 0073      | `api_token`, `device_code`, `session.device_client_id`                            |
