@@ -439,6 +439,12 @@ jobs:
           test "$group" = "service:$PROJECT-api" || { echo "::error::apply API-only origin discovery before deploying workers"; exit 1; }
 
       - name: Register the worker revision
+        env:
+          # Unset: the revision keeps the evaluator the latest one has. `e2b`
+          # once its key is in Parameter Store (apps/worker/README.md,
+          # Deployment order); `none` turns builds off again.
+          EVALUATION_PROVIDER: ${{ vars.WORKER_EVALUATION_PROVIDER }}
+          E2B_TEMPLATE: ${{ vars.WORKER_E2B_TEMPLATE }}
         run: |
           aws ecs describe-task-definition --task-definition "$PROJECT-worker"             --query taskDefinition --output json > worker-current.json
           # The agents' key is the API's sizing secret: read its ARN from the
@@ -446,8 +452,21 @@ jobs:
           anthropic="$(aws ecs describe-task-definition --task-definition "$PROJECT-api" \
             --query "taskDefinition.containerDefinitions[0].secrets[?name=='ANTHROPIC_API_KEY'].valueFrom | [0]" \
             --output text)"
+          # The E2B key's parameter is named as infra/secrets.tf names it; its
+          # ARN needs only the account, which any role may read.
+          e2b=""
+          case "$EVALUATION_PROVIDER" in
+            "" | none) ;;
+            e2b)
+              account="$(aws sts get-caller-identity --query Account --output text)"
+              e2b="arn:aws:ssm:$AWS_REGION:$account:parameter/$PROJECT/e2b-api-key" ;;
+            *)
+              echo "::error::WORKER_EVALUATION_PROVIDER must be e2b, none or unset"
+              exit 1 ;;
+          esac
           jq --arg image "${{ steps.infra.outputs.worker_ecr }}:${{ steps.commit.outputs.sha }}" \
-            --arg anthropic "$anthropic" '
+            --arg anthropic "$anthropic" --arg provider "$EVALUATION_PROVIDER" --arg e2b "$e2b" \
+            --arg template "$E2B_TEMPLATE" '
             .containerDefinitions[0].image = $image
             | .containerDefinitions[0].environment =
                 ((.containerDefinitions[0].environment // [])
@@ -462,6 +481,19 @@ jobs:
                 ((.containerDefinitions[0].secrets // [])
                  | map(select(.name != "ANTHROPIC_API_KEY"))
                  + [{name: "ANTHROPIC_API_KEY", valueFrom: $anthropic}])
+              end
+            | if $provider == "" then .
+              else .containerDefinitions[0].environment =
+                  ((.containerDefinitions[0].environment // [])
+                   | map(select(.name as $n
+                       | ["EVALUATION_PROVIDER", "E2B_TEMPLATE"] | index($n) | not))
+                   + [{name: "EVALUATION_PROVIDER", value: $provider}]
+                   + (if $e2b == "" or $template == "" then []
+                      else [{name: "E2B_TEMPLATE", value: $template}] end))
+                | .containerDefinitions[0].secrets =
+                  ((.containerDefinitions[0].secrets // [])
+                   | map(select(.name != "E2B_API_KEY"))
+                   + (if $e2b == "" then [] else [{name: "E2B_API_KEY", valueFrom: $e2b}] end))
               end
             | del(.taskDefinitionArn, .revision, .status, .requiresAttributes,
                   .compatibilities, .registeredAt, .registeredBy, .deregisteredAt)

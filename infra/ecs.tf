@@ -219,8 +219,15 @@ resource "aws_ecs_task_definition" "worker" {
       # The scope and fixtures agents; the key is sizing's. CD carries both
       # onto the active revision, since container definitions are ignored here.
       { name = "AGENT_MODEL", value = "claude-opus-5-5" },
+      # Sandbox builds run in a fresh E2B sandbox per job; local processes
+      # are refused in production. CD sets it, with the key, on each revision
+      # once the repository variable WORKER_EVALUATION_PROVIDER says so.
+      { name = "EVALUATION_PROVIDER", value = "e2b" },
     ]
-    secrets          = [for key in ["DATABASE_URL", "GITHUB_APP_ID", "GITHUB_APP_PRIVATE_KEY", "ANTHROPIC_API_KEY"] : { name = key, valueFrom = aws_ssm_parameter.app[key].arn }]
+    secrets = concat(
+      [for key in ["DATABASE_URL", "GITHUB_APP_ID", "GITHUB_APP_PRIVATE_KEY", "ANTHROPIC_API_KEY"] : { name = key, valueFrom = aws_ssm_parameter.app[key].arn }],
+      [{ name = "E2B_API_KEY", valueFrom = aws_ssm_parameter.worker["E2B_API_KEY"].arn }],
+    )
     logConfiguration = { logDriver = "awslogs", options = { "awslogs-group" = aws_cloudwatch_log_group.worker.name, "awslogs-region" = var.region, "awslogs-stream-prefix" = "worker" } }
   }])
 }
