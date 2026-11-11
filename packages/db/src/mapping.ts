@@ -53,6 +53,8 @@ export const ID_PREFIXES = [
   "sbx",
   "sbv",
   "sbm",
+  /** A workspace API token. */
+  "tok",
 ] as const;
 
 export type IdPrefix = (typeof ID_PREFIXES)[number];

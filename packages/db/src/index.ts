@@ -175,6 +175,15 @@ export type {
   StoredRepoSnapshot,
 } from "./repo-snapshots.js";
 export { createOrganizationStore } from "./organizations.js";
+export { createApiTokenStore } from "./api-tokens.js";
+export type {
+  ApiTokenStore,
+  NewApiToken,
+  ResolvedApiToken,
+  StoredApiToken,
+} from "./api-tokens.js";
+export { createUsageStore } from "./usage.js";
+export type { RunCount, UsageStore } from "./usage.js";
 export type {
   Membership,
   OrganizationMember,
@@ -186,6 +195,8 @@ export { createObjectStore, isNotFound, sourceArchiveKey } from "./objects.js";
 export type { ObjectStore, ObjectStoreOptions, PutOptions } from "./objects.js";
 export {
   account,
+  apiToken,
+  deviceCode,
   invitation,
   member,
   organization,
@@ -197,6 +208,8 @@ export {
 } from "./schema.js";
 export type {
   AccountRow,
+  ApiTokenRow,
+  DeviceCodeRow,
   InvitationRow,
   OrganizationKind,
   MemberRow,

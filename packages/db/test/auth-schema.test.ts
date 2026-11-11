@@ -13,10 +13,12 @@ import { authSchema } from "../src/auth-schema.js";
 
 test("authSchema is keyed by Better Auth's singular model names", () => {
   // The adapter resolves `schema[modelName]`; `users` would not be found.
-  // The last three belong to the organization plugin, which resolves its
-  // models the same way.
+  // `invitation`, `member` and `organization` belong to the organization
+  // plugin and `deviceCode` to the device-authorization plugin, which
+  // resolve their models the same way.
   assert.deepEqual(Object.keys(authSchema).sort(), [
     "account",
+    "deviceCode",
     "invitation",
     "member",
     "organization",
@@ -142,4 +144,21 @@ test("one provider identity can belong to only one user", () => {
     "account_id",
     "provider_id",
   ]);
+});
+
+test("a device sign-in's codes are unique and go with their user", () => {
+  // The plugin looks a code up by either value and retries on a collision.
+  const columns = getTableConfig(authSchema.deviceCode).columns;
+  for (const name of ["device_code", "user_code"])
+    assert.equal(columns.find((c) => c.name === name)?.isUnique, true, name);
+  const reference = getTableConfig(authSchema.deviceCode).foreignKeys.find(
+    (key) => key.reference().foreignTable === authSchema.user,
+  );
+  assert.equal(reference?.onDelete, "cascade");
+});
+
+test("a session records the command-line client a device sign-in was for", () => {
+  // The API confines such a session to minting that client's token.
+  assert.equal(authSchema.session.deviceClientId.name, "device_client_id");
+  assert.equal(authSchema.session.deviceClientId.notNull, false);
 });

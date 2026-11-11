@@ -11,7 +11,8 @@
  * One module per bounded area, split when the file reached 373 lines and the
  * Jira and commercials tables were about to be added to it:
  *
- * - `schema/auth.ts` — Better Auth's four tables, plus `user_email`.
+ * - `schema/auth.ts` — Better Auth's four tables and the device-flow
+ *   plugin's `device_code`, plus `user_email`.
  * - `schema/organizations.ts` — the second principal, its membership, and the
  *   handle namespace both principals share.
  * - `schema/bounty.ts` — the organization's own bounties: the record a
@@ -27,6 +28,7 @@
  *   provenance behind each, and the submissions judged by them.
  * - `schema/flows.ts` — views of how long people wait, read from the rows
  *   above; no tables.
+ * - `schema/developer.ts` — the public API's workspace tokens.
  *
  * `auth.ts` and `organizations.ts` import each other; see the note in
  * `organizations.ts` for why the foreign-key thunks make that safe.
@@ -34,6 +36,7 @@
 
 export {
   account,
+  deviceCode,
   session,
   user,
   userEmail,
@@ -41,6 +44,7 @@ export {
 } from "./schema/auth.js";
 export type {
   AccountRow,
+  DeviceCodeRow,
   NewUserEmailRow,
   SessionRow,
   UserEmailRow,
@@ -147,3 +151,6 @@ export type {
 } from "./schema/sandbox.js";
 
 export { flowWait, flowWaitSample } from "./schema/flows.js";
+
+export { apiToken } from "./schema/developer.js";
+export type { ApiTokenRow, NewApiTokenRow } from "./schema/developer.js";

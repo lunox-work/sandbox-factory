@@ -1,7 +1,7 @@
 /**
  * The schema handed to Better Auth's Drizzle adapter: the four core auth
- * models plus the three the organization plugin owns, because the adapter
- * treats every key as a possible auth table. Keys must stay singular — see
+ * models, the three the organization plugin owns and the device-authorization
+ * plugin's one, because the adapter treats every key as a possible auth table. Keys must stay singular — see
  * the Better Auth note in `schema.ts`.
  *
  * `todos` and `user_email` are deliberately absent: they are ours, and the
@@ -10,6 +10,7 @@
 
 import {
   account,
+  deviceCode,
   invitation,
   member,
   organization,
@@ -26,4 +27,5 @@ export const authSchema = {
   organization,
   member,
   invitation,
+  deviceCode,
 } as const;

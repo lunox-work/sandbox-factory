@@ -1,7 +1,7 @@
 /**
  * Better Auth's core tables (user, session, account, verification), shaped
- * after `getAuthTables()` in `better-auth/db`, plus `user_email`, which is
- * ours.
+ * after `getAuthTables()` in `better-auth/db`, the device-authorization
+ * plugin's `device_code`, plus `user_email`, which is ours.
  *
  * The Drizzle adapter resolves names by string, so two naming rules are
  * load-bearing; breaking either fails at runtime, not compile time:
@@ -18,6 +18,7 @@
 import { sql } from "drizzle-orm";
 import {
   boolean,
+  integer,
   pgTable,
   text,
   timestamp,
@@ -142,6 +143,13 @@ export const session = pgTable("session", {
     () => organization.id,
     { onDelete: "set null" },
   ),
+  /**
+   * The command-line client a device sign-in was for (`duediligence`,
+   * `carveout`); null for every other session. Set by the session-create
+   * hook in the API's `auth.ts`, and what confines such a session to
+   * minting that client's API token.
+   */
+  deviceClientId: text("device_client_id"),
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
     .defaultNow(),
@@ -206,9 +214,32 @@ export const verification = pgTable("verification", {
     .defaultNow(),
 });
 
+/**
+ * A device sign-in in flight (RFC 8628), owned by Better Auth's
+ * `device-authorization` plugin: a command-line client asks for a code, a
+ * signed-in person approves it on the web app's `/device` page, and the
+ * client's poll redeems it for a session.
+ */
+export const deviceCode = pgTable("device_code", {
+  id: text("id").primaryKey(),
+  deviceCode: text("device_code").notNull().unique(),
+  userCode: text("user_code").notNull().unique(),
+  /** Whoever opened the code on the web app; null until then. */
+  userId: text("user_id").references(() => user.id, { onDelete: "cascade" }),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  /** `pending`, `approved` or `denied`. */
+  status: text("status").notNull(),
+  lastPolledAt: timestamp("last_polled_at", { withTimezone: true }),
+  /** Milliseconds a client waits between polls. */
+  pollingInterval: integer("polling_interval"),
+  clientId: text("client_id"),
+  scope: text("scope"),
+});
+
 export type UserRow = typeof user.$inferSelect;
 export type UserEmailRow = typeof userEmail.$inferSelect;
 export type NewUserEmailRow = typeof userEmail.$inferInsert;
 export type SessionRow = typeof session.$inferSelect;
 export type AccountRow = typeof account.$inferSelect;
 export type VerificationRow = typeof verification.$inferSelect;
+export type DeviceCodeRow = typeof deviceCode.$inferSelect;
