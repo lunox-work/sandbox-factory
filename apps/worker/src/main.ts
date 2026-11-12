@@ -164,11 +164,14 @@ function adapterFor(run: ClaimedAnalysisRun): ToolAdapter {
     case "brief":
       return createBriefAdapter();
     case "slice":
-      return createSliceAdapter({ packageTypes });
+      // carveout's walk (`carveout-walk.ts`) for every new slice; a slice
+      // run already made keeps the walk it was made with (its manifest's
+      // `walkEngine`).
+      return createSliceAdapter({ packageTypes, walker: "carveout" });
     case "sandbox_build":
       return createSandboxBuildAdapter({ agent, provider: evaluation });
     case "scope":
-      return createScopeAdapter(agent, { packageTypes });
+      return createScopeAdapter(agent, { packageTypes, walker: "carveout" });
     case "fixtures":
       return createFixturesAdapter(agent);
     case "sandbox_starter":

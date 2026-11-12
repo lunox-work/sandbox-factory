@@ -1,3 +1,4 @@
+import { sliceManifestSchema } from "@sandbox-factory/shared";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
@@ -225,6 +226,7 @@ async function runSlice(
     inputs: ToolInputs;
     sourceDir: string;
     includeInferred: boolean;
+    walker: "graph" | "carveout";
   }> = {},
 ) {
   const messages: string[] = [];
@@ -243,7 +245,9 @@ async function runSlice(
     signal: new AbortController().signal,
     log: (line) => messages.push(line),
   };
-  const files = await createSliceAdapter().run(input);
+  const files = await createSliceAdapter(
+    options.walker === undefined ? {} : { walker: options.walker },
+  ).run(input);
   const read = async (path: string) => readFile(join(outDir, path), "utf8");
   const manifest = JSON.parse(
     await read("slice-manifest.json"),
@@ -1725,5 +1729,47 @@ test("a program past the file ceiling stops with a blocker instead of compiling 
     );
   } finally {
     await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("carveout's walk chooses the files from the source, and the slice tool builds the same boundary from them", async () => {
+  const graphOut = await scratch("walk-graph");
+  const carveoutOut = await scratch("walk-carveout");
+  try {
+    const entries = ["src/app.ts"];
+    const graphed = await runSlice(graphOut, entries);
+    const walked = await runSlice(carveoutOut, entries, { walker: "carveout" });
+    assert.match(walked.manifest.walkEngine ?? "", /^carveout@\d+\.\d+\.\d+$/);
+    assert.equal(graphed.manifest.walkEngine, undefined);
+    // The compiler passes over imports of types alone and follows a barrel
+    // only to the modules that supply the names taken, so carveout reads a
+    // subset of what graphify's walk reads (4 files of 8 here), and the
+    // boundary built from it has no more blockers.
+    const graphFiles = graphed.manifest.included.map((file) => file.path);
+    const carveoutFiles = walked.manifest.included.map((file) => file.path);
+    assert.deepEqual(carveoutFiles, [
+      "lib/alias.ts",
+      "lib/helpers.ts",
+      "lib/service.ts",
+      "src/app.ts",
+    ]);
+    assert.ok(carveoutFiles.every((path) => graphFiles.includes(path)));
+    assert.ok(
+      walked.manifest.blockers.length <= graphed.manifest.blockers.length,
+      JSON.stringify({
+        graph: graphed.manifest.blockers,
+        carveout: walked.manifest.blockers,
+      }),
+    );
+    assert.deepEqual(
+      walked.manifest.externals.packages.map((p) => p.specifier),
+      ["pg"],
+    );
+    assert.deepEqual(walked.manifest.communities, []);
+    // The manifest is what the API parses, field for field.
+    assert.equal(sliceManifestSchema.safeParse(walked.manifest).success, true);
+  } finally {
+    await rm(graphOut, { recursive: true, force: true });
+    await rm(carveoutOut, { recursive: true, force: true });
   }
 });

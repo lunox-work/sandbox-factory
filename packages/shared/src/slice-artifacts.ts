@@ -76,6 +76,7 @@ export const sliceManifestSchema = z.object({
   schemaVersion: z.literal(SLICE_MANIFEST_SCHEMA_VERSION),
   ...provenance,
   graphSha256: z.string(),
+  walkEngine: z.string().optional(),
   params: sliceParamsSchema,
   entryPoints: strings,
   budget: sliceBudgetSchema,

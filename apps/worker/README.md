@@ -215,7 +215,13 @@ graph that did not succeed fails it `graph_unavailable`. `reach`
 (`packages/core/src/slice`) walks the graph breadth first over import, call,
 inheritance and use relations until the budget is spent: files inside are
 _included_, dependency edges that leave the set are _cuts_, and outside
-files' imports of included modules are the _public surface_. For
+files' imports of included modules are the _public surface_. The
+deployed worker walks with carveout instead (`walker: "carveout"`,
+`slice/carveout-walk.ts`, `carveout/api` pinned exactly): the TypeScript
+compiler's resolution from the source, passing over type-only imports and
+following a barrel only to the modules that supply the names taken; the
+manifest records it as `walkEngine`, and everything after the walk is the
+same. For
 TypeScript and JavaScript the cut modules get declaration stubs from the
 compiler's own emitter, without comments, literal values (constants, class
 properties, `as const` objects and tuples and literal annotations, widened
