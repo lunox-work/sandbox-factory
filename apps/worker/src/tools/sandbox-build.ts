@@ -62,6 +62,9 @@ import {
   packageNameOf,
   privatePackageNames,
   privateTestArgv,
+  layoutTestArgv,
+  PLATFORM_LAYOUT,
+  testRunnerOf,
   transformConfigOf,
   vocabularyBlockers,
   workspaceVocabulary,
@@ -76,6 +79,7 @@ import type {
   EvaluationEnvironment,
   EvaluationProvider,
   GeneratedFile,
+  GradingLayout,
   PrivateTestOutcome,
   ProjectBlocker,
   ProjectSource,
@@ -580,6 +584,238 @@ async function runBaseline(
 }
 
 /**
+ * The baseline on a layout other than the platform's (an uploaded carveout
+ * folder's), in two jobs. Its public suite is the folder's own runner,
+ * which runs every test file it finds, and its hidden tests sit beside the
+ * code (`privateDir` null): in one tree the public run would run them too.
+ * So the first job holds the public files alone and runs the layout's
+ * commands (install from the folder's lockfile with no scripts, build,
+ * public tests); the second holds them with the hidden tests, installs and
+ * builds again, and runs each hidden test on its own twice, each run in a
+ * fresh copy (`fresh`), read by `privateTestOutcome` as the platform's are.
+ * A hidden test whose runner the folder does not install could not run.
+ * The folder brings its lockfile, so nothing is prepared and none is read.
+ */
+async function runLayoutBaseline(
+  provider: EvaluationProvider,
+  input: {
+    readonly label: string;
+    readonly files: readonly GeneratedFile[];
+    readonly acceptanceTests: readonly AcceptanceTest[];
+    readonly layout: GradingLayout;
+    readonly signal: AbortSignal;
+    readonly log: (line: string) => void;
+    readonly now: () => Date;
+    readonly onStep?: StepObserver;
+  },
+): Promise<{
+  baseline: BaselineReport;
+  evaluator: EvaluationEnvironment;
+  lockfile: null;
+}> {
+  const { layout } = input;
+  const hidden = new Set(input.acceptanceTests.map((test) => test.path));
+  const publicFiles = input.files
+    .filter((file) => !hidden.has(file.path))
+    .map((file) => ({ path: file.path, text: file.text }));
+  const steps: BaselineStep[] = [];
+  const privateTests: PrivateTestOutcome[] = [];
+  const executions: StageExecution[] = [];
+  let evaluator: EvaluationEnvironment | null = null;
+  const commandsOk = (names: readonly string[]) =>
+    names.every((name) => steps.some((step) => step.name === name && step.ok));
+  /** One job: staged, `body` run in it, torn down on every path. */
+  const inJob = async (
+    label: string,
+    staged: readonly { path: string; text: string }[],
+    body: (
+      run: (
+        name: BaselineStep["name"],
+        argv: readonly string[],
+        path?: string | null,
+        fresh?: boolean,
+      ) => Promise<{ step: BaselineStep; stdout: string }>,
+    ) => Promise<void>,
+  ) => {
+    let job;
+    try {
+      job = await provider.create({ label, signal: input.signal });
+    } catch (error) {
+      if (input.signal.aborted) throw error;
+      throw new AnalysisError("evaluation_failed");
+    }
+    evaluator ??= job.environment;
+    const execution = {
+      stage: "baseline" as const,
+      sequence: executions.length + 1,
+      environment: job.environment,
+      jobId: job.id,
+      inputsSha256: sha256(
+        canonicalJson(staged.map((file) => [file.path, sha256(file.text)])),
+      ),
+      state: "created" as StageExecution["state"],
+      startedAt: input.now().toISOString(),
+      finishedAt: null as string | null,
+      teardown: "pending" as StageExecution["teardown"],
+    };
+    const current = job;
+    try {
+      await current.stage(staged);
+      execution.state = "running";
+      await body(async (name, argv, path = null, fresh = false) => {
+        input.signal.throwIfAborted();
+        const result = await current.exec({
+          argv,
+          env: {},
+          limits: EVALUATION_LIMITS,
+          ...(fresh ? { fresh: true } : {}),
+        });
+        const step: BaselineStep = {
+          name,
+          argv,
+          exitCode: result.exitCode,
+          timedOut: result.timedOut,
+          ok: !result.timedOut && result.exitCode === 0,
+          path,
+          durationMs: result.durationMs,
+        };
+        steps.push(step);
+        if (!step.ok && name !== "private-test") {
+          const output = `${result.stdout}\n${result.stderr}`.trim();
+          input.log(
+            `${name} failed:\n${output.length <= STEP_LOG_CHARS ? output : `…${output.slice(-STEP_LOG_CHARS)}`}`,
+          );
+        }
+        input.onStep?.(step, { stdout: result.stdout, stderr: result.stderr });
+        return { step, stdout: result.stdout };
+      });
+      execution.state = "succeeded";
+    } catch (error) {
+      execution.state = input.signal.aborted ? "cancelled" : "failed";
+      if (input.signal.aborted) throw error;
+      throw new AnalysisError("evaluation_failed");
+    } finally {
+      execution.finishedAt = input.now().toISOString();
+      try {
+        await current.destroy();
+        execution.teardown = "destroyed";
+      } catch {
+        execution.teardown = "failed";
+      }
+      input.log(
+        `Evaluation job ${current.id} ${execution.state}, teardown ${execution.teardown}.`,
+      );
+      const egressCut = current.egressCut?.();
+      executions.push(
+        egressCut === undefined ? execution : { ...execution, egressCut },
+      );
+    }
+  };
+  const setup = layout.commands.filter(
+    (command) => command.name !== "public-tests",
+  );
+  await inJob(input.label, publicFiles, async (run) => {
+    for (const command of layout.commands) {
+      const { step } = await run(command.name, command.argv);
+      if (!step.ok) return;
+    }
+  });
+  if (
+    input.acceptanceTests.length > 0 &&
+    commandsOk(setup.map((command) => command.name))
+  ) {
+    const before = steps.length;
+    await inJob(
+      `${input.label}-hidden`,
+      [
+        ...publicFiles,
+        ...input.acceptanceTests.map(({ path, text }) => ({ path, text })),
+      ],
+      async (run) => {
+        for (const command of setup) {
+          const { step } = await run(command.name, command.argv);
+          if (!step.ok) return;
+        }
+        const runTest = async (test: AcceptanceTest) => {
+          const argv = layoutTestArgv(
+            layout,
+            test.path,
+            testRunnerOf(test.text),
+          );
+          if (argv === null) return null;
+          const { step, stdout } = await run(
+            "private-test",
+            argv,
+            test.path,
+            true,
+          );
+          return {
+            index: steps.length - 1,
+            observed: privateTestOutcome(step, stdout),
+            points: tapPoints(stdout).join("\n"),
+          };
+        };
+        const first: Awaited<ReturnType<typeof runTest>>[] = [];
+        for (const test of input.acceptanceTests)
+          first.push(await runTest(test));
+        for (const [index, test] of input.acceptanceTests.entries()) {
+          const once = first[index] ?? null;
+          if (once === null) {
+            privateTests.push({
+              path: test.path,
+              expected: test.expectedBaseline,
+              observed: "error",
+              ok: false,
+            });
+            continue;
+          }
+          const again = (await runTest(test)) ?? once;
+          const observed =
+            once.observed === again.observed && once.points === again.points
+              ? again.observed
+              : "flaky";
+          const ok = observed === test.expectedBaseline;
+          privateTests.push({
+            path: test.path,
+            expected: test.expectedBaseline,
+            observed,
+            ok,
+          });
+          for (const at of [once.index, again.index]) {
+            const step = steps[at];
+            if (step !== undefined) steps[at] = { ...step, ok };
+          }
+        }
+      },
+    );
+    // The second job's install and build are the same as the first's
+    // unless a hidden test broke the build: only a failure is kept.
+    for (let at = steps.length - 1; at >= before; at -= 1) {
+      const step = steps[at];
+      if (step !== undefined && step.name !== "private-test" && step.ok)
+        steps.splice(at, 1);
+    }
+  }
+  const verdict = baselineVerdict({
+    steps,
+    privateTests,
+    declared: input.acceptanceTests.map((test) => test.expectedBaseline),
+  });
+  if (evaluator === null) throw new AnalysisError("evaluation_failed");
+  return {
+    baseline: {
+      executions,
+      steps,
+      privateTests,
+      ok: verdict.ok,
+      reasons: verdict.reasons,
+    },
+    evaluator,
+    lockfile: null,
+  };
+}
+
+/**
  * What a build manifest binds its files to: the slice, or a generated
  * version's starter, and the transform and task they were built for.
  */
@@ -617,6 +853,10 @@ export async function writeBuildOutputs(input: {
   readonly baseline: BaselineReport | null;
   readonly evaluator: EvaluationEnvironment | null;
   readonly blockers: readonly ProjectBlocker[];
+  /** A layout other than the platform's, recorded for grading (an upload's). */
+  readonly layout?: GradingLayout;
+  /** An uploaded folder's record hash and carveout release. */
+  readonly upload?: SandboxBuildManifest["upload"];
 }): Promise<{ manifest: SandboxBuildManifest; written: ArtifactFile[] }> {
   const { baseline, blockers } = input;
   const files = [...input.files].sort((a, b) => compare(a.path, b.path));
@@ -637,6 +877,8 @@ export async function writeBuildOutputs(input: {
     toolchain: SANDBOX_TOOLCHAIN,
     toolchainDigest: sha256(canonicalJson(SANDBOX_TOOLCHAIN)),
     engines: BUILD_ENGINES,
+    ...(input.layout === undefined ? {} : { layout: input.layout }),
+    ...(input.upload === undefined ? {} : { upload: input.upload }),
     evaluator: input.evaluator,
     files: records,
     importRewrites: input.importRewrites,
@@ -791,9 +1033,18 @@ export async function baselineOf(
     /** Each step's output, for an agent fixing its own project; never logged. */
     readonly onStep?: StepObserver;
     readonly timing?: RunTiming | undefined;
+    /**
+     * The version's layout when it is not the platform's (an uploaded
+     * folder's): its own commands run, and its hidden tests by its runner.
+     */
+    readonly layout?: GradingLayout | undefined;
   },
 ): Promise<{ baseline: BaselineReport; evaluator: EvaluationEnvironment }> {
-  const result = await runBaseline(provider, input);
+  const { layout } = input;
+  const result =
+    layout === undefined || layout === PLATFORM_LAYOUT
+      ? await runBaseline(provider, input)
+      : await runLayoutBaseline(provider, { ...input, layout });
   input.timing?.baseline(result.baseline.steps);
   if (result.lockfile !== null)
     input.files.push({

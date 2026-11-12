@@ -28,13 +28,16 @@ import { gainedIntegrity } from "carveout/api";
 import { verdict as judge } from "duediligence/api";
 import type { SuiteResult } from "duediligence/api";
 import {
+  PLATFORM_LAYOUT,
   PRIVATE_TESTS_DIR,
   PSEUDONYMS_FILE,
   SUBMISSION_GRADE_TOOL_VERSION,
   TASK_DESCRIPTOR_PATH,
   forwardChange,
   gradingTree,
+  hiddenTestPath,
   isSubmissionGradeParams,
+  layoutOf,
   projectPathOf,
   reverseSubmission,
 } from "sandbox-factory";
@@ -43,6 +46,7 @@ import type {
   BaselineReport,
   EvaluationProvider,
   GeneratedFile,
+  GradingLayout,
   AliasRule,
   ProjectBlocker,
   SandboxBuildManifest,
@@ -73,11 +77,13 @@ const FILE_TEST = "(file)";
 
 /**
  * The built version's files as a grading tree reads them: the public
- * project at its paths, the hidden tests at `tests/private/…`.
+ * project at its paths, the hidden tests at `tests/private/…`, or where
+ * the version's layout stages them (an upload's, at their own paths).
  */
 export async function versionFilesOf(
   input: Pick<ToolRunInput, "inputs">,
   buildRunId: string,
+  layout: GradingLayout = PLATFORM_LAYOUT,
 ): Promise<GeneratedFile[]> {
   const files: GeneratedFile[] = [];
   for (const artifact of await input.inputs.listArtifacts(buildRunId)) {
@@ -98,7 +104,13 @@ export async function versionFilesOf(
             public: true,
           }
         : {
-            path: `${PRIVATE_TESTS_DIR}/${artifact.path.slice("private/".length)}`,
+            path:
+              layout === PLATFORM_LAYOUT
+                ? `${PRIVATE_TESTS_DIR}/${artifact.path.slice("private/".length)}`
+                : hiddenTestPath(
+                    layout,
+                    artifact.path.slice("private/".length),
+                  ),
             text,
             class: "test-private",
             public: false,
@@ -384,7 +396,19 @@ export function createSubmissionGradeAdapter(options: {
       const buildRunId = stored?.source.buildRunId ?? null;
       if (stored === null || buildRunId === null)
         throw new AnalysisError("tool_failed");
-      const versionFiles = await versionFilesOf(input, buildRunId);
+      // The layout the build recorded; none is the platform's own.
+      const manifestText = await buildArtifactText(
+        input,
+        buildRunId,
+        "build-manifest.json",
+      );
+      const recorded =
+        manifestText === null
+          ? undefined
+          : (JSON.parse(manifestText) as Pick<SandboxBuildManifest, "layout">)
+              .layout;
+      const layout = layoutOf({ layout: recorded });
+      const versionFiles = await versionFilesOf(input, buildRunId, layout);
       const descriptor = versionFiles.find(
         (file) => file.path === TASK_DESCRIPTOR_PATH,
       );
@@ -427,6 +451,7 @@ export function createSubmissionGradeAdapter(options: {
         versionFiles,
         editablePaths,
         submission: submitted,
+        ...(layout === PLATFORM_LAYOUT ? {} : { layout }),
       });
       const refused = [
         ...carryRefused,
@@ -458,6 +483,7 @@ export function createSubmissionGradeAdapter(options: {
             signal: input.signal,
             log: input.log,
             now,
+            ...(layout === PLATFORM_LAYOUT ? {} : { layout }),
           })
         ).baseline;
       }

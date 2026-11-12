@@ -205,6 +205,37 @@ test("an e2b job starts registry-only, stages files, cuts egress after the insta
   }
 });
 
+test("a command marked fresh runs in a fresh copy whatever its argv, as a layout's hidden test", async () => {
+  const fake = fakeE2B(() => undefined);
+  const provider = createE2BProvider({
+    client: fake.client,
+    template: "node22-sandbox",
+    budgetMs: 600_000,
+    now: fake.now,
+  });
+  const job = await provider.create({ label: "sbv_up", signal: signal() });
+  await job.stage([{ path: "package.json", text: "{}" }]);
+  await job.exec({ argv: INSTALL, env: {}, limits });
+  const hidden = [
+    "node",
+    "--env-file=carveout.env",
+    "--import=./carveout/assets.js",
+    "--test",
+    "--test-reporter=tap",
+    "--test-reporter-destination=stdout",
+    "apps/shop/src/cart.accept.test.js",
+  ];
+  assert.equal(isHiddenTestRun(hidden), false);
+  await job.exec({ argv: ["node", "carveout/test.js"], env: {}, limits });
+  await job.exec({ argv: hidden, env: {}, limits, fresh: true });
+  const runs = fake.runs.filter((run) => run.command.startsWith("exec "));
+  assert.deepEqual(
+    runs.map((run) => run.cwd),
+    [WORK, WORK, "/home/user/job/fresh"],
+  );
+  await job.destroy();
+});
+
 test("an e2b job refuses paths outside its directory and empty commands", async () => {
   const fake = fakeE2B();
   const job = await createE2BProvider({

@@ -11,6 +11,7 @@
  * depends on a provider SDK.
  */
 
+import type { GradingLayout } from "./layout.js";
 import type { ImportRewrite, ProjectBlocker } from "./project.js";
 import type { PathClass, ResolvedDependency } from "./provenance.js";
 
@@ -72,6 +73,12 @@ export const EVALUATION_LIMITS: EvaluationLimits = {
 
 export interface EvaluationCommand {
   readonly argv: readonly string[];
+  /**
+   * Run in a fresh copy of the job's files as they stood before the first
+   * such run, as a hidden test runs. A provider that copies recognises the
+   * platform's own hidden-test command without it; a layout's needs it.
+   */
+  readonly fresh?: boolean;
   /** Relative to the job's working directory. */
   readonly cwd?: string;
   /** Fixture values only; the adapter never passes its own environment. */
@@ -257,6 +264,20 @@ export interface SandboxBuildManifest {
    * renaming of then (`ALIASES_V1`); present, under the release's.
    */
   readonly engines?: { readonly carveout: string };
+  /**
+   * Where the version keeps its harness and tests, and the commands that
+   * grade it (`layout.ts`). Absent: the platform's own layout, as every
+   * build made before uploads.
+   */
+  readonly layout?: GradingLayout;
+  /**
+   * A version uploaded as a carveout hand-off folder: the hash of its
+   * `carveout.json` and the carveout release that cut it. Absent otherwise.
+   */
+  readonly upload?: {
+    readonly recordSha256: string;
+    readonly carveoutVersion: string;
+  };
   readonly evaluator: EvaluationEnvironment | null;
   readonly files: readonly BuildFileRecord[];
   readonly importRewrites: readonly ImportRewrite[];
