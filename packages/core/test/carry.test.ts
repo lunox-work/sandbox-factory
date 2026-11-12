@@ -210,6 +210,17 @@ test("the line helpers: lines keep their endings, tokens keep literals whole, ke
     "x1",
     ")",
   ]);
+  // Escapes stay inside a literal; an unclosed quote, or `${`, is a character.
+  assert.deepEqual(tokensOf("'a\\'b' x"), ["'a\\'b'", " ", "x"]);
+  assert.deepEqual(tokensOf('"ab'), ['"', "ab"]);
+  assert.deepEqual(tokensOf("`a${b}`"), ["`", "a$", "{", "b", "}", "`"]);
+  assert.deepEqual(tokensOf("`ok`\n"), ["`ok`", "\n"]);
+  assert.deepEqual(tokensOf("'a\n'"), ["'", "a", "\n", "'"]);
+  // Linear: a long line of escaped quotes with no close is quick.
+  const hostile = `"${'\\"'.repeat(50_000)}`;
+  const started = Date.now();
+  assert.equal(tokensOf(hostile).length > 1, true);
+  assert.ok(Date.now() - started < 1_000);
   assert.deepEqual(keptLines(["a", "b", "c"], ["a", "x", "c"]), [0, -1, 2]);
   assert.deepEqual(
     keptLines(["a", "b", "c", "d"], ["x", "c", "b", "y"]),

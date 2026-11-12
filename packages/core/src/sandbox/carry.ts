@@ -67,12 +67,50 @@ export function linesOf(text: string): string[] {
   return text === "" ? [] : (text.match(/[^\n]*\n|[^\n]+$/g) ?? []);
 }
 
-const TOKEN =
-  /"(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*'|`(?:[^`\\$]|\\.)*`|[A-Za-z_$][A-Za-z0-9_$]*|\s+|[\s\S]/g;
+/** Where a string literal opened at `start` closes, past its quote; -1 for none on the line. */
+function literalEnd(line: string, start: number): number {
+  const quote = line[start];
+  for (let at = start + 1; at < line.length; at += 1) {
+    const char = line[at];
+    if (char === "\\") at += 1;
+    else if (char === quote) return at + 1;
+    else if (char === "\n" || (quote === "`" && char === "$")) return -1;
+  }
+  return -1;
+}
 
-/** A line as tokens: string literals whole, identifiers, spaces, single characters. */
+const IDENTIFIER_START = /[A-Za-z_$]/;
+const IDENTIFIER_PART = /[A-Za-z0-9_$]/;
+const SPACE = /\s/;
+
+/**
+ * A line as tokens: string literals whole (a template literal only without
+ * `${`), identifiers, runs of space, single characters. One pass, linear in
+ * the line: a quote that does not close on it is a character of its own.
+ */
 export function tokensOf(line: string): string[] {
-  return line.match(TOKEN) ?? [];
+  const tokens: string[] = [];
+  // A quote that found no close cannot find one from further on: a later
+  // quote of its kind was either escaped in that scan, which then went on
+  // as a scan from it would, or would have closed it.
+  const unclosed = new Set<string>();
+  let at = 0;
+  while (at < line.length) {
+    const char = line[at] as string;
+    let end = at + 1;
+    if (char === '"' || char === "'" || char === "`") {
+      const close = unclosed.has(char) ? -1 : literalEnd(line, at);
+      if (close > 0) end = close;
+      else unclosed.add(char);
+    } else if (IDENTIFIER_START.test(char))
+      while (end < line.length && IDENTIFIER_PART.test(line[end] as string))
+        end += 1;
+    else if (SPACE.test(char))
+      while (end < line.length && SPACE.test(line[end] as string)) end += 1;
+    tokens.push(line.slice(at, end));
+    at = end;
+  }
+  return tokens;
 }
 
 /**

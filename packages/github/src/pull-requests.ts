@@ -61,7 +61,9 @@ export class PullRequestWriter {
   constructor(options: PullRequestWriterOptions) {
     this.#token = options.token;
     this.#fetch = options.fetch ?? globalThis.fetch.bind(globalThis);
-    this.#apiUrl = (options.apiUrl ?? API_URL).replace(/\/+$/, "");
+    let apiUrl = options.apiUrl ?? API_URL;
+    while (apiUrl.endsWith("/")) apiUrl = apiUrl.slice(0, -1);
+    this.#apiUrl = apiUrl;
   }
 
   async #call(
