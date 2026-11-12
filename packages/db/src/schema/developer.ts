@@ -1,7 +1,8 @@
 /**
  * The public API's credentials (workspace API tokens), what they leave
- * behind (the audit log of what machine credentials changed), and the
- * webhooks a workspace is told of changes by.
+ * behind (the audit log of what machine credentials changed, the
+ * idempotency keys a create was retried under), and the webhooks a
+ * workspace is told of changes by.
  *
  * A token belongs to one organization and acts as the person who made it,
  * for as long as they stay its owner or admin (checked on every use, in the
@@ -17,6 +18,7 @@ import {
   integer,
   jsonb,
   pgTable,
+  primaryKey,
   text,
   timestamp,
   unique,
@@ -201,3 +203,36 @@ export const webhookDelivery = pgTable(
 
 export type WebhookEndpointRow = typeof webhookEndpoint.$inferSelect;
 export type WebhookDeliveryRow = typeof webhookDelivery.$inferSelect;
+
+/**
+ * A create a machine credential asked for under an `Idempotency-Key`: the
+ * first answer, replayed to a retry for 24 hours. Keyed by organization,
+ * route pattern and key; the request's hash tells a retry from a different
+ * request reusing the key. The answer is held encrypted (`cipher.ts`): a
+ * create can answer a secret, as a CLI token's mint does. While the first
+ * request runs, `status` is null.
+ */
+export const idempotencyKey = pgTable(
+  "idempotency_key",
+  {
+    organizationId: text("organization_id")
+      .notNull()
+      .references(() => organization.id, { onDelete: "cascade" }),
+    /** `POST /api/v1/orgs/:orgId/bounties`: the method and pattern. */
+    route: text("route").notNull(),
+    key: text("key").notNull(),
+    /** Hex SHA-256 of the request's path and body. */
+    requestHash: text("request_hash").notNull(),
+    status: integer("status"),
+    bodyEnc: text("body_enc"),
+    keyId: text("key_id"),
+    createdAt: at("created_at").notNull().defaultNow(),
+    expiresAt: at("expires_at").notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.organizationId, table.route, table.key] }),
+    index("idempotency_key_expires_idx").on(table.expiresAt),
+  ],
+);
+
+export type IdempotencyKeyRow = typeof idempotencyKey.$inferSelect;

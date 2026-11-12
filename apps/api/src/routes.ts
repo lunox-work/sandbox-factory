@@ -26,6 +26,7 @@ import { NotFoundError, RepositoryInUseError } from "@sandbox-factory/db";
 import type {
   ApiTokenStore,
   AuditStore,
+  IdempotencyStore,
   EmailStore,
   OAuthGrantStore,
   OrganizationStore,
@@ -39,6 +40,7 @@ import { mountSelfRevokeRoute } from "./api-tokens/self.js";
 import { mountAuditRoutes } from "./audit/routes.js";
 import { auditTrail } from "./audit/trail.js";
 import { credentialGuard } from "./credentials.js";
+import { idempotency } from "./idempotency.js";
 import { mountMcpRoutes } from "./mcp/routes.js";
 import {
   mountDiscoveryRoutes,
@@ -195,6 +197,11 @@ export interface AppOptions {
   audit?: AuditStore | undefined;
   /** Webhooks out; the routes are not mounted without them. */
   webhooks?: WebhookRouteOptions | undefined;
+  /**
+   * Replays a create's first answer to a retry under the same
+   * `Idempotency-Key`. Without it the header is ignored.
+   */
+  idempotencyKeys?: IdempotencyStore | undefined;
   /** The clock tokens expire by. Tests only. */
   now?: (() => Date) | undefined;
 }
@@ -226,6 +233,7 @@ export function createApp({
   usage,
   audit,
   webhooks,
+  idempotencyKeys,
   now,
 }: AppOptions): Hono<AppEnv> {
   const app = new Hono<AppEnv>();
@@ -612,6 +620,12 @@ export function createApp({
       await next();
       return;
     });
+    /** After membership: a key belongs to the path's workspace. */
+    if (idempotencyKeys !== undefined)
+      app.use(
+        "/api/v1/orgs/:orgId/*",
+        idempotency({ store: idempotencyKeys, now }),
+      );
 
     if (events !== undefined) mountEventRoutes(app, events);
     if (flows !== undefined) mountFlowRoutes(app, flows);

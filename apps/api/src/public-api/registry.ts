@@ -18,6 +18,9 @@
  * credential may call it and none can reach another through it. Logging
  * out (`POST /tokens/self/revoke`) is the one.
  *
+ * A create is marked `idempotent`: a machine credential's retry under the
+ * same `Idempotency-Key` gets its first answer back (`idempotency.ts`).
+ *
  * Every entry declares its request body (`null` when it takes none) and its
  * response schema, both from `@sandbox-factory/shared`; `openapi.ts` turns
  * the list into `GET /api/v1/openapi.json`, and `public-api.test.ts` fails
@@ -144,6 +147,11 @@ export interface PublicRoute {
   /** Query parameters, where a shared schema states them. */
   readonly query?: z.ZodObject | undefined;
   readonly response: PublicResponse;
+  /**
+   * A create: an `Idempotency-Key` replays its first answer to a retry
+   * (`idempotency.ts`).
+   */
+  readonly idempotent?: true | undefined;
 }
 
 const V1 = "/api/v1";
@@ -405,6 +413,7 @@ export const PUBLIC_ROUTES: readonly PublicRoute[] = [
   {
     method: "POST",
     path: `${ORG}/bounties`,
+    idempotent: true,
     scope: "bounties:write",
     summary:
       "Write a bounty from text, or import one from a connected repository's GitHub issue (`source.githubIssue`; an issue imported before answers 200 with its bounty)",
@@ -475,6 +484,7 @@ export const PUBLIC_ROUTES: readonly PublicRoute[] = [
   {
     method: "POST",
     path: `${ORG}/bounties/:id/propose`,
+    idempotent: true,
     scope: "pricing:write",
     summary: "Size and price a bounty (one model call)",
     tag: "Bounties",
@@ -484,6 +494,7 @@ export const PUBLIC_ROUTES: readonly PublicRoute[] = [
   {
     method: "POST",
     path: `${JIRA}/boards/:id/issues`,
+    idempotent: true,
     scope: "pricing:write",
     summary: "Size one Jira issue as a bounty (owners and admins)",
     tag: "Bounties",
@@ -493,6 +504,7 @@ export const PUBLIC_ROUTES: readonly PublicRoute[] = [
   {
     method: "POST",
     path: `${JIRA}/boards/:id/runs`,
+    idempotent: true,
     scope: "pricing:write",
     summary: "Size every issue a board's scan selects (owners and admins)",
     tag: "Bounties",
@@ -600,6 +612,7 @@ export const PUBLIC_ROUTES: readonly PublicRoute[] = [
   {
     method: "POST",
     path: `${GH}/repositories/:id/runs`,
+    idempotent: true,
     scope: "sandboxes:write",
     summary: "Run one context builder on a repository (owners and admins)",
     tag: "Sandboxes",
@@ -609,6 +622,7 @@ export const PUBLIC_ROUTES: readonly PublicRoute[] = [
   {
     method: "POST",
     path: `${GH}/repositories/:id/builds`,
+    idempotent: true,
     scope: "sandboxes:write",
     summary: "Run every context builder on a repository (owners and admins)",
     tag: "Sandboxes",
@@ -618,6 +632,7 @@ export const PUBLIC_ROUTES: readonly PublicRoute[] = [
   {
     method: "POST",
     path: `${GH}/repositories/:id/scope`,
+    idempotent: true,
     scope: "sandboxes:write",
     summary: "Run the scope agent for a proposal (owners and admins)",
     tag: "Sandboxes",
@@ -660,6 +675,7 @@ export const PUBLIC_ROUTES: readonly PublicRoute[] = [
   {
     method: "POST",
     path: `${SBX}/start`,
+    idempotent: true,
     scope: "sandboxes:write",
     summary: "Start a bounty's sandbox (owners and admins)",
     tag: "Sandboxes",
@@ -679,6 +695,7 @@ export const PUBLIC_ROUTES: readonly PublicRoute[] = [
   {
     method: "POST",
     path: `${SBX}/:id/starter`,
+    idempotent: true,
     scope: "sandboxes:write",
     summary: "Generate a version from the bounty's text (owners and admins)",
     tag: "Sandboxes",
@@ -694,6 +711,7 @@ export const PUBLIC_ROUTES: readonly PublicRoute[] = [
   {
     method: "POST",
     path: `${SBX}/:id/versions`,
+    idempotent: true,
     scope: "sandboxes:write",
     summary: "Cut a draft version from a slice run (owners and admins)",
     tag: "Sandboxes",
@@ -718,6 +736,7 @@ export const PUBLIC_ROUTES: readonly PublicRoute[] = [
   {
     method: "POST",
     path: `${SBX}/versions/:vid/build`,
+    idempotent: true,
     scope: "sandboxes:write",
     summary: "Build a draft version (owners and admins)",
     tag: "Sandboxes",
@@ -753,6 +772,7 @@ export const PUBLIC_ROUTES: readonly PublicRoute[] = [
   {
     method: "POST",
     path: HOOKS,
+    idempotent: true,
     scope: "webhooks:write",
     summary:
       "Add a webhook endpoint; answers its signing secret once (owners and admins)",

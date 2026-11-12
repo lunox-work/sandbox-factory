@@ -205,6 +205,12 @@ export type {
   WebhookEvent,
   WebhookStore,
 } from "./webhooks.js";
+export { createIdempotencyStore, IDEMPOTENCY_TTL_MS } from "./idempotency.js";
+export type {
+  IdempotencyBegin,
+  IdempotencyClaim,
+  IdempotencyStore,
+} from "./idempotency.js";
 export { createOAuthGrantStore } from "./oauth-grants.js";
 export type {
   OAuthGrant,

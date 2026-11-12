@@ -38,6 +38,7 @@ import {
   createUsageStore,
   createWorkspaceSetupStore,
   createWebhookStore,
+  createIdempotencyStore,
   WEBHOOK_DELIVERY_RETENTION_DAYS,
   parseRunChange,
   RUN_CHANGED_CHANNEL,
@@ -138,6 +139,8 @@ const contextFor = (
 const rateCards = createRateCardStore(connection.db);
 /** What machine credentials changed; kept `AUDIT_RETENTION_DAYS`. */
 const audit = createAuditStore(connection.db);
+/** Creates' first answers, replayed to retries for a day. */
+const idempotencyKeys = createIdempotencyStore(connection.db, tokenCipher);
 const bountyWritebacks = createBountyWritebackStore(connection.db);
 
 const auth = createAuth({
@@ -804,6 +807,7 @@ const app = createApp({
   publicUrl: env.BETTER_AUTH_URL,
   usage: createUsageStore(connection.db),
   audit,
+  idempotencyKeys,
   webhooks: {
     webhooks: webhookStore,
     policy: webhookPolicy,
@@ -821,6 +825,7 @@ const bountyWatchdog = new BountyWatchdog({
       audit.prune(
         new Date(now.getTime() - AUDIT_RETENTION_DAYS * 24 * 60 * 60_000),
       ),
+    (now) => idempotencyKeys.prune(now),
     (now) =>
       webhookStore.pruneDeliveries(
         new Date(

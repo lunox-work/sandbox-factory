@@ -151,6 +151,18 @@ function operation(route: PublicRoute, components: Json): Json {
         schema: { type: "string" },
       })),
       ...queryParameters(route, id, components),
+      ...(route.idempotent === true
+        ? [
+            {
+              name: "Idempotency-Key",
+              in: "header",
+              required: false,
+              description:
+                "Replays this request's first answer to a retry with the same key for 24 hours; another request under the key is 422 `idempotency_key_reused`.",
+              schema: { type: "string", minLength: 1, maxLength: 255 },
+            },
+          ]
+        : []),
     ],
     ...(route.request === null
       ? {}
