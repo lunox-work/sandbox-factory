@@ -608,6 +608,15 @@ export const submissionDtoSchema = z.object({
   runId: z.string().nullable(),
   /** The submission this one retries; null for a first attempt. */
   retryOf: z.string().nullable(),
+  /** The pull request it was merged back as (gate 3); null before. */
+  merge: z
+    .object({
+      pullRequestNumber: z.number().int(),
+      pullRequestUrl: z.string(),
+      branch: z.string(),
+      createdAt: z.iso.datetime(),
+    })
+    .nullable(),
   createdAt: z.iso.datetime(),
   updatedAt: z.iso.datetime(),
 });

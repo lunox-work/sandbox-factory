@@ -204,7 +204,9 @@ calibrates hidden tests) post work; `get_handout`
 version only) store the files canonically (`submittedFilesText`) and queue a
 `submission_grade` run; `get_verdict` reads duediligence's verdict
 (passed, overfit, incomplete, refused), the counts and the failing
-scenarios' keys. Approving, publishing and confirming decisions have no tool. A request needs a
+scenarios' keys; `retry` (`POST …/submissions/:sid/retry`) is a failed
+submission's one retry (`submission.retry_of`, unique). Approving,
+publishing, confirming decisions and merging back have no tool. A request needs a
 bearer `lnx_` or `lnxat_` token, else 401 with
 `WWW-Authenticate: Bearer resource_metadata="…/.well-known/oauth-protected-resource/mcp…"`.
 **Every tool wraps one public route**, called in-process with the caller's
@@ -544,7 +546,22 @@ boundary: a text match refuses the plain ways task code could reach the mocks
 or the test run, and misses others. Grading must isolate task code by process:
 each hidden test runs in its own process from a fresh copy of the version's
 files, its outcome read from outside, with no other hidden test, credential or
-grading state loaded beside task code. No route takes a submission yet.
+grading state loaded beside task code.
+
+**Merge-back (gate 3).** Grading a version sliced from a repository runs on
+its snapshot (`snapshotFits`), and a pass is carried back to the
+repository's names at the sliced commit by `reverseSubmission`
+(`packages/core/src/sandbox/carry.ts`): kept lines are the original's byte
+for byte, added lines are renamed and refused unless they map back, and an
+added import of the harness is refused. The result is the grading run's
+`private/merge-patch.json`; one that cannot be carried is the verdict
+`refused`. `POST …/submissions/:sid/merge`, from a signed-in session only,
+opens one pull request per submission (`submission_merge`) with
+`PullRequestWriter` (`packages/github/src/pull-requests.ts`), whose token
+`mergeBackWriter` narrows to the one repository and
+`MERGE_BACK_PERMISSIONS`. The version page lists submissions
+(`SandboxSubmissions.tsx`). The repository's CI result is not read back
+yet: the App holds no `checks` or `statuses` read.
 
 **Nobody picks the repository.** `POST .../sandboxes` takes `bountyId` and cuts
 from the one repository the live proposal says the work touches

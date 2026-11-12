@@ -19,6 +19,7 @@ import {
   createBountyProposalStore,
   createBountySpecStore,
   createDecisionConfirmationStore,
+  createSubmissionMergeStore,
   createSubmissionStore,
   createEmailStore,
   createGithubConnectionStore,
@@ -95,7 +96,7 @@ import {
   heldCommits,
   heldContext,
 } from "./bounties/held-context.js";
-import { installationClient } from "./github/credential.js";
+import { installationClient, mergeBackWriter } from "./github/credential.js";
 import {
   AnthropicCaller,
   DeepSeekCaller,
@@ -529,6 +530,34 @@ const sandbox =
         sandboxes: sandboxStore,
         cuts: sandboxStore,
         submissions: createSubmissionStore(connection.db),
+        ...(github === undefined
+          ? {}
+          : {
+              merges: createSubmissionMergeStore(connection.db),
+              // A merge-back writes with a token for the one repository,
+              // minted with MERGE_BACK_PERMISSIONS and nothing else.
+              mergeBack: {
+                target: async (organizationId: string, repoId: string) => {
+                  const repo = await githubRepos.get(organizationId, repoId);
+                  if (repo === null || repo.syncStatus === "gone") return null;
+                  const found = await github.connections.get(
+                    organizationId,
+                    repo.connectionId,
+                  );
+                  return found === null || !found.healthy
+                    ? null
+                    : {
+                        fullName: repo.fullName,
+                        defaultBranch: repo.defaultBranch,
+                        writer: mergeBackWriter(
+                          github.installations,
+                          found.installationId,
+                          repo.externalId,
+                        ),
+                      };
+                },
+              },
+            }),
         runs: analysisRuns,
         artifacts: analysis.artifacts,
         objects: analysis.objects,

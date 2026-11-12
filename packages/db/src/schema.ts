@@ -145,6 +145,7 @@ export {
   sandboxVersion,
   sandboxVersionSource,
   submission,
+  submissionMerge,
 } from "./schema/sandbox.js";
 export type {
   NewSubmissionRow,
@@ -152,6 +153,7 @@ export type {
   SandboxSourceRow,
   SandboxVersionRow,
   SandboxVersionSourceRow,
+  SubmissionMergeRow,
   SubmissionRow,
 } from "./schema/sandbox.js";
 

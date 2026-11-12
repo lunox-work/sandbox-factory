@@ -204,6 +204,11 @@ the result in a fresh job, every hidden test expected to pass. duediligence's
 records counts, that verdict and the scenario keys (`s1`, from the hidden
 test's file name) of failing hidden tests, never a hidden test's name, body
 or output. Its files are read from the key the submission row names.
+Before anything runs, carveout's `gainedIntegrity` refuses a file that
+gains a way to pass without the code. On a version sliced from a
+repository the run is on its snapshot, and a pass is carried back
+(`reverseSubmission`) to `private/merge-patch.json`, or refused when it
+cannot be.
 
 ### Slice
 

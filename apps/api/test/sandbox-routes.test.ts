@@ -1,3 +1,4 @@
+import { GithubAuthError } from "@sandbox-factory/github";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { test } from "node:test";
@@ -421,6 +422,13 @@ function fixture(
     built: boolean;
     /** The submissions store the routes are given; absent, none. */
     submissions: unknown;
+    /** The merge-back store and target; absent, none. */
+    merges: unknown;
+    mergeBack: unknown;
+    /** What a grading run `arn_grade` wrote, by path. */
+    gradeRun: Record<string, string>;
+    /** The credential the caller signed in with; a session unless said. */
+    via: "session" | "token";
     /** The build is still running, and has written its project only. */
     previewing: boolean;
     /** The version has no passing build to publish. */
@@ -757,19 +765,25 @@ function fixture(
       list: async (_owner: string, runId: string) =>
         runId === "arn_slice" || runId === "arn_other"
           ? artifacts
-          : runId === "arn_build" && overrides.previewing !== true
-            ? builtFiles.map(({ path, body }) => ({
-                ...artifactOf("build_manifest", path, body),
+          : runId === "arn_grade"
+            ? Object.keys(overrides.gradeRun ?? {}).map((path) => ({
+                ...artifactOf("other", path, overrides.gradeRun?.[path] ?? ""),
                 runId,
-                objectKey: `runs/arn_build/lease/${path}`,
+                objectKey: `runs/arn_grade/${path}`,
               }))
-            : runId === "arn_fixtures"
-              ? [fixtureArtifact(runId, fixtureSetText)]
-              : runId === "arn_fixtures_bad"
-                ? [fixtureArtifact(runId, "not json")]
-                : runId === "arn_fixtures_running"
-                  ? [fixtureArtifact(runId, fixtureSetText)]
-                  : [],
+            : runId === "arn_build" && overrides.previewing !== true
+              ? builtFiles.map(({ path, body }) => ({
+                  ...artifactOf("build_manifest", path, body),
+                  runId,
+                  objectKey: `runs/arn_build/lease/${path}`,
+                }))
+              : runId === "arn_fixtures"
+                ? [fixtureArtifact(runId, fixtureSetText)]
+                : runId === "arn_fixtures_bad"
+                  ? [fixtureArtifact(runId, "not json")]
+                  : runId === "arn_fixtures_running"
+                    ? [fixtureArtifact(runId, fixtureSetText)]
+                    : [],
     },
     objects: {
       get: async (key: string) => objects.get(key),
@@ -783,6 +797,12 @@ function fixture(
     ...(overrides.submissions === undefined
       ? {}
       : { submissions: overrides.submissions as never }),
+    ...(overrides.merges === undefined
+      ? {}
+      : { merges: overrides.merges as never }),
+    ...(overrides.mergeBack === undefined
+      ? {}
+      : { mergeBack: overrides.mergeBack as never }),
     previews: {
       preview: async (owner: string, runId: string) =>
         overrides.previewing === true &&
@@ -963,8 +983,11 @@ function fixture(
       role,
       organizationId: c.req.param("orgId"),
     } as never);
+    c.set("principal", { via: overrides.via ?? "session" } as never);
     await next();
   });
+  for (const [path, body] of Object.entries(overrides.gradeRun ?? {}))
+    objects.set(`runs/arn_grade/${path}`, Buffer.from(body));
   mountSandboxRoutes(app, options);
   const request = (
     method: string,
@@ -3499,7 +3522,7 @@ test("a failed submission is retried once with new files, graded against the sam
     patchSha256: sha,
   });
   assert.deepEqual(f.enqueued.at(-1), {
-    snapshotId: null,
+    snapshotId: "rsn_1",
     tool: "submission_grade",
     params: {
       deadlineMinutes: 60,
@@ -3590,7 +3613,7 @@ test("files submitted against a version are stored, hashed and graded once; the 
     patchSha256: sha,
   });
   assert.deepEqual(f.enqueued.at(-1), {
-    snapshotId: null,
+    snapshotId: "rsn_1",
     tool: "submission_grade",
     params: {
       deadlineMinutes: 60,
@@ -3694,4 +3717,212 @@ test("submissions are refused when invalid, against a draft, for members, or whe
     await (await none.request("GET", "/versions/sbv_1/submissions")).json(),
     { submissions: [] },
   );
+});
+
+/** A merge-back store and a GitHub writer that record what they are asked. */
+function mergeBackFake(target: "ok" | "gone" | "forbidden" | "down" = "ok") {
+  const opened: unknown[] = [];
+  const recorded: unknown[] = [];
+  const merges = new Map<string, unknown>();
+  return {
+    opened,
+    recorded,
+    merges: {
+      get: async (_owner: string, id: string) => merges.get(id) ?? null,
+      list: async (_owner: string, ids: readonly string[]) =>
+        ids.flatMap((id) => (merges.has(id) ? [merges.get(id)] : [])),
+      record: async (owner: string, input: { submissionId: string }) => {
+        recorded.push({ owner, ...input });
+        const merge = { id: "smg_1", ...input, createdAt: stamp };
+        merges.set(input.submissionId, merge);
+        return merge;
+      },
+    },
+    mergeBack: {
+      target: async (owner: string, repoId: string) =>
+        target === "gone" || owner !== "org_1" || repoId !== "ghr_1"
+          ? null
+          : {
+              fullName: "acme/shop",
+              defaultBranch: "main",
+              writer: {
+                open: async (input: unknown) => {
+                  opened.push(input);
+                  if (target === "forbidden")
+                    throw new GithubAuthError(403, "refused");
+                  if (target === "down") throw new Error("down");
+                  return {
+                    number: 7,
+                    url: "https://github.com/acme/shop/pull/7",
+                    commitSha: "beef",
+                  };
+                },
+              },
+            },
+    },
+  };
+}
+
+const carried = JSON.stringify({
+  schemaVersion: 1,
+  commitSha: "c0ffee",
+  files: [{ path: "src/refunds.ts", text: "export const refund = 1;\n" }],
+});
+const passedSubmission = (overrides: object = {}) => {
+  const fake = submissionsFake();
+  return {
+    ...fake.store,
+    get: async (owner: string, id: string) =>
+      owner === "org_1" && id === "sbm_1"
+        ? {
+            ...((await fake.store.get(owner, id)) as object),
+            status: "passed",
+            result: {
+              public: { passed: 1, total: 1 },
+              hidden: { passed: 2, total: 2 },
+              verdict: "passed",
+              failedScenarios: [],
+            },
+            ...overrides,
+          }
+        : null,
+  };
+};
+
+test("a passing submission is merged back as one pull request on the version's commit, from a signed-in session", async () => {
+  const back = mergeBackFake();
+  const f = fixture("admin", {
+    submissions: passedSubmission(),
+    merges: back.merges,
+    mergeBack: back.mergeBack,
+    gradeRun: { "private/merge-patch.json": carried },
+  });
+  const first = await f.request("POST", "/submissions/sbm_1/merge");
+  assert.equal(first.status, 201);
+  const body = (await first.json()) as {
+    submission: { merge: Record<string, unknown> | null };
+  };
+  assert.deepEqual(body.submission.merge, {
+    pullRequestNumber: 7,
+    pullRequestUrl: "https://github.com/acme/shop/pull/7",
+    branch: "lunox/sbm_1",
+    createdAt: stamp,
+  });
+  const asked = back.opened[0] as Record<string, unknown>;
+  assert.deepEqual(
+    {
+      fullName: asked["fullName"],
+      baseCommit: asked["baseCommit"],
+      base: asked["base"],
+      branch: asked["branch"],
+      title: asked["title"],
+      files: asked["files"],
+    },
+    {
+      fullName: "acme/shop",
+      baseCommit: "c0ffee",
+      base: "main",
+      branch: "lunox/sbm_1",
+      title: "Fix it",
+      files: [{ path: "src/refunds.ts", text: "export const refund = 1;\n" }],
+    },
+  );
+  assert.match(String(asked["body"]), /hidden tests \(2\/2\)/);
+  assert.deepEqual(back.recorded[0], {
+    owner: "org_1",
+    submissionId: "sbm_1",
+    repositoryFullName: "acme/shop",
+    branch: "lunox/sbm_1",
+    commitSha: "beef",
+    pullRequestNumber: 7,
+    pullRequestUrl: "https://github.com/acme/shop/pull/7",
+    openedBy: "user_1",
+  });
+
+  // Again: the pull request already opened, and no second one.
+  const again = await f.request("POST", "/submissions/sbm_1/merge");
+  assert.equal(again.status, 200);
+  assert.equal(back.opened.length, 1);
+  // Read back on the submission and in the version's list.
+  const read = (await (
+    await f.request("GET", "/submissions/sbm_1")
+  ).json()) as { submission: { merge: { pullRequestNumber: number } } };
+  assert.equal(read.submission.merge.pullRequestNumber, 7);
+  const listed = (await (
+    await f.request("GET", "/versions/sbv_1/submissions")
+  ).json()) as { submissions: { merge: unknown }[] };
+  assert.notEqual(listed.submissions[0]?.merge, null);
+});
+
+test("merge-back is refused for a token, a member, a submission that did not pass or was not sliced, and where GitHub refuses", async () => {
+  const code = async (
+    overrides: Parameters<typeof fixture>[1],
+    role = "admin",
+  ) => {
+    const response = await fixture(role, overrides).request(
+      "POST",
+      "/submissions/sbm_1/merge",
+    );
+    const body = (await response.json()) as { code?: string };
+    return [response.status, body.code ?? null];
+  };
+  const back = () => mergeBackFake();
+  const ready = (fake = back()) => ({
+    submissions: passedSubmission(),
+    merges: fake.merges,
+    mergeBack: fake.mergeBack,
+    gradeRun: { "private/merge-patch.json": carried },
+  });
+  assert.deepEqual(await code({ ...ready(), via: "token" }), [
+    403,
+    "session_required",
+  ]);
+  assert.deepEqual(await code(ready(), "member"), [403, null]);
+  assert.deepEqual(await code({ submissions: passedSubmission() }), [
+    503,
+    "merge_unavailable",
+  ]);
+  assert.deepEqual(
+    await code({ ...ready(), submissions: submissionsFake().store }),
+    [409, "not_passed"],
+  );
+  assert.deepEqual(
+    await code({
+      ...ready(),
+      submissions: passedSubmission({
+        result: {
+          public: { passed: 1, total: 1 },
+          hidden: { passed: 2, total: 2 },
+          verdict: "refused",
+        },
+      }),
+    }),
+    [409, "not_passed"],
+  );
+  // A generated version's grading run carries nothing back.
+  assert.deepEqual(await code({ ...ready(), gradeRun: {} }), [
+    409,
+    "not_sliced",
+  ]);
+  assert.deepEqual(
+    await code({ ...ready(), submissions: passedSubmission({ runId: null }) }),
+    [409, "not_sliced"],
+  );
+  assert.deepEqual(await code(ready(mergeBackFake("gone"))), [
+    409,
+    "repository_unavailable",
+  ]);
+  assert.deepEqual(await code(ready(mergeBackFake("forbidden"))), [
+    409,
+    "merge_forbidden",
+  ]);
+  assert.deepEqual(await code(ready(mergeBackFake("down"))), [
+    502,
+    "github_failed",
+  ]);
+  const missing = await fixture("admin", ready()).request(
+    "POST",
+    "/submissions/sbm_x/merge",
+  );
+  assert.equal(missing.status, 404);
 });

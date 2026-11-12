@@ -52,6 +52,7 @@ import { sandboxFilesPath } from "../../routes";
 import { usually, useTypicalWaits } from "../../data/typical";
 import { LunoxMark } from "@/components/LunoxMark";
 
+import { SandboxSubmissions } from "../sandbox/SandboxSubmissions";
 import { PublishMenu } from "./PublishMenu";
 import { NoVersion, StepVersionCard } from "./BountySteps";
 
@@ -1194,6 +1195,16 @@ export function SandboxGeneration({
         </p>
         {content}
       </RuledSection>
+      {/* A published version takes submissions; a sliced one merges them back. */}
+      {canManage && selected !== null && selected.frozenAt !== null && (
+        <RuledSection title="Submissions">
+          <SandboxSubmissions
+            organizationId={organizationId}
+            versionId={selected.id}
+            canMerge={!canGenerate}
+          />
+        </RuledSection>
+      )}
     </>
   );
 }

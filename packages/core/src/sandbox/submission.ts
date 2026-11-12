@@ -70,6 +70,10 @@ export function submissionVerdict(
   result: SubmissionResult,
 ): "passed" | "failed" {
   const whole = (suite: SuiteCount) => suite.passed === suite.total;
+  // A verdict other than a pass fails a run its counts would pass: one
+  // refused after its tests, when it could not be carried back.
+  if (result.verdict !== undefined && result.verdict !== "passed")
+    return "failed";
   return result.hidden.total > 0 && whole(result.hidden) && whole(result.public)
     ? "passed"
     : "failed";

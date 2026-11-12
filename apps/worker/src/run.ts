@@ -186,7 +186,12 @@ export async function executeRun(
     // repository is fetched or even named.
     let source: string;
     let snapshot: ToolRunInput["run"] = null;
-    if (readsSource(run.tool)) {
+    // Grading reads its version's snapshot when it has one: the commit a
+    // passing submission is carried back to.
+    if (
+      readsSource(run.tool) ||
+      (run.tool === "submission_grade" && run.snapshotId !== null)
+    ) {
       if (run.snapshotId === null || run.commitSha === null)
         throw new AnalysisError("source_unavailable");
       snapshot = { snapshotId: run.snapshotId, commitSha: run.commitSha };

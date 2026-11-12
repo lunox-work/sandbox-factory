@@ -20,6 +20,8 @@ import {
   GithubOAuthError,
   type InstallationNarrowing,
   type InstallationTokens,
+  MERGE_BACK_PERMISSIONS,
+  PullRequestWriter,
   type TokenSource,
   UserCredential,
 } from "@sandbox-factory/github";
@@ -92,6 +94,29 @@ export function installationClient(
 ): GithubClient {
   return new GithubClient({
     token: tokens.provider(installationId, narrowingFor(scope)),
+    ...(fetchImpl === undefined ? {} : { fetch: fetchImpl }),
+  });
+}
+
+/**
+ * The one writing client: merge-back's pull request on one repository,
+ * with a token narrowed to it and `MERGE_BACK_PERMISSIONS`. Its own kind,
+ * apart from `installationClient`, so no read scope can reach a write.
+ */
+export function mergeBackWriter(
+  tokens: InstallationTokens,
+  installationId: string,
+  repositoryId: string,
+  fetchImpl?: typeof globalThis.fetch,
+): PullRequestWriter {
+  const id = Number(repositoryId);
+  if (!Number.isSafeInteger(id) || id <= 0)
+    throw new Error("A merge-back needs GitHub's numeric repository id.");
+  return new PullRequestWriter({
+    token: tokens.provider(installationId, {
+      repositoryIds: [id],
+      permissions: MERGE_BACK_PERMISSIONS,
+    }),
     ...(fetchImpl === undefined ? {} : { fetch: fetchImpl }),
   });
 }
