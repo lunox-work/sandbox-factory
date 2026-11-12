@@ -66,7 +66,7 @@ import {
   reportedBaselineOf,
   writeBuildOutputs,
 } from "./sandbox-build.js";
-import { sha256 } from "./slice/hash.js";
+import { sha256 } from "carveout/extract";
 import { checkStarter } from "./starter-check.js";
 import type { StarterCheckStage } from "./starter-check.js";
 

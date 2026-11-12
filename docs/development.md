@@ -50,7 +50,8 @@ never derive integration configuration from production environment files.
   arithmetic and stage rules over their whole bounded domain, handles,
   aliases and the slice walk on generated inputs (`fast-check`), and the
   fixture expression gate against a real parser (`acorn`). Both are test
-  dependencies of `packages/core` only; its `src` stays dependency-free.
+  dependencies of `packages/core` only; its `src` imports nothing else but
+  `carveout/pseudonyms`.
   When a law test fails, the law or the code is wrong; fix the one that
   is, never the bound.
 - The lease protocol, the worker's job limiter and its progress writer are

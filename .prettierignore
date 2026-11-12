@@ -19,3 +19,6 @@ test-results
 # lake writes this for the Lean proofs; reformatting it creates a diff
 # the next `lake build` reverts.
 docs/specs/lean/lake-manifest.json
+
+# Recorded slice outputs, byte for byte; the golden diff reads them as written.
+apps/worker/test/golden

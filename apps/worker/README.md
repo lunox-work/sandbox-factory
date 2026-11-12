@@ -208,25 +208,31 @@ Before anything runs, carveout's `gainedIntegrity` refuses a file that
 gains a way to pass without the code. On a version sliced from a
 repository the run is on its snapshot, and a pass is carried back
 (`reverseSubmission`) to `private/merge-patch.json`, or refused when it
-cannot be.
+cannot be, under the renaming the build was made with (`src/tools/engines.ts`:
+carveout's when its manifest has `engines.carveout`, else `ALIASES_V1`).
 
 ### Slice
 
 A slice run (`src/tools/slice.ts`) names the succeeded graphify run on the
 same snapshot (`params.graphRunId`), its entry points (repository paths), a
-budget (`maxFiles`, default 40; `maxDepth`, default 3) and whether
-graphify's inferred edges are walked (`includeInferred`, default off). A
-graph that did not succeed fails it `graph_unavailable`. `reach`
-(`packages/core/src/slice`) walks the graph breadth first over import, call,
-inheritance and use relations until the budget is spent: files inside are
-_included_, dependency edges that leave the set are _cuts_, and outside
-files' imports of included modules are the _public surface_. The
-deployed worker walks with carveout instead (`walker: "carveout"`,
-`slice/carveout-walk.ts`, `carveout/api` pinned exactly): the TypeScript
-compiler's resolution from the source, passing over type-only imports and
-following a barrel only to the modules that supply the names taken; the
-manifest records it as `walkEngine`, and everything after the walk is the
-same. For
+budget (`maxFiles`, default 40; `maxDepth`, default 3) and
+`includeInferred` (graphify's inferred edges; kept in the parameters, though
+carveout's walk has none). A graph that did not succeed fails it
+`graph_unavailable`; the graph names and hashes the request but chooses no
+file. carveout analyses the slice (`slice/carveout-analysis.ts`,
+`carveout/api` `analyse`, pinned exactly; its NOTICE.md lists where it
+differs from the platform's analysis before it). The extractor, fixture
+compile, compiler configuration, package types and registries the other
+tools use are `carveout/extract`, at the same pin. carveout's analysis:
+it walks the TypeScript compiler's resolution from the source, passing over
+type-only imports and following a barrel only to the modules that supply
+the names taken, until the budget is spent. Files inside are _included_,
+imports that leave the set are _cuts_, and outside files' imports of
+included modules are the _public surface_. The manifest records
+`walkEngine: "carveout@<version>"`, no communities, and `toolVersion` with
+the same release (`SLICE_TOOL_VERSION`); a literal path read at runtime
+blocks nothing (`pathReads: "omit"`). An entry point the walk cannot read,
+or a slice of no file, fails `tool_failed`; one past 64 MiB, `too_large`. For
 TypeScript and JavaScript the cut modules get declaration stubs from the
 compiler's own emitter, without comments, literal values (constants, class
 properties, `as const` objects and tuples and literal annotations, widened
@@ -258,7 +264,7 @@ specifier and environment variable name; values are never read. Each
 package records whether it is a workspace package (`package.json`
 `workspaces`, `pnpm-workspace.yaml`, `lerna.json`; `*` and `**` globs) and
 the registry its lockfile and npm or Yarn configuration say it comes from
-(`src/tools/package-registry.ts`).
+(`packageRegistries` in `carveout/extract`).
 
 ### Sandbox build
 
@@ -296,7 +302,9 @@ when a lockfile resolves it from the public registry and no configuration
 sends its scope elsewhere; any other is mocked by default, and one from
 another registry can never be approved. Every build scans the public files
 for the workspace's names (`packages/core/src/sandbox/vocabulary.ts`; an
-organization's distinctive words too, and the scope, or multi-word name, of each workspace or private-registry package the slice imports) and blocks `vocabulary_leaked`, and for
+organization's distinctive words too, and the scope, or multi-word name, of each workspace or private-registry package the slice imports) and blocks `vocabulary_leaked`
+on what carveout's scan or the platform's before it finds
+(`src/tools/vocabulary-check.ts`), and for
 credentials (`packages/core/src/sandbox/secrets.ts`) and blocks `secret_found`
 by file, line and rule, never the value. Starters are scanned the same way.
 `.gitignore` names only public files' output.
@@ -360,8 +368,9 @@ fails every build `evaluation_failed` before anything is generated.
 
 Outputs: `build-manifest.json` (every generated file hashed and classified
 public or private; harness, test and project hashes; the toolchain and its
-digest; the evaluator environment; import rewrites, renames, dependencies,
-blockers and the baseline report), `baseline.json`, `project/<path>` for
+digest; `engines.carveout`, the release that renamed it; the evaluator
+environment; import rewrites, renames, dependencies, blockers and the
+baseline report), `baseline.json`, `project/<path>` for
 every public file including the lockfile, `private/<path>` for hidden
 tests, and `private/pseudonym.lunox` (kind `pseudonyms`), the alias rules
 the public files were renamed by; the private sandbox is `project/` read

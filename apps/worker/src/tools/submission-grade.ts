@@ -48,6 +48,7 @@ import type {
   SandboxBuildManifest,
   SubmissionResult,
 } from "sandbox-factory";
+import { aliasesOf } from "./engines.js";
 import { AnalysisError } from "../errors.js";
 import type { ArtifactFile, ToolAdapter, ToolRunInput } from "./adapter.js";
 import { baselineOf } from "./sandbox-build.js";
@@ -163,10 +164,11 @@ async function buildTables(
     throw new AnalysisError("tool_failed");
   const manifest = JSON.parse(manifestText) as Pick<
     SandboxBuildManifest,
-    "renames" | "files"
+    "renames" | "files" | "engines"
   >;
   const table = JSON.parse(tableText) as { rules: AliasRule[] };
-  return { manifest, rules: table.rules };
+  // The renaming the version was built with, which alone carries it back.
+  return { manifest, rules: table.rules, aliases: aliasesOf(manifest) };
 }
 
 const projectOf = (versionFiles: readonly GeneratedFile[]) =>
@@ -182,7 +184,7 @@ export async function carriedBack(
   versionFiles: readonly GeneratedFile[],
   submitted: readonly { readonly path: string; readonly text: string }[],
 ) {
-  const { manifest, rules } = await buildTables(input, buildRunId);
+  const { manifest, rules, aliases } = await buildTables(input, buildRunId);
   const project = projectOf(versionFiles);
   return reverseSubmission({
     submitted,
@@ -190,6 +192,7 @@ export async function carriedBack(
     repositoryText: (path) => sourceText(input.sourceDir, path),
     rules,
     renames: manifest.renames,
+    aliases,
     // A stub stands for a module the repository has; the rest it has not.
     harness: manifest.files
       .filter((record) => HARNESS_CLASSES.has(record.class))
@@ -211,13 +214,13 @@ export async function carriedForward(
   changed: readonly { readonly path: string; readonly text: string }[],
   editablePaths: readonly string[],
 ) {
-  const { manifest, rules } = await buildTables(input, buildRunId);
+  const { manifest, rules, aliases } = await buildTables(input, buildRunId);
   const project = projectOf(versionFiles);
   const editable = new Set(editablePaths);
   const judged = changed.filter(
     (file) =>
       sourceText(input.sourceDir, file.path) === null ||
-      editable.has(projectPathOf(file.path, manifest.renames, rules)),
+      editable.has(projectPathOf(file.path, manifest.renames, rules, aliases)),
   );
   const carried = forwardChange({
     changed: judged,
@@ -225,6 +228,7 @@ export async function carriedForward(
     repositoryText: (path) => sourceText(input.sourceDir, path),
     rules,
     renames: manifest.renames,
+    aliases,
   });
   return { ...carried, ignored: changed.length - judged.length };
 }

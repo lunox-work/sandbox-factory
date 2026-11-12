@@ -11,7 +11,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { StoredAnalysisRun, StoredArtifact } from "@sandbox-factory/db";
 import type { BoundaryContract, SliceManifest } from "sandbox-factory";
-import { createSliceAdapter } from "../src/tools/slice.js";
+import { goldenRun, goldenScenario } from "./slice-golden.js";
 
 export const fixture = fileURLToPath(
   new URL("../../fixtures/slice/", import.meta.url),
@@ -141,24 +141,29 @@ export function slice(): Promise<SliceOutput> {
         createdAt: stamp,
       },
     ];
-    const files = await createSliceAdapter().run({
-      sourceDir: fixture,
-      outDir: out,
-      params: sliceRun.params,
-      run: { snapshotId: "rsn_1", commitSha: "a".repeat(40) },
-      inputs: {
-        getRun: async (id) => (id === graphRun.id ? graphRun : null),
-        listArtifacts: async (id) => (id === graphRun.id ? graphArtifacts : []),
-        readArtifact: async (key) =>
-          key === graphArtifacts[0]?.objectKey ? graphBytes : undefined,
-        getVersion: async () => null,
-        getTask: async () => null,
-        recordBuildOutput: async () => false,
-        recordStarterOutput: async () => false,
+    goldenScenario("fixture");
+    const files = await goldenRun(
+      {},
+      {
+        sourceDir: fixture,
+        outDir: out,
+        params: sliceRun.params,
+        run: { snapshotId: "rsn_1", commitSha: "a".repeat(40) },
+        inputs: {
+          getRun: async (id) => (id === graphRun.id ? graphRun : null),
+          listArtifacts: async (id) =>
+            id === graphRun.id ? graphArtifacts : [],
+          readArtifact: async (key) =>
+            key === graphArtifacts[0]?.objectKey ? graphBytes : undefined,
+          getVersion: async () => null,
+          getTask: async () => null,
+          recordBuildOutput: async () => false,
+          recordStarterOutput: async () => false,
+        },
+        signal: new AbortController().signal,
+        log: () => {},
       },
-      signal: new AbortController().signal,
-      log: () => {},
-    });
+    );
     const objects = new Map<string, Buffer>();
     const artifacts: StoredArtifact[] = [];
     for (const file of files) {

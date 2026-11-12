@@ -58,8 +58,7 @@ import type {
   TypedSurfaces,
 } from "./abstractions/typescript.js";
 import { loadGraph } from "./slice.js";
-import { sha256 } from "./slice/hash.js";
-import { isScriptPath } from "./slice/typescript.js";
+import { isScriptPath, sha256 } from "carveout/extract";
 
 /** Languages the syntactic tier reads; scripts reach it only past the program cap. */
 export const SYNTACTIC_LANGUAGES: readonly string[] = ["python", "go", "java"];

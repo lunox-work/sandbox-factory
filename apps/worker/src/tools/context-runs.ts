@@ -22,7 +22,7 @@ import type {
 import type { z } from "zod";
 import { AnalysisError } from "../errors.js";
 import type { ToolInputs } from "./adapter.js";
-import { sha256 } from "./slice/hash.js";
+import { sha256 } from "carveout/extract";
 
 async function loadDocument<T>(
   inputs: ToolInputs,

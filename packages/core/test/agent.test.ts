@@ -80,8 +80,8 @@ test("slices, scopes and the map-reading builders read a graph", () => {
 
 test("every tool has a version", () => {
   for (const tool of ANALYSIS_TOOLS) assert.match(toolVersionOf(tool), /@/);
-  assert.equal(toolVersionOf("scope"), "scope@5");
-  assert.equal(toolVersionOf("fixtures"), "fixtures@3");
+  assert.equal(toolVersionOf("scope"), "scope@6");
+  assert.equal(toolVersionOf("fixtures"), "fixtures@4");
 });
 
 const submission: ScopeSubmission = {

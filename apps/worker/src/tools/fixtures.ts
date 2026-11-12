@@ -49,7 +49,7 @@ import { snapshotOf } from "./adapter.js";
 import { loadDataModel } from "./context-runs.js";
 import type { ArtifactFile, ToolAdapter, ToolRunInput } from "./adapter.js";
 import { checkFixtures } from "./fixtures-check.js";
-import { nearestCompilerOptions } from "./compiler-config.js";
+import { nearestCompilerOptions } from "carveout/extract";
 import { loadSliceRun, readIncludedSource } from "./slice-run.js";
 import type { LoadedSliceRun } from "./slice-run.js";
 import type { RunTiming } from "../timing.js";

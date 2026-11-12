@@ -42,7 +42,7 @@ import { createGraphifyAdapter } from "./tools/graphify.js";
 import { createSandboxBuildAdapter } from "./tools/sandbox-build.js";
 import { createScopeAdapter } from "./tools/scope.js";
 import { createSliceAdapter } from "./tools/slice.js";
-import { npmPackageTypes } from "./tools/slice/package-types.js";
+import { npmPackageTypes } from "carveout/extract";
 import { createStarterAdapter } from "./tools/starter.js";
 import { createSubmissionGradeAdapter } from "./tools/submission-grade.js";
 
@@ -173,20 +173,17 @@ function adapterFor(run: ClaimedAnalysisRun): ToolAdapter {
     case "brief":
       return createBriefAdapter();
     case "slice":
-      // carveout's walk (`carveout-walk.ts`) for every new slice; a slice
-      // run already made keeps the walk it was made with (its manifest's
-      // `walkEngine`).
-      return createSliceAdapter({ packageTypes, walker: "carveout" });
+      // carveout analyses every new slice (`slice/carveout-analysis.ts`); a
+      // slice run already made keeps what it was made with (its manifest's
+      // `walkEngine` and `toolVersion`).
+      return createSliceAdapter({ packageTypes });
     case "sandbox_build":
       return createSandboxBuildAdapter({
         agent: agentFor(run),
         provider: evaluation,
       });
     case "scope":
-      return createScopeAdapter(agentFor(run), {
-        packageTypes,
-        walker: "carveout",
-      });
+      return createScopeAdapter(agentFor(run), { packageTypes });
     case "fixtures":
       return createFixturesAdapter(agentFor(run));
     case "sandbox_starter":

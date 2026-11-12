@@ -35,8 +35,10 @@ The one accepted runtime cycle (auth and organization schema modules) is in
 
 Three rules are load-bearing:
 
-- **`packages/core` has zero dependencies.** It is bundled into a browser, a
-  Node server and an extension host, and is the one publishable package.
+- **`packages/core` depends on `carveout/pseudonyms` alone**, carveout's pure
+  entry (no `typescript`, no `node:*`; `.dependency-cruiser.cjs` allows
+  nothing else). It is bundled into a browser, a Node server and an extension
+  host, and is the one publishable package.
 - **`packages/client` is platform-neutral**: `fetch` only. Its tsconfig sets
   `types: []`, so a `node:*` import fails to compile. `lib` includes `DOM`
   only for the web-standard fetch types.
@@ -568,7 +570,8 @@ grading state loaded beside task code.
 **Merge-back (gate 3).** Grading a version sliced from a repository runs on
 its snapshot (`snapshotFits`), and a pass is carried back to the
 repository's names at the sliced commit by `reverseSubmission`
-(`packages/core/src/sandbox/carry.ts`): kept lines are the original's byte
+(`packages/core/src/sandbox/carry.ts`, carveout's; under the renaming the
+build manifest's `engines.carveout` names, `ALIASES_V1` without it): kept lines are the original's byte
 for byte, added lines are renamed and refused unless they map back, and an
 added import of the harness is refused. The result is the grading run's
 `private/merge-patch.json`; one that cannot be carried is the verdict
@@ -668,7 +671,7 @@ and for credentials (`packages/core/src/sandbox/secrets.ts`) and blocks
 module from its declarations, the repository's own packages included,
 resolved to their source (`workspaceModuleResolver`). The worker fetches the
 published types of the public packages a slice reads
-(`apps/worker/src/tools/slice/package-types.ts`: the lockfile's versions,
+(`npmPackageTypes` from `carveout/extract`: the lockfile's versions,
 install scripts off, the public registry only, cached by package set); when
 it cannot, those packages are untyped. The fixture compile blocks only on
 errors the stubs add: one the source shares under untyped packages is kept as

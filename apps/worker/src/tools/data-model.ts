@@ -44,7 +44,7 @@ import { recognizeDrizzle } from "./data-model/drizzle.js";
 import { recognizePrisma } from "./data-model/prisma.js";
 import { orderMigrations, replaySqlMigrations } from "./data-model/sql.js";
 import { loadGraph } from "./slice.js";
-import { sha256 } from "./slice/hash.js";
+import { sha256 } from "carveout/extract";
 
 /** Bytes one schema, migration or code file may have to be read. */
 export const DATA_MODEL_FILE_BYTES_MAX = 2 * 1024 * 1024;

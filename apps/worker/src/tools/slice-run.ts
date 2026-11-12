@@ -19,7 +19,7 @@ import type { BoundaryContract, SliceManifest } from "sandbox-factory";
 import type { StoredAnalysisRun, StoredArtifact } from "@sandbox-factory/db";
 import { AnalysisError } from "../errors.js";
 import type { ToolInputs } from "./adapter.js";
-import { sha256 } from "./slice/hash.js";
+import { sha256 } from "carveout/extract";
 
 export interface LoadedSliceRun {
   readonly run: StoredAnalysisRun;

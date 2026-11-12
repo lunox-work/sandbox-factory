@@ -11,7 +11,7 @@ import {
   pnpmWorkspacePatterns,
   workspaceModuleResolver,
   workspacePackages,
-} from "../src/tools/compiler-config.js";
+} from "carveout/extract";
 
 test("diamond inheritance applies later bases to compiler and serialized options", async () => {
   const root = await mkdtemp(join(tmpdir(), "compiler-config-"));

@@ -25,8 +25,11 @@ import {
   scenarioProblems,
 } from "sandbox-factory";
 import type { BoundaryContract, SandboxFixture } from "sandbox-factory";
-import { compileFixture } from "./slice/fixture.js";
-import { NODE_BUILTINS, declarationPathFor } from "./slice/typescript.js";
+import {
+  compileFixture,
+  declarationPathFor,
+  NODE_BUILTINS,
+} from "carveout/extract";
 
 export const FIXTURE_CHECK_PATH = `${HARNESS_DIR}/fixtures.check.ts`;
 const PROBLEMS_MAX = 40;
