@@ -789,6 +789,17 @@ export const PUBLIC_ROUTES: readonly PublicRoute[] = [
     request: createSubmissionSchema,
     response: accepted(submissionResponseSchema),
   },
+  {
+    method: "POST",
+    path: `${SBX}/submissions/:sid/retry`,
+    idempotent: true,
+    scope: "submissions:write",
+    summary:
+      "Retry a failed submission once with new files, told only its failing scenario keys (owners and admins)",
+    tag: "Sandboxes",
+    request: createSubmissionSchema,
+    response: accepted(submissionResponseSchema),
+  },
   read(
     `${SBX}/versions/:vid/submissions`,
     "A version's submissions and their verdicts",

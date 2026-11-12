@@ -8,7 +8,9 @@
  * upload finds the one it already made.
  *
  * Status moves one way: `queued`, `running`, then `passed`, `failed` or
- * `errored`. A verdict is never computed here; `submissionVerdict` in core
+ * `errored`. A failed or errored submission takes one retry (`retry`), a
+ * new submission that names it in `retryOf`; the contributor is told only
+ * the first one's scenario keys. A verdict is never computed here; `submissionVerdict` in core
  * decides it from the counts, so the rule is the same wherever it is read.
  */
 
@@ -32,6 +34,8 @@ export interface StoredSubmission {
   readonly status: SubmissionStatus;
   readonly result: SubmissionResult | null;
   readonly runId: string | null;
+  /** The submission this one retries; null for a first attempt. */
+  readonly retryOf: string | null;
   readonly createdAt: string;
   readonly updatedAt: string;
 }
@@ -52,6 +56,28 @@ export type CreateSubmissionResult =
     }
   | { readonly ok: false; readonly reason: "not-found" | "not_frozen" };
 
+export type RetrySubmissionResult =
+  | {
+      readonly ok: true;
+      readonly submission: StoredSubmission;
+      /** False when this retry, with these files, was already made. */
+      readonly created: boolean;
+    }
+  | {
+      readonly ok: false;
+      readonly reason:
+        | "not-found"
+        /** Still queued or running: there is no verdict to retry yet. */
+        | "not_finished"
+        | "passed"
+        /** A retry is not retried. */
+        | "is_retry"
+        /** The submission's one retry was made, with other files. */
+        | "retry_used"
+        /** These files were already submitted against the version. */
+        | "same_patch";
+    };
+
 /** How a run ended: with counts, or without being able to run at all. */
 export type SubmissionOutcome = SubmissionResult | "errored";
 
@@ -68,6 +94,15 @@ export interface SubmissionStore {
     organizationId: string,
     submissionId: string,
   ): Promise<(StoredSubmission & { readonly patchKey: string }) | null>;
+  /**
+   * A new submission against the same version that retries a failed or
+   * errored one: its one retry. The same files again find the retry made.
+   */
+  retry(
+    organizationId: string,
+    submissionId: string,
+    input: Omit<NewSubmission, "sandboxVersionId">,
+  ): Promise<RetrySubmissionResult>;
   /** A version's submissions, newest first. */
   list(
     organizationId: string,
@@ -96,6 +131,7 @@ const toSubmission = (row: SubmissionRow): StoredSubmission => ({
   status: row.status,
   result: row.result,
   runId: row.runId,
+  retryOf: row.retryOf ?? null,
   createdAt: row.createdAt.toISOString(),
   updatedAt: row.updatedAt.toISOString(),
 });
@@ -192,6 +228,61 @@ export function createSubmissionStore(db: Database): SubmissionStore {
         const raced = await existing(owner, input);
         if (raced === undefined) throw error;
         return { ok: true, submission: toSubmission(raced), created: false };
+      }
+    },
+
+    async retry(owner, id, input) {
+      const original = await get(owner, id);
+      if (original === null) return { ok: false, reason: "not-found" };
+      if (original.retryOf !== null) return { ok: false, reason: "is_retry" };
+      if (original.status === "passed") return { ok: false, reason: "passed" };
+      if (original.status === "queued" || original.status === "running")
+        return { ok: false, reason: "not_finished" };
+      const retryOf = async () =>
+        (
+          (await db
+            .select()
+            .from(submission)
+            .where(
+              and(
+                eq(submission.organizationId, owner),
+                eq(submission.retryOf, id),
+              ),
+            )
+            .limit(1)) as SubmissionRow[]
+        )[0];
+      const made = (found: SubmissionRow): RetrySubmissionResult =>
+        found.patchSha256 === input.patchSha256
+          ? { ok: true, submission: toSubmission(found), created: false }
+          : { ok: false, reason: "retry_used" };
+      const found = await retryOf();
+      if (found !== undefined) return made(found);
+      if (input.patchSha256 === original.patchSha256)
+        return { ok: false, reason: "same_patch" };
+      try {
+        const rows = (await db
+          .insert(submission)
+          .values({
+            id: generateId("sbm"),
+            organizationId: owner,
+            sandboxVersionId: original.sandboxVersionId,
+            submittedBy: input.submittedBy,
+            patchKey: input.patchKey,
+            patchSha256: input.patchSha256,
+            retryOf: id,
+          })
+          .returning()) as SubmissionRow[];
+        const row = rows[0];
+        if (row === undefined)
+          throw new Error("Submission insert returned no row.");
+        return { ok: true, submission: toSubmission(row), created: true };
+      } catch (error) {
+        // Two retries at once, or files another submission already holds.
+        if (!isUniqueViolation(error)) throw error;
+        const raced = await retryOf();
+        return raced === undefined
+          ? { ok: false, reason: "same_patch" }
+          : made(raced);
       }
     },
 

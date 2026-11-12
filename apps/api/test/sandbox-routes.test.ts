@@ -3394,7 +3394,16 @@ test("a built version's handout lists its public files and commits to its hidden
 });
 
 /** A submissions store that records what the routes ask of it. */
-function submissionsFake(reason?: "not_frozen" | "not-found") {
+function submissionsFake(
+  reason?: "not_frozen" | "not-found",
+  retryReason?:
+    | "not-found"
+    | "not_finished"
+    | "passed"
+    | "is_retry"
+    | "retry_used"
+    | "same_patch",
+) {
   const made: unknown[] = [];
   const stored = (overrides: object = {}) => ({
     id: "sbm_1",
@@ -3410,11 +3419,13 @@ function submissionsFake(reason?: "not_frozen" | "not-found") {
       failedScenarios: ["s2"],
     },
     runId: "arn_grade",
+    retryOf: null,
     createdAt: stamp,
     updatedAt: stamp,
     ...overrides,
   });
   let seen = false;
+  let retried = false;
   return {
     made,
     store: {
@@ -3440,9 +3451,112 @@ function submissionsFake(reason?: "not_frozen" | "not-found") {
       get: async (owner: string, id: string) =>
         owner === "org_1" && id === "sbm_1" ? stored() : null,
       list: async (owner: string) => (owner === "org_1" ? [stored()] : []),
+      retry: async (
+        owner: string,
+        id: string,
+        input: { patchSha256: string; patchKey: string },
+      ) => {
+        made.push({ owner, retryOf: id, ...input });
+        if (retryReason !== undefined)
+          return { ok: false, reason: retryReason };
+        const created = !retried;
+        retried = true;
+        return {
+          ok: true,
+          created,
+          submission: stored({
+            id: "sbm_2",
+            status: "queued",
+            result: null,
+            runId: null,
+            patchSha256: input.patchSha256,
+            retryOf: id,
+          }),
+        };
+      },
     },
   };
 }
+
+test("a failed submission is retried once with new files, graded against the same version", async () => {
+  const submissions = submissionsFake();
+  const f = fixture("admin", { submissions: submissions.store });
+  const files = [{ path: "src/a.ts", text: "fixed" }];
+  const first = await f.request("POST", "/submissions/sbm_1/retry", { files });
+  assert.equal(first.status, 202);
+  const body = (await first.json()) as {
+    submission: { id: string; retryOf: string | null };
+  };
+  assert.deepEqual(body.submission.retryOf, "sbm_1");
+  const sha = createHash("sha256")
+    .update(JSON.stringify({ files }))
+    .digest("hex");
+  assert.deepEqual(submissions.made.at(-1), {
+    owner: "org_1",
+    retryOf: "sbm_1",
+    submittedBy: "user_1",
+    patchKey: `submissions/org_1/sbv_1/${sha}.json`,
+    patchSha256: sha,
+  });
+  assert.deepEqual(f.enqueued.at(-1), {
+    snapshotId: null,
+    tool: "submission_grade",
+    params: {
+      deadlineMinutes: 60,
+      grader: "submission",
+      submissionId: "sbm_2",
+      sandboxVersionId: "sbv_1",
+      patchSha256: sha,
+    },
+    requestedBy: "user_1",
+    maxActive: 3,
+  });
+  const again = await f.request("POST", "/submissions/sbm_1/retry", { files });
+  assert.equal(again.status, 200);
+  assert.equal(
+    f.enqueued.filter(
+      (run) => (run as { tool: string }).tool === "submission_grade",
+    ).length,
+    1,
+  );
+  // Another workspace's submission, or none, is not found before anything is stored.
+  assert.equal(
+    (await f.request("POST", "/submissions/sbm_x/retry", { files })).status,
+    404,
+  );
+
+  for (const reason of [
+    "not_finished",
+    "passed",
+    "is_retry",
+    "retry_used",
+    "same_patch",
+  ] as const) {
+    const refused = await fixture("admin", {
+      submissions: submissionsFake(undefined, reason).store,
+    }).request("POST", "/submissions/sbm_1/retry", { files });
+    assert.equal(refused.status, 409);
+    assert.equal(((await refused.json()) as { code: string }).code, reason);
+  }
+  assert.equal(
+    (
+      await fixture("admin", {
+        submissions: submissionsFake(undefined, "not-found").store,
+      }).request("POST", "/submissions/sbm_1/retry", { files })
+    ).status,
+    404,
+  );
+  assert.equal(
+    (
+      await fixture("member", { submissions: submissionsFake().store }).request(
+        "POST",
+        "/submissions/sbm_1/retry",
+        { files },
+      )
+    ).status,
+    403,
+  );
+});
 
 test("files submitted against a version are stored, hashed and graded once; the verdict shows counts and scenario keys only", async () => {
   const submissions = submissionsFake();

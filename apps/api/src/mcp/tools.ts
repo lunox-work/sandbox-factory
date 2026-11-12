@@ -588,6 +588,31 @@ const TOOLS = [
     body: ({ files }) => ({ files }),
   }),
   tool({
+    name: "retry",
+    description:
+      "Retry a failed submission once: submit the files again, changed, after reading its failing scenario keys with get_verdict. A submission has one retry, a passed one none. Read the new verdict with get_verdict.",
+    input: {
+      submissionId: id("submission"),
+      files: z
+        .array(
+          z.object({
+            path: z.string().min(1).max(500),
+            text: z.string(),
+          }),
+        )
+        .min(1)
+        .max(200)
+        .describe(
+          "Each file the work changed or added, whole, at its path in the sandbox.",
+        ),
+    },
+    scoped: true,
+    method: "POST",
+    path: ({ submissionId }, workspace) =>
+      `${org(workspace)}/sandboxes/submissions/${enc(submissionId)}/retry`,
+    body: ({ files }) => ({ files }),
+  }),
+  tool({
     name: "get_verdict",
     description:
       "Read a submission's verdict: passed, overfit, incomplete or refused, the public and hidden counts, and the keys of the spec scenarios a failing hidden test covers. Never a hidden test's name or body.",
@@ -640,6 +665,7 @@ export const TOOLSETS: Readonly<Record<string, readonly ToolName[]>> = {
     "prepare",
     "get_handout",
     "judge",
+    "retry",
     "get_verdict",
   ],
   "/mcp/carveout": [
@@ -654,6 +680,7 @@ export const TOOLSETS: Readonly<Record<string, readonly ToolName[]>> = {
     "cut_slice",
     "get_handout",
     "submit_patch",
+    "retry",
     "get_verdict",
   ],
 };

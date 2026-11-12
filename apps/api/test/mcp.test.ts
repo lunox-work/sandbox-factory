@@ -129,6 +129,7 @@ const WRITE_TOOLS = new Set([
   "prepare",
   "submit_patch",
   "judge",
+  "retry",
 ]);
 
 function textOf(result: unknown): string {
@@ -167,6 +168,7 @@ test("each endpoint lists exactly its toolset", async () => {
       "get_handout",
       "submit_patch",
       "judge",
+      "retry",
       "get_verdict",
       "connect_github",
       "connect_jira",
@@ -188,6 +190,7 @@ test("each endpoint lists exactly its toolset", async () => {
       "prepare",
       "get_handout",
       "judge",
+      "retry",
       "get_verdict",
     ],
     "/mcp/carveout": [
@@ -202,6 +205,7 @@ test("each endpoint lists exactly its toolset", async () => {
       "cut_slice",
       "get_handout",
       "submit_patch",
+      "retry",
       "get_verdict",
     ],
   };

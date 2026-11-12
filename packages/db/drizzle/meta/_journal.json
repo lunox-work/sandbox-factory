@@ -561,6 +561,13 @@
       "when": 1794461736543,
       "tag": "0079_decision_confirmation",
       "breakpoints": true
+    },
+    {
+      "idx": 80,
+      "version": "7",
+      "when": 1794470788293,
+      "tag": "0080_submission_retry",
+      "breakpoints": true
     }
   ]
 }

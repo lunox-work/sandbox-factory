@@ -606,6 +606,8 @@ export const submissionDtoSchema = z.object({
   failedScenarios: z.array(z.string()),
   refused: z.array(z.object({ path: z.string(), reason: z.string() })),
   runId: z.string().nullable(),
+  /** The submission this one retries; null for a first attempt. */
+  retryOf: z.string().nullable(),
   createdAt: z.iso.datetime(),
   updatedAt: z.iso.datetime(),
 });

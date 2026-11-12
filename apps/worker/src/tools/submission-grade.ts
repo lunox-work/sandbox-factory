@@ -5,6 +5,10 @@
  * duediligence's rule (`duediligence/api` `verdict`) turns the outcomes into
  * the verdict: refused, incomplete, overfit or passed.
  *
+ * Before anything runs, carveout's hand-off policy (`gainedIntegrity`)
+ * refuses a file that gains a way to pass a test without the code: telling
+ * a test run from a real one, exiting early, rewriting the assertions.
+ *
  * Only counts, the verdict and the scenario keys of failing hidden tests
  * (`s1`, from the file names the hidden-tests scaffold writes) leave the
  * run, in `submission-result.json` and on the submission. A hidden test's
@@ -13,6 +17,7 @@
 
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { gainedIntegrity } from "carveout/api";
 import { verdict as judge } from "duediligence/api";
 import type { SuiteResult } from "duediligence/api";
 import {
@@ -75,6 +80,32 @@ export async function versionFilesOf(
     );
   }
   return files;
+}
+
+/**
+ * The submitted files that gain a way to pass without the code over the
+ * version's own text (`gainedIntegrity`), each with the ways it gained.
+ */
+export function integrityRefusals(
+  versionFiles: readonly GeneratedFile[],
+  submitted: readonly { readonly path: string; readonly text: string }[],
+): { path: string; reason: string }[] {
+  const before = new Map(
+    versionFiles
+      .filter((file) => file.public)
+      .map((file) => [file.path, file.text]),
+  );
+  return submitted.flatMap(({ path, text }) => {
+    const gained = gainedIntegrity(path, before.get(path) ?? null, text);
+    return gained.length === 0
+      ? []
+      : [
+          {
+            path,
+            reason: `It adds a way to pass the tests without the code: ${gained.join(", ")}.`,
+          },
+        ];
+  });
 }
 
 /** The outcome of a graded tree, as duediligence's rule reads it. */
@@ -214,12 +245,16 @@ export function createSubmissionGradeAdapter(options: {
         editablePaths,
         submission: read.files,
       });
+      const refused = [
+        ...tree.refused,
+        ...integrityRefusals(versionFiles, read.files),
+      ];
       const hiddenPaths = versionFiles
         .filter((file) => file.class === "test-private")
         .map((file) => file.path)
         .sort();
       let baseline: BaselineReport | null = null;
-      if (tree.refused.length === 0) {
+      if (refused.length === 0) {
         const acceptanceTests: AcceptanceTest[] = versionFiles
           .filter((file) => file.class === "test-private")
           .map((file) => ({
@@ -240,7 +275,7 @@ export function createSubmissionGradeAdapter(options: {
           })
         ).baseline;
       }
-      const result = resultOf({ hiddenPaths, baseline, refused: tree.refused });
+      const result = resultOf({ hiddenPaths, baseline, refused });
       input.log(
         `Submission ${params.submissionId}: ${result.verdict ?? ""}, public ${result.public.passed}/${result.public.total}, hidden ${result.hidden.passed}/${result.hidden.total}.`,
       );
