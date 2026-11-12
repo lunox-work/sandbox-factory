@@ -39,9 +39,9 @@
   "devDependencies": {
     "@hono/node-server": "^2.1.1",
     "@playwright/test": "1.64.1",
-    "@swc/core": "1.16.20",
-    "dependency-cruiser": "18.7.0",
-    "hono": "^4.13.13",
+    "@swc/core": "1.16.21",
+    "dependency-cruiser": "18.7.2",
+    "hono": "^4.13.16",
     "husky": "^9.1.7",
     "prettier": "^3.9.10",
     "turbo": "^2.11.10",
