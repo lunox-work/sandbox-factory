@@ -33,8 +33,11 @@ export const MCP_INSTRUCTIONS =
   "sized and priced, then given a sandbox sliced from the workspace's " +
   "repositories that a contributor can build and be judged in. These tools " +
   "read one workspace's bounties, proposals, repositories, Jira boards, " +
-  "sandboxes and runs; writes and approvals happen in the Lunox web app " +
-  "for now.";
+  "sandboxes and runs. Posting work is available: write a bounty or " +
+  "import one from a GitHub or Jira issue, size it, change its spec, and " +
+  "get the link that connects GitHub or Jira. Approvals happen in the web " +
+  "app: approving a price or a slice, publishing a sandbox and confirming " +
+  "decisions are a person's act there.";
 
 /** What MCP clients are told to ask for when they sign in. */
 const CHALLENGE_SCOPE = [...MCP_DEFAULT_SCOPES, OFFLINE_ACCESS_SCOPE].join(" ");
@@ -84,8 +87,18 @@ export function mountMcpRoutes(
         const value = c.req.header(name);
         if (value !== undefined) headers.set(name, value);
       }
-      const call: ApiCall = async (target) => {
-        const response = await app.request(target, { headers });
+      const call: ApiCall = async (target, init = {}) => {
+        const sent = new Headers(headers);
+        if (init.accept !== undefined) sent.set("accept", init.accept);
+        if (init.body !== undefined)
+          sent.set("content-type", "application/json");
+        const response = await app.request(target, {
+          method: init.method ?? "GET",
+          headers: sent,
+          ...(init.body === undefined
+            ? {}
+            : { body: JSON.stringify(init.body) }),
+        });
         const body: unknown = await response.json().catch(() => null);
         return { status: response.status, body };
       };

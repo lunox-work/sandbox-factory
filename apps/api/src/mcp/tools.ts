@@ -3,7 +3,10 @@
  *
  * **Every tool is a thin wrapper over one public route.** It names the
  * route, calls it with the caller's own credential (`ApiCall`), and returns
- * the API's JSON as text. It holds no access logic: the credential guard,
+ * the API's JSON as text. Read tools are GETs; write tools post work (a
+ * bounty, an imported issue, a sizing, a spec change) or hand back a
+ * connect link. Approving, publishing and confirming decisions have no
+ * tool: they are a person's act in the web app. It holds no access logic: the credential guard,
  * the public registry, scopes and `requireMembership` decide everything,
  * and a refusal comes back as a tool error carrying the API's `code`
  * (`insufficient_scope`, `not_public`, ...). A tool that needs the
@@ -11,13 +14,26 @@
  * credential's one workspace.
  */
 
+import { randomUUID } from "node:crypto";
+
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
+import { respecRequestSchema } from "@sandbox-factory/shared";
+import { BOUNTY_LIMITS } from "sandbox-factory";
 import { z } from "zod";
+
+/** What a call sends besides the caller's credential; a GET by default. */
+export interface ApiCallInit {
+  readonly method?: "GET" | "POST";
+  /** Sent as JSON. */
+  readonly body?: unknown;
+  readonly accept?: string;
+}
 
 /** A call to the API in-process, as the caller; JSON body or null. */
 export type ApiCall = (
   path: string,
+  init?: ApiCallInit,
 ) => Promise<{ status: number; body: unknown }>;
 
 interface Tool {
@@ -75,7 +91,9 @@ async function workspaceOf(
 
 /**
  * A tool over one route. `path` builds the route from the arguments and,
- * for `scoped` tools, the workspace id.
+ * for `scoped` tools, the workspace id; a write tool also names its
+ * `method` and builds its `body`. `answer` shapes a success, the API's
+ * JSON by default.
  */
 function tool<Shape extends z.ZodRawShape>(definition: {
   name: string;
@@ -83,7 +101,12 @@ function tool<Shape extends z.ZodRawShape>(definition: {
   input: Shape;
   scoped: boolean;
   path: (args: z.infer<z.ZodObject<Shape>>, organizationId: string) => string;
+  method?: "POST";
+  body?: (args: z.infer<z.ZodObject<Shape>>) => unknown;
+  accept?: string;
+  answer?: (body: unknown) => CallToolResult;
 }): Tool {
+  const writes = definition.method !== undefined;
   return {
     name: definition.name,
     register(server, call) {
@@ -93,7 +116,14 @@ function tool<Shape extends z.ZodRawShape>(definition: {
         {
           description: definition.description,
           inputSchema: schema,
-          annotations: { readOnlyHint: true, openWorldHint: false },
+          annotations: writes
+            ? {
+                readOnlyHint: false,
+                destructiveHint: false,
+                idempotentHint: false,
+                openWorldHint: false,
+              }
+            : { readOnlyHint: true, openWorldHint: false },
         },
         async (args: unknown) => {
           // The SDK validated already; parsed again for the shape's type.
@@ -106,13 +136,40 @@ function tool<Shape extends z.ZodRawShape>(definition: {
           }
           const { status, body } = await call(
             definition.path(parsed, organizationId),
+            {
+              ...(definition.method === undefined
+                ? {}
+                : { method: definition.method }),
+              ...(definition.body === undefined
+                ? {}
+                : { body: definition.body(parsed) }),
+              ...(definition.accept === undefined
+                ? {}
+                : { accept: definition.accept }),
+            },
           );
-          return status >= 200 && status < 300
-            ? text(body)
-            : toolError(status, body);
+          if (status < 200 || status >= 300) return toolError(status, body);
+          return (definition.answer ?? text)(body);
         },
       );
     },
+  };
+}
+
+/** A connect route's `{ url }`, as a sentence a person can act on. */
+function connectLink(what: string) {
+  return (body: unknown): CallToolResult => {
+    const url = (body as { url?: unknown } | null)?.url;
+    return typeof url === "string"
+      ? {
+          content: [
+            {
+              type: "text",
+              text: `To connect ${what}, open this link in a browser while signed in to Lunox and finish the steps there: ${url}`,
+            },
+          ],
+        }
+      : toolError(502, { error: "The API answered no link.", code: "no_url" });
   };
 }
 
@@ -253,6 +310,129 @@ const TOOLS = [
     path: ({ runId }, workspace) =>
       `${org(workspace)}/github/runs/${enc(runId)}`,
   }),
+
+  // Posting work: each a write over one public route; the route's scope
+  // and role checks decide.
+  tool({
+    name: "post_bounty",
+    description:
+      "Write a new bounty in the workspace from a title and a description of the work. It is not sized; call size_bounty with its id to price it.",
+    input: {
+      title: z
+        .string()
+        .trim()
+        .min(1)
+        .max(BOUNTY_LIMITS.title)
+        .describe("What is to be done, in a line."),
+      description: z
+        .string()
+        .max(BOUNTY_LIMITS.description)
+        .optional()
+        .describe("The work in full: context, what done looks like."),
+      stack: z
+        .array(z.string().min(1))
+        .max(30)
+        .optional()
+        .describe(
+          "Technologies the work needs beyond what the repositories use.",
+        ),
+    },
+    scoped: true,
+    method: "POST",
+    path: (_args, workspace) => `${org(workspace)}/bounties`,
+    body: ({ title, description, stack }) => ({
+      title,
+      ...(description === undefined ? {} : { description }),
+      ...(stack === undefined ? {} : { stack }),
+    }),
+  }),
+  tool({
+    name: "import_github_issue",
+    description:
+      "Make a bounty from a GitHub issue on a repository the workspace connected, taking its title, body and labels. Importing the same issue again returns the bounty it made.",
+    input: {
+      url: z
+        .string()
+        .describe("The issue's URL, https://github.com/owner/repo/issues/12."),
+    },
+    scoped: true,
+    method: "POST",
+    path: (_args, workspace) => `${org(workspace)}/bounties`,
+    body: ({ url }) => ({ source: { githubIssue: url } }),
+  }),
+  tool({
+    name: "import_jira_issue",
+    description:
+      "Make a bounty from one Jira issue on a registered board, unsized. Find the board and issue ids with search_issues.",
+    input: {
+      boardId: id("board"),
+      issueId: z
+        .string()
+        .regex(/^\d{1,18}$/)
+        .describe("Jira's numeric issue id, as search_issues returned it."),
+    },
+    scoped: true,
+    method: "POST",
+    path: ({ boardId }, workspace) =>
+      `${org(workspace)}/jira/boards/${enc(boardId)}/import`,
+    body: ({ issueId }) => ({ issueId }),
+  }),
+  tool({
+    name: "size_bounty",
+    description:
+      "Size and price one bounty with a model call; it runs in the background. Poll get_bounty until it has a proposal, then read it with get_proposal.",
+    input: { bountyId: id("bounty") },
+    scoped: true,
+    method: "POST",
+    path: ({ bountyId }, workspace) =>
+      `${org(workspace)}/bounties/${enc(bountyId)}/propose`,
+    body: () => ({ requestId: randomUUID() }),
+  }),
+  tool({
+    name: "respec",
+    description:
+      "Change a proposal's spec: expand it with more scenarios, answer its open questions, or trim scenarios. Runs in the background against the proposal revision you read with get_proposal.",
+    input: {
+      proposalId: id("proposal"),
+      expectedRevision: z
+        .number()
+        .int()
+        .positive()
+        .describe("The proposal's revision, as get_proposal returned it."),
+      request: respecRequestSchema.describe(
+        "What to change: mode expand, answer or trim, with its fields.",
+      ),
+    },
+    scoped: true,
+    method: "POST",
+    path: ({ proposalId }, workspace) =>
+      `${org(workspace)}/proposals/${enc(proposalId)}/respec`,
+    body: ({ expectedRevision, request }) => ({
+      expectedRevision,
+      request,
+      requestId: randomUUID(),
+    }),
+  }),
+  tool({
+    name: "connect_github",
+    description:
+      "Get the link that connects the workspace's GitHub repositories. Connecting is a browser step: give the person the link to open.",
+    input: {},
+    scoped: true,
+    path: (_args, workspace) => `${org(workspace)}/github/connect`,
+    accept: "application/json",
+    answer: connectLink("GitHub"),
+  }),
+  tool({
+    name: "connect_jira",
+    description:
+      "Get the link that connects a Jira site to the workspace. Connecting is a browser step: give the person the link to open.",
+    input: {},
+    scoped: true,
+    path: (_args, workspace) => `${org(workspace)}/jira/connect`,
+    accept: "application/json",
+    answer: connectLink("Jira"),
+  }),
 ] as const;
 
 export type ToolName = (typeof TOOLS)[number]["name"];
@@ -267,6 +447,10 @@ export const TOOLSETS: Readonly<Record<string, readonly ToolName[]>> = {
     "get_proposal",
     "get_run",
     "get_usage",
+    "post_bounty",
+    "import_github_issue",
+    "import_jira_issue",
+    "size_bounty",
   ],
   "/mcp/carveout": [
     "list_workspaces",
