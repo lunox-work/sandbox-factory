@@ -141,8 +141,8 @@ function operation(route: PublicRoute, components: Json): Json {
     operationId: id,
     summary: route.summary,
     tags: [route.tag],
-    "x-required-scope": route.scope,
-    security: [{ apiToken: [route.scope] }],
+    ...(route.scope === null ? {} : { "x-required-scope": route.scope }),
+    security: [{ apiToken: route.scope === null ? [] : [route.scope] }],
     parameters: [
       ...pathParameters(route.path).map((name) => ({
         name,

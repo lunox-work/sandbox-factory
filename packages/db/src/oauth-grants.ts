@@ -12,7 +12,7 @@
  * capability.
  */
 
-import { and, desc, eq, isNull, lt, ne, or } from "drizzle-orm";
+import { and, desc, eq, isNull, lt, ne, or, sql } from "drizzle-orm";
 
 import type { Database } from "./errors.js";
 import {
@@ -75,6 +75,13 @@ export interface OAuthGrantStore {
     organizationId: string,
     grantId: string,
   ): Promise<OAuthGrant | undefined>;
+  /**
+   * Ends one access token and the refresh token it was issued with, and
+   * nothing else: the grant stands, so the app may sign in again without a
+   * new consent. What a client's logout calls with the token it holds.
+   * False when the organization holds no such token.
+   */
+  revokeAccessToken(organizationId: string, tokenId: string): Promise<boolean>;
 }
 
 /** At most this many listed, as for API tokens. */
@@ -231,6 +238,36 @@ export function createOAuthGrantStore(db: Database): OAuthGrantStore {
           );
         await tx.delete(oauthConsent).where(oneGrant(owner, grantId));
         return toGrant(row);
+      });
+    },
+
+    async revokeAccessToken(owner, tokenId) {
+      return db.transaction(async (tx) => {
+        const [token] = await tx
+          .update(oauthAccessToken)
+          .set({ revoked: sql`coalesce(${oauthAccessToken.revoked}, now())` })
+          .where(
+            and(
+              eq(oauthAccessToken.referenceId, owner),
+              eq(oauthAccessToken.id, tokenId),
+            ),
+          )
+          .returning({ refreshId: oauthAccessToken.refreshId });
+        if (token === undefined) return false;
+        // The refresh token it came with would mint the next one.
+        if (token.refreshId !== null)
+          await tx
+            .update(oauthRefreshToken)
+            .set({
+              revoked: sql`coalesce(${oauthRefreshToken.revoked}, now())`,
+            })
+            .where(
+              and(
+                eq(oauthRefreshToken.referenceId, owner),
+                eq(oauthRefreshToken.id, token.refreshId),
+              ),
+            );
+        return true;
       });
     },
   };

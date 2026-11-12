@@ -202,6 +202,28 @@ test("a revoked grant's tokens stop at once", async () => {
   assert.equal((await request("/api/v1/me", { headers })).status, 401);
 });
 
+test("an access token revokes itself and leaves its grant standing", async () => {
+  const { request, issue, grants } = setup();
+  const first = issue();
+  const second = issue();
+  const res = await request("/api/v1/tokens/self/revoke", {
+    method: "POST",
+    headers: first.headers,
+  });
+  assert.equal(res.status, 204);
+  assert.equal(grants.tokens[0]?.revoked, true);
+  assert.equal(grants.tokens[1]?.revoked, false);
+  assert.equal(grants.grants.length, 2);
+  assert.equal(
+    (await request("/api/v1/me", { headers: first.headers })).status,
+    401,
+  );
+  assert.equal(
+    (await request("/api/v1/me", { headers: second.headers })).status,
+    200,
+  );
+});
+
 test("a use is recorded at most once a minute", async () => {
   const { request, issue, grants, advance } = setup();
   const { headers, grantId } = issue();

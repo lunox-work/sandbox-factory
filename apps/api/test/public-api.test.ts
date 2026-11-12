@@ -35,7 +35,14 @@ test("every registry entry declares its scope, request and response schemas", ()
     assert.equal(seen.has(key), false, `${key} is listed twice`);
     seen.add(key);
     assert.match(route.path, /^\/api\/v1\//, key);
-    assert.equal(isApiScope(route.scope), true, key);
+    // Only a self route goes without a scope; it names no resource.
+    assert.equal(
+      route.scope === null
+        ? /\/self\//.test(route.path)
+        : isApiScope(route.scope),
+      true,
+      key,
+    );
     assert.ok(route.summary.length > 0, key);
     // `null` is a decision (no body); `undefined` is an omission.
     assert.notEqual(route.request, undefined, `${key} has no request schema`);
@@ -51,11 +58,12 @@ test("every registry entry declares its scope, request and response schemas", ()
       );
     }
     // Reads need only `workspace:read`; writes never take it.
-    assert.equal(
-      route.scope === "workspace:read",
-      route.method === "GET" && response.status !== 302,
-      `${key} has the wrong kind of scope`,
-    );
+    if (route.scope !== null)
+      assert.equal(
+        route.scope === "workspace:read",
+        route.method === "GET" && response.status !== 302,
+        `${key} has the wrong kind of scope`,
+      );
     assert.equal(publicRoute(route.method, route.path), route);
   }
   assert.equal(publicRoute("GET", "/api/v1/orgs/:orgId/tokens"), undefined);
@@ -63,6 +71,8 @@ test("every registry entry declares its scope, request and response schemas", ()
 
 test("no public route manages credentials or is a person's act", () => {
   for (const route of PUBLIC_ROUTES) {
+    // A credential may end itself, and manage nothing else.
+    if (route.path === "/api/v1/tokens/self/revoke") continue;
     assert.doesNotMatch(route.path, /\/tokens|\/oauth/, route.path);
     assert.doesNotMatch(
       route.path,
@@ -108,7 +118,9 @@ test("GET /api/v1/openapi.json is served without a credential, valid and whole",
     const operation =
       document.paths[openApiPath(route.path)]?.[route.method.toLowerCase()];
     assert.ok(operation, `${route.method} ${route.path} is missing`);
-    assert.deepEqual(operation.security, [{ apiToken: [route.scope] }]);
+    assert.deepEqual(operation.security, [
+      { apiToken: route.scope === null ? [] : [route.scope] },
+    ]);
     assert.equal(
       operations.has(operation.operationId),
       false,

@@ -22,7 +22,8 @@
  * - `device`: only the routes a command-line client needs to mint its
  *   token (`DEVICE_ROUTES`).
  * - `token` and `oauth`: only routes in the public registry, and
- *   only with the scope the registry names for them. A route not listed is
+ *   only with the scope the registry names for them (a self route names
+ *   none: it acts on the presenting credential alone). A route not listed is
  *   refused, whatever the scopes: deny by default. Which organization it
  *   may name is `requireMembership`'s check, in `routes.ts`.
  */
@@ -251,7 +252,8 @@ export function admit(
       code: "not_public",
     };
   }
-  if (!principal.scopes.includes(declared.scope)) {
+  // A self route needs no scope: it can only reach the credential itself.
+  if (declared.scope !== null && !principal.scopes.includes(declared.scope)) {
     return {
       error: `This credential lacks the ${declared.scope} scope.`,
       code: "insufficient_scope",

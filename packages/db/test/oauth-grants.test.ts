@@ -126,3 +126,31 @@ test("revoke of another workspace's grant touches nothing", async () => {
   );
   assert.equal(fake.calls.length, 1);
 });
+
+test("revokeAccessToken ends the token and the refresh token it came with", async () => {
+  const fake = createSequencedFakeDb([[{ refreshId: "rt_1" }], []]);
+  assert.equal(
+    await createOAuthGrantStore(fake.db).revokeAccessToken("org_1", "at_1"),
+    true,
+  );
+  assert.deepEqual(
+    fake.calls.map((call) => call.kind),
+    ["update", "update"],
+  );
+  assert.ok(fake.calls.every((call) => call.filtered === true));
+});
+
+test("revokeAccessToken without a refresh token, or of another workspace's, ends no more", async () => {
+  const lone = createSequencedFakeDb([[{ refreshId: null }]]);
+  assert.equal(
+    await createOAuthGrantStore(lone.db).revokeAccessToken("org_1", "at_1"),
+    true,
+  );
+  assert.equal(lone.calls.length, 1);
+  const miss = createSequencedFakeDb([[]]);
+  assert.equal(
+    await createOAuthGrantStore(miss.db).revokeAccessToken("org_2", "at_1"),
+    false,
+  );
+  assert.equal(miss.calls.length, 1);
+});

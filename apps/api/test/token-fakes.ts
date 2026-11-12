@@ -263,5 +263,13 @@ export function memoryGrants(): OAuthGrantStore & {
         if (token.grantId === grantId) token.revoked = true;
       return Promise.resolve(listed(grant));
     },
+    revokeAccessToken(organizationId, tokenId) {
+      const token = tokens.find(({ id }) => id === tokenId);
+      const grant = grants.find(({ id }) => id === token?.grantId);
+      if (token === undefined || grant?.organizationId !== organizationId)
+        return Promise.resolve(false);
+      token.revoked = true;
+      return Promise.resolve(true);
+    },
   };
 }

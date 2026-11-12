@@ -331,6 +331,50 @@ test("a revoked token is refused at once", async () => {
   assert.equal(other.status, 404);
 });
 
+test("a token revokes itself, and only itself, with no scope", async () => {
+  const { request, mint, bearer, tokens } = setup();
+  const self = await mint(["bounties:write"]);
+  const other = await mint();
+  // A body naming another token is not read: the presenting one is revoked.
+  const res = await request("/api/v1/tokens/self/revoke", {
+    method: "POST",
+    headers: { ...bearer(self), "content-type": "application/json" },
+    body: JSON.stringify({ id: tokens.rows[1]?.id }),
+  });
+  assert.equal(res.status, 204);
+  assert.notEqual(tokens.rows[0]?.revokedAt, null);
+  assert.equal(tokens.rows[1]?.revokedAt, null);
+  const after = await request("/api/v1/tokens/self/revoke", {
+    method: "POST",
+    headers: bearer(self),
+  });
+  assert.equal(after.status, 401);
+  assert.equal(
+    (await request("/api/v1/me", { headers: bearer(self) })).status,
+    401,
+  );
+  assert.equal(
+    (await request("/api/v1/me", { headers: bearer(other) })).status,
+    200,
+  );
+});
+
+test("a session or device sign-in has no token to revoke", async () => {
+  const { request } = setup();
+  const session = await request("/api/v1/tokens/self/revoke", {
+    method: "POST",
+    headers: signedIn,
+  });
+  assert.equal(session.status, 403);
+  assert.equal((await bodyOf(session)).code, "bound_credential_required");
+  const device = await request("/api/v1/tokens/self/revoke", {
+    method: "POST",
+    headers: deviceSession("carveout"),
+  });
+  assert.equal(device.status, 403);
+  assert.equal((await bodyOf(device)).code, "device_session");
+});
+
 test("an expired token is refused, and an unknown one too", async () => {
   let clock = new Date("2026-11-12T00:00:00.000Z");
   const { request, mint, bearer } = setup({ now: () => clock });

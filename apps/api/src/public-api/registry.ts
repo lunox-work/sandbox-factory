@@ -13,6 +13,11 @@
  * A scope never widens a role: a listed route that only owners and admins
  * may use still checks the acting role (the token creator's, read at use).
  *
+ * A **self** route (`scope: null`) needs no scope: it acts only on the
+ * credential presenting it, named by nothing in the request, so any bound
+ * credential may call it and none can reach another through it. Logging
+ * out (`POST /tokens/self/revoke`) is the one.
+ *
  * Every entry declares its request body (`null` when it takes none) and its
  * response schema, both from `@sandbox-factory/shared`; `openapi.ts` turns
  * the list into `GET /api/v1/openapi.json`, and `public-api.test.ts` fails
@@ -116,7 +121,8 @@ export interface PublicRoute {
   readonly method: PublicMethod;
   /** The Hono pattern the route is registered under, `/api/v1/...`. */
   readonly path: string;
-  readonly scope: ApiScope;
+  /** Null for a self route: any bound credential, acting on itself only. */
+  readonly scope: ApiScope | null;
   readonly summary: string;
   /** The OpenAPI tag: the section of PLAN.md section 3 it belongs to. */
   readonly tag: "Workspace" | "Integrations" | "Bounties" | "Sandboxes";
@@ -160,6 +166,18 @@ function read(
 }
 
 export const PUBLIC_ROUTES: readonly PublicRoute[] = [
+  // The credential itself
+  {
+    method: "POST",
+    path: `${V1}/tokens/self/revoke`,
+    scope: null,
+    summary:
+      "Revoke the presenting API token or OAuth access token (log out); no scope needed",
+    tag: "Workspace",
+    request: null,
+    response: removed,
+  },
+
   // Workspace
   read(
     `${V1}/me`,

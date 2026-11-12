@@ -33,6 +33,7 @@ import type {
 } from "@sandbox-factory/db";
 
 import { mountApiTokenRoutes } from "./api-tokens/routes.js";
+import { mountSelfRevokeRoute } from "./api-tokens/self.js";
 import { credentialGuard } from "./credentials.js";
 import { mountMcpRoutes } from "./mcp/routes.js";
 import {
@@ -330,6 +331,9 @@ export function createApp({
       now,
     }),
   );
+
+  /** A bound credential ends itself: a client's logout. */
+  mountSelfRevokeRoute(app, { tokens: apiTokens, grants: oauthGrants });
 
   /**
    * Who am I? `id` is the account: permanent, and what anything durable must
