@@ -289,6 +289,15 @@ export const submissionGradeParamsSchema = z.strictObject({
   patchSha256: sha256Schema,
   names: z.literal("repository").optional(),
 });
+/** Stored import parameters: the draft it writes and the upload it reads. */
+export const sandboxImportParamsSchema = z.strictObject({
+  deadlineMinutes: z.number().int().min(1).max(120).default(60),
+  importer: z.literal("upload"),
+  sandboxVersionId: z.string().min(1),
+  uploadSha256: sha256Schema,
+  recordSha256: sha256Schema,
+  carveoutVersion: z.string().min(1).max(64),
+});
 export const analysisRunDtoSchema = z.discriminatedUnion("tool", [
   z.strictObject({
     ...runCommon,
@@ -344,6 +353,11 @@ export const analysisRunDtoSchema = z.discriminatedUnion("tool", [
     ...runCommon,
     tool: z.literal("submission_grade"),
     params: submissionGradeParamsSchema,
+  }),
+  z.strictObject({
+    ...runCommon,
+    tool: z.literal("sandbox_import"),
+    params: sandboxImportParamsSchema,
   }),
 ]);
 /**

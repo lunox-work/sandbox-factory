@@ -77,6 +77,12 @@ export interface ToolInputs {
     readonly files: readonly SubmittedFile[];
   } | null>;
   /**
+   * An upload's stored text (`uploadObjectKey` under the run's own
+   * workspace), for its import run; null when it cannot be read. Absent
+   * outside the queue.
+   */
+  readUpload?(versionId: string, uploadSha256: string): Promise<string | null>;
+  /**
    * Moves a submission to running under this run, then to its outcome:
    * counts and a verdict, or `errored`. False when it was not waiting.
    */

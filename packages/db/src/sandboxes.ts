@@ -127,6 +127,17 @@ export interface NewStarterSource extends NewVersionTransform {
   readonly origin: "starter";
   readonly starterRunId: string;
 }
+/**
+ * A version imported from a hand-off folder carveout cut on the
+ * maintainer's machine and uploaded. Its import run is queued first, naming
+ * the version's id, and stands where a starter run does: it writes the
+ * version and is its build. Kept in the starter's columns; the run's tool
+ * tells the two apart (`toSource`), so no column is added.
+ */
+export interface NewUploadSource extends NewVersionTransform {
+  readonly origin: "upload";
+  readonly importRunId: string;
+}
 export interface NewSandboxVersion {
   /** Given when a run queued before the version must already name it. */
   readonly id?: string;
@@ -135,7 +146,7 @@ export interface NewSandboxVersion {
   readonly complexity: string;
   readonly tags: readonly string[];
   readonly testSummary?: readonly { label: string; count: number }[];
-  readonly source: NewSlicedSource | NewStarterSource;
+  readonly source: NewSlicedSource | NewStarterSource | NewUploadSource;
   /**
    * A slice cut for the sandbox rather than asked for by hand: when its
    * newest version is a draft already cut from the same slice run, that
@@ -465,10 +476,18 @@ const toVersion = (row: SandboxVersionRow): StoredSandboxVersion => ({
 const toSource = (
   row: SandboxVersionSourceRow,
   sourceCommitSha: string | null,
+  /** The tool of the run in `starter_run_id`, which says generated or uploaded. */
+  starterTool: string | null = null,
 ): StoredVersionSource => ({
   sandboxVersionId: row.sandboxVersionId,
-  // The schema keeps a version sliced or generated, never both.
-  origin: row.sliceRunId === null ? "starter" : "slice",
+  // The schema keeps a version sliced or generated, never both; an upload
+  // is kept as generated, by its import run.
+  origin:
+    row.sliceRunId !== null
+      ? "slice"
+      : starterTool === "sandbox_import"
+        ? "upload"
+        : "starter",
   sourceSnapshotId: row.sourceSnapshotId,
   sourceCommitSha,
   sliceRunId: row.sliceRunId,
@@ -548,12 +567,17 @@ export function createSandboxStore(db: Database): SandboxStore {
   /** A `sandbox_source` row of the owner's: the scope of a write to one. */
   const ownedSource = (owner: string) =>
     sql`exists (select 1 from ${sandbox} where ${sandbox.id} = ${sandboxSource.sandboxId} and ${sandbox.organizationId} = ${owner})`;
+  /** The tool of the run a generated or uploaded version names. */
+  const starterToolOf = sql<
+    string | null
+  >`(select ${analysisRun.tool} from ${analysisRun} where ${analysisRun.id} = ${sandboxVersionSource.starterRunId})`;
   const versions = (tx: Database = db) =>
     tx
       .select({
         version: sandboxVersion,
         source: sandboxVersionSource,
         commitSha: repoSnapshot.commitSha,
+        starterTool: starterToolOf,
       })
       .from(sandboxVersion)
       .innerJoin(sandbox, eq(sandbox.id, sandboxVersion.sandboxId))
@@ -711,20 +735,30 @@ export function createSandboxStore(db: Database): SandboxStore {
         const id = input.id ?? generateId("sbv");
         const source = input.source;
         let commitSha: string | null = null;
-        if (source.origin === "starter") {
-          // Generated only while there is no repository to slice instead.
+        if (source.origin === "starter" || source.origin === "upload") {
+          // Generated or uploaded only while there is no repository to slice instead.
           if (parent.sourceRepoId !== null)
             return { ok: false, reason: "source_linked" } as const;
-          // The owner's starter run, queued for this very version.
+          // The owner's starter or import run, queued for this very version.
           const run = (
             await tx
               .select({ id: analysisRun.id })
               .from(analysisRun)
               .where(
                 and(
-                  eq(analysisRun.id, source.starterRunId),
+                  eq(
+                    analysisRun.id,
+                    source.origin === "upload"
+                      ? source.importRunId
+                      : source.starterRunId,
+                  ),
                   eq(analysisRun.organizationId, owner),
-                  eq(analysisRun.tool, "sandbox_starter"),
+                  eq(
+                    analysisRun.tool,
+                    source.origin === "upload"
+                      ? "sandbox_import"
+                      : "sandbox_starter",
+                  ),
                   sql`${analysisRun.params}->>'sandboxVersionId' = ${id}`,
                 ),
               )
@@ -782,7 +816,11 @@ export function createSandboxStore(db: Database): SandboxStore {
               return {
                 ok: true,
                 version: toVersion(newest.version),
-                source: toSource(newest.source, newest.commitSha),
+                source: toSource(
+                  newest.source,
+                  newest.commitSha,
+                  newest.starterTool,
+                ),
               } as const;
           }
           // The slice must have succeeded on a snapshot of this sandbox's own
@@ -840,11 +878,17 @@ export function createSandboxStore(db: Database): SandboxStore {
           .insert(sandboxVersionSource)
           .values({
             sandboxVersionId: versionRow.id,
-            ...(source.origin === "starter"
-              ? // The starter run is the version's build as well.
+            ...(source.origin === "starter" || source.origin === "upload"
+              ? // The starter or import run is the version's build as well.
                 {
-                  starterRunId: source.starterRunId,
-                  buildRunId: source.starterRunId,
+                  starterRunId:
+                    source.origin === "upload"
+                      ? source.importRunId
+                      : source.starterRunId,
+                  buildRunId:
+                    source.origin === "upload"
+                      ? source.importRunId
+                      : source.starterRunId,
                 }
               : {
                   sourceSnapshotId: source.sourceSnapshotId,
@@ -876,7 +920,11 @@ export function createSandboxStore(db: Database): SandboxStore {
         return {
           ok: true,
           version: toVersion(versionRow),
-          source: toSource(sourceRow, commitSha),
+          source: toSource(
+            sourceRow,
+            commitSha,
+            source.origin === "upload" ? "sandbox_import" : null,
+          ),
         } as const;
       });
     },
@@ -904,7 +952,7 @@ export function createSandboxStore(db: Database): SandboxStore {
         ? null
         : {
             version: toVersion(row.version),
-            source: toSource(row.source, row.commitSha),
+            source: toSource(row.source, row.commitSha, row.starterTool),
           };
     },
     async updateDraft(owner, versionId, patch, now = new Date()) {
@@ -990,7 +1038,7 @@ export function createSandboxStore(db: Database): SandboxStore {
         return {
           ok: true,
           version: toVersion(versionRow),
-          source: toSource(sourceRow, current.commitSha),
+          source: toSource(sourceRow, current.commitSha, current.starterTool),
         } as const;
       });
     },
@@ -1037,7 +1085,11 @@ export function createSandboxStore(db: Database): SandboxStore {
           return {
             ok: true,
             version: toVersion(current.version),
-            source: toSource(current.source, current.commitSha),
+            source: toSource(
+              current.source,
+              current.commitSha,
+              current.starterTool,
+            ),
           } as const;
         const rows = await tx
           .update(sandboxVersionSource)
@@ -1051,7 +1103,7 @@ export function createSandboxStore(db: Database): SandboxStore {
         return {
           ok: true,
           version: toVersion(current.version),
-          source: toSource(row, current.commitSha),
+          source: toSource(row, current.commitSha, current.starterTool),
         } as const;
       });
     },
@@ -1217,7 +1269,7 @@ export function createSandboxStore(db: Database): SandboxStore {
           sandbox: toSandbox(published, sourceRepo?.sourceRepoId ?? null),
           version: {
             version: toVersion(versionRow),
-            source: toSource(sourceRow, current.commitSha),
+            source: toSource(sourceRow, current.commitSha, current.starterTool),
           },
         } as const;
       });
@@ -1249,7 +1301,7 @@ export function createSandboxStore(db: Database): SandboxStore {
     async replayContext(owner, versionId) {
       const row = (
         await db
-          .select({ source: sandboxVersionSource })
+          .select({ source: sandboxVersionSource, starterTool: starterToolOf })
           .from(sandboxVersionSource)
           .innerJoin(
             sandboxVersion,
@@ -1302,7 +1354,11 @@ export function createSandboxStore(db: Database): SandboxStore {
                 )
             )[0];
       return {
-        source: toSource(row.source, snapshot?.commitSha ?? null),
+        source: toSource(
+          row.source,
+          snapshot?.commitSha ?? null,
+          row.starterTool,
+        ),
         snapshot:
           snapshot === undefined
             ? null

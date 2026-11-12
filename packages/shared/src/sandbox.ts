@@ -257,7 +257,7 @@ export const approvedTaskSnapshotSchema = z.discriminatedUnion(
  */
 export const sandboxVersionSourceDtoSchema = z.strictObject({
   sandboxVersionId: z.string(),
-  origin: z.enum(["slice", "starter"]),
+  origin: z.enum(["slice", "starter", "upload"]),
   sourceSnapshotId: z.string().nullable(),
   sourceCommitSha: z.string().nullable(),
   sliceRunId: z.string().nullable(),

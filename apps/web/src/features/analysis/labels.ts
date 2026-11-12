@@ -82,6 +82,8 @@ export function runLabel(run: AnalysisRunDto): string {
       return "Generated starter";
     case "submission_grade":
       return "Submission grading";
+    case "sandbox_import":
+      return "Uploaded folder";
     case "graphify":
       return "Graphify";
     case "abstractions":

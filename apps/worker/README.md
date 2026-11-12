@@ -211,6 +211,32 @@ repository the run is on its snapshot, and a pass is carried back
 cannot be, under the renaming the build was made with (`src/tools/engines.ts`:
 carveout's when its manifest has `engines.carveout`, else `ALIASES_V1`).
 
+A version's build manifest may record a `layout` (`GradingLayout`,
+`packages/core/src/sandbox/layout.ts`); none is the platform's own
+(`sandbox/`, `mocks/`, `tests/{public,private}`), so a version built before
+layouts grades byte for byte as before. On another layout `gradingTree`
+keeps its harness roots and configuration files, and the baseline runs in
+two jobs (`runLayoutBaseline` in `src/tools/sandbox-build.ts`): the public
+files with the layout's commands, then the public files with the hidden
+tests, each hidden test twice by `layoutTestArgv`, every run marked `fresh`
+(E2B runs it in a fresh copy, as it does the platform's hidden-test argv).
+
+### Import
+
+A `sandbox_import` run (`src/tools/sandbox-import.ts`, `sandbox_import@1`)
+makes an uploaded carveout hand-off folder the draft its params name. It
+reads the stored upload (`uploadObjectKey`, under the run's own workspace),
+checks its hash and the record's (`carveout.json`), and writes the folder
+verbatim under `project/`, the acceptance tests under `private/` at their
+folder paths, `project/sandbox-task.json` (editable paths: the record's
+included files that are not tests) and a `build-manifest.json` with the
+file classes, the folder's layout (`carveout/api` `folderLayout`, plus the
+descriptor), `engines.carveout` (the worker's release, which read the
+layout) and `upload: { recordSha256, carveoutVersion }`. Its baseline runs
+on that layout and every acceptance test must fail on it. It calls no
+model, reads no source, and records its build as a starter's
+(`recordStarterOutput`): the import run is the version's starter and build.
+
 ### Slice
 
 A slice run (`src/tools/slice.ts`) names the succeeded graphify run on the

@@ -45,6 +45,7 @@ import { createSliceAdapter } from "./tools/slice.js";
 import { npmPackageTypes } from "carveout/extract";
 import { createStarterAdapter } from "./tools/starter.js";
 import { createSubmissionGradeAdapter } from "./tools/submission-grade.js";
+import { createSandboxImportAdapter } from "./tools/sandbox-import.js";
 
 const env = parseWorkerEnv();
 // Named, so the launcher sees this worker while it is idle and has no run
@@ -193,6 +194,8 @@ function adapterFor(run: ClaimedAnalysisRun): ToolAdapter {
       });
     case "submission_grade":
       return createSubmissionGradeAdapter({ provider: evaluation });
+    case "sandbox_import":
+      return createSandboxImportAdapter({ provider: evaluation });
   }
 }
 const stopClaiming = new AbortController();
