@@ -29,8 +29,8 @@
  * - `schema/flows.ts` — views of how long people wait, read from the rows
  *   above; no tables.
  * - `schema/developer.ts` — the public API's workspace tokens, the
- *   audit log of what machine credentials changed, idempotency keys, and
- *   webhooks out.
+ *   audit log of what machine credentials changed, idempotency keys,
+ *   webhooks out, and the model-token ledger the monthly quota counts.
  * - `schema/oauth.ts` — the OAuth provider plugin's clients, grants and
  *   tokens, for MCP clients and other apps.
  *
@@ -163,6 +163,7 @@ export {
   apiToken,
   auditEntry,
   idempotencyKey,
+  modelUsage,
   webhookDelivery,
   webhookEndpoint,
 } from "./schema/developer.js";
@@ -170,6 +171,7 @@ export type {
   ApiTokenRow,
   AuditEntryRow,
   IdempotencyKeyRow,
+  ModelUsageRow,
   NewApiTokenRow,
   NewAuditEntryRow,
   WebhookDeliveryRow,

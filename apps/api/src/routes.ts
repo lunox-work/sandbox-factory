@@ -51,6 +51,7 @@ import {
 import { mountOAuthGrantRoutes } from "./oauth/grants.js";
 import { isBound } from "./principal.js";
 import { buildOpenApiDocument } from "./public-api/openapi.js";
+import { MONTHLY_MODEL_TOKENS_DEFAULT } from "./quota.js";
 import { mountUsageRoutes } from "./usage/routes.js";
 import {
   mountWebhookRoutes,
@@ -194,8 +195,13 @@ export interface AppOptions {
    * and MCP's sign-in challenges name. Without it neither is mounted.
    */
   publicUrl?: string | undefined;
-  /** Run counts for `/usage`; not mounted without it. */
+  /** Run counts and model tokens for `/usage`; not mounted without it. */
   usage?: UsageStore | undefined;
+  /**
+   * `MONTHLY_MODEL_TOKENS_PER_ORG`, which `/usage` reports the month's
+   * tokens against; `MONTHLY_MODEL_TOKENS_DEFAULT` when absent.
+   */
+  monthlyModelTokens?: number | undefined;
   /**
    * The audit log: what machine credentials changed, and credential and
    * webhook management. Without it nothing is recorded and `/audit` is not
@@ -245,6 +251,7 @@ export function createApp({
   oauthGrants,
   publicUrl,
   usage,
+  monthlyModelTokens = MONTHLY_MODEL_TOKENS_DEFAULT,
   audit,
   webhooks,
   idempotencyKeys,
@@ -672,7 +679,12 @@ export function createApp({
       });
     if (oauthGrants !== undefined)
       mountOAuthGrantRoutes(app, { grants: oauthGrants });
-    if (usage !== undefined) mountUsageRoutes(app, { usage, now });
+    if (usage !== undefined)
+      mountUsageRoutes(app, {
+        usage,
+        now,
+        monthlyTokenLimit: monthlyModelTokens,
+      });
     if (audit !== undefined) mountAuditRoutes(app, { audit });
     if (webhooks !== undefined) mountWebhookRoutes(app, { now, ...webhooks });
 

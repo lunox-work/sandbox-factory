@@ -400,8 +400,10 @@ export class BountyProfiler {
   }
 
   /**
-   * A run enqueued or found. `"full"` at the organization's cap; null when
-   * the snapshot, or the run another names, is not there to run against.
+   * A run enqueued or found. `"full"` at the organization's cap, or once
+   * its month's model tokens are spent (the scope asks a model), so the
+   * profile waits rather than fails; null when the snapshot, or the run
+   * another names, is not there to run against.
    */
   async #enqueue(
     owner: string,
@@ -424,7 +426,10 @@ export class BountyProfiler {
         maxActive: Math.max(1, (this.#options.maxActive ?? 3) - 1),
       },
     );
-    if (!result.ok) return result.reason === "run_limit" ? "full" : null;
+    if (!result.ok)
+      return result.reason === "run_limit" || result.reason === "quota_exceeded"
+        ? "full"
+        : null;
     return result.run;
   }
 

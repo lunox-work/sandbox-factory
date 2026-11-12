@@ -404,6 +404,15 @@ const sandboxBounties: Record<string, string> = {
   sbx_raced: "bty_raced",
 };
 
+/** The run store's refusal once the month's model tokens are spent. */
+const quotaRefusal = {
+  ok: false,
+  reason: "quota_exceeded",
+  used: 10_000_000,
+  limit: 10_000_000,
+  resetsAt: new Date("2099-12-01T00:00:00.000Z"),
+};
+
 function fixture(
   role = "owner",
   overrides: Partial<{
@@ -413,6 +422,7 @@ function fixture(
     contract: unknown;
     unparsable: boolean;
     limit: boolean;
+    quota: boolean;
     sliceStatus: string;
     recordFails: boolean;
     conflict: boolean;
@@ -428,7 +438,7 @@ function fixture(
     /** What a grading run `arn_grade` wrote, by path. */
     gradeRun: Record<string, string>;
     /** The credential the caller signed in with; a session unless said. */
-    via: "session" | "token";
+    via: "session" | "token" | "oauth" | "device";
     /** The build is still running, and has written its project only. */
     previewing: boolean;
     /** The version has no passing build to publish. */
@@ -751,6 +761,7 @@ function fixture(
                           : null,
       enqueue: async (_owner: string, snapshotId: string, input: unknown) => {
         enqueued.push({ snapshotId, ...(input as object) });
+        if (overrides.quota === true) return quotaRefusal;
         return overrides.limit === true
           ? { ok: false, reason: "run_limit" }
           : {
@@ -1587,6 +1598,30 @@ test("admins read the files a version's build wrote, as text where it is text", 
   assert.equal((await read("")).status, 400);
 });
 
+test("outside a web session no credential reads a version's private files", async () => {
+  for (const via of ["token", "oauth", "device"] as const) {
+    const f = fixture("owner", { built: true, via });
+    const list = (await (
+      await f.request("GET", "/versions/sbv_1/files")
+    ).json()) as { files: { path: string }[] };
+    assert.ok(list.files.length > 0, via);
+    assert.ok(
+      list.files.every(({ path }) => !path.startsWith("private/")),
+      via,
+    );
+    const hidden = await f.request(
+      "GET",
+      "/versions/sbv_1/files/content?path=private%2Fhidden.test.ts",
+    );
+    assert.equal(hidden.status, 404, via);
+    const source = await f.request(
+      "GET",
+      "/versions/sbv_1/files/content?path=project%2Fsrc%2Findex.ts",
+    );
+    assert.equal(source.status, 200, via);
+  }
+});
+
 test("a build still running shows the project it generated, as provisional", async () => {
   const f = fixture("owner", { built: true, previewing: true });
   const list = (await (
@@ -2057,6 +2092,7 @@ function starterFixture(
     /** Approved unless said: a draft proposal is not generated from. */
     proposalStatus: "proposed" | "approved";
     limit: boolean;
+    quota: boolean;
     created: "ok" | "source_linked" | "not-found" | "starter_in_progress";
     /** The newest version's starter run, still under way. */
     inFlight: boolean;
@@ -2127,6 +2163,7 @@ function starterFixture(
         input: { params: { sandboxVersionId: string } },
       ) => {
         enqueued.push({ snapshotId, input });
+        if (overrides.quota === true) return quotaRefusal;
         return overrides.limit === true
           ? { ok: false, reason: "run_limit" }
           : {
@@ -3925,4 +3962,23 @@ test("merge-back is refused for a token, a member, a submission that did not pas
     "/submissions/sbm_x/merge",
   );
   assert.equal(missing.status, 404);
+});
+
+test("a build and a generated version are refused with 429 once the month's model tokens are spent", async () => {
+  for (const [f, path] of [
+    [fixture("owner", { quota: true }), "/versions/sbv_1/build"],
+    [starterFixture("owner", { quota: true }), "/sbx_1/starter"],
+  ] as const) {
+    const response = await f.request("POST", path);
+    assert.equal(response.status, 429, path);
+    const body = (await response.json()) as {
+      error: string;
+      code: string;
+      resetsAt: string;
+    };
+    assert.equal(body.code, "quota_exceeded", path);
+    assert.equal(body.resetsAt, "2099-12-01T00:00:00.000Z", path);
+    assert.match(body.error, /monthly model-token limit/, path);
+    assert.ok(Number(response.headers.get("retry-after")) > 0, path);
+  }
 });

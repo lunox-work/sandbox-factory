@@ -1,11 +1,13 @@
 /**
- * A workspace's usage, counted from the rows its runs already write: no
- * table of its own, so nothing can drift from what happened.
+ * A workspace's usage. Its runs are counted from the rows they already
+ * write, so nothing can drift from what happened; its model tokens are
+ * summed from the ledger every model reply writes (`model-usage.ts`).
  */
 
 import { and, eq, gte, sql } from "drizzle-orm";
 
 import type { Database } from "./errors.js";
+import { modelTokensSince, type ModelTokens } from "./model-usage.js";
 import { analysisRun, bountyRun } from "./schema.js";
 
 export interface RunCount {
@@ -20,10 +22,13 @@ export interface RunCount {
 export interface UsageStore {
   /** Runs the organization started since `since`, by family, kind and state. */
   runCounts(organizationId: string, since: Date): Promise<RunCount[]>;
+  /** The model tokens the organization's runs recorded since `since`. */
+  modelTokens(organizationId: string, since: Date): Promise<ModelTokens>;
 }
 
 export function createUsageStore(db: Database): UsageStore {
   return {
+    modelTokens: (owner, since) => modelTokensSince(db, owner, since),
     async runCounts(owner, since) {
       const count = sql<number>`count(*)::int`;
       const [sizing, analysis] = await Promise.all([

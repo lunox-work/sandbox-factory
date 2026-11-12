@@ -9,6 +9,7 @@ export type {
   JsonSchema,
   ParseResult,
   SizerErrorCode,
+  SizingReply,
   SizingRequestOptions,
   SizingUsage,
   StructuredCall,

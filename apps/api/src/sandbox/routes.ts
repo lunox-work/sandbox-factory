@@ -57,6 +57,7 @@ import {
   updateSandboxVersionSchema,
 } from "@sandbox-factory/shared";
 import type { Context, Hono } from "hono";
+import { inWebSession } from "../analysis/routes.js";
 import {
   replayOf,
   resolveScope,
@@ -68,6 +69,7 @@ import { isAtLeastAdmin } from "../access.js";
 import { connectedRepositories } from "../bounties/held-context.js";
 import type { AuthVariables } from "../http-context.js";
 import { textOf } from "../object-text.js";
+import { setRetryAfter } from "../quota.js";
 import { hiddenSha256 } from "duediligence/api";
 import { createHash } from "node:crypto";
 import { submittedFilesText } from "sandbox-factory";
@@ -118,8 +120,10 @@ const versionResponse = (
   });
 
 /** A refusal the version service settled on, answered with its status. */
-const failed = (c: Context, refusal: Failure): Response =>
-  c.json(refusal.body, FAILURE_STATUS[refusal.reason]);
+const failed = (c: Context, refusal: Failure): Response => {
+  if (refusal.reason === "quota") setRetryAfter(c, refusal.body);
+  return c.json(refusal.body, FAILURE_STATUS[refusal.reason]);
+};
 
 /**
  * The repository a bounty's sandbox is cut from: the one its live
@@ -838,7 +842,7 @@ export function mountSandboxRoutes(
     return c.json(
       sandboxFileListSchema.parse({
         run: run === null ? null : { id: run.id, status: run.status },
-        files: files.map(({ path, sizeBytes, sha256 }) => ({
+        files: files.filter(readable(c)).map(({ path, sizeBytes, sha256 }) => ({
           path,
           sizeBytes,
           sha256,
@@ -847,6 +851,17 @@ export function mountSandboxRoutes(
       }),
     );
   });
+  /**
+   * Which of a build's files this request may read: all of them in a
+   * person's web session, and outside one (an API token, an OAuth client, a
+   * CLI's device session: how an agent reaches the platform) none under
+   * `private/`, where the hidden tests and the name table are. The handout
+   * gives an agent their count and commitment hash instead.
+   */
+  const readable =
+    (c: Context) =>
+    (file: { readonly path: string }): boolean =>
+      inWebSession(c) || !file.path.startsWith("private/");
   /**
    * What a build run wrote: its artifacts once it has committed them, and
    * until then, what it has generated before its baseline, as provisional.
@@ -881,9 +896,9 @@ export function mountSandboxRoutes(
     );
     const runId = stored?.source.buildRunId ?? null;
     if (runId === null) return c.json({ error: "Not found." }, 404);
-    const file = (await filesOf(owner, runId)).files.find(
-      (item) => item.path === path,
-    );
+    const file = (await filesOf(owner, runId)).files
+      .filter(readable(c))
+      .find((item) => item.path === path);
     if (file === undefined) return c.json({ error: "Not found." }, 404);
     c.header("Cache-Control", "no-store");
     const answer = (

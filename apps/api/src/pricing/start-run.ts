@@ -1,5 +1,6 @@
 import {
   followsJira,
+  type QuotaExceeded,
   type RateCardStore,
   type StoredBountyRun,
   type StoredRateCard,
@@ -22,6 +23,7 @@ import { externalBoardId } from "./selection.js";
 export type StartRunResult =
   | { readonly ok: true; readonly run: StoredBountyRun }
   | { readonly ok: false; readonly reason: "active"; readonly runId: string }
+  | QuotaExceeded
   | {
       readonly ok: false;
       readonly reason: "live-proposal";
@@ -213,6 +215,7 @@ export async function startRun(
     promptVersion: options.promptVersion,
   });
   if (!created.ok) {
+    if (created.reason === "quota_exceeded") return created;
     return created.reason === "active"
       ? { ok: false, reason: "active", runId: created.runId }
       : {
@@ -231,6 +234,7 @@ export async function startRun(
 export type StartBountyRunResult =
   | { readonly ok: true; readonly run: StoredBountyRun }
   | { readonly ok: false; readonly reason: "active"; readonly runId: string }
+  | QuotaExceeded
   | {
       readonly ok: false;
       readonly reason: "live-proposal";
@@ -322,6 +326,7 @@ export async function startBountyRun(
     promptVersion: options.promptVersion,
   });
   if (!created.ok) {
+    if (created.reason === "quota_exceeded") return created;
     return created.reason === "active"
       ? { ok: false, reason: "active", runId: created.runId }
       : {

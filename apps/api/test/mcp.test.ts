@@ -25,6 +25,7 @@ import {
   type ApiCallInit,
 } from "../src/mcp/tools.js";
 import { hashOAuthToken } from "../src/oauth/provider.js";
+import { quotaExceededBody } from "../src/quota.js";
 import { PUBLIC_ROUTES } from "../src/public-api/registry.js";
 import { createApp } from "../src/routes.js";
 import {
@@ -66,7 +67,15 @@ function setup(runCounts: RunCount[] = []) {
         usageCalls.push({ organizationId });
         return Promise.resolve(runCounts);
       },
+      modelTokens: () =>
+        Promise.resolve({
+          inputTokens: 1_000,
+          outputTokens: 500,
+          cacheReadTokens: 8_000,
+          cacheWriteTokens: 500,
+        }),
     },
+    monthlyModelTokens: 50_000,
     publicUrl: BASE,
   });
 
@@ -315,9 +324,14 @@ test("a tool answers the route's data, in the credential's workspace", async () 
   const parsed = JSON.parse(textOf(usage)) as {
     window: { days: number };
     runs: Array<{ count: number }>;
+    modelTokens: { used: number; limit: number; remaining: number };
   };
   assert.equal(parsed.window.days, 7);
   assert.equal(parsed.runs[0]?.count, 2);
+  // This month's model tokens, against the workspace's monthly limit.
+  assert.equal(parsed.modelTokens.used, 10_000);
+  assert.equal(parsed.modelTokens.limit, 50_000);
+  assert.equal(parsed.modelTokens.remaining, 40_000);
   assert.deepEqual(usageCalls, [{ organizationId: ORG }]);
   await client.close();
 });
@@ -433,6 +447,32 @@ test("a refusal without a code is named by its status", () => {
     code: "http_500",
     status: 500,
   });
+});
+
+test("a run refused at the monthly token limit is a tool error saying so and when it resets", async () => {
+  const refusal = quotaExceededBody({
+    used: 10_000_250,
+    limit: 10_000_000,
+    resetsAt: new Date("2026-12-01T00:00:00.000Z"),
+  });
+  const { client } = await overFakeApi(() => ({ status: 429, body: refusal }));
+  for (const [name, args] of [
+    ["size_bounty", { bountyId: "bty_1" }],
+    ["prepare", { versionId: "sbv_1" }],
+  ] as const) {
+    const result = await client.callTool({ name, arguments: args });
+    assert.equal(result.isError, true, name);
+    const error = JSON.parse(textOf(result)) as {
+      error: string;
+      code: string;
+      status: number;
+    };
+    assert.equal(error.code, "quota_exceeded", name);
+    assert.equal(error.status, 429, name);
+    assert.match(error.error, /monthly model-token limit/, name);
+    assert.match(error.error, /2026-12-01T00:00:00\.000Z/, name);
+  }
+  await client.close();
 });
 
 /** The tools over a fake API that records each call and answers `reply`. */

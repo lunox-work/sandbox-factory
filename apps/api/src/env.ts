@@ -9,6 +9,7 @@ import type { KeyObject } from "node:crypto";
 import { z } from "zod";
 
 import { parseClientFloors } from "./client-version.js";
+import { MONTHLY_MODEL_TOKENS_DEFAULT } from "./quota.js";
 
 /**
  * An optional secret that has no value. Terraform seeds every secret with
@@ -39,6 +40,16 @@ const envSchema = z.object({
   MAX_ACTIVE_RUNS_PER_ORG: z.preprocess(
     unsetSecret,
     z.coerce.number().int().min(1).max(50).default(3),
+  ),
+  /**
+   * The model tokens a workspace's runs may spend in a calendar month (UTC)
+   * before a new model run is refused (`quota_exceeded`): input, output and
+   * cache tokens alike, on the platform's own keys. See `model-usage.ts` in
+   * packages/db.
+   */
+  MONTHLY_MODEL_TOKENS_PER_ORG: z.preprocess(
+    unsetSecret,
+    z.coerce.number().int().min(1).default(MONTHLY_MODEL_TOKENS_DEFAULT),
   ),
   CORS_ORIGINS: z
     .string()

@@ -39,6 +39,7 @@ import {
   createTokenCipher,
   createFlowWaitStore,
   createUsageStore,
+  createModelUsageStore,
   createWorkspaceSetupStore,
   createWebhookStore,
   createIdempotencyStore,
@@ -127,7 +128,14 @@ const jiraConnections = createJiraConnectionStore(connection.db, tokenCipher);
 const jiraBoards = createJiraBoardStore(connection.db);
 /** Read by sizing for a board's repository outline, and by the GitHub routes. */
 const repoSnapshots = createRepoSnapshotStore(connection.db);
-const bountyRuns = createBountyRunStore(connection.db);
+/**
+ * The monthly model-token quota the run stores admit new model runs by. A
+ * run already admitted is never cut off for tokens: admission is the guard,
+ * and the ledger every model reply writes (`modelUsage`) is the truth.
+ */
+const tokenQuota = { monthlyLimit: env.MONTHLY_MODEL_TOKENS_PER_ORG };
+const modelUsage = createModelUsageStore(connection.db);
+const bountyRuns = createBountyRunStore(connection.db, { tokenQuota });
 const bountyProposals = createBountyProposalStore(connection.db);
 const bountySpecs = createBountySpecStore(connection.db);
 const bountyProfiles = createBountyProfileStore(connection.db);
@@ -299,6 +307,7 @@ const bountyExecutor =
         bounties,
         specs: bountySpecs,
         caller,
+        modelUsage,
         clientFor: runClientFor,
         contextFor,
         // Declared below, with the GitHub App it reads through; called only
@@ -495,7 +504,7 @@ const githubReconciler =
 const avatars =
   objects === undefined ? undefined : createAvatarService({ store: objects });
 
-const analysisRuns = createAnalysisRunStore(connection.db);
+const analysisRuns = createAnalysisRunStore(connection.db, { tokenQuota });
 /** What the price reads a repository's brief through. */
 const briefArtifacts = createArtifactStore(connection.db);
 const workerLauncher = new WorkerLauncher({
@@ -863,6 +872,7 @@ const app = createApp({
   oauthGrants: createOAuthGrantStore(connection.db),
   publicUrl: env.BETTER_AUTH_URL,
   usage: createUsageStore(connection.db),
+  monthlyModelTokens: env.MONTHLY_MODEL_TOKENS_PER_ORG,
   audit,
   idempotencyKeys,
   webhooks: {

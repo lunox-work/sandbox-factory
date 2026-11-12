@@ -56,6 +56,7 @@ import { isAtLeastAdmin } from "../access.js";
 import type { Principal } from "../principal.js";
 import { recentReads } from "../jira/recent.js";
 import { boundedLimit, rowCursor } from "../paging.js";
+import { quotaExceededResponse } from "../quota.js";
 import { REVISE_SPEC_PROMPT_VERSION } from "../sizing/tools/revise-spec.js";
 import { describesProposal } from "./delivery.js";
 import { freshProposal } from "./review.js";
@@ -257,6 +258,8 @@ export function mountPricingRoutes<Env extends PricingAppEnv>(
     });
     if (started.ok) return c.json({ run: started.run }, 202);
     switch (started.reason) {
+      case "quota_exceeded":
+        return quotaExceededResponse(c, started);
       case "sizing-unavailable":
         return c.json(
           {
@@ -450,6 +453,8 @@ export function mountPricingRoutes<Env extends PricingAppEnv>(
     }
     if (started.ok) return c.json({ run: started.run }, 202);
     switch (started.reason) {
+      case "quota_exceeded":
+        return quotaExceededResponse(c, started);
       case "live-proposal":
         return c.json({ proposalId: started.proposalId });
       case "has-subtasks":
@@ -536,6 +541,8 @@ export function mountPricingRoutes<Env extends PricingAppEnv>(
     });
     if (started.ok) return c.json({ run: started.run }, 202);
     switch (started.reason) {
+      case "quota_exceeded":
+        return quotaExceededResponse(c, started);
       case "live-proposal":
         return c.json({ proposalId: started.proposalId });
       case "sizing-unavailable":
@@ -1313,6 +1320,8 @@ export function mountPricingRoutes<Env extends PricingAppEnv>(
       promptVersion: options.promptVersion,
     });
     if (!created.ok) {
+      if (created.reason === "quota_exceeded")
+        return quotaExceededResponse(c, created);
       // The run in the way, so the page can follow it rather than say no.
       return created.reason === "active"
         ? c.json(
@@ -1458,6 +1467,8 @@ export function mountPricingRoutes<Env extends PricingAppEnv>(
       promptVersion: REVISE_SPEC_PROMPT_VERSION,
     });
     if (!created.ok) {
+      if (created.reason === "quota_exceeded")
+        return quotaExceededResponse(c, created);
       return c.json(
         created.reason === "active"
           ? {

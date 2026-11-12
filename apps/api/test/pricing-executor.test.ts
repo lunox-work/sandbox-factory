@@ -7,6 +7,7 @@ import type {
   BountySpecStore,
   JiraBoardStore,
   JiraIssueStore,
+  NewModelUsage,
   StoredBountyRun,
   StoredBounty,
   BountyStore,
@@ -36,6 +37,7 @@ import {
   SizerError,
   type SizingRequestOptions,
   type StructuredCall,
+  type StructuredCaller,
   type StructuredResult,
 } from "../src/sizing/caller.js";
 import type { DraftedSpec } from "../src/sizing/tools/draft-spec.js";
@@ -286,6 +288,8 @@ function harness(options: {
   progressError?: Error;
   /** Recording the model calls fails with this, as a database fault would. */
   modelCallsError?: Error;
+  /** The token ledger; absent, the executor records none. */
+  modelUsage?: BountyExecutorOptions["modelUsage"];
 }) {
   const current = run(options.runOverrides);
   const plans: unknown[] = [];
@@ -613,6 +617,9 @@ function harness(options: {
     ...(options.profilingEnabled === undefined
       ? {}
       : { profilingEnabled: () => options.profilingEnabled === true }),
+    ...(options.modelUsage === undefined
+      ? {}
+      : { modelUsage: options.modelUsage }),
     now: () => new Date("2026-09-22T00:00:00.000Z"),
     leaseToken: () => "lease_1",
     onWritebackCreated: (_organizationId, operationId) => {
@@ -2314,6 +2321,113 @@ test("a bounty written here is sized with no Jira at all", async () => {
     outputTokens: 45,
   });
   assert.deepEqual(state.refreshed, []);
+});
+
+test("every reply a run's calls got is recorded to the token ledger against its workspace and run", async () => {
+  const ledger: Array<{ organizationId: string; entry: NewModelUsage }> = [];
+  const state = harness({
+    bounties: [handWritten()],
+    runOverrides: oneBountyRun("bty_7"),
+    clientResult: { ok: false, reason: "reconnect" },
+    modelUsage: {
+      record: (organizationId, entry) => {
+        ledger.push({ organizationId, entry });
+        return Promise.resolve();
+      },
+    },
+  });
+  await state.executor.execute("org_1", "brn_1");
+  assert.equal(state.finishes[0]?.status, "succeeded");
+  assert.deepEqual(ledger, [
+    {
+      organizationId: "org_1",
+      entry: {
+        runFamily: "sizing",
+        runId: "brn_1",
+        kind: "draft_spec",
+        model: "drafting-model",
+        inputTokens: 100,
+        outputTokens: 40,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+      },
+    },
+    {
+      organizationId: "org_1",
+      entry: {
+        runFamily: "sizing",
+        runId: "brn_1",
+        kind: "size_bounty",
+        model: "actual-model",
+        inputTokens: 10,
+        outputTokens: 5,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+      },
+    },
+  ]);
+});
+
+test("a ledger write that fails is logged, and the run it was for still finishes", async () => {
+  const errors: string[] = [];
+  const state = harness({
+    bounties: [handWritten()],
+    runOverrides: oneBountyRun("bty_7"),
+    clientResult: { ok: false, reason: "reconnect" },
+    modelUsage: { record: () => Promise.reject(new Error("database down")) },
+    onBackgroundError: (code) => void errors.push(code),
+  });
+  await state.executor.execute("org_1", "brn_1");
+  assert.equal(state.finishes[0]?.status, "succeeded");
+  assert.deepEqual(errors, [
+    "model_usage_record_failed",
+    "model_usage_record_failed",
+  ]);
+});
+
+test("a call that throws still records the replies that reached the model", async () => {
+  const ledger: NewModelUsage[] = [];
+  // A provider that answered once, then failed: what a call that validated
+  // badly, or fell back and failed again, leaves behind.
+  const caller: StructuredCaller = {
+    model: "fake",
+    call: (_tool, _input, options) => {
+      options?.onReply?.({
+        model: "first-try",
+        usage: {
+          inputTokens: 7,
+          outputTokens: 3,
+          cacheReadTokens: 2,
+          cacheWriteTokens: 1,
+        },
+      });
+      return Promise.reject(new SizerError("sizing_invalid_output", false));
+    },
+  };
+  const state = harness({
+    bounties: [handWritten()],
+    runOverrides: oneBountyRun("bty_7"),
+    clientResult: { ok: false, reason: "reconnect" },
+    caller: caller as unknown as FakeCaller,
+    modelUsage: {
+      record: (_organizationId, entry) => {
+        ledger.push(entry);
+        return Promise.resolve();
+      },
+    },
+  });
+  await state.executor.execute("org_1", "brn_1");
+  assert.ok(ledger.length >= 1);
+  assert.deepEqual(ledger[0], {
+    runFamily: "sizing",
+    runId: "brn_1",
+    kind: "draft_spec",
+    model: "first-try",
+    inputTokens: 7,
+    outputTokens: 3,
+    cacheReadTokens: 2,
+    cacheWriteTokens: 1,
+  });
 });
 
 test("a bounty written here is drafted beside the workspace's repositories", async () => {

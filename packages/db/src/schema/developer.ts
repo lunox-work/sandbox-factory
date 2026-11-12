@@ -1,8 +1,9 @@
 /**
  * The public API's credentials (workspace API tokens), what they leave
  * behind (the audit log of what machine credentials changed, the
- * idempotency keys a create was retried under), and the webhooks a
- * workspace is told of changes by.
+ * idempotency keys a create was retried under), the webhooks a
+ * workspace is told of changes by, and the ledger of the model tokens its
+ * runs spent.
  *
  * A token belongs to one organization and acts as the person who made it,
  * for as long as they stay its owner or admin (checked on every use, in the
@@ -236,3 +237,44 @@ export const idempotencyKey = pgTable(
 );
 
 export type IdempotencyKeyRow = typeof idempotencyKey.$inferSelect;
+
+/**
+ * The model-token ledger: one row per model reply the platform paid for,
+ * against the workspace and the run that asked. A worker agent's turn
+ * (`analysis`, the run an `analysis_run` id names) or a sizing attempt in
+ * the API (`sizing`, a `bounty_run` id). What the monthly quota counts and
+ * `GET .../usage` reports; see `model-usage.ts`.
+ *
+ * `run_id` has no foreign key: it names a row in either run table, and a
+ * run that goes must not take its spend with it. The organization's does
+ * cascade, as nothing is billed to a workspace that is gone.
+ */
+export const modelUsage = pgTable(
+  "model_usage",
+  {
+    id: text("id").primaryKey(),
+    organizationId: text("organization_id")
+      .notNull()
+      .references(() => organization.id, { onDelete: "cascade" }),
+    runFamily: text("run_family").notNull(),
+    runId: text("run_id").notNull(),
+    /** An analysis run's tool, or the structured call's tool name. */
+    kind: text("kind").notNull(),
+    /** The model that answered, as the provider reported it. */
+    model: text("model").notNull(),
+    inputTokens: integer("input_tokens").notNull(),
+    outputTokens: integer("output_tokens").notNull(),
+    cacheReadTokens: integer("cache_read_tokens").notNull(),
+    cacheWriteTokens: integer("cache_write_tokens").notNull(),
+    at: at("at").notNull().defaultNow(),
+  },
+  (table) => [
+    index("model_usage_organization_at_idx").on(table.organizationId, table.at),
+    check(
+      "model_usage_run_family_check",
+      sql`${table.runFamily} in ('analysis', 'sizing')`,
+    ),
+  ],
+);
+
+export type ModelUsageRow = typeof modelUsage.$inferSelect;

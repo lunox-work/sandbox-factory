@@ -3,6 +3,8 @@ import { test } from "node:test";
 
 import {
   DEFAULT_WORKSPACE_SETTINGS,
+  NO_MODEL_TOKENS,
+  type ModelTokens,
   type RunCount,
   type WorkspaceSettingsStore,
 } from "@sandbox-factory/db";
@@ -49,6 +51,9 @@ function setup(
     roles?: Record<string, string>;
     now?: () => Date;
     runCounts?: RunCount[];
+    /** Ledger rows, as the usage store sums them since a date. */
+    ledger?: Array<{ organizationId: string; at: Date; tokens: ModelTokens }>;
+    monthlyModelTokens?: number;
   } = {},
 ) {
   const roles = options.roles ?? {
@@ -58,6 +63,7 @@ function setup(
   const tokens = memoryTokens();
   const signOuts: Headers[] = [];
   const usageCalls: Array<{ organizationId: string; since: Date }> = [];
+  const tokenCalls: Array<{ organizationId: string; since: Date }> = [];
   const server = createApp({
     corsOrigins: ["http://localhost:5173"],
     auth: fakeAuth(signOuts),
@@ -69,7 +75,27 @@ function setup(
         usageCalls.push({ organizationId, since });
         return Promise.resolve(options.runCounts ?? []);
       },
+      modelTokens: (organizationId, since) => {
+        tokenCalls.push({ organizationId, since });
+        return Promise.resolve(
+          (options.ledger ?? [])
+            .filter(
+              (row) => row.organizationId === organizationId && row.at >= since,
+            )
+            .reduce(
+              (sum, { tokens }) => ({
+                inputTokens: sum.inputTokens + tokens.inputTokens,
+                outputTokens: sum.outputTokens + tokens.outputTokens,
+                cacheReadTokens: sum.cacheReadTokens + tokens.cacheReadTokens,
+                cacheWriteTokens:
+                  sum.cacheWriteTokens + tokens.cacheWriteTokens,
+              }),
+              NO_MODEL_TOKENS,
+            ),
+        );
+      },
     },
+    monthlyModelTokens: options.monthlyModelTokens,
     now: options.now,
   });
   const request = (path: string, init: RequestInit = {}) =>
@@ -88,7 +114,16 @@ function setup(
     return createdApiTokenResponseSchema.parse(await res.json()).secret;
   }
   const bearer = (secret: string) => ({ authorization: `Bearer ${secret}` });
-  return { request, mint, bearer, tokens, roles, signOuts, usageCalls };
+  return {
+    request,
+    mint,
+    bearer,
+    tokens,
+    roles,
+    signOuts,
+    usageCalls,
+    tokenCalls,
+  };
 }
 
 async function bodyOf(
@@ -574,6 +609,101 @@ test("usage counts the window asked for, thirty days by default", async () => {
     headers: signedIn,
   });
   assert.equal(tooLong.status, 400);
+});
+
+test("usage reports this calendar month's model tokens against the limit", async () => {
+  const tokens = (inputTokens: number): ModelTokens => ({
+    inputTokens,
+    outputTokens: 10,
+    cacheReadTokens: 100,
+    cacheWriteTokens: 1,
+  });
+  const ledger = [
+    // The last instant of October: last month's, so not counted.
+    {
+      organizationId: ORG,
+      at: new Date("2026-10-31T23:59:59.999Z"),
+      tokens: tokens(5_000),
+    },
+    {
+      organizationId: ORG,
+      at: new Date("2026-11-01T00:00:00.000Z"),
+      tokens: tokens(200),
+    },
+    {
+      organizationId: ORG,
+      at: new Date("2026-11-10T09:00:00.000Z"),
+      tokens: tokens(300),
+    },
+    // Another workspace's.
+    {
+      organizationId: OTHER_ORG,
+      at: new Date("2026-11-10T09:00:00.000Z"),
+      tokens: tokens(9_000),
+    },
+  ];
+  let clock = new Date("2026-11-12T08:30:00.000Z");
+  const { request, tokenCalls } = setup({
+    now: () => clock,
+    ledger,
+    monthlyModelTokens: 1_000,
+  });
+  const read = async () => {
+    const res = await request(`/api/v1/orgs/${ORG}/usage?days=7`, {
+      headers: signedIn,
+    });
+    assert.equal(res.status, 200);
+    return usageResponseSchema.parse(await res.json()).modelTokens;
+  };
+  // Whatever window the runs are counted over, tokens are this month's.
+  assert.deepEqual(await read(), {
+    from: "2026-11-01T00:00:00.000Z",
+    resetsAt: "2026-12-01T00:00:00.000Z",
+    used: 500 + 20 + 200 + 2,
+    limit: 1_000,
+    remaining: 1_000 - 722,
+    inputTokens: 500,
+    outputTokens: 20,
+    cacheReadTokens: 200,
+    cacheWriteTokens: 2,
+  });
+  assert.deepEqual(tokenCalls[0], {
+    organizationId: ORG,
+    since: new Date("2026-11-01T00:00:00.000Z"),
+  });
+  // Past the limit, nothing is left; it is not negative.
+  ledger.push({
+    organizationId: ORG,
+    at: new Date("2026-11-11T00:00:00.000Z"),
+    tokens: tokens(5_000),
+  });
+  const spent = await read();
+  assert.equal(spent.used, 722 + 5_111);
+  assert.equal(spent.remaining, 0);
+  // The month rolls over at midnight UTC on the first: the count starts
+  // again, and the next reset is a month on.
+  clock = new Date("2026-12-01T00:00:00.000Z");
+  assert.deepEqual(await read(), {
+    from: "2026-12-01T00:00:00.000Z",
+    resetsAt: "2027-01-01T00:00:00.000Z",
+    used: 0,
+    limit: 1_000,
+    remaining: 1_000,
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+  });
+});
+
+test("usage reports the default monthly limit when none is configured", async () => {
+  const { request } = setup({ now: () => new Date("2026-11-12T00:00:00Z") });
+  const res = await request(`/api/v1/orgs/${ORG}/usage`, {
+    headers: signedIn,
+  });
+  const usage = usageResponseSchema.parse(await res.json());
+  assert.equal(usage.modelTokens.limit, 10_000_000);
+  assert.equal(usage.modelTokens.remaining, 10_000_000);
 });
 
 test("a failed use record and a failed sign-out are logged, not fatal", async () => {

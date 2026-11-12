@@ -230,6 +230,20 @@ export type {
 } from "./oauth-grants.js";
 export { createUsageStore } from "./usage.js";
 export type { RunCount, UsageStore } from "./usage.js";
+export {
+  createModelUsageStore,
+  MODEL_TOOLS,
+  NO_MODEL_TOKENS,
+  quotaMonth,
+  totalTokens,
+} from "./model-usage.js";
+export type {
+  ModelTokens,
+  ModelUsageStore,
+  NewModelUsage,
+  QuotaExceeded,
+  TokenQuota,
+} from "./model-usage.js";
 export type {
   Membership,
   OrganizationMember,

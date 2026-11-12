@@ -84,6 +84,7 @@ export abstract class RetryingCaller implements StructuredCaller {
           userMessage(tool, input, problem),
           attemptSignal.signal,
         );
+        options.onReply?.({ model: reply.actualModel, usage: reply.usage });
         inputTokens += reply.usage.inputTokens;
         outputTokens += reply.usage.outputTokens;
 

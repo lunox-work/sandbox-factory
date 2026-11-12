@@ -70,6 +70,8 @@ export function inputText(input: unknown, key: string): string | null {
 export interface AgentTurn {
   readonly content: readonly ContentBlock[];
   readonly stopReason: string | null;
+  /** The model that answered, when the provider says: a fallback may. */
+  readonly model?: string;
   readonly usage: {
     readonly inputTokens: number;
     readonly outputTokens: number;

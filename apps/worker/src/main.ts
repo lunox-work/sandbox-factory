@@ -8,6 +8,7 @@ import {
   createBountyProposalStore,
   createBountySpecStore,
   createConnection,
+  createModelUsageStore,
   createObjectStore,
   createSandboxStore,
   createSubmissionStore,
@@ -25,6 +26,7 @@ import { executeRun } from "./run.js";
 import { createSourceCache } from "./source-cache.js";
 import { createAnthropicModel } from "./agent/anthropic.js";
 import type { AgentSettings } from "./agent/loop.js";
+import { meteredAgent } from "./agent/metered.js";
 import { createE2BProvider, e2bClient } from "./evaluation/e2b.js";
 import { createLocalProcessProvider } from "./evaluation/local-process.js";
 import { EVALUATION_JOBS_MAX, limitJobs } from "./evaluation/limit.js";
@@ -73,6 +75,13 @@ const agent: AgentSettings = {
       : null,
   limits: { maxTurns: env.AGENT_MAX_TURNS, maxTokens: env.AGENT_TOKEN_BUDGET },
 };
+// Every turn a run's agents take is written to the token ledger against
+// the run's workspace and the run: what the monthly quota counts.
+const modelUsage = createModelUsageStore(connection.db);
+const agentFor = (run: ClaimedAnalysisRun): AgentSettings =>
+  meteredAgent(agent, run, modelUsage, (code, error) =>
+    console.error(code, run.id, error instanceof Error ? error.message : ""),
+  );
 // `e2b` runs each job in a fresh E2B sandbox, the hosted provider.
 // `local-process` is the development provider: a fresh directory and
 // scrubbed processes, not an isolation boundary, so only a worker that opts
@@ -169,13 +178,22 @@ function adapterFor(run: ClaimedAnalysisRun): ToolAdapter {
       // `walkEngine`).
       return createSliceAdapter({ packageTypes, walker: "carveout" });
     case "sandbox_build":
-      return createSandboxBuildAdapter({ agent, provider: evaluation });
+      return createSandboxBuildAdapter({
+        agent: agentFor(run),
+        provider: evaluation,
+      });
     case "scope":
-      return createScopeAdapter(agent, { packageTypes, walker: "carveout" });
+      return createScopeAdapter(agentFor(run), {
+        packageTypes,
+        walker: "carveout",
+      });
     case "fixtures":
-      return createFixturesAdapter(agent);
+      return createFixturesAdapter(agentFor(run));
     case "sandbox_starter":
-      return createStarterAdapter({ agent, provider: evaluation });
+      return createStarterAdapter({
+        agent: agentFor(run),
+        provider: evaluation,
+      });
     case "submission_grade":
       return createSubmissionGradeAdapter({ provider: evaluation });
   }

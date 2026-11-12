@@ -663,6 +663,30 @@ test("at the organization's analysis cap a profile waits, and the rest of the sw
   );
 });
 
+test("a workspace whose month's model tokens are spent holds its profiles at the scope, not failed", async () => {
+  const h = harness();
+  h.runs.refuse.set("scope", {
+    ok: false,
+    reason: "quota_exceeded",
+    used: 10,
+    limit: 10,
+    resetsAt: new Date("2026-12-01T00:00:00.000Z"),
+  });
+  await h.profiles.request(OWNER, request);
+  await h.profiler.sweep();
+  assert.deepEqual(
+    [...h.profiles.rows.values()].map((row) => row.status),
+    ["queued"],
+  );
+  // Once the month resets, the scope is queued as it would have been.
+  h.runs.refuse.clear();
+  await h.profiler.sweep();
+  assert.deepEqual(
+    [...h.profiles.rows.values()].map((row) => row.status),
+    ["scoping"],
+  );
+});
+
 test("a full build slot holds back only builds: another profile's scope still goes", async () => {
   const h = harness();
   await h.profiles.request(OWNER, request);

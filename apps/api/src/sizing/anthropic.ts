@@ -18,6 +18,8 @@ interface ProviderMessage {
   readonly usage: {
     readonly input_tokens: number;
     readonly output_tokens: number;
+    readonly cache_read_input_tokens?: number | null;
+    readonly cache_creation_input_tokens?: number | null;
   };
 }
 
@@ -88,6 +90,9 @@ export class AnthropicCaller extends RetryingCaller {
       usage: {
         inputTokens: reply.usage.input_tokens,
         outputTokens: reply.usage.output_tokens,
+        // Apart from input on Anthropic's usage, and counted all the same.
+        cacheReadTokens: reply.usage.cache_read_input_tokens ?? 0,
+        cacheWriteTokens: reply.usage.cache_creation_input_tokens ?? 0,
       },
     };
   }

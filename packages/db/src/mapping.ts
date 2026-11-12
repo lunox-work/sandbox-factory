@@ -63,6 +63,8 @@ export const ID_PREFIXES = [
   /** A webhook endpoint, and one event's delivery to it. */
   "whk",
   "whd",
+  /** One model reply's tokens in the ledger the monthly quota counts. */
+  "mtk",
 ] as const;
 
 export type IdPrefix = (typeof ID_PREFIXES)[number];

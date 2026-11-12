@@ -107,6 +107,8 @@ export class DeepSeekCaller extends RetryingCaller {
     return {
       outcome: outcomeOf(completion, tool.name),
       actualModel: completion.model,
+      // `prompt_tokens` already includes DeepSeek's cache hits, so nothing
+      // is reported apart from it: the ledger would count them twice.
       usage: {
         inputTokens: completion.usage.prompt_tokens,
         outputTokens: completion.usage.completion_tokens,

@@ -45,6 +45,16 @@ export interface StructuredCall<I, O> {
 export interface SizingUsage {
   readonly inputTokens: number;
   readonly outputTokens: number;
+  /** Prompt-cache tokens, where the provider reports them apart from input. */
+  readonly cacheReadTokens?: number;
+  readonly cacheWriteTokens?: number;
+}
+
+/** One reply that reached the model, as the token ledger records it. */
+export interface SizingReply {
+  /** The model that answered, as the provider reported it. */
+  readonly model: string;
+  readonly usage: SizingUsage;
 }
 
 export interface StructuredResult<O> {
@@ -60,6 +70,12 @@ export interface SizingRequestOptions {
   readonly signal?: AbortSignal;
   /** Absolute run deadline. Provider retries must fit inside it. */
   readonly deadlineAt?: Date;
+  /**
+   * Told of every reply that reached a model, the attempts that failed
+   * validation and a fallback's included, as each comes back: what the
+   * platform paid for, which a thrown call would otherwise lose.
+   */
+  readonly onReply?: (reply: SizingReply) => void;
 }
 
 export interface StructuredCaller {
@@ -115,9 +131,11 @@ export class FakeCaller implements StructuredCaller {
       .map(({ input }) => input);
   }
 
+  /** An answer's usage is reported as the one reply that made it. */
   call<I, O>(
     tool: StructuredCall<I, O>,
     input: I,
+    options: SizingRequestOptions = {},
   ): Promise<StructuredResult<O>> {
     this.calls.push({ tool: tool.name, input });
     const source = Object.hasOwn(this.answers, tool.name)
@@ -130,8 +148,8 @@ export class FakeCaller implements StructuredCaller {
         new Error(`FakeCaller has no answer for ${tool.name}.`),
       );
     }
-    return answer instanceof Error
-      ? Promise.reject(answer)
-      : Promise.resolve(answer as StructuredResult<O>);
+    if (answer instanceof Error) return Promise.reject(answer);
+    options.onReply?.({ model: answer.actualModel, usage: answer.usage });
+    return Promise.resolve(answer as StructuredResult<O>);
   }
 }

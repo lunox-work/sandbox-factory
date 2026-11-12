@@ -90,6 +90,8 @@ function fixture(role = "owner") {
     "run_limit" | "graph_mismatch" | "slice_mismatch" | "not-found" | null =
     null;
   let graphStatus: StoredAnalysisRun["status"] = "succeeded";
+  /** The store's refusal once the month's model tokens are spent. */
+  let quota: object | null = null;
   /** The snapshot's succeeded context runs, by tool; none until a test adds them. */
   const contexts = new Map<string, string>();
   const asked: { snapshot: string; tool: string }[] = [];
@@ -118,6 +120,7 @@ function fixture(role = "owner") {
             created: false,
             run: { ...graphRun, status: graphStatus },
           };
+        if (quota !== null) return quota;
         if (refuse !== null) return { ok: false, reason: refuse };
         return {
           ok: true,
@@ -216,6 +219,9 @@ function fixture(role = "owner") {
     listedWith,
     refuse: (reason: typeof refuse) => {
       refuse = reason;
+    },
+    overQuota: (used: number, limit: number, resetsAt: Date) => {
+      quota = { ok: false, reason: "quota_exceeded", used, limit, resetsAt };
     },
     graphFails: () => {
       graphStatus = "failed";
@@ -457,4 +463,32 @@ test("agent runs name the snapshot's succeeded context runs, and only those ther
   const params = one.enqueued[1]?.params as Record<string, unknown>;
   assert.equal(params["dataModelRunId"], "arn_model");
   assert.equal("abstractionsRunId" in params, false);
+});
+
+test("agent runs are refused with 429 once the workspace's monthly tokens are spent", async () => {
+  const f = fixture();
+  f.overQuota(10_000_400, 10_000_000, new Date("2099-12-01T00:00:00.000Z"));
+  for (const path of ["repositories/ghr_1/scope", "runs/arn_slice/fixtures"]) {
+    const response = await f.request(path, { proposalId: "bpr_1" });
+    assert.equal(response.status, 429, path);
+    const body = (await response.json()) as {
+      error: string;
+      code: string;
+      used: number;
+      limit: number;
+      resetsAt: string;
+    };
+    assert.equal(body.code, "quota_exceeded");
+    assert.equal(body.used, 10_000_400);
+    assert.equal(body.limit, 10_000_000);
+    assert.equal(body.resetsAt, "2099-12-01T00:00:00.000Z");
+    assert.equal(
+      body.error,
+      "This workspace has reached its monthly model-token limit (10,000,400 of 10,000,000 tokens). Runs that call a model are refused until it resets at 2099-12-01T00:00:00.000Z, the start of next month (UTC).",
+    );
+    // Seconds until the reset, so a client knows when to ask again.
+    assert.ok(Number(response.headers.get("retry-after")) > 0);
+  }
+  // Nothing was woken for a run that was not queued.
+  assert.equal(f.launches(), 0);
 });
