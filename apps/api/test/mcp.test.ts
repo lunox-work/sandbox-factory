@@ -140,6 +140,8 @@ test("each endpoint lists exactly its toolset", async () => {
       "list_bounties",
       "get_bounty",
       "get_proposal",
+      "get_decisions",
+      "confirm_link",
       "list_repositories",
       "get_snapshot",
       "list_boards",
@@ -166,6 +168,8 @@ test("each endpoint lists exactly its toolset", async () => {
       "import_github_issue",
       "import_jira_issue",
       "size_bounty",
+      "get_decisions",
+      "confirm_link",
     ],
     "/mcp/carveout": [
       "list_workspaces",
@@ -486,6 +490,65 @@ test("connect tools ask for JSON and answer the link with what to do", async () 
   // No link in the answer is an error, not a sentence without one.
   const jira = await client.callTool({ name: "connect_jira", arguments: {} });
   assert.equal(jira.isError, true);
+  await client.close();
+});
+
+test("decisions are read by a tool, and confirm_link hands the person the page, never confirming", async () => {
+  let reply: unknown = {
+    decisions: [{ key: "d1", text: "Retries stop after three." }],
+    confirmation: null,
+    confirmUrl: "https://app.test/bounties/acme/bty_1?tab=price#decisions",
+  };
+  const { client, routed } = await overFakeApi(() => ({
+    status: 200,
+    body: reply,
+  }));
+  const read = await client.callTool({
+    name: "get_decisions",
+    arguments: { proposalId: "bpr_1" },
+  });
+  assert.match(textOf(read), /Retries stop after three/);
+  assert.equal(
+    routed()[0]?.path,
+    `/api/v1/orgs/${ORG}/proposals/bpr_1/decisions`,
+  );
+  const link = await client.callTool({
+    name: "confirm_link",
+    arguments: { proposalId: "bpr_1" },
+  });
+  assert.match(textOf(link), /^Ask the person to open this link.*#decisions$/);
+  // Every call only read.
+  assert.ok(routed().every(({ init }) => init.method === undefined));
+  reply = { ...(reply as object), confirmation: { confirmedBy: "user_1" } };
+  assert.match(
+    textOf(
+      await client.callTool({
+        name: "confirm_link",
+        arguments: { proposalId: "bpr_1" },
+      }),
+    ),
+    /already confirmed/,
+  );
+  reply = {
+    decisions: [],
+    confirmation: null,
+    confirmUrl: "https://app.test/x",
+  };
+  assert.match(
+    textOf(
+      await client.callTool({
+        name: "confirm_link",
+        arguments: { proposalId: "bpr_1" },
+      }),
+    ),
+    /no decisions to confirm/,
+  );
+  reply = { decisions: [] };
+  const broken = await client.callTool({
+    name: "confirm_link",
+    arguments: { proposalId: "bpr_1" },
+  });
+  assert.equal(broken.isError, true);
   await client.close();
 });
 

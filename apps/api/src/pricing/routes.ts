@@ -15,14 +15,17 @@ import {
   JiraAuthError,
   type JiraIssueSpec,
 } from "@sandbox-factory/jira";
+import { createHash } from "node:crypto";
 import type {
   JiraIssueDto,
   ProposalCategoriesDto,
+  ProposalDecisionsResponse,
   ProposalSpecRevisionsResponse,
 } from "@sandbox-factory/shared";
 import {
   addIssueSchema,
   boardSelectionSchema,
+  confirmDecisionsSchema,
   createRunSchema,
   proposalMutationSchema,
   proposalProfileResponseSchema,
@@ -36,6 +39,9 @@ import type { Context, Hono } from "hono";
 import {
   CATEGORIES,
   checkRespec,
+  decisionsText,
+  renderSpecDocument,
+  specDecisions,
   priceFor,
   resetStep,
   SPEC_LIMITS,
@@ -47,6 +53,7 @@ import {
 } from "sandbox-factory";
 
 import { isAtLeastAdmin } from "../access.js";
+import type { Principal } from "../principal.js";
 import { recentReads } from "../jira/recent.js";
 import { boundedLimit, rowCursor } from "../paging.js";
 import { REVISE_SPEC_PROMPT_VERSION } from "../sizing/tools/revise-spec.js";
@@ -59,6 +66,8 @@ export interface PricingAppEnv {
   Variables: {
     user: { id: string };
     member: { organizationId: string; role: string };
+    /** Which credential is asking: decisions are confirmed by a session only. */
+    principal: Pick<Principal, "via">;
   };
 }
 
@@ -782,6 +791,162 @@ export function mountPricingRoutes<Env extends PricingAppEnv>(
       })),
     };
     return c.json(body);
+  });
+
+  /*
+    A spec's decisions and their confirmation. The decisions are the
+    current revision's assumptions (`specDecisions`), hashed as
+    `decisionsText` writes them; a confirmation names that hash, so one
+    made for other decisions reads as none. `confirmUrl` is the bounty's
+    Price step in the web app, where a person confirms: never a token.
+  */
+  const decisionsOf = async (
+    organizationId: string,
+    proposal: { id: string; bountyId: string; specRevision: number | null },
+  ): Promise<ProposalDecisionsResponse> => {
+    const slug = await options.organizationSlug?.(organizationId);
+    const confirmUrl = `${options.appUrl ?? ""}/bounties/${encodeURIComponent(slug ?? organizationId)}/${encodeURIComponent(proposal.bountyId)}?tab=price#decisions`;
+    const spec =
+      proposal.specRevision === null
+        ? null
+        : await options.specs.get(
+            organizationId,
+            proposal.id,
+            proposal.specRevision,
+          );
+    if (spec === null)
+      return {
+        specRevision: null,
+        decisions: [],
+        decisionsSha256: null,
+        confirmation: null,
+        confirmUrl,
+      };
+    const decisions = specDecisions(spec.draft);
+    const decisionsSha256 = createHash("sha256")
+      .update(decisionsText(decisions), "utf8")
+      .digest("hex");
+    const confirmed =
+      (await options.decisions?.get(
+        organizationId,
+        proposal.id,
+        spec.revision,
+        decisionsSha256,
+      )) ?? null;
+    return {
+      specRevision: spec.revision,
+      decisions,
+      decisionsSha256,
+      confirmation:
+        confirmed === null
+          ? null
+          : {
+              confirmedBy: confirmed.confirmedBy,
+              confirmedAt: confirmed.confirmedAt,
+            },
+      confirmUrl,
+    };
+  };
+
+  app.get("/api/v1/orgs/:orgId/proposals/:id/decisions", async (c) => {
+    const { organizationId } = c.get("member");
+    const proposal = await options.proposals.get(
+      organizationId,
+      c.req.param("id"),
+    );
+    if (proposal === null) return c.json({ error: "Not found" }, 404);
+    return c.json(await decisionsOf(organizationId, proposal));
+  });
+
+  /*
+    A person confirms the decisions they read, from the web app only: an API
+    token, an OAuth app or a command-line client's device session is
+    refused, whatever its scopes. Owners and admins, as for approving a
+    price. The revision and hash must be the current ones.
+  */
+  app.post("/api/v1/orgs/:orgId/proposals/:id/decisions/confirm", async (c) => {
+    if (c.get("principal").via !== "session")
+      return c.json(
+        {
+          error: "Decisions are confirmed by a person in the web app.",
+          code: "session_required",
+        },
+        403,
+      );
+    const parsed = confirmDecisionsSchema.safeParse(
+      await c.req.json().catch(() => null),
+    );
+    if (!parsed.success) return c.json({ error: "Invalid confirmation." }, 400);
+    const { organizationId, role } = c.get("member");
+    const denied = requireAdmin(role);
+    if (denied !== null) return c.json(denied, 403);
+    if (options.decisions === undefined)
+      return c.json(
+        {
+          error: "Decisions cannot be confirmed on this deployment.",
+          code: "decisions_unavailable",
+        },
+        503,
+      );
+    const proposal = await options.proposals.get(
+      organizationId,
+      c.req.param("id"),
+    );
+    if (proposal === null) return c.json({ error: "Not found" }, 404);
+    const current = await decisionsOf(organizationId, proposal);
+    if (
+      current.specRevision !== parsed.data.specRevision ||
+      current.decisionsSha256 !== parsed.data.decisionsSha256
+    )
+      return c.json(
+        {
+          error: "The spec changed since these decisions were read.",
+          code: "decisions_changed",
+        },
+        409,
+      );
+    const confirmed = await options.decisions.confirm({
+      organizationId,
+      proposalId: proposal.id,
+      specRevision: parsed.data.specRevision,
+      decisionsSha256: parsed.data.decisionsSha256,
+      confirmedBy: c.get("user").id,
+    });
+    if (confirmed === null)
+      return c.json(
+        {
+          error: "The spec changed since these decisions were read.",
+          code: "decisions_changed",
+        },
+        409,
+      );
+    return c.json(await decisionsOf(organizationId, proposal));
+  });
+
+  /*
+    The spec as duediligence reads one (`renderSpecDocument`): the Gherkin,
+    then the `Decided:` list. `?revision=` reads an earlier revision.
+  */
+  app.get("/api/v1/orgs/:orgId/proposals/:id/spec/gherkin", async (c) => {
+    const { organizationId } = c.get("member");
+    const proposal = await options.proposals.get(
+      organizationId,
+      c.req.param("id"),
+    );
+    if (proposal === null) return c.json({ error: "Not found" }, 404);
+    const revision = specRevision(c.req.query("revision"));
+    if (revision === null) return c.json({ error: "Invalid revision." }, 400);
+    const wanted = revision ?? proposal.specRevision;
+    const spec =
+      wanted === null
+        ? null
+        : await options.specs.get(organizationId, proposal.id, wanted);
+    if (spec === null && revision !== undefined)
+      return c.json({ error: "Not found" }, 404);
+    return c.json({
+      specRevision: spec?.revision ?? null,
+      document: spec === null ? null : renderSpecDocument(spec.draft),
+    });
   });
 
   app.post("/api/v1/orgs/:orgId/proposals/:id/approve", async (c) => {

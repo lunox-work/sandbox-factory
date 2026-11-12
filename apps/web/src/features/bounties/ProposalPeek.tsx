@@ -61,6 +61,7 @@ import {
   OutlineSource,
   ProposalSpec,
   scenarioTotal,
+  useDecisions,
   useProposalSpec,
   useRevisionView,
   useShownSpec,
@@ -248,6 +249,7 @@ export function ProposalPeek({
   const key = proposal.liveKey ?? proposal.issueKey;
   // Read when the peek opens, like the bounty, so the tab opens on it.
   const spec = useProposalSpec(base, proposal.id, proposal.specRevision);
+  const decisions = useDecisions(base, proposal.id, proposal.specRevision);
   // The repositories the work touches, at the commits it was sized beside.
   const outlines = useRepoSnapshots(
     base,
@@ -367,6 +369,8 @@ export function ProposalPeek({
       read={spec.read}
       onRetry={spec.retry}
       canAnalyze={canDecide && held === null}
+      decisions={decisions}
+      canConfirm={canDecide}
       weightPoints={step?.settings.weightPoints ?? WEIGHT_POINTS}
       sizeReason={
         withinBounty

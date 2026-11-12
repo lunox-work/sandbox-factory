@@ -454,6 +454,42 @@ export const bountySpec = pgTable(
 );
 
 /**
+ * A person's confirmation of one spec revision's decisions (its
+ * assumptions, `specDecisions`): the hash of exactly the decisions they
+ * read. One per revision; a new revision needs its own. Made in the web
+ * app only, never by a token.
+ */
+export const decisionConfirmation = pgTable(
+  "decision_confirmation",
+  {
+    id: text("id").primaryKey(),
+    organizationId: text("organization_id")
+      .notNull()
+      .references(() => organization.id, { onDelete: "cascade" }),
+    proposalId: text("proposal_id")
+      .notNull()
+      .references(() => bountyProposal.id, { onDelete: "cascade" }),
+    specRevision: integer("spec_revision").notNull(),
+    decisionsSha256: text("decisions_sha256").notNull(),
+    confirmedBy: text("confirmed_by")
+      .notNull()
+      .references(() => user.id, { onDelete: "cascade" }),
+    confirmedAt: ts("confirmed_at").notNull().defaultNow(),
+  },
+  (table) => [
+    unique("decision_confirmation_proposal_revision_unique").on(
+      table.proposalId,
+      table.specRevision,
+    ),
+    index("decision_confirmation_organization_id_idx").on(table.organizationId),
+    check(
+      "decision_confirmation_sha256_check",
+      sql`length(${table.decisionsSha256}) = 64 AND ${table.specRevision} > 0`,
+    ),
+  ],
+);
+
+/**
  * A proposal's complexity profile, one row per spec revision and snapshot:
  * the evidence its price will point back to, measured in each repository
  * its work touches.

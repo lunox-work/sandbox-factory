@@ -190,8 +190,12 @@ toolsets: `POST /mcp` (all), `/mcp/duediligence`, `/mcp/carveout`
 (`TOOLSETS` in `tools.ts`). Read tools are GETs; write tools post work
 (`post_bounty`, `import_github_issue`, `import_jira_issue`, `size_bounty`,
 `respec`; the first four also on `/mcp/duediligence`) and `connect_github`,
-`connect_jira` return the connect route's link with what to do. Approving,
-publishing and confirming decisions have no tool. A request needs a
+`connect_jira` return the connect route's link with what to do.
+`get_decisions` reads a spec's decisions (its assumptions, keyed `d1…`,
+hashed) and `confirm_link` returns the web page where a person confirms
+them (`POST …/decisions/confirm`, a web session only; one
+`decision_confirmation` per spec revision and hash). Approving, publishing
+and confirming decisions have no tool. A request needs a
 bearer `lnx_` or `lnxat_` token, else 401 with
 `WWW-Authenticate: Bearer resource_metadata="…/.well-known/oauth-protected-resource/mcp…"`.
 **Every tool wraps one public route**, called in-process with the caller's

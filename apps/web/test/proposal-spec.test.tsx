@@ -6,6 +6,7 @@ import { afterEach, expect, test, vi } from "vitest";
 import {
   ProposalSpec,
   scenarioTotal,
+  useDecisions,
   useProposalSpec,
   type SinceSized,
   type SizeReason,
@@ -703,4 +704,91 @@ test("a bounty the model left unsized says that instead of a size", async () => 
       "The model left it unsized:",
     ),
   ).toBeDefined();
+});
+
+/** The spec with its decisions wired, as the peek wires them. */
+function WithDecisions({ canConfirm }: { canConfirm: boolean }) {
+  const { read, retry } = useProposalSpec(BASE, "bpr_1", 1);
+  const decisions = useDecisions(BASE, "bpr_1", 1);
+  return (
+    <ProposalSpec
+      read={read}
+      onRetry={retry}
+      canAnalyze={false}
+      decisions={decisions}
+      canConfirm={canConfirm}
+    />
+  );
+}
+
+function decisionsServer(options: { failConfirm?: boolean } = {}) {
+  let confirmedAt: string | null = null;
+  const posted: unknown[] = [];
+  const decisions = () =>
+    Response.json({
+      specRevision: 1,
+      decisions: [
+        { key: "d1", text: "Invitations go by email only." },
+        { key: "d2", text: "One invitation per slot." },
+      ],
+      decisionsSha256: "b".repeat(64),
+      confirmation:
+        confirmedAt === null ? null : { confirmedBy: "user_1", confirmedAt },
+      confirmUrl: "https://app.test/bounties/acme/bty_1?tab=price#decisions",
+    });
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: string, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/decisions/confirm")) {
+        posted.push(JSON.parse(String(init?.body)));
+        if (options.failConfirm === true)
+          return Promise.resolve(
+            Response.json({ code: "decisions_changed" }, { status: 409 }),
+          );
+        confirmedAt = "2026-11-12T00:00:00.000Z";
+        return Promise.resolve(decisions());
+      }
+      if (url.endsWith("/decisions")) return Promise.resolve(decisions());
+      return Promise.resolve(Response.json({ spec: spec() }));
+    }),
+  );
+  return posted;
+}
+
+test("an owner confirms the spec's decisions under its assumptions, with the revision and hash read", async () => {
+  const posted = decisionsServer();
+  render(<WithDecisions canConfirm />);
+  const bar = await screen.findByRole("region", { name: "Decisions" });
+  expect(bar.textContent).toMatch(
+    /Hidden tests are written to these decisions/,
+  );
+  await userEvent.click(
+    within(bar).getByRole("button", { name: "Confirm decisions" }),
+  );
+  await waitFor(() =>
+    expect(
+      screen.getByRole("region", { name: "Decisions" }).textContent,
+    ).toMatch(/Decisions confirmed/),
+  );
+  expect(posted).toEqual([
+    { specRevision: 1, decisionsSha256: "b".repeat(64) },
+  ]);
+});
+
+test("a member waits for an owner, and a refused confirmation says so", async () => {
+  decisionsServer();
+  const { unmount } = render(<WithDecisions canConfirm={false} />);
+  const bar = await screen.findByRole("region", { name: "Decisions" });
+  expect(bar.textContent).toMatch(/Waiting for an owner or admin/);
+  expect(within(bar).queryByRole("button")).toBeNull();
+  unmount();
+  decisionsServer({ failConfirm: true });
+  render(<WithDecisions canConfirm />);
+  await userEvent.click(
+    await screen.findByRole("button", { name: "Confirm decisions" }),
+  );
+  expect((await screen.findByRole("alert")).textContent).toMatch(
+    /could not be confirmed/,
+  );
 });

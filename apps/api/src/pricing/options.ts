@@ -4,6 +4,7 @@ import {
   type BountyProposalStore,
   type BountyRunStore,
   type BountySpecStore,
+  type DecisionConfirmationStore,
   type BountyWritebackStore,
   type JiraBoardStore,
   type JiraConnectionStore,
@@ -24,6 +25,8 @@ export interface PricingRouteOptions {
   readonly boards: JiraBoardStore;
   readonly proposals: BountyProposalStore;
   readonly specs: BountySpecStore;
+  /** Confirmations of specs' decisions; absent, none can be made. */
+  readonly decisions?: DecisionConfirmationStore;
   readonly issues: JiraIssueStore;
   /** The organization's bounties, which every proposal prices. */
   readonly bounties: BountyStore;
