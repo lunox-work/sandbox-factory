@@ -530,7 +530,9 @@ export function isSandboxBuildParams(
   params: AnalysisParams,
 ): params is SandboxBuildParams {
   return (
-    "sandboxVersionId" in params && !("agent" in params) && !("grader" in params)
+    "sandboxVersionId" in params &&
+    !("agent" in params) &&
+    !("grader" in params)
   );
 }
 export function toolOfParams(params: AnalysisParams): AnalysisTool {
