@@ -101,7 +101,7 @@ export const holdsHiddenTests = (run: StoredAnalysisRun) =>
   HIDDEN_TEST_TOOLS.has(run.tool) || preparation(run);
 /** Whether this request's credential is a person's web session. */
 export const inWebSession = (c: Context) =>
-  c.get("principal").via === "session";
+  c.get("principal")?.via === "session";
 /**
  * A legacy preparation run (a `fixtures` run with `pseudonyms`, queued
  * before 2026-10-19) wrote a name table too, so it is one of them.

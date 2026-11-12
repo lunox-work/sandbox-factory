@@ -95,7 +95,13 @@ import type {
 import { GithubAuthError } from "@sandbox-factory/github";
 
 const sandboxDto = ({ organizationId: _owner, ...dto }: StoredSandbox) => dto;
-const sourceDto = (source: StoredVersionSource) => ({
+/**
+ * A version's source as the API answers it. `hideTests` (any credential but
+ * a person's web session: how an agent reaches the platform) answers its
+ * hidden tests as none, as the handout does: an agent that could read them
+ * could pass them without the work.
+ */
+const sourceDto = (source: StoredVersionSource, hideTests: boolean) => ({
   sandboxVersionId: source.sandboxVersionId,
   origin: source.origin,
   sourceSnapshotId: source.sourceSnapshotId,
@@ -111,7 +117,7 @@ const sourceDto = (source: StoredVersionSource) => ({
   contextVersions: { ...source.contextVersions },
   aliasRules: source.aliasRules,
   dependencyChoices: source.dependencyChoices,
-  acceptanceTests: source.acceptanceTests,
+  acceptanceTests: hideTests ? [] : source.acceptanceTests,
   fixtures: source.fixtures,
   approvedTask: source.approvedTask,
   scope: source.scope,
@@ -128,10 +134,11 @@ const sourceDto = (source: StoredVersionSource) => ({
 const versionResponse = (
   stored: StoredVersionWithSource,
   privileged: boolean,
+  hideTests: boolean,
 ) =>
   sandboxVersionResponseSchema.parse({
     version: stored.version,
-    ...(privileged ? { source: sourceDto(stored.source) } : {}),
+    ...(privileged ? { source: sourceDto(stored.source, hideTests) } : {}),
   });
 
 /** A refusal the version service settled on, answered with its status. */
@@ -370,7 +377,7 @@ export function mountSandboxRoutes(
           sandbox: sandboxDto(sandbox),
           slice: null,
           version: generated.result.version,
-          source: sourceDto(generated.result.source),
+          source: sourceDto(generated.result.source, !inWebSession(c)),
           run: generated.run,
         }),
         201,
@@ -383,7 +390,10 @@ export function mountSandboxRoutes(
         sandbox: sandboxDto(sandbox),
         slice: sliced.slice,
         version: sliced.result?.version ?? null,
-        source: sliced.result === null ? null : sourceDto(sliced.result.source),
+        source:
+          sliced.result === null
+            ? null
+            : sourceDto(sliced.result.source, !inWebSession(c)),
         run: sliced.run,
       }),
       201,
@@ -451,7 +461,7 @@ export function mountSandboxRoutes(
     return c.json(
       generateStarterResponseSchema.parse({
         version: generated.result.version,
-        source: sourceDto(generated.result.source),
+        source: sourceDto(generated.result.source, !inWebSession(c)),
         run: generated.run,
       }),
       202,
@@ -496,7 +506,10 @@ export function mountSandboxRoutes(
       sliceVersionResponseSchema.parse({
         slice: sliced.slice,
         version: sliced.result?.version ?? null,
-        source: sliced.result === null ? null : sourceDto(sliced.result.source),
+        source:
+          sliced.result === null
+            ? null
+            : sourceDto(sliced.result.source, !inWebSession(c)),
         run: sliced.run,
       }),
       sliced.result === null ? 202 : 201,
@@ -549,7 +562,13 @@ export function mountSandboxRoutes(
     );
     return stored === null
       ? c.json({ error: "Not found." }, 404)
-      : c.json(versionResponse(stored, isAtLeastAdmin(c.get("member").role)));
+      : c.json(
+          versionResponse(
+            stored,
+            isAtLeastAdmin(c.get("member").role),
+            !inWebSession(c),
+          ),
+        );
   });
   app.get(`${base}/:id`, async (c) => {
     const sandbox = await options.sandboxes.get(
@@ -600,7 +619,7 @@ export function mountSandboxRoutes(
       now(),
     );
     if (!created.ok) return failed(c, created);
-    return c.json(versionResponse(created.result, true), 201);
+    return c.json(versionResponse(created.result, true, !inWebSession(c)), 201);
   });
 
   /**
@@ -723,7 +742,7 @@ export function mountSandboxRoutes(
       now(),
     );
     if (!result.ok) return refused(c, result.reason);
-    return c.json(versionResponse(result, true));
+    return c.json(versionResponse(result, true, !inWebSession(c)));
   });
 
   /**
@@ -801,7 +820,7 @@ export function mountSandboxRoutes(
       publishVersionResponseSchema.parse({
         sandbox: sandboxDto(result.sandbox),
         version: result.version.version,
-        source: sourceDto(result.version.source),
+        source: sourceDto(result.version.source, !inWebSession(c)),
       }),
     );
   });
@@ -1374,7 +1393,7 @@ export function mountSandboxRoutes(
       uploadResponseSchema.parse({
         sandbox: sandboxDto(sandbox),
         version: imported.result.version,
-        source: sourceDto(imported.result.source),
+        source: sourceDto(imported.result.source, !inWebSession(c)),
         run: imported.run,
       }),
       202,
