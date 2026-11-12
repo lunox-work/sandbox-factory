@@ -98,8 +98,9 @@ development proves nothing about IAM.
 
 Better Auth, configured in `apps/api/src/auth.ts` and mounted at
 `/api/auth/*`. Google, GitHub and Atlassian only; `emailAndPassword` is never
-enabled. The eight auth tables (with the device plugin's `device_code`) are
-bundled as `authSchema` in `packages/db/src/auth-schema.ts`. Two naming rules
+enabled. The fifteen auth tables (with the device plugin's `device_code` and
+the OAuth provider's seven `oauth_*`) are bundled as `authSchema` in
+`packages/db/src/auth-schema.ts`. Two naming rules
 fail at runtime, not compile time, because the adapter resolves names by
 string: exported consts are singular, column properties are camelCase.
 
@@ -122,7 +123,7 @@ string: exported consts are singular, column properties are camelCase.
   fails closed.
 - **Every credential is one `Principal`** (`principal.ts`): user,
   organization, scopes and `via`, one of `session`, `token`, `device` and
-  `oauth` (reserved). The guard is `credentials.ts`.
+  `oauth`. The guard is `credentials.ts`.
   - _Session_: cookie or `bearer()` token, no organization, every scope; roles
     decide, as before.
   - _Workspace API token_: `Authorization: Bearer lnx_…`, table `api_token`
@@ -135,6 +136,11 @@ string: exported consts are singular, column properties are camelCase.
     `GET /me/orgs` and `POST /orgs/:orgId/tokens/cli`, which mints that
     client's token (90 days, scopes within `CLI_CLIENTS`) and ends the
     session.
+  - _OAuth access token_: `Authorization: Bearer lnxat_…`, issued by the
+    OAuth provider below; resolves like an API token to its grant's
+    organization and scopes, acting as the person who consented. Refused
+    (401) once expired, its grant revoked, or that person is no longer owner
+    or admin there. Any other bearer is still Better Auth's session.
 - **Tokens are deny by default.** A bound credential reaches only routes in
   `apps/api/src/public-api/registry.ts`, matched by Hono pattern, holding the
   scope listed there (`API_SCOPES` in `packages/core/src/scopes.ts`). An
@@ -145,11 +151,46 @@ string: exported consts are singular, column properties are camelCase.
   schemas from `packages/shared`; `public-api/openapi.ts` serves them as
   OpenAPI 3.1, and `apps/api/test/public-api.test.ts` fails on an entry
   without schemas or a mounted route a token can reach outside the registry.
+- **OAuth 2.1 provider** (`oauth/provider.ts`): Better Auth's
+  `@better-auth/oauth-provider`, for MCP clients and other apps. Issuer
+  `<BETTER_AUTH_URL>/api/auth`; discovery at
+  `/.well-known/oauth-authorization-server[/api/auth]` and RFC 9728
+  `/.well-known/oauth-protected-resource[/mcp…]` (`oauth/discovery.ts`); no
+  `openid` scope, so no ID tokens or OIDC discovery. Authorization code with
+  PKCE (S256 only), open dynamic registration (public clients allowed;
+  clients are never managed from a session), refresh on `offline_access`,
+  opaque 15-minute access tokens and `lnxrt_` refresh tokens stored as
+  SHA-256. Sign-in is the web app's Google, GitHub and Atlassian.
+- **A grant binds one organization.** The web app's `/oauth/consent`
+  (`features/developers/OAuthConsent.tsx`) is both login and consent page:
+  it shows the client, the requested scopes (`workspace:read` checked by
+  default) and the workspaces the person owns or administers, and posts
+  `/api/auth/oauth2/consent` with the choice in `x-lunox-organization`.
+  `consentReferenceId` admits only an owner's or admin's workspace and
+  stores it as `reference_id` on the consent (the grant, unique per person,
+  client and organization) and every token. Connected apps,
+  `GET /orgs/:orgId/oauth/grants` and `POST …/grants/:id/revoke`, are
+  session-only, owners and admins; revoking deletes the grant's tokens.
 - **A session says who is asking, not what they may read.** Every store
   method takes the owner first and puts it in the query. Another owner's id
   returns 404, not 403, so ids cannot be enumerated.
 - `account` has a unique `(provider_id, account_id)`; Better Auth throws on a
   collision rather than tolerating one.
+
+## MCP
+
+`apps/api/src/mcp/`: a remote MCP server on the SDK's Web-standard
+Streamable HTTP transport, **stateless** (a server and transport per POST,
+no session id, JSON responses; GET and DELETE answer 405). Endpoints are
+toolsets: `POST /mcp` (all), `/mcp/duediligence`, `/mcp/carveout`
+(`TOOLSETS` in `tools.ts`); read tools only for now. A request needs a
+bearer `lnx_` or `lnxat_` token, else 401 with
+`WWW-Authenticate: Bearer resource_metadata="…/.well-known/oauth-protected-resource/mcp…"`.
+**Every tool wraps one public route**, called in-process with the caller's
+own `Authorization`, so the guard, registry, scopes and `requireMembership`
+decide; a refusal is a tool error carrying the API's `code`. Tools take
+the workspace from `GET /me/orgs`. CloudFront routes `/mcp*` and
+`/.well-known/*` to the API uncached (`infra/cloudfront.tf`).
 
 ## Organizations
 

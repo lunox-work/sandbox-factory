@@ -36,7 +36,7 @@ Docker or dev scripts. It preserves the setup and testing constraints.
 - `packages/client` uses `fetch` only: no `node:*`, `vscode` or `@types/node`.
   Keep its `types: []`. Only `apps/extension` may import `vscode`.
 - Auth table constants stay singular (`user`), column properties camelCase
-  (`emailVerified`). Better Auth resolves names at runtime. Keep all eight
+  (`emailVerified`). Better Auth resolves names at runtime. Keep all fifteen
   tables in `authSchema`; see `packages/db/test/auth-schema.test.ts`.
 - Handle validation lives in `packages/core/src/handle.ts`; do not duplicate
   its length or character rules in schemas, stores or forms.

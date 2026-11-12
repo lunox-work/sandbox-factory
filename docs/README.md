@@ -30,7 +30,9 @@ product proposals and historical explainers are optional design context.
 - `/api/v1` is the public API for workspace API tokens (`lnx_…`, scoped,
   one workspace each) on the routes its registry lists, described at
   `GET /api/v1/openapi.json`. Command-line clients sign in by device flow
-  and mint their own token. Not built: the OAuth provider, MCP, webhooks
+  and mint their own token. MCP clients sign in over OAuth 2.1, consenting
+  for one workspace, and call read tools at `/mcp` (toolsets
+  `/mcp/duediligence`, `/mcp/carveout`). Not built: write tools, webhooks
   and the developer portal pages.
 - The VS Code extension can run a local task. Its sign-in flow is not built.
 - Not built: contributor submission, adjudication, escrow, payouts,
@@ -44,6 +46,7 @@ product proposals and historical explainers are optional design context.
 | Setup and daily development   | [Run it](../README.md#run-it), [development](./development.md)                                                                            | `Makefile`, `docker-compose.yml`, `package.json`                                                                                                   |
 | Auth and ownership            | [Auth](./architecture.md#auth), [organizations](./architecture.md#organizations)                                                          | `apps/api/src/auth.ts`, `apps/api/src/routes.ts`, `packages/db/src/schema.ts`                                                                      |
 | Public API and tokens         | [Auth](./architecture.md#auth)                                                                                                            | `apps/api/src/credentials.ts`, `apps/api/src/public-api/`, `apps/api/src/api-tokens/`, `packages/core/src/scopes.ts`                               |
+| OAuth provider and MCP        | [Auth](./architecture.md#auth), [MCP](./architecture.md#mcp)                                                                              | `apps/api/src/oauth/`, `apps/api/src/mcp/`, `apps/web/src/features/developers/OAuthConsent.tsx`                                                    |
 | Bounties and Jira             | [Bounties](./architecture.md#bounties)                                                                                                    | `apps/api/src/bounties/routes.ts`, `apps/api/src/jira/`, `packages/core/src/bounty.ts`                                                             |
 | Pricing and specs             | [Pricing](./architecture.md#pricing)                                                                                                      | `packages/core/src/sizing.ts`, `packages/core/src/pricing/`, `apps/api/src/sizing/`, `apps/api/src/pricing/`                                       |
 | GitHub snapshots              | [GitHub](./architecture.md#github), [App setup](./github-apps.md)                                                                         | `apps/api/src/github/`, `packages/github/`                                                                                                         |
