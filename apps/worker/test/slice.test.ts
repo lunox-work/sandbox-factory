@@ -4,13 +4,17 @@ import { createHash } from "node:crypto";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { beforeEach, test } from "node:test";
 import ts from "typescript-compiler";
 import type { StoredAnalysisRun, StoredArtifact } from "@sandbox-factory/db";
+import { SLICE_TOOL_VERSION } from "sandbox-factory";
 import type { SliceManifest, BoundaryContract } from "sandbox-factory";
 import { AnalysisError } from "../src/errors.js";
+import { CutError } from "carveout/api";
 import { createSliceAdapter, sliceArtifactKind } from "../src/tools/slice.js";
+import { analysisErrorOf } from "../src/tools/slice/carveout-analysis.js";
 import {
   compileFixture,
   packageShim,
@@ -33,7 +37,7 @@ import {
   stubPathFor,
 } from "../src/tools/slice/typescript.js";
 import type { ToolInputs, ToolRunInput } from "../src/tools/adapter.js";
-import { goldenRun, goldenScenario } from "./slice-golden.js";
+import { SHIM_ADDED_LINES, goldenRun, goldenScenario } from "./slice-golden.js";
 
 beforeEach((t) => goldenScenario(t.name));
 
@@ -229,7 +233,6 @@ async function runSlice(
     inputs: ToolInputs;
     sourceDir: string;
     includeInferred: boolean;
-    walker: "graph" | "carveout";
   }> = {},
 ) {
   const messages: string[] = [];
@@ -248,10 +251,7 @@ async function runSlice(
     signal: new AbortController().signal,
     log: (line) => messages.push(line),
   };
-  const files = await goldenRun(
-    options.walker === undefined ? {} : { walker: options.walker },
-    input,
-  );
+  const files = await goldenRun({}, input);
   const read = async (path: string) => readFile(join(outDir, path), "utf8");
   const manifest = JSON.parse(
     await read("slice-manifest.json"),
@@ -306,7 +306,8 @@ test("a TypeScript slice gets compilable stubs, a public surface and a pinned ma
       ],
       environment: [{ name: "DATABASE_URL", files: ["src/app.ts"] }],
     });
-    assert.deepEqual(manifest.communities, [0]);
+    // carveout's walk is the compiler's, not graphify's: no communities.
+    assert.deepEqual(manifest.communities, []);
     assert.deepEqual(
       contract.outbound.map((module) => module.module),
       [
@@ -387,11 +388,10 @@ test("a TypeScript slice gets compilable stubs, a public surface and a pinned ma
     assert.match(boundary, /## Public surface[\s\S]*\*\*run\*\*/);
     assert.match(boundary, /`pg` \(postgres\)/);
     assert.match(await read("public-surface.md"), /\*\*run\*\*/);
-    assert.match(
+    assert.equal(
       await read("abstract.md"),
-      /Community 0[\s\S]*The app and its callers/,
+      `# Slice abstract\n\nCommunities (none) of graph run ${graphRun.id}, from the graphify wiki.\n\nNo community pages were available.\n`,
     );
-    assert.doesNotMatch(await read("abstract.md"), /service layer/);
     assert.deepEqual(files.map((file) => [file.path, file.kind]).slice(0, 5), [
       ["abstract.md", "abstract_md"],
       ["boundary-contract.json", "boundary_contract"],
@@ -906,44 +906,41 @@ test("a public package's fetched types reach the stubs and the check, and a fail
   }
 });
 
-test("a language without an extractor still gets the manifest and names", async () => {
+test("an entry point carveout's walk cannot read reaches nothing, and the slice fails saying so", async () => {
   const out = await scratch("python");
   try {
-    const { manifest, contract, read } = await runSlice(
-      out,
-      ["scripts/tool.py"],
-      {
+    // carveout walks TypeScript and JavaScript; a Python entry point names
+    // no file of its graph, whatever graphify's graph holds.
+    const messages: string[] = [];
+    await assert.rejects(
+      createSliceAdapter().run({
+        sourceDir: fixture,
+        outDir: out,
+        params: {
+          deadlineMinutes: 30,
+          graphRunId: graphRun.id,
+          entryPoints: ["scripts/tool.py"],
+          budget: { maxFiles: 1, maxDepth: 1 },
+          includeInferred: false,
+        },
+        run: { snapshotId: "rsn_1", commitSha: "a".repeat(40) },
+        inputs: inputsFor(pythonGraph),
+        signal: new AbortController().signal,
+        log: (line) => messages.push(line),
+      }),
+      (error: unknown) =>
+        error instanceof AnalysisError && error.code === "tool_failed",
+    );
+    assert.match(messages.join("\n"), /scripts\/tool\.py names no file/);
+    // Recorded as the golden run of the old test, through the same runner.
+    await assert.rejects(
+      runSlice(out, ["scripts/tool.py"], {
         graph: pythonGraph,
         budget: { maxFiles: 1, maxDepth: 1 },
-      },
+      }),
+      (error: unknown) =>
+        error instanceof AnalysisError && error.code === "tool_failed",
     );
-    assert.equal(contract.language, "none");
-    assert.equal(contract.stubCoverage, "names-only");
-    assert.equal(contract.compilation.attempted, false);
-    assert.deepEqual(contract.outbound, [
-      {
-        module: "scripts/helper.py",
-        symbols: [],
-        importedBy: ["scripts/tool.py"],
-        stubPath: null,
-      },
-    ]);
-    assert.deepEqual(
-      contract.blockers.map((b) => b.code),
-      ["missing_build_input", "no_extractor"],
-    );
-    assert.deepEqual(manifest.requiredBuildInputs.packages, [
-      { name: "boto3", version: null, declaredIn: null },
-    ]);
-    assert.deepEqual(
-      manifest.externals.packages.map((p) => p.specifier),
-      ["boto3"],
-    );
-    assert.deepEqual(
-      manifest.externals.environment.map((e) => e.name),
-      ["BUCKET"],
-    );
-    assert.match(await read("boundary.md"), /names-only/);
   } finally {
     await rm(out, { recursive: true, force: true });
   }
@@ -1542,19 +1539,23 @@ test("stubs carry no literal values, comments or private members, and credential
         ),
       },
     );
+    // carveout's graph holds the code and what it imports: a credentials
+    // file named as an entry point is no file of it, and blocks as one. A
+    // namespace passed on whole is copied within the file budget.
     assert.deepEqual(
       manifest.included.map((file) => file.path),
-      ["keys/service-account.json", "src/app.ts"],
+      ["src/app.ts", "src/w.ts"],
     );
     assert.deepEqual(
-      contract.blockers.filter((b) => b.code === "secret_file"),
+      contract.blockers.filter(
+        (b) => b.code === "secret_file" || b.code === "unknown_entry_point",
+      ),
       [
         {
-          code: "secret_file",
-          file: "keys/service-account.json",
+          code: "unknown_entry_point",
+          file: null,
           location: null,
-          detail:
-            "keys/service-account.json is a credentials file; a slice may not include it. Import fixture values instead.",
+          detail: "keys/service-account.json names no file in the graph.",
         },
       ],
     );
@@ -1590,11 +1591,9 @@ test("stubs carry no literal values, comments or private members, and credential
       .map((symbol) => symbol.declaration ?? "");
     assert.ok(declarations.includes("export declare const API_KEY: string;"));
     assert.equal(JSON.stringify(contract).includes(key), false);
-    // Read only as `util.pick`, the namespace asks for `pick`; passed on
-    // as a value, `whole` asks for the whole module.
+    // Read only as `util.pick`, the namespace asks for `pick`.
     assert.match(await read("stubs/src/u.d.ts"), /pick/);
     assert.doesNotMatch(await read("stubs/src/u.d.ts"), /spare/);
-    assert.match(await read("stubs/src/w.d.ts"), /one[\s\S]*two/);
   } finally {
     await Promise.all([
       rm(out, { recursive: true, force: true }),
@@ -1739,44 +1738,133 @@ test("a program past the file ceiling stops with a blocker instead of compiling 
   }
 });
 
-test("carveout's walk chooses the files from the source, and the slice tool builds the same boundary from them", async () => {
-  const graphOut = await scratch("walk-graph");
-  const carveoutOut = await scratch("walk-carveout");
+test("carveout analyses the slice, and the tool version names the release installed", async () => {
+  const out = await scratch("walk-carveout");
   try {
-    const entries = ["src/app.ts"];
-    const graphed = await runSlice(graphOut, entries);
-    const walked = await runSlice(carveoutOut, entries, { walker: "carveout" });
-    assert.match(walked.manifest.walkEngine ?? "", /^carveout@\d+\.\d+\.\d+$/);
-    assert.equal(graphed.manifest.walkEngine, undefined);
+    const { manifest, contract } = await runSlice(out, ["src/app.ts"]);
+    const { version } = createRequire(import.meta.url)(
+      "carveout/package.json",
+    ) as { version: string };
+    // A pin bump changes the tool version, so no slice the old release
+    // made is reused for a request the new one would cut.
+    assert.ok(SLICE_TOOL_VERSION.endsWith(`+carveout@${version}`));
+    assert.equal(manifest.toolVersion, SLICE_TOOL_VERSION);
+    assert.equal(contract.toolVersion, SLICE_TOOL_VERSION);
+    assert.equal(manifest.walkEngine, `carveout@${version}`);
     // The compiler passes over imports of types alone and follows a barrel
-    // only to the modules that supply the names taken, so carveout reads a
-    // subset of what graphify's walk reads (4 files of 8 here), and the
-    // boundary built from it has no more blockers.
-    const graphFiles = graphed.manifest.included.map((file) => file.path);
-    const carveoutFiles = walked.manifest.included.map((file) => file.path);
-    assert.deepEqual(carveoutFiles, [
-      "lib/alias.ts",
-      "lib/helpers.ts",
-      "lib/service.ts",
-      "src/app.ts",
-    ]);
-    assert.ok(carveoutFiles.every((path) => graphFiles.includes(path)));
-    assert.ok(
-      walked.manifest.blockers.length <= graphed.manifest.blockers.length,
-      JSON.stringify({
-        graph: graphed.manifest.blockers,
-        carveout: walked.manifest.blockers,
-      }),
+    // only to the modules that supply the names taken.
+    assert.deepEqual(
+      manifest.included.map((file) => file.path),
+      ["lib/alias.ts", "lib/helpers.ts", "lib/service.ts", "src/app.ts"],
     );
     assert.deepEqual(
-      walked.manifest.externals.packages.map((p) => p.specifier),
+      manifest.externals.packages.map((p) => p.specifier),
       ["pg"],
     );
-    assert.deepEqual(walked.manifest.communities, []);
+    assert.deepEqual(manifest.communities, []);
+    // carveout's edges say whether they are type-only; the contract's name
+    // no target symbol instead.
+    assert.ok(
+      [...manifest.cuts.outbound, ...manifest.internalImports].every(
+        (edge) => edge.targetSymbol === null && !("typeOnly" in edge),
+      ),
+    );
     // The manifest is what the API parses, field for field.
-    assert.equal(sliceManifestSchema.safeParse(walked.manifest).success, true);
+    assert.equal(sliceManifestSchema.safeParse(manifest).success, true);
+    // The shim adds carveout's asset modules, Buffer and import.meta.env.
+    assert.equal(SHIM_ADDED_LINES.length, 26);
+    assert.ok(SHIM_ADDED_LINES.includes('declare module "*.svg";'));
   } finally {
-    await rm(graphOut, { recursive: true, force: true });
-    await rm(carveoutOut, { recursive: true, force: true });
+    await rm(out, { recursive: true, force: true });
+  }
+});
+
+test("a cut carveout cannot make is the platform's analysis error", () => {
+  const codeOf = (error: unknown) =>
+    error instanceof AnalysisError ? error.code : null;
+  assert.equal(
+    codeOf(analysisErrorOf(new CutError("too_large", "big"))),
+    "too_large",
+  );
+  assert.equal(
+    codeOf(analysisErrorOf(new CutError("no_files", "none"))),
+    "tool_failed",
+  );
+  assert.equal(
+    codeOf(analysisErrorOf(new CutError("unreadable", "link"))),
+    "tool_failed",
+  );
+  const other = new Error("elsewhere");
+  assert.equal(analysisErrorOf(other), other);
+});
+
+test("a credentials file the slice imports blocks it", async () => {
+  const [out, source] = await Promise.all([
+    scratch("secret"),
+    scratch("secret-src"),
+  ]);
+  try {
+    await mkdir(join(source, "src"), { recursive: true });
+    await mkdir(join(source, "keys"), { recursive: true });
+    await writeFile(
+      join(source, "tsconfig.json"),
+      JSON.stringify({
+        compilerOptions: {
+          module: "NodeNext",
+          moduleResolution: "NodeNext",
+          resolveJsonModule: true,
+          strict: true,
+        },
+      }),
+    );
+    await writeFile(
+      join(source, "src/app.ts"),
+      'import account from "../keys/service-account.json" with { type: "json" };\nexport const kind = account.type;\n',
+    );
+    await writeFile(
+      join(source, "keys/service-account.json"),
+      '{ "type": "service_account" }\n',
+    );
+    const { manifest } = await (async () => {
+      const files = await createSliceAdapter().run({
+        sourceDir: source,
+        outDir: out,
+        params: {
+          deadlineMinutes: 30,
+          graphRunId: graphRun.id,
+          entryPoints: ["src/app.ts"],
+          budget: { maxFiles: 5, maxDepth: 2 },
+          includeInferred: false,
+        },
+        run: { snapshotId: "rsn_1", commitSha: "a".repeat(40) },
+        inputs: inputsFor(graphOf([], {})),
+        signal: new AbortController().signal,
+        log: () => {},
+      });
+      const path = files.find((file) => file.kind === "slice_manifest");
+      return {
+        manifest: JSON.parse(
+          await readFile(path?.absolutePath ?? "", "utf8"),
+        ) as SliceManifest,
+      };
+    })();
+    assert.equal(manifest.meta.ready, false);
+    assert.deepEqual(
+      manifest.blockers.filter((b) => b.code === "secret_file"),
+      [
+        {
+          code: "secret_file",
+          file: "keys/service-account.json",
+          location: null,
+          detail:
+            "keys/service-account.json is a credentials file; a slice may not include it. Import fixture values instead.",
+        },
+      ],
+    );
+  } finally {
+    await Promise.all([
+      rm(out, { recursive: true, force: true }),
+      rm(source, { recursive: true, force: true }),
+    ]);
   }
 });

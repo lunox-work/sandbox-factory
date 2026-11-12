@@ -239,12 +239,17 @@ export function snapshotBuilt(
     ),
   );
 }
-/** Bumped when the slice walk, extractor or artifact shapes change meaning. */
-export const SLICE_TOOL_VERSION = "slice@5";
+/**
+ * Bumped when the slice walk, extractor or artifact shapes change meaning.
+ * The suffix is the carveout release that analyses the slice, exactly as
+ * the worker pins it; the worker's tests fail when the two part, so a pin
+ * bump cannot reuse a slice the old release made.
+ */
+export const SLICE_TOOL_VERSION = "slice@6+carveout@0.3.0";
 /** Bumped when the generated project, harness or baseline rules change meaning. */
 export const SANDBOX_BUILD_RUN_VERSION = "sandbox_build@11";
 /** Bumped when the scope agent's tools, prompt or proposal shape change meaning. */
-export const SCOPE_TOOL_VERSION = "scope@5";
+export const SCOPE_TOOL_VERSION = "scope@6";
 /** Bumped when the fixtures agent's tools, prompt or set shape change meaning. */
 export const FIXTURES_TOOL_VERSION = "fixtures@3";
 /** Bumped when the starter agent's tools, prompt, set or project change meaning. */

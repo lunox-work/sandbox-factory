@@ -214,19 +214,21 @@ cannot be.
 
 A slice run (`src/tools/slice.ts`) names the succeeded graphify run on the
 same snapshot (`params.graphRunId`), its entry points (repository paths), a
-budget (`maxFiles`, default 40; `maxDepth`, default 3) and whether
-graphify's inferred edges are walked (`includeInferred`, default off). A
-graph that did not succeed fails it `graph_unavailable`. `reach`
-(`packages/core/src/slice`) walks the graph breadth first over import, call,
-inheritance and use relations until the budget is spent: files inside are
-_included_, dependency edges that leave the set are _cuts_, and outside
-files' imports of included modules are the _public surface_. The
-deployed worker walks with carveout instead (`walker: "carveout"`,
-`slice/carveout-walk.ts`, `carveout/api` pinned exactly): the TypeScript
-compiler's resolution from the source, passing over type-only imports and
-following a barrel only to the modules that supply the names taken; the
-manifest records it as `walkEngine`, and everything after the walk is the
-same. For
+budget (`maxFiles`, default 40; `maxDepth`, default 3) and
+`includeInferred` (graphify's inferred edges; kept in the parameters, though
+carveout's walk has none). A graph that did not succeed fails it `graph_unavailable`; the graph names
+and hashes the request but chooses no file. carveout analyses the slice
+(`slice/carveout-analysis.ts`, `carveout/api` `analyse`, pinned exactly; its
+NOTICE.md lists where it differs from the platform's analysis before it):
+it walks the TypeScript compiler's resolution from the source, passing over
+type-only imports and following a barrel only to the modules that supply
+the names taken, until the budget is spent. Files inside are _included_,
+imports that leave the set are _cuts_, and outside files' imports of
+included modules are the _public surface_. The manifest records
+`walkEngine: "carveout@<version>"`, no communities, and `toolVersion` with
+the same release (`SLICE_TOOL_VERSION`); a literal path read at runtime
+blocks nothing (`pathReads: "omit"`). An entry point the walk cannot read,
+or a slice of no file, fails `tool_failed`; one past 64 MiB, `too_large`. For
 TypeScript and JavaScript the cut modules get declaration stubs from the
 compiler's own emitter, without comments, literal values (constants, class
 properties, `as const` objects and tuples and literal annotations, widened
