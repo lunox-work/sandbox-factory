@@ -180,7 +180,8 @@ try {
       .update(sliceOut["boundary-contract.json"])
       .digest("hex"),
   );
-  assert.match(sliceOut["abstract.md"], /Community 0/);
+  // carveout's walk has no graphify communities.
+  assert.match(sliceOut["abstract.md"], /Communities \(none\)/);
   // The same slice on a file with no imports closes cleanly.
   const clean = await createSliceAdapter().run({
     sourceDir: join(directory, "checkout-a"),
