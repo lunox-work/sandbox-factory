@@ -13,7 +13,7 @@ deliberate local action so no merge can replace a database.
                        │
                   CloudFront
                  ╱           ╲
-        default              /api/*
+        default    /api/*, /mcp*, /.well-known/*
            │                    │
      S3 (private,     api.platform.lunox.work
       OAC-read)        (origin_dns keeps this
