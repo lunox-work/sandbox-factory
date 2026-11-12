@@ -780,15 +780,23 @@ test("prompts carry the ticket's spec and the seam rule", () => {
   assert.match(FIXTURES_SYSTEM_PROMPT, /sandbox\/run\.ts/);
   assert.match(FIXTURES_SYSTEM_PROMPT, /index only with a literal key/);
   // Hidden tests that a submission cannot satisfy by gaming the mocks or
-  // the public data, and that say the same thing twice.
+  // the public data, and that say the same thing twice: duediligence's
+  // brief (`prompts/sandbox/hidden-tests`, hard-wrapped), rendered for this
+  // project, then how the tools run here.
+  const hidden = HIDDEN_TESTS_SYSTEM_PROMPT.replace(/\s+/g, " ");
   for (const rule of [
     /Assert observable results first/,
     /`recordedCalls\(\)` only to confirm that a seam was reached/,
     /Call `resetMocks\(\)` at the start of each test/,
     /inputs differ from the fixtures' default data/,
     /runs twice and must give the same result/,
+    /what shortcut passes the visible cases/,
+    /under `tests\/private\/` as a `\*\.test\.ts` file/,
+    /from `\.\.\/\.\.\/sandbox\/mock\.js`/,
+    /Finish by calling `submit_hidden_tests` once/,
   ])
-    assert.match(HIDDEN_TESTS_SYSTEM_PROMPT, rule);
+    assert.match(hidden, rule);
+  assert.doesNotMatch(hidden, /\{\{/);
 });
 
 test("a starter is written with the context synced into its bounty, when it has any", () => {

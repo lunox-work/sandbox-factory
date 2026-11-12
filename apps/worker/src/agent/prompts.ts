@@ -9,7 +9,9 @@
  * prompt carries the bounty's own title, description and stack.
  */
 
+import { renderPrompt } from "duediligence/api";
 import {
+  PRIVATE_TESTS_DIR,
   STARTER_SOURCE_DIR,
   renderGherkin,
   renderSourceContext,
@@ -119,21 +121,27 @@ export function starterBountySection(input: {
   ].join("\n\n");
 }
 
+/**
+ * The hidden-tests agent's system prompt: the sandbox, then duediligence's
+ * own brief for a generated project (`prompts/sandbox/hidden-tests`), then
+ * how it runs here. The brief is the pinned engine's: a change in it
+ * arrives with a version bump of `duediligence` and bumps `sandbox_build@`
+ * with it. Rendered when this module loads, so a brief that gains a
+ * placeholder fails at the pin bump rather than reaching a model.
+ */
 export const HIDDEN_TESTS_SYSTEM_PROMPT = `${SANDBOX_CONTEXT}
 
-The sandbox for the bounty below is built, and its baseline runs: it installs, builds, runs its walkthrough and passes its public tests. What it lacks are hidden tests: the acceptance tests a developer's submission is judged by, which the developer never sees. Your job is to write them.
+The sandbox for the bounty below is built, and its baseline runs. Your job is to write its hidden tests. Here is the brief:
 
-Write each hidden test under \`tests/private/\` as a \`*.test.ts\` file, and mark it with the outcome it has on the sandbox as it is now. "fail" is a test that only a finished bounty passes: it checks the behaviour the bounty asks for. "pass" is one that guards behaviour the code already has and a finished bounty must keep. At least one must be "fail". A submission is accepted when every hidden test passes, so test what the bounty's spec says through the code's own interface, such that any correct implementation passes and an incomplete one does not. Do not test names, messages or structure the spec leaves open.
-
-A "fail" test must fail by its assertions, not by breaking. Hidden tests are compiled with the project by \`npm run build\`, so they must type-check against the code as it is now: a test that imports a function or calls a parameter the bounty has yet to add breaks the build, and the whole baseline with it. When the bounty adds something new, reach it at run time inside the test, for example \`const mod: Record<string, unknown> = await import("../../src/feature.js")\`, assert that it exists, and call it through a type you declare in the test. A test that throws while its file loads, or imports something that is not there, is an error, never the failure it is expected to show. A "pass" is read from the runner's report, not only its exit code: at least one test must run to completion and none may be skipped, todo or cancelled, and a file that ends early or declares no test is an error. Do not name a test after a file.
-
-A submission is graded by these tests, so write them so that it can only pass by doing the work:
-- Assert observable results first: what the code returns, throws or leaves in the state it exposes. Use \`recordedCalls()\` only to confirm that a seam was reached, and with what, never as the only evidence that the behaviour is there.
-- Call \`resetMocks()\` at the start of each test, for example in \`beforeEach\`, and install the behaviour each test needs inside it, so no test depends on what another left behind.
-- Include at least one case whose inputs differ from the fixtures' default data and the walkthrough's: give the mocked calls other values with \`mockImplementation(path, fn)\` inside that test, so an implementation that hard-codes the public data fails. Never use the exact fixture values as a test's only inputs.
-- Each hidden test runs twice and must give the same result for every test both times: nothing may depend on timing, randomness, the clock or the order the tests run in.
-
-The toolchain is fixed: Node 22, TypeScript 5.9, ES modules. Tests use \`node:test\` and \`node:assert/strict\`. Import the project's code with relative paths from the test's folder and \`.js\` extensions; from \`tests/private/\` a file at \`src/feature.ts\` is \`../../src/feature.js\`. Cut modules are recording mocks; import \`{ mockImplementation, recordedCalls, resetMocks }\` from \`../../sandbox/mock.js\` to give a mocked call behaviour or to check what the code asked of it. Packages compile as \`any\`. Nothing may reach the network, a database or any outside service.
+${renderPrompt("sandbox/hidden-tests", {
+  hiddenDir: PRIVATE_TESTS_DIR,
+  testPattern: "*.test.ts",
+  build: "npm run build",
+  importExample: "../../src/feature.js",
+  mockModule: "../../sandbox/mock.js",
+  toolchain:
+    "Node 22, TypeScript 5.9, ES modules. Tests use `node:test` and `node:assert/strict`, with `.js` extensions on relative imports.",
+}).trim()}
 
 The files you need most are quoted below, so write from them rather than reading them again; the repository tools show the rest of the developer's project as it is built. The tests compile under the quoted \`tsconfig.json\`, so write to its strictness: under \`noUncheckedIndexedAccess\` an indexed element or a \`match\` group may be \`undefined\` and must be narrowed before use. Use \`run_hidden_tests\` to build the project with your tests and run its baseline in a fresh job; it shows each step, what each test did against what you said it would, and the output of those that surprised you. Runs are limited. Finish by calling \`submit_hidden_tests\` once with a short summary of what the tests check. When your last \`run_hidden_tests\` passed, submit with \`tests: null\`: that set is accepted as it ran, with no need to write it out again. Tests given instead are run through the baseline again and accepted when it passes: the project builds and runs, the public tests pass and each hidden test does what you said it would.`;
 
