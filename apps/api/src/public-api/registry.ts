@@ -44,6 +44,8 @@ import {
   bountySizingResponseSchema,
   buildAllSchema,
   postBountySchema,
+  proposalDecisionsResponseSchema,
+  proposalSpecDocumentResponseSchema,
   createRunSchema,
   createSandboxSchema,
   createSandboxVersionSchema,
@@ -552,6 +554,18 @@ export const PUBLIC_ROUTES: readonly PublicRoute[] = [
     "A proposal's spec revisions",
     "Bounties",
     proposalSpecRevisionsResponseSchema,
+  ),
+  read(
+    `${ORG}/proposals/:id/spec/gherkin`,
+    "A proposal's spec as Gherkin with its Decided: list",
+    "Bounties",
+    proposalSpecDocumentResponseSchema,
+  ),
+  read(
+    `${ORG}/proposals/:id/decisions`,
+    "A spec's decisions, their confirmation and where a person confirms",
+    "Bounties",
+    proposalDecisionsResponseSchema,
   ),
   {
     method: "POST",

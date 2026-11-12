@@ -245,6 +245,50 @@ const TOOLS = [
       `${org(workspace)}/proposals/${enc(proposalId)}`,
   }),
   tool({
+    name: "get_decisions",
+    description:
+      "Read what a proposal's spec decided where the bounty was silent: its decisions (d1, d2…), whether a person confirmed them, and the spec as Gherkin with its Decided: list. Hidden tests are written to confirmed decisions.",
+    input: { proposalId: id("proposal") },
+    scoped: true,
+    path: ({ proposalId }, workspace) =>
+      `${org(workspace)}/proposals/${enc(proposalId)}/decisions`,
+  }),
+  tool({
+    name: "confirm_link",
+    description:
+      "Get the web page where a person confirms a proposal's decisions. Decisions are confirmed by a person, never by a tool: give them the link.",
+    input: { proposalId: id("proposal") },
+    scoped: true,
+    path: ({ proposalId }, workspace) =>
+      `${org(workspace)}/proposals/${enc(proposalId)}/decisions`,
+    answer: (body: unknown): CallToolResult => {
+      const read = body as {
+        confirmUrl?: unknown;
+        confirmation?: unknown;
+        decisions?: unknown[];
+      } | null;
+      if (typeof read?.confirmUrl !== "string")
+        return toolError(502, {
+          error: "The API answered no link.",
+          code: "no_url",
+        });
+      const done =
+        read.confirmation !== null && read.confirmation !== undefined;
+      return {
+        content: [
+          {
+            type: "text",
+            text: done
+              ? `These decisions are already confirmed. The proposal's page: ${read.confirmUrl}`
+              : (read.decisions?.length ?? 0) === 0
+                ? `This proposal's spec has no decisions to confirm. Its page: ${read.confirmUrl}`
+                : `Ask the person to open this link while signed in to Lunox, read the decisions and confirm them there: ${read.confirmUrl}`,
+          },
+        ],
+      };
+    },
+  }),
+  tool({
     name: "list_repositories",
     description:
       "List the GitHub repositories the workspace registered, to find a repository or its latest snapshot.",
@@ -451,6 +495,8 @@ export const TOOLSETS: Readonly<Record<string, readonly ToolName[]>> = {
     "import_github_issue",
     "import_jira_issue",
     "size_bounty",
+    "get_decisions",
+    "confirm_link",
   ],
   "/mcp/carveout": [
     "list_workspaces",

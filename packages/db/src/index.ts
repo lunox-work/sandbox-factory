@@ -117,6 +117,11 @@ export type {
   WorkspaceSettingsStore,
 } from "./workspace-settings.js";
 export { createBountySpecStore } from "./bounty-specs.js";
+export { createDecisionConfirmationStore } from "./decision-confirmations.js";
+export type {
+  DecisionConfirmationStore,
+  StoredDecisionConfirmation,
+} from "./decision-confirmations.js";
 export type {
   BountySpecStore,
   NewBountySpec,

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
@@ -1818,4 +1819,214 @@ test("the rubric's size is refused while it has none", async () => {
     { method: "POST", headers, body: JSON.stringify({}) },
   );
   assert.equal(invalid.status, 400);
+});
+
+/* A spec's decisions, their confirmation, and the spec as duediligence reads it. */
+
+const decisionsPath = "/api/v1/orgs/org_1/proposals/bpr_1/decisions";
+const decidedSpec = {
+  ...storedSpec,
+  draft: {
+    ...storedSpec.draft,
+    assumptions: ["Retries stop after three attempts.", "Only cards retry."],
+  },
+};
+const decidedHash = createHash("sha256")
+  .update(
+    "d1\tRetries stop after three attempts.\nd2\tOnly cards retry.\n",
+    "utf8",
+  )
+  .digest("hex");
+
+function decisionsHarness(
+  options: {
+    role?: string;
+    specRevision?: number | null;
+    store?: boolean;
+  } = {},
+) {
+  const confirmed: unknown[] = [];
+  let stored: { decisionsSha256: string; confirmedBy: string } | null = null;
+  const proposal = reviewProposal({
+    specRevision: options.specRevision === undefined ? 2 : options.specRevision,
+  });
+  const app = createApp({
+    corsOrigins: ["https://app.test"],
+    auth: fakeAuth(),
+    organizations: {
+      roleOf: () => Promise.resolve(options.role ?? "owner"),
+    } as never,
+    pricing: {
+      rateCards: {} as never,
+      runs: {} as never,
+      boards: {} as never,
+      issues: {} as never,
+      bounties: {} as never,
+      appUrl: "https://app.test",
+      organizationSlug: async () => "acme",
+      proposals: {
+        get: (organizationId: string, id: string) =>
+          Promise.resolve(
+            organizationId === "org_1" && id === "bpr_1" ? proposal : null,
+          ),
+      } as never,
+      specs: {
+        get: (_org: string, _id: string, revision: number) =>
+          Promise.resolve(revision === 9 ? null : { ...decidedSpec, revision }),
+      } as never,
+      ...(options.store === false
+        ? {}
+        : {
+            decisions: {
+              get: async (
+                _org: string,
+                _id: string,
+                _revision: number,
+                sha: string,
+              ) =>
+                stored !== null && stored.decisionsSha256 === sha
+                  ? {
+                      id: "dcf_1",
+                      proposalId: "bpr_1",
+                      specRevision: 2,
+                      decisionsSha256: sha,
+                      confirmedBy: stored.confirmedBy,
+                      confirmedAt: "2026-11-12T00:00:00.000Z",
+                    }
+                  : null,
+              confirm: async (input: {
+                decisionsSha256: string;
+                confirmedBy: string;
+              }) => {
+                confirmed.push(input);
+                stored = input;
+                return {
+                  id: "dcf_1",
+                  proposalId: "bpr_1",
+                  specRevision: 2,
+                  decisionsSha256: input.decisionsSha256,
+                  confirmedBy: input.confirmedBy,
+                  confirmedAt: "2026-11-12T00:00:00.000Z",
+                };
+              },
+            },
+          }),
+    },
+  });
+  return { app, confirmed };
+}
+
+test("a spec's decisions are its assumptions, hashed, unconfirmed until a person confirms them in the web app", async () => {
+  const state = decisionsHarness();
+  const read = await state.app.request(decisionsPath, { headers });
+  assert.equal(read.status, 200);
+  assert.deepEqual(await read.json(), {
+    specRevision: 2,
+    decisions: [
+      { key: "d1", text: "Retries stop after three attempts." },
+      { key: "d2", text: "Only cards retry." },
+    ],
+    decisionsSha256: decidedHash,
+    confirmation: null,
+    confirmUrl: `https://app.test/bounties/acme/${reviewProposal({}).bountyId}?tab=price#decisions`,
+  });
+  // A stale hash or revision is refused, and nothing is recorded.
+  for (const body of [
+    { specRevision: 2, decisionsSha256: "0".repeat(64) },
+    { specRevision: 1, decisionsSha256: decidedHash },
+  ]) {
+    const stale = await state.app.request(`${decisionsPath}/confirm`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+    });
+    assert.equal(stale.status, 409);
+  }
+  assert.equal(
+    (
+      await state.app.request(`${decisionsPath}/confirm`, {
+        method: "POST",
+        headers,
+        body: "{}",
+      })
+    ).status,
+    400,
+  );
+  assert.deepEqual(state.confirmed, []);
+  const confirm = await state.app.request(`${decisionsPath}/confirm`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ specRevision: 2, decisionsSha256: decidedHash }),
+  });
+  assert.equal(confirm.status, 200);
+  const body = (await confirm.json()) as {
+    confirmation: { confirmedBy: string } | null;
+  };
+  assert.ok(body.confirmation !== null);
+  assert.equal(state.confirmed.length, 1);
+});
+
+test("decisions are confirmed by owners and admins only, where the deployment stores them", async () => {
+  const member = decisionsHarness({ role: "member" });
+  const denied = await member.app.request(`${decisionsPath}/confirm`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ specRevision: 2, decisionsSha256: decidedHash }),
+  });
+  assert.equal(denied.status, 403);
+  const storeless = decisionsHarness({ store: false });
+  const unavailable = await storeless.app.request(`${decisionsPath}/confirm`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ specRevision: 2, decisionsSha256: decidedHash }),
+  });
+  assert.equal(unavailable.status, 503);
+  // A proposal with no spec has no decisions.
+  const unspecced = decisionsHarness({ specRevision: null });
+  const none = (await (
+    await unspecced.app.request(decisionsPath, { headers })
+  ).json()) as { specRevision: number | null; decisions: unknown[] };
+  assert.deepEqual([none.specRevision, none.decisions], [null, []]);
+  assert.equal(
+    (
+      await unspecced.app.request(
+        "/api/v1/orgs/org_1/proposals/bpr_other/decisions",
+        { headers },
+      )
+    ).status,
+    404,
+  );
+});
+
+test("the spec as duediligence reads it: Gherkin, then the Decided: list", async () => {
+  const state = decisionsHarness();
+  const response = await state.app.request(`${specPath}/gherkin`, { headers });
+  assert.equal(response.status, 200);
+  const body = (await response.json()) as {
+    specRevision: number;
+    document: string;
+  };
+  assert.equal(body.specRevision, 2);
+  assert.ok(
+    body.document.endsWith(
+      "\nDecided:\n\n- Retries stop after three attempts.\n- Only cards retry.\n",
+    ),
+  );
+  assert.equal(
+    (await state.app.request(`${specPath}/gherkin?revision=9`, { headers }))
+      .status,
+    404,
+  );
+  assert.equal(
+    (await state.app.request(`${specPath}/gherkin?revision=x`, { headers }))
+      .status,
+    400,
+  );
+  const unspecced = decisionsHarness({ specRevision: null });
+  assert.deepEqual(
+    await (
+      await unspecced.app.request(`${specPath}/gherkin`, { headers })
+    ).json(),
+    { specRevision: null, document: null },
+  );
 });

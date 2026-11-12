@@ -41,6 +41,7 @@ import type {
   StepResultDto,
 } from "@sandbox-factory/shared";
 import {
+  Check,
   ChevronRight,
   CircleHelp,
   CornerDownRight,
@@ -201,6 +202,64 @@ export function useProposalSpec(
       void query.refetch();
     },
   };
+}
+
+/**
+ * A spec's decisions and their confirmation (`GET …/decisions`), and the
+ * act of confirming them. Read only for a proposal with a spec.
+ */
+export function useDecisions(
+  base: string,
+  proposalId: string,
+  specRevision: number | null | undefined,
+): DecisionsControl | undefined {
+  const owner = decodeURIComponent(base.split("/").at(-1) ?? "");
+  const userId = useUserId();
+  const [state, setState] = useState<"idle" | "pending" | "failed">("idle");
+  const query = useQuery({
+    queryKey: queryKeys.resource(
+      userId,
+      owner,
+      "proposal-decisions",
+      proposalId,
+      specRevision,
+    ),
+    enabled: specRevision != null,
+    queryFn: ({ signal }) =>
+      clients.pricing.decisions(owner, proposalId, signal),
+  });
+  const read = query.data;
+  if (specRevision == null || read === undefined || read.specRevision === null)
+    return undefined;
+  const { specRevision: revision, decisionsSha256 } = read;
+  return {
+    count: read.decisions.length,
+    confirmedAt: read.confirmation?.confirmedAt ?? null,
+    state,
+    confirm: async () => {
+      if (decisionsSha256 === null) return;
+      setState("pending");
+      try {
+        await clients.pricing.confirmDecisions(owner, proposalId, {
+          specRevision: revision,
+          decisionsSha256,
+        });
+        await query.refetch();
+        setState("idle");
+      } catch {
+        setState("failed");
+      }
+    },
+  };
+}
+
+/** What the Assumptions card offers about confirming them. */
+export interface DecisionsControl {
+  readonly count: number;
+  /** When a person confirmed these decisions; null until one does. */
+  readonly confirmedAt: string | null;
+  readonly state: "idle" | "pending" | "failed";
+  readonly confirm: () => Promise<void>;
 }
 
 /**
@@ -527,6 +586,8 @@ export function ProposalSpec({
   changes,
   sinceSized,
   view,
+  decisions,
+  canConfirm = false,
 }: {
   read: SpecRead;
   onRetry: () => void;
@@ -556,6 +617,10 @@ export function ProposalSpec({
    * spec follows it and has no picker of its own.
    */
   view?: RevisionView;
+  /** The decisions' confirmation, under the Assumptions; absent, none is shown. */
+  decisions?: DecisionsControl | undefined;
+  /** Whether the reader may confirm them (owners and admins). */
+  canConfirm?: boolean;
 }) {
   const {
     read: shown,
@@ -600,6 +665,8 @@ export function ProposalSpec({
           }
           changes={viewing === null ? changes : undefined}
           diff={diff}
+          decisions={viewing === null ? decisions : undefined}
+          canConfirm={canConfirm}
         />
       )}
     </div>
@@ -622,6 +689,8 @@ function SpecBody({
   onView,
   changes,
   diff,
+  decisions,
+  canConfirm,
 }: {
   spec: BountySpecDto;
   canAnalyze: boolean;
@@ -635,6 +704,9 @@ function SpecBody({
   onView: (revision: number) => void;
   changes: SpecChanges | undefined;
   diff: SpecDiff | undefined;
+  /** The current revision's decisions; absent for an earlier one. */
+  decisions: DecisionsControl | undefined;
+  canConfirm: boolean;
 }) {
   const { draft } = spec;
   // Each kind with what it has, and after it what the other side of the
@@ -905,6 +977,9 @@ function SpecBody({
         icon={Lightbulb}
         tone="text-sky-500"
       />
+      {decisions !== undefined && decisions.count > 0 && (
+        <DecisionsConfirm decisions={decisions} canConfirm={canConfirm} />
+      )}
     </div>
   );
 }
@@ -1144,6 +1219,59 @@ export function Steps({
         </li>
       ))}
     </ol>
+  );
+}
+
+/**
+ * Under the Assumptions: whether a person confirmed them as the spec's
+ * decisions, which hidden tests are written to, and the button that does.
+ * `#decisions` is where the confirm link an agent hands over lands.
+ */
+function DecisionsConfirm({
+  decisions,
+  canConfirm,
+}: {
+  decisions: DecisionsControl;
+  canConfirm: boolean;
+}) {
+  return (
+    <section
+      id="decisions"
+      aria-label="Decisions"
+      className="bg-card flex flex-wrap items-center justify-between gap-3 rounded-xl border px-5 py-3 text-sm"
+    >
+      {decisions.confirmedAt !== null ? (
+        <p className="flex items-center gap-2">
+          <Check aria-hidden="true" className="size-4 text-emerald-500" />
+          Decisions confirmed{" "}
+          {new Date(decisions.confirmedAt).toLocaleDateString()}.
+        </p>
+      ) : (
+        <>
+          <p className="text-muted-foreground">
+            {canConfirm
+              ? "Hidden tests are written to these decisions. Confirm them once you have read them."
+              : "Waiting for an owner or admin to confirm these decisions."}
+            {decisions.state === "failed" && (
+              <span role="alert" className="text-destructive block">
+                They could not be confirmed. The spec may have changed: read it
+                again and retry.
+              </span>
+            )}
+          </p>
+          {canConfirm && (
+            <Button
+              type="button"
+              size="sm"
+              disabled={decisions.state === "pending"}
+              onClick={() => void decisions.confirm()}
+            >
+              Confirm decisions
+            </Button>
+          )}
+        </>
+      )}
+    </section>
   );
 }
 

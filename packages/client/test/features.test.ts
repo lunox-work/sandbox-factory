@@ -338,3 +338,48 @@ test("a workspace's settings are read and changed at its own path", async () => 
     },
   ]);
 });
+
+test("a spec's decisions are read, and confirmed with the revision and hash read", async () => {
+  const calls: { url: string; method: string; body: unknown }[] = [];
+  const answer = {
+    specRevision: 2,
+    decisions: [{ key: "d1", text: "Retries stop after three." }],
+    decisionsSha256: "a".repeat(64),
+    confirmation: null,
+    confirmUrl: "https://app.test/bounties/acme/bty_1?tab=price#decisions",
+  };
+  const pricing = new PricingClient({
+    baseUrl: "",
+    fetch: (async (url: string | URL | Request, init?: RequestInit) => {
+      calls.push({
+        url: String(url),
+        method: init?.method ?? "GET",
+        body:
+          init?.body === undefined ? undefined : JSON.parse(String(init.body)),
+      });
+      return Response.json(answer);
+    }) as typeof fetch,
+  });
+  assert.deepEqual(await pricing.decisions("acme", "bpr 1"), answer);
+  assert.deepEqual(
+    await pricing.confirmDecisions("acme", "bpr 1", {
+      specRevision: 2,
+      decisionsSha256: "a".repeat(64),
+    }),
+    answer,
+  );
+  assert.deepEqual(
+    calls.map(({ url, method }) => [
+      url.replace(/^.*\/orgs\/acme/, ""),
+      method,
+    ]),
+    [
+      ["/proposals/bpr%201/decisions", "GET"],
+      ["/proposals/bpr%201/decisions/confirm", "POST"],
+    ],
+  );
+  assert.deepEqual(calls[1]?.body, {
+    specRevision: 2,
+    decisionsSha256: "a".repeat(64),
+  });
+});

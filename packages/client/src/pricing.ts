@@ -1,7 +1,11 @@
-import type { RateCardValuesDto } from "@sandbox-factory/shared";
+import type {
+  ConfirmDecisionsRequest,
+  RateCardValuesDto,
+} from "@sandbox-factory/shared";
 import {
   proposalActionResponseSchema,
   proposalCategoriesDtoSchema,
+  proposalDecisionsResponseSchema,
   proposalDetailResponseSchema,
   proposalListResponseSchema,
   proposalProfileResponseSchema,
@@ -96,6 +100,28 @@ export class PricingClient extends ApiClient {
       await this.request(
         `${ownerPath(owner)}/proposals/${encodeURIComponent(id)}/spec${revision === undefined ? "" : `?revision=${revision}`}`,
         { signal },
+      ),
+    );
+  }
+  /** A spec's decisions and whether a person confirmed them. */
+  async decisions(owner: string, id: string, signal?: AbortSignal) {
+    return proposalDecisionsResponseSchema.parse(
+      await this.request(
+        `${ownerPath(owner)}/proposals/${encodeURIComponent(id)}/decisions`,
+        { signal },
+      ),
+    );
+  }
+  /** Confirms the decisions read (a person's session only). */
+  async confirmDecisions(
+    owner: string,
+    id: string,
+    input: ConfirmDecisionsRequest,
+  ) {
+    return proposalDecisionsResponseSchema.parse(
+      await this.request(
+        `${ownerPath(owner)}/proposals/${encodeURIComponent(id)}/decisions/confirm`,
+        { method: "POST", body: JSON.stringify(input) },
       ),
     );
   }

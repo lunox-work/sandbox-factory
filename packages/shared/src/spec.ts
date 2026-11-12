@@ -240,3 +240,49 @@ export type ProposalSpecResponse = z.infer<typeof proposalSpecResponseSchema>;
 export type ProposalSpecRevisionsResponse = z.infer<
   typeof proposalSpecRevisionsResponseSchema
 >;
+
+/** A spec decision as `specDecisions` keys it. */
+export const specDecisionDtoSchema = z.object({
+  key: z.string().regex(/^d\d+$/),
+  text: z.string(),
+});
+
+/**
+ * `GET /proposals/:id/decisions`: the current spec revision's decisions,
+ * the hash a confirmation binds to, who confirmed them (null until a
+ * person does) and the web page where a person confirms. `specRevision` is
+ * null, and the list empty, for a proposal with no spec.
+ */
+export const proposalDecisionsResponseSchema = z.object({
+  specRevision: z.number().int().positive().nullable(),
+  decisions: z.array(specDecisionDtoSchema),
+  decisionsSha256: z.string().length(64).nullable(),
+  confirmation: z
+    .object({
+      confirmedBy: z.string(),
+      confirmedAt: z.iso.datetime(),
+    })
+    .nullable(),
+  confirmUrl: z.string(),
+});
+
+/**
+ * `POST /proposals/:id/decisions/confirm`, a person's act in the web app
+ * (never a token): the revision and hash they read, so a spec that changed
+ * since is refused rather than confirmed unseen.
+ */
+export const confirmDecisionsSchema = z.strictObject({
+  specRevision: z.number().int().positive(),
+  decisionsSha256: z.string().regex(/^[0-9a-f]{64}$/),
+});
+
+/** `GET /proposals/:id/spec/gherkin`: the spec as duediligence reads one. */
+export const proposalSpecDocumentResponseSchema = z.object({
+  specRevision: z.number().int().positive().nullable(),
+  document: z.string().nullable(),
+});
+
+export type ProposalDecisionsResponse = z.infer<
+  typeof proposalDecisionsResponseSchema
+>;
+export type ConfirmDecisionsRequest = z.infer<typeof confirmDecisionsSchema>;
