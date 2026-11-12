@@ -16,7 +16,7 @@ import {
   npmPackageTypes,
   PUBLIC_REGISTRY,
   typesPackageOf,
-} from "../src/tools/slice/package-types.js";
+} from "carveout/extract";
 
 test("the lockfile's root install is what npm installs again, an alias as one", async () => {
   const root = await mkdtemp(join(tmpdir(), "locked-spec-"));

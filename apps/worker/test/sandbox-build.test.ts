@@ -50,7 +50,7 @@ import {
   tapPoints,
 } from "../src/tools/sandbox-build.js";
 import { stubModules } from "../src/tools/slice-run.js";
-import { sha256 } from "../src/tools/slice/hash.js";
+import { sha256 } from "carveout/extract";
 import type { ToolInputs, ToolRunInput } from "../src/tools/adapter.js";
 import type { contextRun } from "./context-fixtures.js";
 import { fixture, sha, slice, sliceRun, stamp } from "./fixture-slice.js";

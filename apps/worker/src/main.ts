@@ -42,7 +42,7 @@ import { createGraphifyAdapter } from "./tools/graphify.js";
 import { createSandboxBuildAdapter } from "./tools/sandbox-build.js";
 import { createScopeAdapter } from "./tools/scope.js";
 import { createSliceAdapter } from "./tools/slice.js";
-import { npmPackageTypes } from "./tools/slice/package-types.js";
+import { npmPackageTypes } from "carveout/extract";
 import { createStarterAdapter } from "./tools/starter.js";
 import { createSubmissionGradeAdapter } from "./tools/submission-grade.js";
 

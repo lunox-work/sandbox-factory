@@ -668,7 +668,7 @@ and for credentials (`packages/core/src/sandbox/secrets.ts`) and blocks
 module from its declarations, the repository's own packages included,
 resolved to their source (`workspaceModuleResolver`). The worker fetches the
 published types of the public packages a slice reads
-(`apps/worker/src/tools/slice/package-types.ts`: the lockfile's versions,
+(`npmPackageTypes` from `carveout/extract`: the lockfile's versions,
 install scripts off, the public registry only, cached by package set); when
 it cannot, those packages are untyped. The fixture compile blocks only on
 errors the stubs add: one the source shares under untyped packages is kept as

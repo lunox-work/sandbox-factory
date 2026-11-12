@@ -37,8 +37,7 @@ import {
   analyseWithCarveout,
   type SliceAnalysis,
 } from "./slice/carveout-analysis.js";
-import { sha256 } from "./slice/hash.js";
-import type { PackageTypesFetcher } from "./slice/package-types.js";
+import { type PackageTypesFetcher, sha256 } from "carveout/extract";
 
 export type { SliceAnalysis } from "./slice/carveout-analysis.js";
 

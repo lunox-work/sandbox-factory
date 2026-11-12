@@ -3,10 +3,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
-import {
-  isPublicRegistry,
-  packageRegistries,
-} from "../src/tools/package-registry.js";
+import { isPublicRegistry, packageRegistries } from "carveout/extract";
 
 async function repository(files: Record<string, unknown>) {
   const root = await mkdtemp(join(tmpdir(), "package-registry-"));

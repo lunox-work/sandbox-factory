@@ -180,7 +180,7 @@ export const ANALYSIS_TOOLS = [
 export type AnalysisTool = (typeof ANALYSIS_TOOLS)[number];
 export const GRAPHIFY_TOOL_VERSION = "graphifyy@0.4.18+driver-1";
 /** Bumped when an extractor, a visibility rule or the index's shape changes meaning. */
-export const ABSTRACTIONS_TOOL_VERSION = "abstractions@3";
+export const ABSTRACTIONS_TOOL_VERSION = "abstractions@4";
 /** Bumped when a recognizer, the replay rules or the model's shape change meaning. */
 export const DATA_MODEL_TOOL_VERSION = "data_model@1";
 /** Bumped when which documents are kept, or how, changes. */
@@ -247,13 +247,13 @@ export function snapshotBuilt(
  */
 export const SLICE_TOOL_VERSION = "slice@6+carveout@0.3.0";
 /** Bumped when the generated project, harness or baseline rules change meaning. */
-export const SANDBOX_BUILD_RUN_VERSION = "sandbox_build@11";
+export const SANDBOX_BUILD_RUN_VERSION = "sandbox_build@12";
 /** Bumped when the scope agent's tools, prompt or proposal shape change meaning. */
 export const SCOPE_TOOL_VERSION = "scope@6";
 /** Bumped when the fixtures agent's tools, prompt or set shape change meaning. */
-export const FIXTURES_TOOL_VERSION = "fixtures@3";
+export const FIXTURES_TOOL_VERSION = "fixtures@4";
 /** Bumped when the starter agent's tools, prompt, set or project change meaning. */
-export const STARTER_TOOL_VERSION = "sandbox_starter@4";
+export const STARTER_TOOL_VERSION = "sandbox_starter@5";
 /** Bumped when the grading tree, its commands or the verdict change meaning. */
 export const SUBMISSION_GRADE_TOOL_VERSION = "submission_grade@2";
 /**

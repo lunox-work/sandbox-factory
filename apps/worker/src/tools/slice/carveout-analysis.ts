@@ -28,7 +28,7 @@ import {
   type SliceParams,
 } from "sandbox-factory";
 import { AnalysisError } from "../../errors.js";
-import { sha256 } from "./hash.js";
+import { sha256 } from "carveout/extract";
 
 /** The carveout release installed, as package.json pins it. */
 export const CARVEOUT_VERSION = (

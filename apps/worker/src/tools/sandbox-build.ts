@@ -29,8 +29,15 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { isBuiltin } from "node:module";
 import { dirname, join } from "node:path";
-import { nearestCompilerOptions } from "./compiler-config.js";
-export { nearestCompilerOptions } from "./compiler-config.js";
+import {
+  isNodeBuiltin,
+  nearestCompilerOptions,
+  NODE_BUILTINS,
+  packageModules,
+  packageUses,
+  sha256,
+} from "carveout/extract";
+export { nearestCompilerOptions } from "carveout/extract";
 import {
   ENV_FILE,
   EVALUATION_LIMITS,
@@ -103,9 +110,6 @@ import {
 } from "./pseudonyms.js";
 import type { WrittenPseudonyms } from "./pseudonyms.js";
 import { loadSliceRun, readIncludedSource } from "./slice-run.js";
-import { sha256 } from "./slice/hash.js";
-import { packageModules, packageUses } from "./slice/fixture.js";
-import { NODE_BUILTINS, isNodeBuiltin } from "./slice/typescript.js";
 import type { RunTiming } from "../timing.js";
 import { together } from "../together.js";
 

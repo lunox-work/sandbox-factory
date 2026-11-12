@@ -64,7 +64,7 @@ import { loadAbstractions, loadDataModel, loadSeams } from "./context-runs.js";
 import type { ArtifactFile, ToolAdapter, ToolRunInput } from "./adapter.js";
 import { analyseSlice, loadGraph } from "./slice.js";
 import type { LoadedGraph, SliceAnalysis } from "./slice.js";
-import type { PackageTypesFetcher } from "./slice/package-types.js";
+import type { PackageTypesFetcher } from "carveout/extract";
 
 /** Candidate requests one run may check before it must submit. */
 export const SCOPE_CHECKS_MAX = 8;

@@ -616,7 +616,7 @@ test("the starter agent checks, runs and submits a starter that is built as the 
     assert.equal(manifest.sliceRunId, null);
     assert.equal(manifest.sourceSnapshotId, null);
     assert.equal(manifest.starterSha256, sha(setText));
-    assert.equal(manifest.toolVersion, "sandbox_starter@4");
+    assert.equal(manifest.toolVersion, "sandbox_starter@5");
     assert.equal(
       manifest.transformConfigSha256,
       sha(

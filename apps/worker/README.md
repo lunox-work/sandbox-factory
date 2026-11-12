@@ -216,10 +216,13 @@ A slice run (`src/tools/slice.ts`) names the succeeded graphify run on the
 same snapshot (`params.graphRunId`), its entry points (repository paths), a
 budget (`maxFiles`, default 40; `maxDepth`, default 3) and
 `includeInferred` (graphify's inferred edges; kept in the parameters, though
-carveout's walk has none). A graph that did not succeed fails it `graph_unavailable`; the graph names
-and hashes the request but chooses no file. carveout analyses the slice
-(`slice/carveout-analysis.ts`, `carveout/api` `analyse`, pinned exactly; its
-NOTICE.md lists where it differs from the platform's analysis before it):
+carveout's walk has none). A graph that did not succeed fails it
+`graph_unavailable`; the graph names and hashes the request but chooses no
+file. carveout analyses the slice (`slice/carveout-analysis.ts`,
+`carveout/api` `analyse`, pinned exactly; its NOTICE.md lists where it
+differs from the platform's analysis before it). The extractor, fixture
+compile, compiler configuration, package types and registries the other
+tools use are `carveout/extract`, at the same pin. carveout's analysis:
 it walks the TypeScript compiler's resolution from the source, passing over
 type-only imports and following a barrel only to the modules that supply
 the names taken, until the budget is spent. Files inside are _included_,
@@ -260,7 +263,7 @@ specifier and environment variable name; values are never read. Each
 package records whether it is a workspace package (`package.json`
 `workspaces`, `pnpm-workspace.yaml`, `lerna.json`; `*` and `**` globs) and
 the registry its lockfile and npm or Yarn configuration say it comes from
-(`src/tools/package-registry.ts`).
+(`packageRegistries` in `carveout/extract`).
 
 ### Sandbox build
 

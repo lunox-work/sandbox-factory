@@ -17,25 +17,25 @@ import { createSliceAdapter, sliceArtifactKind } from "../src/tools/slice.js";
 import { analysisErrorOf } from "../src/tools/slice/carveout-analysis.js";
 import {
   compileFixture,
-  packageShim,
-  packageUses,
-  UNTYPED_PACKAGE_CODES,
-  UNTYPED_PACKAGE_OPTIONS,
-} from "../src/tools/slice/fixture.js";
-import { gitBlobId, gitFileMode, sha256 } from "../src/tools/slice/hash.js";
-import type { PackageTypes } from "../src/tools/slice/package-types.js";
-import {
   declarationPathFor,
   extractTypeScriptBoundary,
   filterDeclaration,
+  gitBlobId,
+  gitFileMode,
   importsOf,
   isDataPath,
   isNodeBuiltin,
   loadConfig,
   packageNameOf,
+  packageShim,
+  type PackageTypes,
+  packageUses,
   sanitizeDeclaration,
+  sha256,
   stubPathFor,
-} from "../src/tools/slice/typescript.js";
+  UNTYPED_PACKAGE_CODES,
+  UNTYPED_PACKAGE_OPTIONS,
+} from "carveout/extract";
 import type { ToolInputs, ToolRunInput } from "../src/tools/adapter.js";
 import { SHIM_ADDED_LINES, goldenRun, goldenScenario } from "./slice-golden.js";
 
@@ -1711,10 +1711,11 @@ test("a program past the file ceiling stops with a blocker instead of compiling 
         {
           from: "a.ts",
           to: "b.ts",
-          relation: "imports",
+          relation: "imports" as const,
           specifier: "./b.js",
           location: null,
-          targetSymbol: null,
+          // carveout's edge says whether it is type-only, not which symbol.
+          typeOnly: false,
         },
       ],
       inbound: [],

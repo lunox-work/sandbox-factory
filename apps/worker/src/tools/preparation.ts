@@ -22,7 +22,7 @@ import {
 import { z } from "zod";
 import type { ArtifactFile, ToolInputs } from "./adapter.js";
 import type { WrittenPseudonyms } from "./pseudonyms.js";
-import { sha256 } from "./slice/hash.js";
+import { sha256 } from "carveout/extract";
 
 /** Where a preparation keeps its name table. */
 export const PREPARED_PSEUDONYMS_PATH = "pseudonym-table.json";

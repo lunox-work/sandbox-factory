@@ -29,7 +29,7 @@ import type {
   SpecDraft,
   StarterSubmission,
 } from "sandbox-factory";
-import { compileFixture } from "./slice/fixture.js";
+import { compileFixture } from "carveout/extract";
 
 const PROBLEMS_MAX = 40;
 

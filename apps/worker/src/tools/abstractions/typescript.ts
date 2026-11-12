@@ -27,15 +27,15 @@ import type { AbstractionOmission, SurfaceKind } from "sandbox-factory";
 import ts from "typescript-compiler";
 import {
   ALL,
-  PROGRAM_FILES_MAX,
-  TYPESCRIPT_EXTRACTOR_VERSION,
   boundedHost,
   extractionOptions,
   filterDeclaration,
   isNodeBuiltin,
   loadConfig,
-} from "../slice/typescript.js";
-import type { LoadedConfig } from "../compiler-config.js";
+  type LoadedConfig,
+  PROGRAM_FILES_MAX,
+  TYPESCRIPT_EXTRACTOR_VERSION,
+} from "carveout/extract";
 
 /** A type an export names: another module's export, or a package. */
 export type RawReference =
