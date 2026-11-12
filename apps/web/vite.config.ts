@@ -108,6 +108,15 @@ export default defineConfig(({ mode }) => {
           target: env["VITE_API_URL"] ?? "http://localhost:4000",
           changeOrigin: true,
         },
+        // MCP and OAuth discovery, at the API's root as in production.
+        "/mcp": {
+          target: env["VITE_API_URL"] ?? "http://localhost:4000",
+          changeOrigin: true,
+        },
+        "/.well-known": {
+          target: env["VITE_API_URL"] ?? "http://localhost:4000",
+          changeOrigin: true,
+        },
       },
     },
   };

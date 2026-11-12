@@ -32,6 +32,7 @@ const SandboxFilesPage = lazy(() =>
   })),
 );
 import { DeviceApprovalPage } from "./features/developers/DeviceApproval";
+import { OAuthConsentPage } from "./features/developers/OAuthConsent";
 import { newBountyUrl } from "./features/onboarding/prefill";
 import { setupComplete } from "./features/onboarding/setup";
 import { useWorkspaceSetup } from "./features/onboarding/useWorkspaceSetup";
@@ -45,6 +46,7 @@ import {
   repositoryForPath,
   sandboxFilesForPath,
   deviceCodeForPath,
+  isOAuthConsentPath,
   type ConnectionTab,
   screenForPath,
   slugForPath,
@@ -57,8 +59,9 @@ export function App() {
   const { pathname, search } = useLocation();
   // A version's files open in a tab of their own, outside the shell.
   const sandboxFiles = sandboxFilesForPath(pathname);
-  // So does approving a command-line client's sign-in.
+  // So does approving a command-line client's sign-in, or an app's.
   const deviceCode = deviceCodeForPath(pathname, search);
+  const oauthConsent = isOAuthConsentPath(pathname);
 
   // Three states, not two: rendering sign-in while the session resolves would
   // flash it at a signed-in user on every reload.
@@ -85,6 +88,8 @@ export function App() {
       <Leaving />
       {deviceCode !== undefined ? (
         <DeviceApprovalPage initialCode={deviceCode} />
+      ) : oauthConsent ? (
+        <OAuthConsentPage search={search} />
       ) : sandboxFiles !== undefined ? (
         <Suspense
           fallback={

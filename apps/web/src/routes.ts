@@ -228,6 +228,17 @@ export function deviceCodeForPath(
   return new URLSearchParams(search).get("user_code") ?? "";
 }
 
+/**
+ * Where an app's OAuth sign-in asks for consent, as the API's
+ * `oauth/provider.ts` names it; Better Auth adds the signed query.
+ */
+export const OAUTH_CONSENT_PATH = "/oauth/consent";
+
+/** Whether `pathname` is the OAuth consent page. */
+export function isOAuthConsentPath(pathname: string): boolean {
+  return pathname.replace(/\/+$/, "") === OAUTH_CONSENT_PATH;
+}
+
 /** The version whose files a path is: `/sandboxes/:workspace/:versionId`. */
 export function sandboxFilesForPath(
   pathname: string,
