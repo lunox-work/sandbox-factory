@@ -245,7 +245,7 @@ export function snapshotBuilt(
  * the worker pins it; the worker's tests fail when the two part, so a pin
  * bump cannot reuse a slice the old release made.
  */
-export const SLICE_TOOL_VERSION = "slice@6+carveout@0.3.0";
+export const SLICE_TOOL_VERSION = "slice@6+carveout@0.3.1";
 /** Bumped when the generated project, harness or baseline rules change meaning. */
 export const SANDBOX_BUILD_RUN_VERSION = "sandbox_build@12";
 /** Bumped when the scope agent's tools, prompt or proposal shape change meaning. */

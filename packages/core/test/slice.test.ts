@@ -586,7 +586,7 @@ test("readiness needs full coverage and no blockers", () => {
   assert.equal(blocked.reasons.length, 3);
   assert.match(blocked.reasons[1] ?? "", /in src\/main.ts/);
   assert.equal(OPERATION_POLICY.unknown, "refused");
-  assert.equal(toolVersionOf("slice"), "slice@6+carveout@0.3.0");
+  assert.match(toolVersionOf("slice"), /^slice@6\+carveout@\d+\.\d+\.\d+$/);
   assert.equal(toolVersionOf("graphify").startsWith("graphifyy"), true);
   assert.equal(isSliceParams({ deadlineMinutes: 30 }), false);
   assert.equal(

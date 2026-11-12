@@ -1,7 +1,7 @@
 {
   "name": "sandbox-factory",
   "version": "1.0.0",
-  "description": "Dependency-free domain rules shared by every surface: handles and roles, bounties and their stages, selection, sizing and pricing, the tech stack catalog, repository facts, slices, context documents and sandbox contracts.",
+  "description": "Domain rules shared by every surface: handles and roles, bounties and their stages, selection, sizing and pricing, the tech stack catalog, repository facts, slices, context documents and sandbox contracts.",
   "license": "MIT",
   "author": "feversoul",
   "repository": {
@@ -41,5 +41,8 @@
     "fast-check": "^4.10.2",
     "typescript": "^7.0.2"
   },
-  "keywords": []
+  "keywords": [],
+  "dependencies": {
+    "carveout": "0.3.1"
+  }
 }
