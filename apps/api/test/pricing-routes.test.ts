@@ -484,6 +484,7 @@ function jiraBounty(overrides: Partial<StoredBounty> = {}): StoredBounty {
     components: [],
     inputTruncated: false,
     origin: "jira",
+    sourceUrl: null,
     stack: [],
     categories: [],
     createdBy: null,

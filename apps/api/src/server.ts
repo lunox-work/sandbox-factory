@@ -737,6 +737,31 @@ const app = createApp({
     contexts: bountyContexts,
     repos: githubRepos,
     ...(githubContext === undefined ? {} : { githubContext }),
+    ...(github === undefined
+      ? {}
+      : {
+          // An imported issue is read with a token narrowed to its
+          // repository and `issues: read`.
+          githubIssues: {
+            repos: githubRepos,
+            issuesFor: async (
+              organizationId: string,
+              repo: { connectionId: string; externalId: string },
+            ) => {
+              const found = await github.connections.get(
+                organizationId,
+                repo.connectionId,
+              );
+              return found === null || !found.healthy
+                ? null
+                : installationClient(
+                    github.installations,
+                    found.installationId,
+                    { kind: "issues", repositoryId: repo.externalId },
+                  );
+            },
+          },
+        }),
     profiles: bountyProfiles,
     connections: jiraConnections,
     writebacks: bountyWritebacks,

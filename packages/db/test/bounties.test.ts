@@ -31,6 +31,7 @@ function bountyRow(overrides: Partial<BountyRow> = {}): BountyRow {
     components: [],
     inputTruncated: false,
     origin: "manual",
+    sourceUrl: null,
     stack: [],
     categories: [],
     createdBy: "user_1",
@@ -92,10 +93,47 @@ test("creates a bounty written here, with no Jira issue", async () => {
   assert.match(String(values?.["id"]), /^bty_/);
   assert.equal(values?.["organizationId"], "org_1");
   assert.equal(values?.["origin"], "manual");
+  assert.equal(values?.["sourceUrl"], null);
   assert.equal(values?.["createdBy"], "user_1");
   assert.deepEqual(values?.["stack"], ["PostgreSQL"]);
   assert.equal("number" in (values ?? {}), false);
   assert.equal("repoId" in (values ?? {}), false);
+});
+
+test("creates a bounty from a GitHub issue, keeping its URL as the source", async () => {
+  const url = "https://github.com/acme/app/issues/12";
+  const fake = createFakeDb([
+    bountyRow({ origin: "github", sourceUrl: url, inputTruncated: true }),
+  ]);
+  const created = await createBountyStore(fake.db).create("org_1", "user_1", {
+    ...newBounty,
+    source: { origin: "github", url },
+    inputTruncated: true,
+  });
+  assert.equal(created.origin, "github");
+  assert.equal(created.sourceUrl, url);
+  const values = fake.calls[0]?.values;
+  assert.equal(values?.["origin"], "github");
+  assert.equal(values?.["sourceUrl"], url);
+  assert.equal(values?.["inputTruncated"], true);
+});
+
+test("finds the bounty an issue was imported as, in its workspace only", async () => {
+  const url = "https://github.com/acme/app/issues/12";
+  const hit = createSequencedFakeDb([
+    [{ id: "bty_1" }],
+    [{ row: bountyRow({ origin: "github", sourceUrl: url }), ...unlinked }],
+  ]);
+  const found = await createBountyStore(hit.db).findBySource("org_1", url);
+  assert.equal(found?.sourceUrl, url);
+  assert.equal(hit.calls[0]?.filtered, true);
+  assert.equal(hit.calls[0]?.limited, 1);
+  const miss = createSequencedFakeDb([[]]);
+  assert.equal(
+    await createBountyStore(miss.db).findBySource("org_2", url),
+    null,
+  );
+  assert.equal(miss.calls.length, 1);
 });
 
 test("inserts a bounty once, and passes a failure on", async () => {
@@ -882,9 +920,15 @@ test("a bounty is named by its id alone, and its columns are checked", () => {
     "bounty_approved_version_check",
     "bounty_origin_check",
     "bounty_revision_check",
+    "bounty_source_url_check",
     "bounty_title_check",
     "bounty_version_check",
   ]);
+  // One bounty per imported issue in a workspace.
+  const bySource = config.indexes.find(
+    ({ config: index }) => index.name === "bounty_source_url_unique",
+  );
+  assert.equal(bySource?.config.unique, true);
   // One row per version of a bounty's scope, which goes with it.
   const versions = getTableConfig(bountyVersion);
   assert.deepEqual(

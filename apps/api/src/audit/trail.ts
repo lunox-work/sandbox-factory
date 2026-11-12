@@ -53,9 +53,12 @@ export function pathResource(pattern: string, path: string): string | null {
   return found;
 }
 
-/** Names the resource a create made, for its audit entry. */
-export function noteAuditResource(c: Context<Env>, id: string): void {
-  c.set("auditResourceId", id);
+/**
+ * Names the resource a create made, for its audit entry. Takes any
+ * route's context: route modules type their own environment.
+ */
+export function noteAuditResource(c: Context, id: string): void {
+  (c as Context<Env>).set("auditResourceId", id);
 }
 
 export function auditTrail(options: {

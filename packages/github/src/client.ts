@@ -7,7 +7,8 @@
  * takes a `TokenProvider` and never learns which it holds:
  *
  *   installation   `tokens.provider(installationId, narrowing)` — the
- *                  repository calls, `tree`, `languages` and `blobText`
+ *                  repository calls, `tree`, `languages`, `blobText` and
+ *                  `issue`
  *   user           `credential.token` — `user`, `userInstallations`,
  *                  `userInstallationRepositoryCount`
  *
@@ -18,6 +19,8 @@
 import {
   githubBlobResponseSchema,
   githubBranchPageResponseSchema,
+  type GithubIssueResponse,
+  githubIssueResponseSchema,
   type GithubInstallationResponse,
   githubInstallationPageResponseSchema,
   type GithubLanguagesResponse,
@@ -308,6 +311,20 @@ export class GithubClient {
     return blob.encoding === "base64"
       ? Buffer.from(blob.content, "base64").toString("utf8")
       : blob.content;
+  }
+
+  /**
+   * One issue by number, with its title, body and labels. Needs
+   * `issues: read`. A 404 is an issue that does not exist or that this
+   * token cannot see; GitHub answers a pull request here too, marked
+   * `pull_request`.
+   */
+  async issue(fullName: string, number: number): Promise<GithubIssueResponse> {
+    const response = await this.#get(
+      `/repos/${segments(fullName)}/issues/${segment(String(number))}`,
+      "issue",
+    );
+    return this.#parse(response, githubIssueResponseSchema, "issue");
   }
 
   async #get(

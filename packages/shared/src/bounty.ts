@@ -185,6 +185,11 @@ export const bountyDtoSchema = bountySummaryDtoSchema.extend({
    * Jira's no longer overwrites it. Defaulted, so an older API still parses.
    */
   textEdited: z.boolean().default(false),
+  /**
+   * The GitHub issue an imported bounty came from; null for any other.
+   * Optional, so an older API still parses.
+   */
+  sourceUrl: z.string().nullable().optional(),
   createdBy: z.string().nullable(),
   stages: bountyStagesSchema,
 });
@@ -325,6 +330,30 @@ export const createBountySchema = z.strictObject({
   stack: stackInputSchema.default([]),
 });
 
+/** `https://github.com/<owner>/<repo>/issues/<number>`. */
+export const GITHUB_ISSUE_URL =
+  /^https:\/\/github\.com\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)\/issues\/([1-9][0-9]{0,9})\/?$/;
+
+/**
+ * A bounty imported from a GitHub issue on a repository the workspace
+ * connected: its title and text are read from the issue, whose URL it
+ * keeps as its source. Importing an issue again answers the bounty it made.
+ */
+export const importGithubIssueSchema = z.strictObject({
+  source: z.strictObject({
+    githubIssue: z
+      .string()
+      .regex(GITHUB_ISSUE_URL, "Give the issue's github.com URL."),
+  }),
+  stack: stackInputSchema.default([]),
+});
+
+/** What `POST .../bounties` reads: text, or an issue to import. */
+export const postBountySchema = z.union([
+  createBountySchema,
+  importGithubIssueSchema,
+]);
+
 /**
  * A change to a bounty, against the revision the editor saw. A Jira
  * bounty's text is Jira's to change, so only its stack may be set here;
@@ -386,5 +415,6 @@ export type SyncBountyContextResponse = z.infer<
   typeof syncBountyContextResponseSchema
 >;
 export type CreateBountyInput = z.infer<typeof createBountySchema>;
+export type ImportGithubIssueInput = z.infer<typeof importGithubIssueSchema>;
 export type UpdateBountyInput = z.infer<typeof updateBountySchema>;
 export type LinkBountyJiraInput = z.infer<typeof linkBountyJiraSchema>;

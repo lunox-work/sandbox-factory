@@ -24,6 +24,7 @@ import {
   primaryKey,
   text,
   timestamp,
+  uniqueIndex,
 } from "drizzle-orm/pg-core";
 import type {
   BountyOrigin,
@@ -58,8 +59,14 @@ export const bounty = pgTable(
      * issue. Linking an issue again takes Jira's text back, and clears it.
      */
     textEditedAt: ts("text_edited_at"),
-    /** `manual` or `jira`: where the text came from when it was made. */
+    /** `manual`, `jira` or `github`: where the text came from when it was made. */
     origin: text("origin").$type<BountyOrigin>().notNull().default("manual"),
+    /**
+     * The issue a `github` bounty was imported from, by its URL; null for
+     * any other. One bounty per issue in a workspace: importing it again
+     * answers the bounty it made.
+     */
+    sourceUrl: text("source_url"),
     /**
      * Technologies the bounty adds to the stack detected in the workspace's
      * repositories, by name. A bounty names no repository: its work may
@@ -113,7 +120,17 @@ export const bounty = pgTable(
       "bounty_title_check",
       sql`char_length(${table.title}) between 1 and 255`,
     ),
-    check("bounty_origin_check", sql`${table.origin} in ('manual', 'jira')`),
+    check(
+      "bounty_origin_check",
+      sql`${table.origin} in ('manual', 'jira', 'github')`,
+    ),
+    check(
+      "bounty_source_url_check",
+      sql`(${table.origin} = 'github') = (${table.sourceUrl} IS NOT NULL)`,
+    ),
+    uniqueIndex("bounty_source_url_unique")
+      .on(table.organizationId, table.sourceUrl)
+      .where(sql`${table.sourceUrl} IS NOT NULL`),
     check("bounty_revision_check", sql`${table.revision} > 0`),
     check("bounty_version_check", sql`${table.version} > 0`),
     check(

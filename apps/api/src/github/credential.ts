@@ -35,10 +35,14 @@ import {
  * - `repository` — one repository, contents and metadata: reading its
  *   pointer, its tree and its languages. Narrowed by GitHub's numeric id,
  *   so a token minted for one repository cannot read its neighbours.
+ * - `issues` — one repository, issues and metadata: reading an issue a
+ *   bounty is imported from. Apart from `repository`, so neither token
+ *   carries the other's permission.
  */
 export type InstallationScope =
   | { readonly kind: "discovery" }
-  | { readonly kind: "repository"; readonly repositoryId: string };
+  | { readonly kind: "repository"; readonly repositoryId: string }
+  | { readonly kind: "issues"; readonly repositoryId: string };
 
 /** What a `discovery` token may do. */
 export const DISCOVERY_PERMISSIONS: Readonly<Record<string, string>> = {
@@ -48,6 +52,12 @@ export const DISCOVERY_PERMISSIONS: Readonly<Record<string, string>> = {
 /** What a `repository` token may do. */
 export const REPOSITORY_READ_PERMISSIONS: Readonly<Record<string, string>> = {
   contents: "read",
+  metadata: "read",
+};
+
+/** What an `issues` token may do. */
+export const ISSUES_READ_PERMISSIONS: Readonly<Record<string, string>> = {
+  issues: "read",
   metadata: "read",
 };
 
@@ -63,7 +73,10 @@ export function narrowingFor(scope: InstallationScope): InstallationNarrowing {
   }
   return {
     repositoryIds: [repositoryId],
-    permissions: REPOSITORY_READ_PERMISSIONS,
+    permissions:
+      scope.kind === "issues"
+        ? ISSUES_READ_PERMISSIONS
+        : REPOSITORY_READ_PERMISSIONS,
   };
 }
 

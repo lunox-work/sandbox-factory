@@ -21,6 +21,7 @@ import type {
 } from "@sandbox-factory/db";
 import {
   createBountySchema,
+  importGithubIssueSchema,
   bountyCategoryCountsSchema,
   bountyStatusCountsSchema,
   bountyDtoSchema,
@@ -46,8 +47,10 @@ import {
 } from "sandbox-factory";
 
 import { isAtLeastAdmin } from "../access.js";
+import { noteAuditResource } from "../audit/trail.js";
 import { boundedLimit, rowCursor } from "../paging.js";
 import type { BountyLive } from "../pricing/routes.js";
+import { importGithubIssue, type GithubIssueSource } from "./github-issue.js";
 import { contextVersionsOf, heldContext } from "./held-context.js";
 
 export interface BountyRouteOptions {
@@ -68,6 +71,11 @@ export interface BountyRouteOptions {
     organizationId: string,
     proposalId: string,
   ) => Promise<BountyLive | null>;
+  /**
+   * Reads the GitHub issue a bounty is imported from. Absent, an import
+   * answers 503 `unconfigured`.
+   */
+  readonly githubIssues?: GithubIssueSource;
 }
 
 interface BountyAppEnv {
@@ -91,9 +99,10 @@ export function mountBountyRoutes<Env extends BountyAppEnv>(
 
   app.post(base, async (c) => {
     const { organizationId } = c.get("member");
-    const parsed = createBountySchema.safeParse(
-      await c.req.json().catch(() => null),
-    );
+    const body: unknown = await c.req.json().catch(() => null);
+    if (typeof body === "object" && body !== null && "source" in body)
+      return importIssue(c, organizationId, body);
+    const parsed = createBountySchema.safeParse(body);
     if (!parsed.success) {
       return c.json(
         {
@@ -108,8 +117,48 @@ export function mountBountyRoutes<Env extends BountyAppEnv>(
       c.get("user").id,
       parsed.data,
     );
+    noteAuditResource(c, created.id);
     return c.json({ bounty: await detail(options, created) }, 201);
   });
+
+  /** `{ source: { githubIssue } }`: a bounty read from a GitHub issue. */
+  async function importIssue(
+    c: Context<Env>,
+    organizationId: string,
+    body: unknown,
+  ): Promise<Response> {
+    const parsed = importGithubIssueSchema.safeParse(body);
+    if (!parsed.success)
+      return c.json(
+        {
+          code: "invalid_bounty",
+          error: parsed.error.issues[0]?.message ?? "Invalid import.",
+        },
+        400,
+      );
+    if (options.githubIssues === undefined)
+      return c.json(
+        {
+          error: "GitHub is not set up on this server.",
+          code: "unconfigured",
+        },
+        503,
+      );
+    const result = await importGithubIssue(
+      options.githubIssues,
+      options.bounties,
+      organizationId,
+      c.get("user").id,
+      parsed.data,
+    );
+    if (!result.ok)
+      return c.json({ error: result.error, code: result.code }, result.status);
+    noteAuditResource(c, result.bounty.id);
+    return c.json(
+      { bounty: await detail(options, result.bounty) },
+      result.created ? 201 : 200,
+    );
+  }
 
   app.get(`${base}/:id`, async (c) => {
     const { organizationId } = c.get("member");
@@ -584,6 +633,7 @@ function bountyDto(
     components: [...bounty.components],
     inputTruncated: bounty.inputTruncated,
     textEdited: bounty.textEditedAt !== null,
+    sourceUrl: bounty.sourceUrl,
     createdBy: bounty.createdBy,
     stages,
   };
