@@ -290,6 +290,8 @@ test("no route outside the registry answers a token, and every entry is a route"
     events: stub as AppOptions["events"],
     flows: stub as AppOptions["flows"],
     usage: stub as AppOptions["usage"],
+    audit: stub as AppOptions["audit"],
+    webhooks: stub as AppOptions["webhooks"],
   });
   const minted = await server.request(`/api/v1/orgs/${ORG}/tokens`, {
     method: "POST",

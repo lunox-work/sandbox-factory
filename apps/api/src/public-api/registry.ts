@@ -100,6 +100,13 @@ import {
   updateSandboxVersionSchema,
   usageQuerySchema,
   usageResponseSchema,
+  createWebhookSchema,
+  updateWebhookSchema,
+  webhookDeliveryListSchema,
+  webhookDeliveryResponseSchema,
+  webhookEndpointListSchema,
+  webhookEndpointResponseSchema,
+  webhookSecretResponseSchema,
   workspaceSettingsSchema,
   writebackOperationResponseSchema,
   writebackReconcileResponseSchema,
@@ -125,7 +132,8 @@ export interface PublicRoute {
   readonly scope: ApiScope | null;
   readonly summary: string;
   /** The OpenAPI tag: the section of PLAN.md section 3 it belongs to. */
-  readonly tag: "Workspace" | "Integrations" | "Bounties" | "Sandboxes";
+  readonly tag:
+    "Workspace" | "Integrations" | "Bounties" | "Sandboxes" | "Webhooks";
   /** The JSON body it reads, or null when it reads none. */
   readonly request: z.ZodType | null;
   /** Query parameters, where a shared schema states them. */
@@ -138,6 +146,7 @@ const ORG = `${V1}/orgs/:orgId`;
 const GH = `${ORG}/github`;
 const JIRA = `${ORG}/jira`;
 const SBX = `${ORG}/sandboxes`;
+const HOOKS = `${ORG}/webhooks`;
 
 const ok = (schema: z.ZodType) => ({ status: 200, schema }) as const;
 const created = (schema: z.ZodType) => ({ status: 201, schema }) as const;
@@ -721,6 +730,83 @@ export const PUBLIC_ROUTES: readonly PublicRoute[] = [
     "Sandboxes",
     replayResponseSchema,
   ),
+
+  // Webhooks out
+  read(
+    HOOKS,
+    "Webhook endpoints (owners and admins)",
+    "Webhooks",
+    webhookEndpointListSchema,
+  ),
+  {
+    method: "POST",
+    path: HOOKS,
+    scope: "webhooks:write",
+    summary:
+      "Add a webhook endpoint; answers its signing secret once (owners and admins)",
+    tag: "Webhooks",
+    request: createWebhookSchema,
+    response: created(webhookSecretResponseSchema),
+  },
+  read(
+    `${HOOKS}/:id`,
+    "One webhook endpoint (owners and admins)",
+    "Webhooks",
+    webhookEndpointResponseSchema,
+  ),
+  {
+    method: "PATCH",
+    path: `${HOOKS}/:id`,
+    scope: "webhooks:write",
+    summary:
+      "Change an endpoint's URL, events or enabled state (owners and admins)",
+    tag: "Webhooks",
+    request: updateWebhookSchema,
+    response: ok(webhookEndpointResponseSchema),
+  },
+  {
+    method: "DELETE",
+    path: `${HOOKS}/:id`,
+    scope: "webhooks:write",
+    summary: "Remove an endpoint and its deliveries (owners and admins)",
+    tag: "Webhooks",
+    request: null,
+    response: removed,
+  },
+  {
+    method: "POST",
+    path: `${HOOKS}/:id/rotate-secret`,
+    scope: "webhooks:write",
+    summary:
+      "Replace an endpoint's signing secret; answers it once (owners and admins)",
+    tag: "Webhooks",
+    request: null,
+    response: ok(webhookSecretResponseSchema),
+  },
+  read(
+    `${HOOKS}/:id/deliveries`,
+    "An endpoint's deliveries, newest first (owners and admins)",
+    "Webhooks",
+    webhookDeliveryListSchema,
+  ),
+  {
+    method: "POST",
+    path: `${HOOKS}/:id/deliveries/:deliveryId/redeliver`,
+    scope: "webhooks:write",
+    summary: "Send a delivery again now (owners and admins)",
+    tag: "Webhooks",
+    request: null,
+    response: accepted(webhookDeliveryResponseSchema),
+  },
+  {
+    method: "POST",
+    path: `${HOOKS}/:id/ping`,
+    scope: "webhooks:write",
+    summary: "Send an endpoint a test ping event (owners and admins)",
+    tag: "Webhooks",
+    request: null,
+    response: accepted(webhookDeliveryResponseSchema),
+  },
 ];
 
 const byRoute = new Map(

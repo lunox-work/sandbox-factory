@@ -225,5 +225,8 @@ export * from "./developer.js";
 /** What machine credentials changed, as the audit log answers it. */
 export * from "./audit.js";
 
+/** Webhooks out: endpoints, deliveries and the event they carry. */
+export * from "./webhooks.js";
+
 export * from "./slice-artifacts.js";
 export { normalizeSpecText } from "sandbox-factory";

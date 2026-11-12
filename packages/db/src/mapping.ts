@@ -57,6 +57,9 @@ export const ID_PREFIXES = [
   "tok",
   /** One audit log entry: a change a machine credential made. */
   "aud",
+  /** A webhook endpoint, and one event's delivery to it. */
+  "whk",
+  "whd",
 ] as const;
 
 export type IdPrefix = (typeof ID_PREFIXES)[number];

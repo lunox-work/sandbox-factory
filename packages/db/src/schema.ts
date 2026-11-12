@@ -28,8 +28,8 @@
  *   provenance behind each, and the submissions judged by them.
  * - `schema/flows.ts` — views of how long people wait, read from the rows
  *   above; no tables.
- * - `schema/developer.ts` — the public API's workspace tokens and the
- *   audit log of what machine credentials changed.
+ * - `schema/developer.ts` — the public API's workspace tokens, the
+ *   audit log of what machine credentials changed, and webhooks out.
  * - `schema/oauth.ts` — the OAuth provider plugin's clients, grants and
  *   tokens, for MCP clients and other apps.
  *
@@ -155,12 +155,19 @@ export type {
 
 export { flowWait, flowWaitSample } from "./schema/flows.js";
 
-export { apiToken, auditEntry } from "./schema/developer.js";
+export {
+  apiToken,
+  auditEntry,
+  webhookDelivery,
+  webhookEndpoint,
+} from "./schema/developer.js";
 export type {
   ApiTokenRow,
   AuditEntryRow,
   NewApiTokenRow,
   NewAuditEntryRow,
+  WebhookDeliveryRow,
+  WebhookEndpointRow,
 } from "./schema/developer.js";
 
 export {

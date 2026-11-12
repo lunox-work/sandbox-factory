@@ -535,7 +535,22 @@ function fixture(
       "runs/arn_slice/lease/slice-manifest.json",
       Buffer.from("not json"),
     );
+  const announced: Array<{
+    owner: string;
+    versionId: string;
+    version: number;
+  }> = [];
   const options = {
+    onPublished: (
+      owner: string,
+      published: { versionId: string; version: number },
+    ) => {
+      announced.push({
+        owner,
+        versionId: published.versionId,
+        version: published.version,
+      });
+    },
     sandboxes: {
       create: async (
         owner: string,
@@ -966,6 +981,7 @@ function fixture(
     enqueued,
     removed,
     published,
+    announced,
     linked,
     requested,
     cuts,
@@ -1031,6 +1047,10 @@ test("an admin publishes a version whose build passed, and unpublishes the sandb
   assert.deepEqual(f.published, [
     { versionId: "sbv_1", actor: "user_1", expiresAt: until.expiresAt },
   ]);
+  // The sandbox.published webhook is told.
+  assert.equal(f.announced.length, 1);
+  assert.equal(f.announced[0]?.owner, "org_1");
+  assert.equal(f.announced[0]?.versionId, "sbv_1");
   assert.equal(body.sandbox.expiresAt, until.expiresAt);
   // An expiry is required, and must be ahead.
   for (const [given, code] of [

@@ -190,6 +190,21 @@ export type {
   AuditVia,
   NewAuditEntry,
 } from "./audit.js";
+export {
+  createWebhookStore,
+  deliveryState,
+  WEBHOOK_DELIVERY_RETENTION_DAYS,
+} from "./webhooks.js";
+export type {
+  ClaimedWebhookDelivery,
+  NewWebhookEndpoint,
+  StoredWebhookDelivery,
+  StoredWebhookEndpoint,
+  WebhookAttempt,
+  WebhookEndpointChange,
+  WebhookEvent,
+  WebhookStore,
+} from "./webhooks.js";
 export { createOAuthGrantStore } from "./oauth-grants.js";
 export type {
   OAuthGrant,

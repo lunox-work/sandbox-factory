@@ -739,6 +739,13 @@ export function mountSandboxRoutes(
               409,
             )
           : c.json({ error: "Not found." }, 404);
+    options.onPublished?.(owner, {
+      sandboxId: result.sandbox.id,
+      versionId: result.version.version.id,
+      version: result.version.version.version,
+      expiresAt,
+      at,
+    });
     return c.json(
       publishVersionResponseSchema.parse({
         sandbox: sandboxDto(result.sandbox),

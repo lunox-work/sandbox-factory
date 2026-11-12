@@ -125,6 +125,7 @@ function harness(
 ) {
   let current = options.op ?? operation();
   const events: string[] = [];
+  const failed: StoredBountyWriteback[] = [];
   const writebacks = {
     claim: () => {
       if (options.claimMiss) return Promise.resolve(null);
@@ -258,6 +259,7 @@ function harness(
     clientsFor: () =>
       Promise.resolve({ ok: true, client: readClient, writeClient }),
     leaseToken: () => "lease",
+    onFailed: (_organizationId, writeback) => failed.push(writeback),
     ...(options.leaseLost
       ? {
           // Beat once, straight away, so a lost lease shows mid-request.
@@ -269,7 +271,7 @@ function harness(
         }
       : {}),
   });
-  return { delivery, events, current: () => current };
+  return { delivery, events, failed, current: () => current };
 }
 
 test("approval posts one fixed comment then adds the label", async () => {
@@ -326,6 +328,11 @@ test("a site that no longer holds the write grant fails preflight before sending
   const result = await state.delivery.execute("org_1", "bwo_1");
   assert.equal(result?.status, "failed");
   assert.ok(state.events.includes("failed:write_consent_required"));
+  // The writeback.failed webhook is told.
+  assert.deepEqual(
+    state.failed.map(({ status }) => status),
+    ["failed"],
+  );
   assert.ok(!state.events.includes("attempt"));
 });
 

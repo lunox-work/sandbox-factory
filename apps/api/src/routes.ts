@@ -48,6 +48,10 @@ import { mountOAuthGrantRoutes } from "./oauth/grants.js";
 import { isBound } from "./principal.js";
 import { buildOpenApiDocument } from "./public-api/openapi.js";
 import { mountUsageRoutes } from "./usage/routes.js";
+import {
+  mountWebhookRoutes,
+  type WebhookRouteOptions,
+} from "./webhooks/routes.js";
 
 import type { Auth } from "./auth.js";
 import {
@@ -189,6 +193,8 @@ export interface AppOptions {
    * mounted, as in a test with no database.
    */
   audit?: AuditStore | undefined;
+  /** Webhooks out; the routes are not mounted without them. */
+  webhooks?: WebhookRouteOptions | undefined;
   /** The clock tokens expire by. Tests only. */
   now?: (() => Date) | undefined;
 }
@@ -219,6 +225,7 @@ export function createApp({
   publicUrl,
   usage,
   audit,
+  webhooks,
   now,
 }: AppOptions): Hono<AppEnv> {
   const app = new Hono<AppEnv>();
@@ -620,6 +627,7 @@ export function createApp({
       mountOAuthGrantRoutes(app, { grants: oauthGrants });
     if (usage !== undefined) mountUsageRoutes(app, { usage, now });
     if (audit !== undefined) mountAuditRoutes(app, { audit });
+    if (webhooks !== undefined) mountWebhookRoutes(app, { now, ...webhooks });
 
     /** The organization, plus the caller's role in it. Members only. */
     app.get("/api/v1/orgs/:orgId", async (c) => {

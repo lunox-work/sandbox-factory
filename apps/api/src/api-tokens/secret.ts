@@ -20,18 +20,26 @@ const DISPLAY_LENGTH = 8;
 /** The largest multiple of 62 a byte reaches; above it would bias. */
 const UNBIASED_LIMIT = 248;
 
-export function generateSecret(
+/** `length` base62 characters from `random`, without modulo bias. */
+export function randomBase62(
+  length: number,
   random: (size: number) => Uint8Array = randomBytes,
 ): string {
   let body = "";
-  while (body.length < SECRET_LENGTH) {
-    for (const byte of random(SECRET_LENGTH)) {
+  while (body.length < length) {
+    for (const byte of random(length)) {
       if (byte >= UNBIASED_LIMIT) continue;
       body += ALPHABET.charAt(byte % ALPHABET.length);
-      if (body.length === SECRET_LENGTH) break;
+      if (body.length === length) break;
     }
   }
-  return `${API_TOKEN_PREFIX}${body}`;
+  return body;
+}
+
+export function generateSecret(
+  random: (size: number) => Uint8Array = randomBytes,
+): string {
+  return `${API_TOKEN_PREFIX}${randomBase62(SECRET_LENGTH, random)}`;
 }
 
 /** The stored form: hex SHA-256 of the whole secret, prefix included. */

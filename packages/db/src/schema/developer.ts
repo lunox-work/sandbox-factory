@@ -1,6 +1,7 @@
 /**
- * The public API's credentials (workspace API tokens) and what they leave
- * behind: the audit log of what machine credentials changed.
+ * The public API's credentials (workspace API tokens), what they leave
+ * behind (the audit log of what machine credentials changed), and the
+ * webhooks a workspace is told of changes by.
  *
  * A token belongs to one organization and acts as the person who made it,
  * for as long as they stay its owner or admin (checked on every use, in the
@@ -10,6 +11,7 @@
 
 import { sql } from "drizzle-orm";
 import {
+  boolean,
   check,
   index,
   integer,
@@ -17,6 +19,7 @@ import {
   pgTable,
   text,
   timestamp,
+  unique,
 } from "drizzle-orm/pg-core";
 import type { ApiScope } from "sandbox-factory";
 
@@ -110,3 +113,91 @@ export const auditEntry = pgTable(
 
 export type AuditEntryRow = typeof auditEntry.$inferSelect;
 export type NewAuditEntryRow = typeof auditEntry.$inferInsert;
+
+const at = (name: string) => timestamp(name, { withTimezone: true });
+
+/**
+ * Where a workspace is told of changes: an https URL, the event types it
+ * takes, and the secret each delivery is signed with. The secret is held
+ * encrypted like integration credentials (`cipher.ts`, `key_id` beside it),
+ * shown once on create and on rotation.
+ *
+ * Disabled by a person, or automatically after `WEBHOOK_DISABLE_AFTER`
+ * failed attempts in a row, with the reason; enabling again clears both.
+ */
+export const webhookEndpoint = pgTable(
+  "webhook_endpoint",
+  {
+    id: text("id").primaryKey(),
+    organizationId: text("organization_id")
+      .notNull()
+      .references(() => organization.id, { onDelete: "cascade" }),
+    url: text("url").notNull(),
+    description: text("description").notNull().default(""),
+    eventTypes: jsonb("event_types").$type<string[]>().notNull(),
+    enabled: boolean("enabled").notNull().default(true),
+    /** `v1:` ciphertext of the signing secret, never the secret. */
+    secretEnc: text("secret_enc").notNull(),
+    keyId: text("key_id").notNull(),
+    createdBy: text("created_by").references(() => user.id, {
+      onDelete: "set null",
+    }),
+    /** Failed attempts since the last success, across its deliveries. */
+    consecutiveFailures: integer("consecutive_failures").notNull().default(0),
+    disabledReason: text("disabled_reason"),
+    disabledAt: at("disabled_at"),
+    createdAt: at("created_at").notNull().defaultNow(),
+    updatedAt: at("updated_at").notNull().defaultNow(),
+  },
+  (table) => [
+    index("webhook_endpoint_organization_created_idx").on(
+      table.organizationId,
+      table.createdAt,
+    ),
+  ],
+);
+
+/**
+ * One event owed to one endpoint, and how sending it has gone. Due while
+ * `next_attempt_at` is set; delivered when `delivered_at` is; given up when
+ * neither is. An event reaches an endpoint once (`event_id` unique per
+ * endpoint), however many API processes saw it happen.
+ */
+export const webhookDelivery = pgTable(
+  "webhook_delivery",
+  {
+    id: text("id").primaryKey(),
+    organizationId: text("organization_id")
+      .notNull()
+      .references(() => organization.id, { onDelete: "cascade" }),
+    endpointId: text("endpoint_id")
+      .notNull()
+      .references(() => webhookEndpoint.id, { onDelete: "cascade" }),
+    eventId: text("event_id").notNull(),
+    type: text("type").notNull(),
+    /** The body sent: ids and states only, never a resource's content. */
+    payload: jsonb("payload").$type<Record<string, unknown>>().notNull(),
+    attemptCount: integer("attempt_count").notNull().default(0),
+    nextAttemptAt: at("next_attempt_at"),
+    lastStatusCode: integer("last_status_code"),
+    lastError: text("last_error"),
+    deliveredAt: at("delivered_at"),
+    createdAt: at("created_at").notNull().defaultNow(),
+  },
+  (table) => [
+    unique("webhook_delivery_endpoint_event_unique").on(
+      table.endpointId,
+      table.eventId,
+    ),
+    index("webhook_delivery_endpoint_created_idx").on(
+      table.endpointId,
+      table.createdAt,
+    ),
+    index("webhook_delivery_due_idx")
+      .on(table.nextAttemptAt)
+      .where(sql`${table.nextAttemptAt} is not null`),
+  ],
+);
+
+export type WebhookEndpointRow = typeof webhookEndpoint.$inferSelect;
+export type WebhookDeliveryRow = typeof webhookDelivery.$inferSelect;

@@ -46,6 +46,11 @@ export interface BountyDeliveryOptions {
   readonly setInterval?: typeof globalThis.setInterval;
   readonly clearInterval?: typeof globalThis.clearInterval;
   readonly onBackgroundError?: (code: string) => void;
+  /** Told when a writeback ends failed: the `writeback.failed` webhook. */
+  readonly onFailed?: (
+    organizationId: string,
+    writeback: StoredBountyWriteback,
+  ) => void;
 }
 
 export class BountyDelivery {
@@ -85,13 +90,16 @@ export class BountyDelivery {
         .catch(() => leaseController.abort());
     }, HEARTBEAT_MS);
     try {
-      return await this.#executeClaimed(
+      const ended = await this.#executeClaimed(
         organizationId,
         id,
         leaseToken,
         operation,
         leaseController.signal,
       );
+      if (ended?.status === "failed")
+        this.#options.onFailed?.(organizationId, ended);
+      return ended;
     } finally {
       (this.#options.clearInterval ?? clearInterval)(heartbeat);
     }
