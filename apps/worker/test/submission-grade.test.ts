@@ -262,3 +262,19 @@ test("the verdict rule on outcomes: never run is incomplete, flaky is a failure"
   assert.deepEqual(flaky.hidden, { passed: 0, total: 2 });
   assert.deepEqual(flaky.failedScenarios, ["s1"]);
 });
+
+test("a submission that tells a test run from a real one is refused by carveout's policy, and nothing runs", async () => {
+  const { result, fake } = await grade(
+    [
+      {
+        path: "src/feature.ts",
+        text: 'export const feature = () => (process.env.NODE_ENV === "test" ? 1 : 0);\n',
+      },
+    ],
+    () => ({}),
+  );
+  assert.equal(result.verdict, "refused");
+  assert.equal(result.refused?.[0]?.path, "src/feature.ts");
+  assert.match(result.refused?.[0]?.reason ?? "", /without the code/);
+  assert.equal(fake.jobs(), 0);
+});
