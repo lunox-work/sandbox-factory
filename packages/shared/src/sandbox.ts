@@ -627,3 +627,98 @@ export const submissionListSchema = z.object({
   submissions: z.array(submissionDtoSchema),
 });
 export type SubmissionDto = z.infer<typeof submissionDtoSchema>;
+
+/**
+ * How many files, and how large, one uploaded hand-off folder may carry:
+ * in all (characters), and each file. The route also refuses a larger
+ * request body before reading it.
+ */
+export const UPLOAD_LIMITS = {
+  files: 1000,
+  bytes: 8_000_000,
+  fileBytes: 512 * 1024,
+} as const;
+/** The request body limit for an upload: the files, the tests and JSON's overhead. */
+export const UPLOAD_BODY_MAX_BYTES = 12_000_000;
+
+/**
+ * One of the maintainer's acceptance tests, at its path in the folder
+ * (renamed into the folder's names by the receipt's table), expected to
+ * fail before the work: an `acceptanceTestSchema` whose path is the
+ * folder's rather than under `tests/private/`.
+ */
+export const uploadAcceptanceTestSchema = acceptanceTestSchema.extend({
+  path: entryPointSchema.refine(
+    (path) => /\.(?:test|spec)\.[cm]?tsx?$/.test(path),
+    "An acceptance test is a TypeScript test file (.test.ts, .spec.ts).",
+  ),
+  expectedBaseline: z.literal("fail").default("fail"),
+});
+
+/**
+ * `POST /sandboxes/uploads`: a public, pseudonymised carveout hand-off
+ * folder (`carveout handoff --platform`), as a version of a bounty's
+ * sandbox. Text files only, at the folder's paths; the receipt never
+ * comes.
+ */
+export const createUploadSchema = z.strictObject({
+  bountyId: z.string().min(1),
+  carveout: z.strictObject({
+    version: z
+      .string()
+      .min(1)
+      .max(64)
+      .regex(/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/),
+    recordSha256: z.string().regex(/^[a-f0-9]{64}$/),
+  }),
+  files: z
+    .array(
+      z.strictObject({
+        path: z.string().min(1).max(500),
+        text: z.string().max(UPLOAD_LIMITS.fileBytes),
+      }),
+    )
+    .min(1)
+    .max(UPLOAD_LIMITS.files)
+    .refine(
+      (files) =>
+        files.reduce((total, file) => total + file.text.length, 0) <=
+        UPLOAD_LIMITS.bytes,
+      `At most ${UPLOAD_LIMITS.bytes} characters in all.`,
+    ),
+  acceptanceTests: z
+    .array(uploadAcceptanceTestSchema)
+    .min(1)
+    .max(ACCEPTANCE_TESTS_MAX)
+    .refine(
+      (tests) => new Set(tests.map((test) => test.path)).size === tests.length,
+      "Acceptance test paths must be unique.",
+    ),
+  title: oneLine(120).optional(),
+  specSummary: z.string().min(1).max(4_000).optional(),
+});
+export type CreateUploadDto = z.infer<typeof createUploadSchema>;
+/** The sandbox, the draft version, its provenance and the import run. */
+export const uploadResponseSchema = z.object({
+  sandbox: sandboxDtoSchema,
+  version: sandboxVersionDtoSchema,
+  source: sandboxVersionSourceDtoSchema,
+  run: analysisRunDtoSchema,
+});
+
+/**
+ * `GET /sandboxes/submissions/:sid/files`: a passing submission's changed
+ * files on an uploaded version, for `carveout patch --from`: what the
+ * contributor changed or added, at the folder's paths, never a hidden test.
+ */
+export const submissionFilesResponseSchema = z.object({
+  submission: submissionDtoSchema,
+  upload: z.object({
+    recordSha256: z.string(),
+    carveoutVersion: z.string(),
+  }),
+  files: z.array(z.object({ path: z.string(), text: z.string() })),
+});
+export type SubmissionFilesResponseDto = z.infer<
+  typeof submissionFilesResponseSchema
+>;

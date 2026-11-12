@@ -139,7 +139,7 @@ shows the result.
 | Sandbox start, source | `POST /sandboxes/start`, `PUT /:id/source`, `POST /:id/starter`                                 | E   | `start_sandbox`                           |
 | Slice plan            | `POST /repositories/:id/slice-plan` (carveout `plan()`, no cut)                                 | N   | `plan_slice` (carveout)                   |
 | Slice cut, approve    | `GET/POST /sandboxes/:id/slice`, `/slice/approve`                                               | C   | `cut_slice`; approve wide slice in portal |
-| Upload a local slice  | `POST /orgs/:orgId/slices` (a public carveout folder; receipt stays local)                      | N   | (CLI: `carveout handoff --platform`)      |
+| Upload a local slice  | `POST /orgs/:orgId/sandboxes/uploads` (a public carveout folder; receipt stays local)           | E   | (CLI: `carveout handoff --platform`)      |
 | Versions, build       | `GET/POST/PATCH /sandboxes/:id/versions`, `/versions/:vid/build`, `/replay`                     | E   | `build_version`                           |
 | Prepare hidden tests  | `POST /versions/:vid/prepare` (duediligence calibration on the slice)                           | N   | `prepare` (duediligence)                  |
 | Publish               | `POST /versions/:vid/publish`, `/unpublish`                                                     | E   | (portal only: a person's act)             |

@@ -91,6 +91,8 @@ import {
 } from "./analysis/routes.js";
 import {
   mountSandboxRoutes,
+  UPLOADS_ROUTE,
+  uploadBodyLimit,
   type SandboxRouteOptions,
 } from "./sandbox/routes.js";
 
@@ -660,6 +662,9 @@ export function createApp({
       await next();
       return;
     });
+    // An upload's body is bounded before anything reads it, the
+    // idempotency hash below included.
+    app.use(UPLOADS_ROUTE, uploadBodyLimit);
     /** After membership: a key belongs to the path's workspace. */
     if (idempotencyKeys !== undefined)
       app.use(

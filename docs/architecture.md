@@ -213,7 +213,17 @@ version only) store the files canonically (`submittedFilesText`) and queue a
 `submission_grade` run; `get_verdict` reads duediligence's verdict
 (passed, overfit, incomplete, refused), the counts and the failing
 scenarios' keys; `retry` (`POST …/submissions/:sid/retry`) is a failed
-submission's one retry (`submission.retry_of`, unique). Approving,
+submission's one retry (`submission.retry_of`, unique). A workspace
+that will not connect its repository uploads a public, pseudonymised
+carveout hand-off folder instead (`carveout handoff --platform`,
+`POST …/sandboxes/uploads`, `sandboxes:write`, owners and admins, no MCP
+tool: the body is too large and the receipt stays local): checked for the
+workspace's names, credentials and plain paths, stored by hash, and
+imported by a `sandbox_import` run (origin `upload`). A passing
+submission on such a version comes back to the maintainer's machine as
+its changed files (`GET …/sandboxes/submissions/:sid/files`,
+`submissions:write`, never a hidden test) for `carveout patch --from`.
+Approving,
 publishing, confirming decisions and merging back have no tool. A request needs a
 bearer `lnx_` or `lnxat_` token, else 401 with
 `WWW-Authenticate: Bearer resource_metadata="…/.well-known/oauth-protected-resource/mcp…"`.

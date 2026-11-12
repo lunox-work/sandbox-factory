@@ -44,6 +44,10 @@ import {
   sandboxFileListSchema,
   sandboxHandoutSchema,
   createSubmissionSchema,
+  createUploadSchema,
+  submissionFilesResponseSchema,
+  uploadResponseSchema,
+  UPLOAD_BODY_MAX_BYTES,
   submissionListSchema,
   submissionResponseSchema,
   type SubmissionDto,
@@ -72,7 +76,18 @@ import { textOf } from "../object-text.js";
 import { setRetryAfter } from "../quota.js";
 import { hiddenSha256 } from "duediligence/api";
 import { createHash } from "node:crypto";
-import { submittedFilesText } from "sandbox-factory";
+import {
+  layoutOf,
+  organizationNames,
+  parseSubmittedFiles,
+  submittedFilesText,
+  uploadObjectKey,
+  workspaceVocabulary,
+  type SandboxBuildManifest,
+} from "sandbox-factory";
+import { generateId } from "@sandbox-factory/db";
+import { bodyLimit } from "hono/body-limit";
+import { changedSubmissionFiles, checkUpload } from "./uploads.js";
 import type {
   StoredSubmission,
   StoredSubmissionMerge,
@@ -235,6 +250,25 @@ function refused(
     );
   return c.json({ error: "Not found." }, 404);
 }
+
+/**
+ * The request body limit for an upload, answered in this API's shape
+ * before the body is read. `createApp` mounts it ahead of the idempotency
+ * middleware, which reads the body to hash it; here it guards the route
+ * wherever it is mounted.
+ */
+export const uploadBodyLimit = bodyLimit({
+  maxSize: UPLOAD_BODY_MAX_BYTES,
+  onError: (c) =>
+    c.json(
+      {
+        error: `An upload is at most ${UPLOAD_BODY_MAX_BYTES} bytes.`,
+        code: "upload_too_large",
+      },
+      413,
+    ),
+});
+export const UPLOADS_ROUTE = "/api/v1/orgs/:orgId/sandboxes/uploads";
 
 export function mountSandboxRoutes(
   app: Hono<{ Variables: AuthVariables }>,
@@ -1211,6 +1245,230 @@ export function mountSandboxRoutes(
         submissions: listed.map((item) =>
           submissionOf(item, merges.get(item.id) ?? null),
         ),
+      }),
+    );
+  });
+
+  /*
+    An uploaded hand-off folder (`carveout handoff --platform`), as a
+    version of the bounty's sandbox: for a workspace that will not connect
+    its repository. The sandbox is made when the bounty has none, and an
+    upload is refused when it is sliced from a repository. The folder is
+    checked (`checkUpload`), stored under the version by its hash, and
+    imported by a `sandbox_import` run queued through the usual admission.
+    Publishing it stays a person's act in the web app.
+  */
+  app.post(`${base}/uploads`, uploadBodyLimit, async (c) => {
+    if (!isAtLeastAdmin(c.get("member").role))
+      return c.json(
+        { error: "Only owners and admins can upload a version." },
+        403,
+      );
+    const put = options.objects.put;
+    if (put === undefined)
+      return c.json(
+        {
+          error: "Uploads are not taken on this deployment.",
+          code: "uploads_unavailable",
+        },
+        503,
+      );
+    const parsed = createUploadSchema.safeParse(
+      await c.req.json().catch(() => null),
+    );
+    if (!parsed.success)
+      return c.json(
+        {
+          error: "Invalid upload.",
+          code: "invalid_upload",
+          issues: parsed.error.issues.slice(0, 20).map((issue) => ({
+            path: issue.path.join("."),
+            message: issue.message,
+          })),
+        },
+        400,
+      );
+    const body = parsed.data;
+    const owner = c.get("member").organizationId;
+    const bounty = await options.bounties.get(owner, body.bountyId);
+    if (bounty === null)
+      return c.json({ error: "Not found.", code: "bounty_not_found" }, 404);
+    const refusal = await held(owner, body.bountyId);
+    if (refusal !== null) return c.json(refusal, 409);
+    const existing = (await options.sandboxes.list(owner)).find(
+      (item) => item.bountyId === body.bountyId,
+    );
+    if (existing !== undefined && existing.sourceRepoId !== null)
+      return c.json(
+        {
+          error:
+            "This bounty's sandbox is sliced from its connected repository; an uploaded folder is for a bounty with none.",
+          code: "source_linked",
+        },
+        409,
+      );
+    const checked = checkUpload(
+      body,
+      workspaceVocabulary(
+        organizationNames([
+          ...((await options.organizationNames?.(owner)) ?? []),
+        ]),
+      ),
+    );
+    if ("refusal" in checked)
+      return c.json(checked.refusal.body, checked.refusal.status);
+    let sandbox = existing;
+    if (sandbox === undefined) {
+      const made = await options.sandboxes.create(owner, {
+        bountyId: body.bountyId,
+        sourceRepoId: null,
+      });
+      if (made.ok) sandbox = made.sandbox;
+      else if (made.reason === "bounty_has_sandbox")
+        sandbox = (await options.sandboxes.list(owner)).find(
+          (item) => item.bountyId === body.bountyId,
+        );
+      if (sandbox === undefined)
+        return sandboxRefused(c, made.ok ? "not-found" : made.reason);
+      if (sandbox.sourceRepoId !== null)
+        return sandboxRefused(c, "source_linked");
+    }
+    const text = JSON.stringify({
+      files: [...body.files]
+        .sort((a, b) => (a.path < b.path ? -1 : 1))
+        .map(({ path, text: file }) => ({ path, text: file })),
+      acceptanceTests: body.acceptanceTests.map(
+        ({ path, text: file, expectedBaseline }) => ({
+          path,
+          text: file,
+          expectedBaseline,
+        }),
+      ),
+    });
+    const uploadSha256 = createHash("sha256")
+      .update(text, "utf8")
+      .digest("hex");
+    const versionId = generateId("sbv");
+    const key = uploadObjectKey(owner, versionId, uploadSha256);
+    await put(key, Buffer.from(text, "utf8"));
+    const imported = await service.upload(
+      owner,
+      c.get("user").id,
+      sandbox,
+      {
+        versionId,
+        uploadSha256,
+        recordSha256: checked.recordSha256,
+        carveoutVersion: body.carveout.version,
+        title: body.title,
+        specSummary: body.specSummary,
+      },
+      now(),
+    );
+    if (!imported.ok) {
+      await options.objects.remove(key).catch(() => {});
+      return failed(c, imported);
+    }
+    await options.ensureWorker().catch(() => options.onLaunchError?.());
+    return c.json(
+      uploadResponseSchema.parse({
+        sandbox: sandboxDto(sandbox),
+        version: imported.result.version,
+        source: sourceDto(imported.result.source),
+        run: imported.run,
+      }),
+      202,
+    );
+  });
+
+  /*
+    A passing submission's changed files on an uploaded version, for
+    `carveout patch --from`, which applies them on the maintainer's machine
+    with the receipt: built only from what the submission stored, less what
+    is the version's own text and anything at a hidden test's path. A
+    version sliced from a connected repository is merged back through its
+    pull request instead, and its carried-back patch stays private.
+  */
+  app.get(`${base}/submissions/:sid/files`, async (c) => {
+    if (!isAtLeastAdmin(c.get("member").role))
+      return c.json(
+        { error: "Only owners and admins can read a submission's files." },
+        403,
+      );
+    const owner = c.get("member").organizationId;
+    const found = await options.submissions?.get(owner, c.req.param("sid"));
+    if (found === undefined || found === null)
+      return c.json({ error: "Not found." }, 404);
+    if (found.status !== "passed" || found.result?.verdict !== "passed")
+      return c.json(
+        {
+          error: "Only a passing submission's files are taken back.",
+          code: "not_passed",
+        },
+        409,
+      );
+    const stored = await options.sandboxes.getVersion(
+      owner,
+      found.sandboxVersionId,
+    );
+    if (stored === null) return c.json({ error: "Not found." }, 404);
+    if (stored.source.origin !== "upload" || stored.source.buildRunId === null)
+      return c.json(
+        {
+          error:
+            "Only a submission on an uploaded version is taken back this way; a version sliced from a connected repository is merged back by its pull request.",
+          code: "not_uploaded",
+        },
+        409,
+      );
+    const unreadable = () =>
+      c.json(
+        {
+          error: "The submission's files could not be read.",
+          code: "artifacts_unavailable",
+        },
+        502,
+      );
+    const artifacts = await options.artifacts.list(
+      owner,
+      stored.source.buildRunId,
+    );
+    const textOfArtifact = async (path: string) => {
+      const artifact = artifacts.find((item) => item.path === path);
+      if (artifact === undefined) return null;
+      const bytes = await options.objects.get(artifact.objectKey);
+      return bytes === undefined ? null : textOf(bytes);
+    };
+    const manifestText = await textOfArtifact("build-manifest.json");
+    const submittedBytes = await options.objects.get(found.patchKey);
+    const submitted =
+      submittedBytes === undefined
+        ? null
+        : parseSubmittedFiles(Buffer.from(submittedBytes).toString("utf8"));
+    if (manifestText === null || submitted === null) return unreadable();
+    const manifest = JSON.parse(manifestText) as Pick<
+      SandboxBuildManifest,
+      "files" | "layout" | "upload"
+    >;
+    if (manifest.upload === undefined) return unreadable();
+    const publicText = new Map<string, string | null>();
+    for (const file of submitted)
+      publicText.set(file.path, await textOfArtifact(`project/${file.path}`));
+    c.header("Cache-Control", "no-store");
+    return c.json(
+      submissionFilesResponseSchema.parse({
+        submission: submissionOf(found),
+        upload: manifest.upload,
+        files: changedSubmissionFiles({
+          submitted,
+          publicText: (path) => publicText.get(path) ?? null,
+          hiddenPaths: new Set(
+            manifest.files
+              .filter((file) => file.class === "test-private")
+              .map((file) => file.path),
+          ),
+          privateDir: layoutOf(manifest).tests.privateDir,
+        }),
       }),
     );
   });
