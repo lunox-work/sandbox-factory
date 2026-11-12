@@ -10,7 +10,8 @@ import type {
   SandboxStore,
 } from "@sandbox-factory/db";
 import { sourceArchiveKey } from "@sandbox-factory/db";
-import { readsSource } from "sandbox-factory";
+import type { SubmissionStore } from "@sandbox-factory/db";
+import { parseSubmittedFiles, readsSource } from "sandbox-factory";
 import { fetchSource } from "./fetch-source.js";
 import type { SourceCache } from "./source-cache.js";
 import { progressRecorder } from "./progress.js";
@@ -29,6 +30,11 @@ export interface RunOptions {
   readonly runs: AnalysisRunStore;
   /** Earlier runs' artifacts, read owner-scoped for tools that build on them. */
   readonly artifacts?: Pick<ArtifactStore, "list">;
+  /**
+   * Submissions, owner-scoped, for the grading adapter; their files are read
+   * from the key the submission names, never from one a run passes in.
+   */
+  readonly submissions?: Pick<SubmissionStore, "get" | "start" | "finish">;
   /** Sandbox versions, owner-scoped, for the build and starter adapters. */
   readonly sandboxes?: Pick<
     SandboxStore,
@@ -128,6 +134,29 @@ export async function executeRun(
             output,
             now(),
           ),
+    readSubmission: async (submissionId) => {
+      const found = await options.submissions?.get(
+        run.organizationId,
+        submissionId,
+      );
+      if (found === undefined || found === null) return null;
+      const bytes = await options.objects.get(found.patchKey);
+      if (bytes === undefined) return null;
+      const files = parseSubmittedFiles(Buffer.from(bytes).toString("utf8"));
+      return files === null ? null : { submission: found, files };
+    },
+    finishSubmission: async (submissionId, runId, outcome) => {
+      if (options.submissions === undefined) return false;
+      await options.submissions.start(run.organizationId, submissionId, runId);
+      return (
+        (await options.submissions.finish(
+          run.organizationId,
+          submissionId,
+          outcome,
+          now(),
+        )) !== null
+      );
+    },
   };
   options.shutdown?.addEventListener("abort", shutdown, { once: true });
   if (options.shutdown?.aborted) shutdown();

@@ -560,3 +560,59 @@ export const taskDescriptorSchema = z.strictObject({
   ),
 });
 export type TaskDescriptorDto = z.infer<typeof taskDescriptorSchema>;
+
+/** How many files, and how large, one submission may carry. */
+export const SUBMISSION_LIMITS = { files: 200, bytes: 4_000_000 } as const;
+
+/**
+ * `POST /sandboxes/versions/:vid/submissions`: the files a contributor
+ * changed or added, each whole. The version decides everything else.
+ */
+export const createSubmissionSchema = z.strictObject({
+  files: z
+    .array(
+      z.strictObject({
+        path: z.string().min(1).max(500),
+        text: z.string(),
+      }),
+    )
+    .min(1)
+    .max(SUBMISSION_LIMITS.files)
+    .refine(
+      (files) =>
+        files.reduce((total, file) => total + file.text.length, 0) <=
+        SUBMISSION_LIMITS.bytes,
+      `At most ${SUBMISSION_LIMITS.bytes} characters in all.`,
+    ),
+});
+
+const suiteCountSchema = z.object({
+  passed: z.number().int().nonnegative(),
+  total: z.number().int().nonnegative(),
+});
+
+/**
+ * A submission and its verdict: counts, duediligence's verdict, and the
+ * scenario keys a failing hidden test is tied to. Never a hidden test's
+ * name, body or output.
+ */
+export const submissionDtoSchema = z.object({
+  id: z.string(),
+  sandboxVersionId: z.string(),
+  status: z.enum(["queued", "running", "passed", "failed", "errored"]),
+  verdict: z.enum(["passed", "overfit", "incomplete", "refused"]).nullable(),
+  public: suiteCountSchema.nullable(),
+  hidden: suiteCountSchema.nullable(),
+  failedScenarios: z.array(z.string()),
+  refused: z.array(z.object({ path: z.string(), reason: z.string() })),
+  runId: z.string().nullable(),
+  createdAt: z.iso.datetime(),
+  updatedAt: z.iso.datetime(),
+});
+export const submissionResponseSchema = z.object({
+  submission: submissionDtoSchema,
+});
+export const submissionListSchema = z.object({
+  submissions: z.array(submissionDtoSchema),
+});
+export type SubmissionDto = z.infer<typeof submissionDtoSchema>;

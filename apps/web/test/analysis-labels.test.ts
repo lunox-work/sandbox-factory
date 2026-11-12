@@ -67,3 +67,18 @@ test("a sandbox's preparation is told apart from a person's fake data", () => {
     } as AnalysisRunDto),
   ).toBe("Sandbox preparation");
 });
+
+test("a submission's grading run is named in the history", () => {
+  expect(
+    runLabel({
+      tool: "submission_grade",
+      params: {
+        deadlineMinutes: 60,
+        grader: "submission",
+        submissionId: "sbm_1",
+        sandboxVersionId: "sbv_1",
+        patchSha256: "a".repeat(64),
+      },
+    } as AnalysisRunDto),
+  ).toBe("Submission grading");
+});

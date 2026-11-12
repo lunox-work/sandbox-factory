@@ -29,10 +29,37 @@ export interface SuiteCount {
   readonly total: number;
 }
 
+/**
+ * duediligence's verdicts (`duediligence/api` `verdict`): `refused` when the
+ * submission changed what it may not, `incomplete` when a public test
+ * fails, `overfit` when the public suite passes and a hidden test does not,
+ * `passed` when both pass. (`regressed` needs an existing suite, which a
+ * sandbox has none of.)
+ */
+export const SUBMISSION_VERDICTS = [
+  "passed",
+  "overfit",
+  "incomplete",
+  "refused",
+] as const;
+export type SubmissionVerdict = (typeof SUBMISSION_VERDICTS)[number];
+
 /** What a finished run found: the public suite and the hidden one. */
 export interface SubmissionResult {
   readonly public: SuiteCount;
   readonly hidden: SuiteCount;
+  /** Absent on a result recorded before verdicts. */
+  readonly verdict?: SubmissionVerdict;
+  /**
+   * The spec scenarios (`s1`, `s2`…) a failing hidden test is keyed to, by
+   * its file name: what a contributor may be told, never which test or why.
+   */
+  readonly failedScenarios?: readonly string[];
+  /** What a refused submission changed that it may not, with why. */
+  readonly refused?: readonly {
+    readonly path: string;
+    readonly reason: string;
+  }[];
 }
 
 /**
@@ -46,4 +73,42 @@ export function submissionVerdict(
   return result.hidden.total > 0 && whole(result.hidden) && whole(result.public)
     ? "passed"
     : "failed";
+}
+
+/**
+ * How a submission's files are stored (the object its `patchKey` names):
+ * canonical JSON, `{ "files": [{ "path", "text" }] }` sorted by path, so the
+ * same files are the same bytes and the same `patchSha256`.
+ */
+export function submittedFilesText(
+  files: readonly { readonly path: string; readonly text: string }[],
+): string {
+  const sorted = [...files]
+    .map(({ path, text }) => ({ path, text }))
+    .sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+  return JSON.stringify({ files: sorted });
+}
+
+/** The files `submittedFilesText` wrote; null for anything else. */
+export function parseSubmittedFiles(
+  text: string,
+): { readonly path: string; readonly text: string }[] | null {
+  let value: unknown;
+  try {
+    value = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  const files = (value as { files?: unknown } | null)?.files;
+  if (!Array.isArray(files)) return null;
+  const out: { path: string; text: string }[] = [];
+  for (const file of files) {
+    const { path, text: body } = (file ?? {}) as {
+      path?: unknown;
+      text?: unknown;
+    };
+    if (typeof path !== "string" || typeof body !== "string") return null;
+    out.push({ path, text: body });
+  }
+  return out;
 }

@@ -538,6 +538,65 @@ const TOOLS = [
       `${org(workspace)}/sandboxes/versions/${enc(versionId)}/handout`,
   }),
   tool({
+    name: "submit_patch",
+    description:
+      "Submit the files changed in a published sandbox version for grading against its public and hidden tests. It runs in the background; read the verdict with get_verdict. The same files again are the submission already made.",
+    input: {
+      versionId: id("version"),
+      files: z
+        .array(
+          z.object({
+            path: z.string().min(1).max(500),
+            text: z.string(),
+          }),
+        )
+        .min(1)
+        .max(200)
+        .describe(
+          "Each file the work changed or added, whole, at its path in the sandbox.",
+        ),
+    },
+    scoped: true,
+    method: "POST",
+    path: ({ versionId }, workspace) =>
+      `${org(workspace)}/sandboxes/versions/${enc(versionId)}/submissions`,
+    body: ({ files }) => ({ files }),
+  }),
+  tool({
+    name: "judge",
+    description:
+      "Judge an implementation against a published version's hidden tests, which you never see: submit the files changed, then read the verdict (passed, overfit, incomplete or refused) with get_verdict. Only counts and the failing scenarios' keys come back.",
+    input: {
+      versionId: id("version"),
+      files: z
+        .array(
+          z.object({
+            path: z.string().min(1).max(500),
+            text: z.string(),
+          }),
+        )
+        .min(1)
+        .max(200)
+        .describe(
+          "Each file the work changed or added, whole, at its path in the sandbox.",
+        ),
+    },
+    scoped: true,
+    method: "POST",
+    path: ({ versionId }, workspace) =>
+      `${org(workspace)}/sandboxes/versions/${enc(versionId)}/submissions`,
+    body: ({ files }) => ({ files }),
+  }),
+  tool({
+    name: "get_verdict",
+    description:
+      "Read a submission's verdict: passed, overfit, incomplete or refused, the public and hidden counts, and the keys of the spec scenarios a failing hidden test covers. Never a hidden test's name or body.",
+    input: { submissionId: id("submission") },
+    scoped: true,
+    path: ({ submissionId }, workspace) =>
+      `${org(workspace)}/sandboxes/submissions/${enc(submissionId)}`,
+  }),
+  tool({
     name: "connect_github",
     description:
       "Get the link that connects the workspace's GitHub repositories. Connecting is a browser step: give the person the link to open.",
@@ -580,6 +639,8 @@ export const TOOLSETS: Readonly<Record<string, readonly ToolName[]>> = {
     "start_sandbox",
     "prepare",
     "get_handout",
+    "judge",
+    "get_verdict",
   ],
   "/mcp/carveout": [
     "list_workspaces",
@@ -592,6 +653,8 @@ export const TOOLSETS: Readonly<Record<string, readonly ToolName[]>> = {
     "start_sandbox",
     "cut_slice",
     "get_handout",
+    "submit_patch",
+    "get_verdict",
   ],
 };
 

@@ -43,6 +43,10 @@ import {
   sandboxFileContentSchema,
   sandboxFileListSchema,
   sandboxHandoutSchema,
+  createSubmissionSchema,
+  submissionListSchema,
+  submissionResponseSchema,
+  type SubmissionDto,
   sandboxListSchema,
   sandboxResponseSchema,
   sandboxSliceResponseSchema,
@@ -65,6 +69,9 @@ import { connectedRepositories } from "../bounties/held-context.js";
 import type { AuthVariables } from "../http-context.js";
 import { textOf } from "../object-text.js";
 import { hiddenSha256 } from "duediligence/api";
+import { createHash } from "node:crypto";
+import { submittedFilesText } from "sandbox-factory";
+import type { StoredSubmission } from "@sandbox-factory/db";
 
 const sandboxDto = ({ organizationId: _owner, ...dto }: StoredSandbox) => dto;
 const sourceDto = (source: StoredVersionSource) => ({
@@ -959,6 +966,129 @@ export function mountSandboxRoutes(
         hiddenTests: hidden.length,
         hiddenSha256: hash,
       }),
+    );
+  });
+
+  /*
+    Submissions against a published (frozen) version: the files are stored
+    as `submittedFilesText` writes them, hashed, and graded by a
+    `submission_grade` run. The same files against the same version are the
+    submission already made. Owners and admins for now; contributors with
+    the marketplace.
+  */
+  const submissionOf = (stored: StoredSubmission): SubmissionDto => ({
+    id: stored.id,
+    sandboxVersionId: stored.sandboxVersionId,
+    status: stored.status,
+    verdict: stored.result?.verdict ?? null,
+    public: stored.result?.public ?? null,
+    hidden: stored.result?.hidden ?? null,
+    failedScenarios: [...(stored.result?.failedScenarios ?? [])],
+    refused: [...(stored.result?.refused ?? [])],
+    runId: stored.runId,
+    createdAt: stored.createdAt,
+    updatedAt: stored.updatedAt,
+  });
+  app.post(`${base}/versions/:vid/submissions`, async (c) => {
+    if (!isAtLeastAdmin(c.get("member").role))
+      return c.json({ error: "Only owners and admins can submit." }, 403);
+    if (options.submissions === undefined || options.objects.put === undefined)
+      return c.json(
+        {
+          error: "Submissions are not taken on this deployment.",
+          code: "submissions_unavailable",
+        },
+        503,
+      );
+    const parsed = createSubmissionSchema.safeParse(
+      await c.req.json().catch(() => null),
+    );
+    if (!parsed.success)
+      return c.json(
+        { error: "Invalid submission.", code: "invalid_submission" },
+        400,
+      );
+    const owner = c.get("member").organizationId;
+    const versionId = c.req.param("vid");
+    const text = submittedFilesText(parsed.data.files);
+    const patchSha256 = createHash("sha256").update(text, "utf8").digest("hex");
+    const patchKey = `submissions/${owner}/${versionId}/${patchSha256}.json`;
+    await options.objects.put(patchKey, Buffer.from(text, "utf8"));
+    const created = await options.submissions.create(owner, {
+      sandboxVersionId: versionId,
+      submittedBy: c.get("user").id,
+      patchKey,
+      patchSha256,
+    });
+    if (!created.ok)
+      return created.reason === "not_frozen"
+        ? c.json(
+            {
+              error: "Only a published version takes submissions.",
+              code: "not_frozen",
+            },
+            409,
+          )
+        : c.json({ error: "Not found." }, 404);
+    if (created.created) {
+      const queued = await options.runs.enqueue(owner, null, {
+        tool: "submission_grade",
+        params: {
+          deadlineMinutes: 60,
+          grader: "submission",
+          submissionId: created.submission.id,
+          sandboxVersionId: versionId,
+          patchSha256,
+        },
+        requestedBy: c.get("user").id,
+        maxActive: options.maxActive ?? 3,
+      });
+      if (!queued.ok)
+        return c.json(
+          {
+            error: "The active analysis limit has been reached.",
+            code: "run_limit",
+          },
+          409,
+        );
+      await options.ensureWorker().catch(() => options.onLaunchError?.());
+    }
+    return c.json(
+      submissionResponseSchema.parse({
+        submission: submissionOf(created.submission),
+      }),
+      created.created ? 202 : 200,
+    );
+  });
+  app.get(`${base}/submissions/:sid`, async (c) => {
+    if (!isAtLeastAdmin(c.get("member").role))
+      return c.json(
+        { error: "Only owners and admins can read a submission." },
+        403,
+      );
+    const found = await options.submissions?.get(
+      c.get("member").organizationId,
+      c.req.param("sid"),
+    );
+    if (found === undefined || found === null)
+      return c.json({ error: "Not found." }, 404);
+    return c.json(
+      submissionResponseSchema.parse({ submission: submissionOf(found) }),
+    );
+  });
+  app.get(`${base}/versions/:vid/submissions`, async (c) => {
+    if (!isAtLeastAdmin(c.get("member").role))
+      return c.json(
+        { error: "Only owners and admins can read submissions." },
+        403,
+      );
+    const listed =
+      (await options.submissions?.list(
+        c.get("member").organizationId,
+        c.req.param("vid"),
+      )) ?? [];
+    return c.json(
+      submissionListSchema.parse({ submissions: listed.map(submissionOf) }),
     );
   });
 

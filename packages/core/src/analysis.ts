@@ -165,7 +165,8 @@ export type ContextBuilder = (typeof CONTEXT_BUILDERS)[number];
  * and to write believable behaviour for a succeeded slice's mocked seams.
  * `sandbox_starter` is the one run with no repository: a model writes a
  * starter project from the bounty's own text, which is then built and
- * checked like a slice's.
+ * checked like a slice's. `submission_grade` runs a submission's patch
+ * against a built version's public and hidden tests (`grading.ts`).
  */
 export const ANALYSIS_TOOLS = [
   ...CONTEXT_BUILDERS,
@@ -174,6 +175,7 @@ export const ANALYSIS_TOOLS = [
   "scope",
   "fixtures",
   "sandbox_starter",
+  "submission_grade",
 ] as const;
 export type AnalysisTool = (typeof ANALYSIS_TOOLS)[number];
 export const GRAPHIFY_TOOL_VERSION = "graphifyy@0.4.18+driver-1";
@@ -247,9 +249,11 @@ export const SCOPE_TOOL_VERSION = "scope@5";
 export const FIXTURES_TOOL_VERSION = "fixtures@3";
 /** Bumped when the starter agent's tools, prompt, set or project change meaning. */
 export const STARTER_TOOL_VERSION = "sandbox_starter@4";
+/** Bumped when the grading tree, its commands or the verdict change meaning. */
+export const SUBMISSION_GRADE_TOOL_VERSION = "submission_grade@1";
 /** Tools that read a repository snapshot; every other one runs without source. */
 export function readsSource(tool: AnalysisTool): boolean {
-  return tool !== "sandbox_starter";
+  return tool !== "sandbox_starter" && tool !== "submission_grade";
 }
 /**
  * Which of a worker's slots a run takes. An agent run spends its time
@@ -270,6 +274,7 @@ export function slotOf(tool: AnalysisTool): RunSlot {
     case "fixtures":
     case "sandbox_build":
     case "sandbox_starter":
+    case "submission_grade":
       return "agent";
     case "graphify":
     case "abstractions":
@@ -303,6 +308,8 @@ export function toolVersionOf(tool: AnalysisTool): string {
   switch (tool) {
     case "sandbox_starter":
       return STARTER_TOOL_VERSION;
+    case "submission_grade":
+      return SUBMISSION_GRADE_TOOL_VERSION;
     case "slice":
       return SLICE_TOOL_VERSION;
     case "sandbox_build":
@@ -452,6 +459,18 @@ export interface StarterParams extends GraphifyParams {
    */
   readonly vocabulary?: readonly string[];
 }
+/**
+ * A submission graded: its files (stored with the submission) applied to
+ * the version it was made against, and the version's own suites run on
+ * them. The submission's hash is in the cache key, so the same patch is
+ * graded once.
+ */
+export interface SubmissionGradeParams extends GraphifyParams {
+  readonly grader: "submission";
+  readonly submissionId: string;
+  readonly sandboxVersionId: string;
+  readonly patchSha256: string;
+}
 export type AnalysisParams =
   | GraphifyParams
   | AbstractionsParams
@@ -462,7 +481,8 @@ export type AnalysisParams =
   | SandboxBuildParams
   | ScopeParams
   | FixturesParams
-  | StarterParams;
+  | StarterParams
+  | SubmissionGradeParams;
 export function isAbstractionsParams(
   params: AnalysisParams,
 ): params is AbstractionsParams {
@@ -489,6 +509,11 @@ export function isFixturesParams(
 ): params is FixturesParams {
   return "agent" in params && params.agent === "fixtures";
 }
+export function isSubmissionGradeParams(
+  params: AnalysisParams,
+): params is SubmissionGradeParams {
+  return "grader" in params && params.grader === "submission";
+}
 export function isStarterParams(
   params: AnalysisParams,
 ): params is StarterParams {
@@ -504,13 +529,18 @@ export function isSliceParams(params: AnalysisParams): params is SliceParams {
 export function isSandboxBuildParams(
   params: AnalysisParams,
 ): params is SandboxBuildParams {
-  return "sandboxVersionId" in params && !("agent" in params);
+  return (
+    "sandboxVersionId" in params &&
+    !("agent" in params) &&
+    !("grader" in params)
+  );
 }
 export function toolOfParams(params: AnalysisParams): AnalysisTool {
   if ("builder" in params) return params.builder;
   if (isScopeParams(params)) return "scope";
   if (isFixturesParams(params)) return "fixtures";
   if (isStarterParams(params)) return "sandbox_starter";
+  if (isSubmissionGradeParams(params)) return "submission_grade";
   return isSliceParams(params)
     ? "slice"
     : isSandboxBuildParams(params)

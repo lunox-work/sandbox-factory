@@ -80,6 +80,8 @@ export function runLabel(run: AnalysisRunDto): string {
       return "Sandbox build";
     case "sandbox_starter":
       return "Generated starter";
+    case "submission_grade":
+      return "Submission grading";
     case "graphify":
       return "Graphify";
     case "abstractions":

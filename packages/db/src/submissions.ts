@@ -60,6 +60,14 @@ export interface SubmissionStore {
     organizationId: string,
     input: NewSubmission,
   ): Promise<CreateSubmissionResult>;
+  /**
+   * One submission, with the key its files are stored under (never shown
+   * outside the platform). Null for another workspace's or none.
+   */
+  get(
+    organizationId: string,
+    submissionId: string,
+  ): Promise<(StoredSubmission & { readonly patchKey: string }) | null>;
   /** A version's submissions, newest first. */
   list(
     organizationId: string,
@@ -93,6 +101,16 @@ const toSubmission = (row: SubmissionRow): StoredSubmission => ({
 });
 
 export function createSubmissionStore(db: Database): SubmissionStore {
+  const get: SubmissionStore["get"] = async (owner, id) => {
+    const [row] = (await db
+      .select()
+      .from(submission)
+      .where(and(eq(submission.organizationId, owner), eq(submission.id, id)))
+      .limit(1)) as SubmissionRow[];
+    return row === undefined
+      ? null
+      : { ...toSubmission(row), patchKey: row.patchKey };
+  };
   /** The owner's version, if it exists, and whether it is frozen. */
   const versionOf = async (owner: string, versionId: string) =>
     (
@@ -144,6 +162,7 @@ export function createSubmissionStore(db: Database): SubmissionStore {
     )[0];
 
   return {
+    get,
     async create(owner, input) {
       const version = await versionOf(owner, input.sandboxVersionId);
       if (version === undefined) return { ok: false, reason: "not-found" };

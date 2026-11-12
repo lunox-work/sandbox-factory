@@ -3,6 +3,8 @@ import type {
   ArtifactKind,
   AnalysisParams,
   SpecDraft,
+  SubmissionResult,
+  SubmittedFile,
 } from "sandbox-factory";
 import type {
   BuildOutput,
@@ -61,6 +63,27 @@ export interface ToolInputs {
     versionId: string,
     starterRunId: string,
     output: StarterOutput,
+  ): Promise<boolean>;
+  /**
+   * A submission and the files it carries, for its grading run; null when
+   * it is gone or its files cannot be read. Absent outside the queue.
+   */
+  readSubmission?(submissionId: string): Promise<{
+    readonly submission: {
+      readonly id: string;
+      readonly sandboxVersionId: string;
+      readonly status: string;
+    };
+    readonly files: readonly SubmittedFile[];
+  } | null>;
+  /**
+   * Moves a submission to running under this run, then to its outcome:
+   * counts and a verdict, or `errored`. False when it was not waiting.
+   */
+  finishSubmission?(
+    submissionId: string,
+    runId: string,
+    outcome: SubmissionResult | "errored",
   ): Promise<boolean>;
 }
 /** The snapshot and commit a source-reading run is on. */
