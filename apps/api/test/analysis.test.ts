@@ -43,7 +43,11 @@ const sliceRun: StoredAnalysisRun = {
     includeInferred: false,
   },
 };
-function fixture(role = "owner", tool: StoredAnalysisRun["tool"] = run.tool) {
+function fixture(
+  role = "owner",
+  tool: StoredAnalysisRun["tool"] = run.tool,
+  via: "session" | "token" | "oauth" | "device" = "session",
+) {
   // The run the repository's list and lookups answer with.
   const shown: StoredAnalysisRun = { ...run, tool };
   /** What the runs list was asked for, call by call. */
@@ -209,6 +213,7 @@ function fixture(role = "owner", tool: StoredAnalysisRun["tool"] = run.tool) {
       role,
       organizationId: c.req.param("orgId"),
     } as never);
+    c.set("principal", { via } as never);
     await next();
   });
   mountAnalysisRoutes(app, options);
@@ -788,6 +793,40 @@ test("a sandbox build's run and artifacts are not a member's to read", async () 
     const admin = fixture("admin", tool);
     assert.equal((await admin.request("artifacts/art_1/url")).status, 200);
   }
+});
+test("outside a web session no credential reads what a build or a grading wrote", async () => {
+  // Hidden tests, their bodies and their output are in these runs'
+  // artifacts and logs. An agent reaches the platform with a token, an
+  // OAuth client or a CLI's device session; it waits on the run's status
+  // (`runs/:id`, which `readableRun` does not guard) but never reads what
+  // it wrote.
+  for (const tool of [
+    "sandbox_build",
+    "sandbox_starter",
+    "submission_grade",
+  ] as const)
+    for (const via of ["token", "oauth", "device"] as const) {
+      const admin = fixture("admin", tool, via);
+      for (const path of [
+        "runs/arn_1/artifacts",
+        "artifacts/art_1/url",
+        "artifacts/art_1/content",
+        "runs/arn_1/log/url",
+        "runs/arn_1/log/content",
+      ])
+        assert.equal(
+          (await admin.request(path)).status,
+          404,
+          `${tool} ${via} ${path}`,
+        );
+      assert.deepEqual(admin.keys, []);
+    }
+  // A context builder's artifacts are not hidden tests: a token reads them.
+  const graph = fixture("admin", run.tool, "token");
+  assert.equal((await graph.request("artifacts/art_1/url")).status, 200);
+  // In the web app an admin still reads a build's.
+  const session = fixture("admin", "sandbox_build");
+  assert.equal((await session.request("artifacts/art_1/url")).status, 200);
 });
 test("a legacy sandbox preparation is kept from members, as a build is; a person's fixtures run is not", async () => {
   // A preparation run as stored before 2026-10-19; nothing queues one now.

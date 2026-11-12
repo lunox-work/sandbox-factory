@@ -83,6 +83,24 @@ const SANDBOX_TOOLS: ReadonlySet<AnalysisTool> = new Set([
 export const hiddenFrom = (role: string, run: StoredAnalysisRun) =>
   (SANDBOX_TOOLS.has(run.tool) || preparation(run)) && !isAtLeastAdmin(role);
 /**
+ * Runs whose artifacts or log hold hidden tests, their bodies or their
+ * output: a version's private sandbox, as above, and a submission's grading.
+ * Their status stays readable (`get_run` waits on a build), but what they
+ * wrote is read only by a person signed in to the web app. An API token,
+ * an OAuth client or a CLI's device session is how an agent reaches the
+ * platform, and an agent that could read hidden tests could pass them
+ * without doing the work.
+ */
+const HIDDEN_TEST_TOOLS: ReadonlySet<AnalysisTool> = new Set([
+  ...SANDBOX_TOOLS,
+  "submission_grade",
+]);
+export const holdsHiddenTests = (run: StoredAnalysisRun) =>
+  HIDDEN_TEST_TOOLS.has(run.tool) || preparation(run);
+/** Whether this request's credential is a person's web session. */
+export const inWebSession = (c: Context) =>
+  c.get("principal").via === "session";
+/**
  * A legacy preparation run (a `fixtures` run with `pseudonyms`, queued
  * before 2026-10-19) wrote a name table too, so it is one of them.
  */
@@ -688,10 +706,20 @@ export function mountAnalysisRoutes(
   }
   /** The artifact a member may read, or null; its run decides, as above. */
   async function visibleArtifact(c: Context, id: string) {
-    const { organizationId, role } = c.get("member");
+    const { organizationId } = c.get("member");
     const artifact = await options.artifacts.get(organizationId, id);
-    if (artifact === null || isAtLeastAdmin(role)) return artifact;
-    return (await visibleRun(c, artifact.runId)) === null ? null : artifact;
+    if (artifact === null) return null;
+    return (await readableRun(c, artifact.runId)) === null ? null : artifact;
+  }
+  /**
+   * The run whose artifacts and log a member may read, or null: a visible
+   * run, and outside a web session not one that holds hidden tests.
+   */
+  async function readableRun(c: Context, id: string) {
+    const run = await visibleRun(c, id);
+    return run === null || (holdsHiddenTests(run) && !inWebSession(c))
+      ? null
+      : run;
   }
   app.get(`${base}/repositories/:id/runs`, async (c) => {
     const { organizationId: owner, role } = c.get("member");
@@ -743,7 +771,7 @@ export function mountAnalysisRoutes(
   app.get(`${base}/runs/:id/artifacts`, async (c) => {
     const owner = c.get("member").organizationId,
       id = c.req.param("id");
-    if ((await visibleRun(c, id)) === null)
+    if ((await readableRun(c, id)) === null)
       return c.json({ error: "Not found." }, 404);
     return c.json(
       artifactListSchema.parse({
@@ -801,6 +829,8 @@ export function mountAnalysisRoutes(
         { error: "Only owners and admins can read analysis logs." },
         403,
       );
+    if ((await readableRun(c, c.req.param("id"))) === null)
+      return c.json({ error: "No log is available." }, 404);
     const key = await options.runs.logKey(
       c.get("member").organizationId,
       c.req.param("id"),
@@ -816,6 +846,8 @@ export function mountAnalysisRoutes(
         { error: "Only owners and admins can read analysis logs." },
         403,
       );
+    if ((await readableRun(c, c.req.param("id"))) === null)
+      return c.json({ error: "No log is available." }, 404);
     const key = await options.runs.logKey(
       c.get("member").organizationId,
       c.req.param("id"),

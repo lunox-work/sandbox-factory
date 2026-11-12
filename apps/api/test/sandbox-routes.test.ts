@@ -438,7 +438,7 @@ function fixture(
     /** What a grading run `arn_grade` wrote, by path. */
     gradeRun: Record<string, string>;
     /** The credential the caller signed in with; a session unless said. */
-    via: "session" | "token";
+    via: "session" | "token" | "oauth" | "device";
     /** The build is still running, and has written its project only. */
     previewing: boolean;
     /** The version has no passing build to publish. */
@@ -1596,6 +1596,30 @@ test("admins read the files a version's build wrote, as text where it is text", 
   // Only a path the run recorded; nothing is joined into a storage key.
   assert.equal((await read("project/../private/hidden.test.ts")).status, 404);
   assert.equal((await read("")).status, 400);
+});
+
+test("outside a web session no credential reads a version's private files", async () => {
+  for (const via of ["token", "oauth", "device"] as const) {
+    const f = fixture("owner", { built: true, via });
+    const list = (await (
+      await f.request("GET", "/versions/sbv_1/files")
+    ).json()) as { files: { path: string }[] };
+    assert.ok(list.files.length > 0, via);
+    assert.ok(
+      list.files.every(({ path }) => !path.startsWith("private/")),
+      via,
+    );
+    const hidden = await f.request(
+      "GET",
+      "/versions/sbv_1/files/content?path=private%2Fhidden.test.ts",
+    );
+    assert.equal(hidden.status, 404, via);
+    const source = await f.request(
+      "GET",
+      "/versions/sbv_1/files/content?path=project%2Fsrc%2Findex.ts",
+    );
+    assert.equal(source.status, 200, via);
+  }
 });
 
 test("a build still running shows the project it generated, as provisional", async () => {
