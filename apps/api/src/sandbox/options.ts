@@ -36,7 +36,10 @@ export interface SandboxRouteOptions {
   readonly objects: Pick<ObjectStore, "get" | "remove"> &
     Partial<Pick<ObjectStore, "put">>;
   /** Submissions; absent, versions take none. */
-  readonly submissions?: Pick<SubmissionStore, "create" | "get" | "list">;
+  readonly submissions?: Pick<
+    SubmissionStore,
+    "create" | "get" | "list" | "retry"
+  >;
   /**
    * What a build still running has written before its baseline, served as
    * the version's files until it commits. Absent, they arrive at commit.

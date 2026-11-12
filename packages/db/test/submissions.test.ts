@@ -23,6 +23,7 @@ const row = (overrides: Partial<SubmissionRow> = {}): SubmissionRow => ({
   status: "queued",
   result: null,
   runId: null,
+  retryOf: null,
   createdAt: now,
   updatedAt: now,
   ...overrides,
@@ -172,5 +173,80 @@ test("one submission is read under its owner, with the key its files are under",
   assert.equal(
     await createSubmissionStore(createFakeDb([]).db).get("org_1", "sbm_x"),
     null,
+  );
+});
+
+test("a failed or errored submission takes one retry, against the same version", async () => {
+  const retryInput = {
+    submittedBy: "user_1",
+    patchKey: `patches/sbv_1/${"b".repeat(64)}.diff`,
+    patchSha256: "b".repeat(64),
+  };
+  const failed = row({ status: "failed" });
+  const retried = row({
+    id: "sbm_2",
+    patchSha256: retryInput.patchSha256,
+    retryOf: "sbm_1",
+  });
+  const store = (responses: readonly (readonly unknown[] | Error)[]) => {
+    const fake = createSequencedFakeDb(responses);
+    return { fake, store: createSubmissionStore(fake.db) };
+  };
+  const made = store([[failed], [], [retried]]);
+  const result = await made.store.retry("owner", "sbm_1", retryInput);
+  assert.deepEqual(result.ok && [result.created, result.submission.retryOf], [
+    true,
+    "sbm_1",
+  ]);
+  assert.equal(made.fake.calls[2]?.kind, "insert");
+  assert.equal(made.fake.calls[2]?.values?.["retryOf"], "sbm_1");
+  assert.equal(made.fake.calls[2]?.values?.["sandboxVersionId"], "sbv_1");
+
+  // The same files again find the retry; other files find it used.
+  const again = await store([[failed], [retried]]).store.retry(
+    "owner",
+    "sbm_1",
+    retryInput,
+  );
+  assert.deepEqual(again.ok && again.created, false);
+  assert.deepEqual(
+    await store([[row({ status: "errored" })], [retried]]).store.retry(
+      "owner",
+      "sbm_1",
+      { ...retryInput, patchSha256: "c".repeat(64) },
+    ),
+    { ok: false, reason: "retry_used" },
+  );
+
+  const refused = async (
+    responses: readonly (readonly unknown[] | Error)[],
+    patchSha256 = retryInput.patchSha256,
+  ) => {
+    const outcome = await store(responses).store.retry("owner", "sbm_1", {
+      ...retryInput,
+      patchSha256,
+    });
+    return outcome.ok ? "ok" : outcome.reason;
+  };
+  assert.equal(await refused([[]]), "not-found");
+  assert.equal(await refused([[row({ retryOf: "sbm_0" })]]), "is_retry");
+  assert.equal(await refused([[row({ status: "passed" })]]), "passed");
+  assert.equal(await refused([[row({ status: "running" })]]), "not_finished");
+  assert.equal(await refused([[row({ status: "queued" })]]), "not_finished");
+  assert.equal(await refused([[failed], []], input.patchSha256), "same_patch");
+  // Files another submission holds, or a retry made at the same moment.
+  assert.equal(await refused([[failed], [], duplicate(), []]), "same_patch");
+  assert.equal(await refused([[failed], [], duplicate(), [retried]]), "ok");
+  await assert.rejects(
+    store([[failed], [], new Error("down")]).store.retry(
+      "owner",
+      "sbm_1",
+      retryInput,
+    ),
+    /down/,
+  );
+  await assert.rejects(
+    store([[failed], [], []]).store.retry("owner", "sbm_1", retryInput),
+    /returned no row/,
   );
 });

@@ -986,59 +986,73 @@ export function mountSandboxRoutes(
     failedScenarios: [...(stored.result?.failedScenarios ?? [])],
     refused: [...(stored.result?.refused ?? [])],
     runId: stored.runId,
+    retryOf: stored.retryOf,
     createdAt: stored.createdAt,
     updatedAt: stored.updatedAt,
   });
-  app.post(`${base}/versions/:vid/submissions`, async (c) => {
+  /**
+   * The checks a write of submitted files shares: the caller's role, the
+   * deployment, the body. The files are stored by their hash, under the
+   * version, before the submission row names them.
+   */
+  const submittedFiles = async (
+    c: Context<{ Variables: AuthVariables }>,
+    versionOf: (owner: string) => Promise<string | null>,
+  ) => {
     if (!isAtLeastAdmin(c.get("member").role))
-      return c.json({ error: "Only owners and admins can submit." }, 403);
+      return {
+        response: c.json({ error: "Only owners and admins can submit." }, 403),
+      };
     if (options.submissions === undefined || options.objects.put === undefined)
-      return c.json(
-        {
-          error: "Submissions are not taken on this deployment.",
-          code: "submissions_unavailable",
-        },
-        503,
-      );
+      return {
+        response: c.json(
+          {
+            error: "Submissions are not taken on this deployment.",
+            code: "submissions_unavailable",
+          },
+          503,
+        ),
+      };
     const parsed = createSubmissionSchema.safeParse(
       await c.req.json().catch(() => null),
     );
     if (!parsed.success)
-      return c.json(
-        { error: "Invalid submission.", code: "invalid_submission" },
-        400,
-      );
+      return {
+        response: c.json(
+          { error: "Invalid submission.", code: "invalid_submission" },
+          400,
+        ),
+      };
     const owner = c.get("member").organizationId;
-    const versionId = c.req.param("vid");
+    const versionId = await versionOf(owner);
+    if (versionId === null)
+      return { response: c.json({ error: "Not found." }, 404) };
     const text = submittedFilesText(parsed.data.files);
     const patchSha256 = createHash("sha256").update(text, "utf8").digest("hex");
     const patchKey = `submissions/${owner}/${versionId}/${patchSha256}.json`;
     await options.objects.put(patchKey, Buffer.from(text, "utf8"));
-    const created = await options.submissions.create(owner, {
-      sandboxVersionId: versionId,
-      submittedBy: c.get("user").id,
-      patchKey,
-      patchSha256,
-    });
-    if (!created.ok)
-      return created.reason === "not_frozen"
-        ? c.json(
-            {
-              error: "Only a published version takes submissions.",
-              code: "not_frozen",
-            },
-            409,
-          )
-        : c.json({ error: "Not found." }, 404);
-    if (created.created) {
+    return {
+      store: options.submissions,
+      owner,
+      versionId,
+      input: { submittedBy: c.get("user").id, patchKey, patchSha256 },
+    };
+  };
+  /** Queues a new submission's grading run, and answers with it. */
+  const graded = async (
+    c: Context<{ Variables: AuthVariables }>,
+    owner: string,
+    made: { submission: StoredSubmission; created: boolean },
+  ) => {
+    if (made.created) {
       const queued = await options.runs.enqueue(owner, null, {
         tool: "submission_grade",
         params: {
           deadlineMinutes: 60,
           grader: "submission",
-          submissionId: created.submission.id,
-          sandboxVersionId: versionId,
-          patchSha256,
+          submissionId: made.submission.id,
+          sandboxVersionId: made.submission.sandboxVersionId,
+          patchSha256: made.submission.patchSha256,
         },
         requestedBy: c.get("user").id,
         maxActive: options.maxActive ?? 3,
@@ -1055,10 +1069,63 @@ export function mountSandboxRoutes(
     }
     return c.json(
       submissionResponseSchema.parse({
-        submission: submissionOf(created.submission),
+        submission: submissionOf(made.submission),
       }),
-      created.created ? 202 : 200,
+      made.created ? 202 : 200,
     );
+  };
+  app.post(`${base}/versions/:vid/submissions`, async (c) => {
+    const files = await submittedFiles(c, async () => c.req.param("vid"));
+    if ("response" in files) return files.response;
+    const created = await files.store.create(files.owner, {
+      sandboxVersionId: files.versionId,
+      ...files.input,
+    });
+    if (!created.ok)
+      return created.reason === "not_frozen"
+        ? c.json(
+            {
+              error: "Only a published version takes submissions.",
+              code: "not_frozen",
+            },
+            409,
+          )
+        : c.json({ error: "Not found." }, 404);
+    return graded(c, files.owner, created);
+  });
+  /*
+    One retry of a failed or errored submission, against the same version.
+    What the contributor was told is the first one's scenario keys
+    (`failedScenarios`), never a hidden test.
+  */
+  const RETRY_REFUSALS = {
+    not_finished: "The submission has no verdict yet.",
+    passed: "The submission passed; there is nothing to retry.",
+    is_retry: "A retry is not retried.",
+    retry_used: "The submission's one retry was already made.",
+    same_patch: "These files were already submitted against the version.",
+  } as const;
+  app.post(`${base}/submissions/:sid/retry`, async (c) => {
+    const files = await submittedFiles(
+      c,
+      async (owner) =>
+        (await options.submissions?.get(owner, c.req.param("sid")))
+          ?.sandboxVersionId ?? null,
+    );
+    if ("response" in files) return files.response;
+    const made = await files.store.retry(
+      files.owner,
+      c.req.param("sid"),
+      files.input,
+    );
+    if (!made.ok)
+      return made.reason === "not-found"
+        ? c.json({ error: "Not found." }, 404)
+        : c.json(
+            { error: RETRY_REFUSALS[made.reason], code: made.reason },
+            409,
+          );
+    return graded(c, files.owner, made);
   });
   app.get(`${base}/submissions/:sid`, async (c) => {
     if (!isAtLeastAdmin(c.get("member").role))

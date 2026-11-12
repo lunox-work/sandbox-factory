@@ -26,6 +26,7 @@
 
 import { sql } from "drizzle-orm";
 import {
+  type AnyPgColumn,
   check,
   index,
   integer,
@@ -270,10 +271,18 @@ export const submission = pgTable(
     runId: text("run_id").references(() => analysisRun.id, {
       onDelete: "set null",
     }),
+    /**
+     * The failed submission this one retries, told only its scenario keys.
+     * Unique: a submission has one retry.
+     */
+    retryOf: text("retry_of").references((): AnyPgColumn => submission.id, {
+      onDelete: "set null",
+    }),
     createdAt: ts("created_at").notNull().defaultNow(),
     updatedAt: ts("updated_at").notNull().defaultNow(),
   },
   (t) => [
+    unique("submission_retry_of_unique").on(t.retryOf),
     // The same patch against the same version is the same submission.
     unique("submission_version_patch_unique").on(
       t.sandboxVersionId,
