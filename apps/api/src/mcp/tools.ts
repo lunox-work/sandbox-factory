@@ -19,7 +19,14 @@ import { randomUUID } from "node:crypto";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { respecRequestSchema } from "@sandbox-factory/shared";
-import { BOUNTY_LIMITS, PRICED_BOUNTY_COMPLEXITIES } from "sandbox-factory";
+import {
+  API_SCOPES,
+  BOUNTY_LIMITS,
+  MCP_DEFAULT_SCOPES,
+  MCP_TOOLSETS,
+  PRICED_BOUNTY_COMPLEXITIES,
+  type ApiScope,
+} from "sandbox-factory";
 import { z } from "zod";
 
 /** What a call sends besides the caller's credential; a GET by default. */
@@ -38,6 +45,11 @@ export type ApiCall = (
 
 interface Tool {
   readonly name: string;
+  /** The scope its one route needs (the public registry's), null for none. */
+  readonly scope: ApiScope | null;
+  /** The route it calls, from its arguments and the workspace id. */
+  route(args: Record<string, unknown>, organizationId: string): string;
+  readonly method: "GET" | "POST";
   register(server: McpServer, call: ApiCall): void;
 }
 
@@ -63,9 +75,19 @@ export function toolError(status: number, body: unknown): CallToolResult {
     typeof fields.error === "string"
       ? fields.error
       : `The API answered ${status}.`;
+  // A grant from before an endpoint asked for this scope: only a new
+  // sign-in asks the person again.
+  const hint =
+    code === "insufficient_scope"
+      ? {
+          hint: "Sign in to this MCP server again (in Claude Code: /mcp, then re-authenticate) and keep this scope ticked on the consent page.",
+        }
+      : {};
   return {
     isError: true,
-    content: [{ type: "text", text: JSON.stringify({ error, code, status }) }],
+    content: [
+      { type: "text", text: JSON.stringify({ error, code, status, ...hint }) },
+    ],
   };
 }
 
@@ -97,6 +119,7 @@ async function workspaceOf(
  */
 function tool<Shape extends z.ZodRawShape>(definition: {
   name: string;
+  scope: ApiScope | null;
   description: string;
   input: Shape;
   scoped: boolean;
@@ -109,6 +132,10 @@ function tool<Shape extends z.ZodRawShape>(definition: {
   const writes = definition.method !== undefined;
   return {
     name: definition.name,
+    scope: definition.scope,
+    method: definition.method ?? "GET",
+    route: (args, organizationId) =>
+      definition.path(args as z.infer<z.ZodObject<Shape>>, organizationId),
     register(server, call) {
       const schema = z.object(definition.input);
       server.registerTool(
@@ -177,9 +204,10 @@ const org = (id: string) => `/api/v1/orgs/${enc(id)}`;
 const id = (what: string) =>
   z.string().min(1).describe(`The ${what}'s id, as a list tool returned it.`);
 
-const TOOLS = [
+export const TOOLS = [
   tool({
     name: "list_workspaces",
+    scope: "workspace:read",
     description:
       "Show the Lunox workspace this connection reads, your role in it and whether Jira and GitHub are connected. Call it first.",
     input: {},
@@ -188,6 +216,7 @@ const TOOLS = [
   }),
   tool({
     name: "get_usage",
+    scope: "workspace:read",
     description:
       "Count the workspace's sizing and analysis runs by kind and state over recent days, to see what has been running.",
     input: {
@@ -205,6 +234,7 @@ const TOOLS = [
   }),
   tool({
     name: "list_bounties",
+    scope: "workspace:read",
     description:
       "List the workspace's bounties, newest first, with each one's status (new, scoped, priced, live); use it to find a bounty's id.",
     input: {
@@ -228,6 +258,7 @@ const TOOLS = [
   }),
   tool({
     name: "get_bounty",
+    scope: "workspace:read",
     description:
       "Read one bounty in full: its scope text, acceptance criteria, linked Jira context and the steps done on it.",
     input: { bountyId: id("bounty") },
@@ -237,6 +268,7 @@ const TOOLS = [
   }),
   tool({
     name: "get_proposal",
+    scope: "workspace:read",
     description:
       "Read one priced proposal: its size, price and whether it is still fresh against the bounty it priced.",
     input: { proposalId: id("proposal") },
@@ -246,6 +278,7 @@ const TOOLS = [
   }),
   tool({
     name: "get_decisions",
+    scope: "workspace:read",
     description:
       "Read what a proposal's spec decided where the bounty was silent: its decisions (d1, d2…), whether a person confirmed them, and the spec as Gherkin with its Decided: list. Hidden tests are written to confirmed decisions.",
     input: { proposalId: id("proposal") },
@@ -255,6 +288,7 @@ const TOOLS = [
   }),
   tool({
     name: "confirm_link",
+    scope: "workspace:read",
     description:
       "Get the web page where a person confirms a proposal's decisions. Decisions are confirmed by a person, never by a tool: give them the link.",
     input: { proposalId: id("proposal") },
@@ -290,6 +324,7 @@ const TOOLS = [
   }),
   tool({
     name: "list_repositories",
+    scope: "workspace:read",
     description:
       "List the GitHub repositories the workspace registered, to find a repository or its latest snapshot.",
     input: {},
@@ -298,6 +333,7 @@ const TOOLS = [
   }),
   tool({
     name: "get_snapshot",
+    scope: "workspace:read",
     description:
       "Read one repository snapshot: the commit it was taken at and the facts read from its file tree.",
     input: { snapshotId: id("snapshot") },
@@ -307,6 +343,7 @@ const TOOLS = [
   }),
   tool({
     name: "list_boards",
+    scope: "workspace:read",
     description:
       "List the Jira boards the workspace registered and how each is sized and priced.",
     input: {},
@@ -315,6 +352,7 @@ const TOOLS = [
   }),
   tool({
     name: "search_issues",
+    scope: "workspace:read",
     description:
       "Search the issues on every registered Jira board by key or words, to find the issue a bounty came from or should.",
     input: {
@@ -330,6 +368,7 @@ const TOOLS = [
   }),
   tool({
     name: "list_sandboxes",
+    scope: "workspace:read",
     description:
       "List the workspace's sandboxes, one per bounty that reached the Sandbox step, with their versions' states.",
     input: {},
@@ -338,6 +377,7 @@ const TOOLS = [
   }),
   tool({
     name: "get_sandbox",
+    scope: "workspace:read",
     description:
       "Read one sandbox: the bounty it belongs to, its source repository and its versions.",
     input: { sandboxId: id("sandbox") },
@@ -347,6 +387,7 @@ const TOOLS = [
   }),
   tool({
     name: "get_run",
+    scope: "workspace:read",
     description:
       "Read one analysis run (a context builder, a slice or a sandbox build): its state, progress and outcome. Poll it after starting work.",
     input: { runId: id("run") },
@@ -359,6 +400,7 @@ const TOOLS = [
   // and role checks decide.
   tool({
     name: "post_bounty",
+    scope: "bounties:write",
     description:
       "Write a new bounty in the workspace from a title and a description of the work. It is not sized; call size_bounty with its id to price it.",
     input: {
@@ -392,6 +434,7 @@ const TOOLS = [
   }),
   tool({
     name: "import_github_issue",
+    scope: "bounties:write",
     description:
       "Make a bounty from a GitHub issue on a repository the workspace connected, taking its title, body and labels. Importing the same issue again returns the bounty it made.",
     input: {
@@ -406,6 +449,7 @@ const TOOLS = [
   }),
   tool({
     name: "import_jira_issue",
+    scope: "bounties:write",
     description:
       "Make a bounty from one Jira issue on a registered board, unsized. Find the board and issue ids with search_issues.",
     input: {
@@ -423,6 +467,7 @@ const TOOLS = [
   }),
   tool({
     name: "size_bounty",
+    scope: "pricing:write",
     description:
       "Size and price one bounty with a model call; it runs in the background. Poll get_bounty until it has a proposal, then read it with get_proposal.",
     input: { bountyId: id("bounty") },
@@ -434,6 +479,7 @@ const TOOLS = [
   }),
   tool({
     name: "respec",
+    scope: "specs:write",
     description:
       "Change a proposal's spec: expand it with more scenarios, answer its open questions, or trim scenarios. Runs in the background against the proposal revision you read with get_proposal.",
     input: {
@@ -459,6 +505,7 @@ const TOOLS = [
   }),
   tool({
     name: "plan_slice",
+    scope: "sandboxes:write",
     description:
       "Slice a connected repository from entry points: which files a sandbox copies, which modules it cuts to stubs, its public surface and what blocks it. It runs in the background; read it with get_run. Nothing is cut or published.",
     input: {
@@ -484,6 +531,7 @@ const TOOLS = [
   }),
   tool({
     name: "start_sandbox",
+    scope: "sandboxes:write",
     description:
       "Start the sandbox for a bounty: where its versions are cut, built and published. Starting one that exists answers it.",
     input: { bountyId: id("bounty") },
@@ -494,6 +542,7 @@ const TOOLS = [
   }),
   tool({
     name: "cut_slice",
+    scope: "sandboxes:write",
     description:
       "Cut a draft version of a sandbox from a succeeded slice run (plan_slice), priced from the bounty's approved proposal. A wide slice still waits for a person's approval in the web app.",
     input: {
@@ -520,6 +569,7 @@ const TOOLS = [
   }),
   tool({
     name: "prepare",
+    scope: "sandboxes:write",
     description:
       "Build a draft version: the standalone project, its baseline, and, when it has none, hidden tests written from the approved spec and calibrated by a reference implementation (duediligence's rule). It runs in the background; read it with get_run, then get_handout. Publishing stays a person's act in the web app.",
     input: { versionId: id("version") },
@@ -530,6 +580,7 @@ const TOOLS = [
   }),
   tool({
     name: "get_handout",
+    scope: "workspace:read",
     description:
       "Read what a developer gets of a built version: its public files, and of its hidden tests only how many there are and the commitment hash over them. No hidden test's name or body is shown.",
     input: { versionId: id("version") },
@@ -539,6 +590,7 @@ const TOOLS = [
   }),
   tool({
     name: "submit_patch",
+    scope: "submissions:write",
     description:
       "Submit the files changed in a published sandbox version for grading against its public and hidden tests. It runs in the background; read the verdict with get_verdict. The same files again are the submission already made.",
     input: {
@@ -564,6 +616,7 @@ const TOOLS = [
   }),
   tool({
     name: "judge",
+    scope: "submissions:write",
     description:
       "Judge an implementation against a published version's hidden tests, which you never see: submit the files changed, then read the verdict (passed, overfit, incomplete or refused) with get_verdict. Only counts and the failing scenarios' keys come back.",
     input: {
@@ -589,6 +642,7 @@ const TOOLS = [
   }),
   tool({
     name: "retry",
+    scope: "submissions:write",
     description:
       "Retry a failed submission once: submit the files again, changed, after reading its failing scenario keys with get_verdict. A submission has one retry, a passed one none. Read the new verdict with get_verdict.",
     input: {
@@ -614,6 +668,7 @@ const TOOLS = [
   }),
   tool({
     name: "get_verdict",
+    scope: "workspace:read",
     description:
       "Read a submission's verdict: passed, overfit, incomplete or refused, the public and hidden counts, and the keys of the spec scenarios a failing hidden test covers. Never a hidden test's name or body.",
     input: { submissionId: id("submission") },
@@ -623,6 +678,7 @@ const TOOLS = [
   }),
   tool({
     name: "connect_github",
+    scope: "integrations:write",
     description:
       "Get the link that connects the workspace's GitHub repositories. Connecting is a browser step: give the person the link to open.",
     input: {},
@@ -633,6 +689,7 @@ const TOOLS = [
   }),
   tool({
     name: "connect_jira",
+    scope: "integrations:write",
     description:
       "Get the link that connects a Jira site to the workspace. Connecting is a browser step: give the person the link to open.",
     input: {},
@@ -645,45 +702,28 @@ const TOOLS = [
 
 export type ToolName = (typeof TOOLS)[number]["name"];
 
-/** The tools each MCP endpoint serves, by path. */
-export const TOOLSETS: Readonly<Record<string, readonly ToolName[]>> = {
-  "/mcp": TOOLS.map((entry) => entry.name),
-  "/mcp/duediligence": [
-    "list_workspaces",
-    "list_bounties",
-    "get_bounty",
-    "get_proposal",
-    "get_run",
-    "get_usage",
-    "post_bounty",
-    "import_github_issue",
-    "import_jira_issue",
-    "size_bounty",
-    "get_decisions",
-    "confirm_link",
-    "start_sandbox",
-    "prepare",
-    "get_handout",
-    "judge",
-    "retry",
-    "get_verdict",
-  ],
-  "/mcp/carveout": [
-    "list_workspaces",
-    "list_repositories",
-    "get_snapshot",
-    "list_sandboxes",
-    "get_sandbox",
-    "get_run",
-    "plan_slice",
-    "start_sandbox",
-    "cut_slice",
-    "get_handout",
-    "submit_patch",
-    "retry",
-    "get_verdict",
-  ],
-};
+/**
+ * The tools each MCP endpoint serves, by path: `MCP_TOOLSETS` in core,
+ * shared with the web app's MCP page. `/mcp` names every tool here, and a
+ * toolset names no other (`mcp.test.ts`).
+ */
+export const TOOLSETS: Readonly<Record<string, readonly ToolName[]>> =
+  MCP_TOOLSETS;
+
+/**
+ * The scopes an endpoint's tools need, in `API_SCOPES` order: what its
+ * sign-in challenge and protected-resource metadata ask an MCP client to
+ * request, so a client signed in through one plugin can use every tool
+ * that plugin's skill names. The person may still untick any of them.
+ */
+export function toolsetScopes(path: string): ApiScope[] {
+  const names = new Set<string>(TOOLSETS[path] ?? []);
+  const needed = new Set<ApiScope>(MCP_DEFAULT_SCOPES);
+  for (const entry of TOOLS) {
+    if (names.has(entry.name) && entry.scope !== null) needed.add(entry.scope);
+  }
+  return API_SCOPES.filter((scope) => needed.has(scope));
+}
 
 /** Registers the tools named in `toolset` on `server`, calling through `call`. */
 export function registerTools(

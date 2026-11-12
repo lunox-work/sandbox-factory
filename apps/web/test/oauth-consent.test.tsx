@@ -61,13 +61,14 @@ test("the consent address is /oauth/consent", () => {
   expect(isOAuthConsentPath("/oauth")).toBe(false);
 });
 
-test("an app is offered reading by default, never more than it asked", () => {
+test("an app is offered what it asked for, never more", () => {
   expect(requestedScopes(SEARCH)).toEqual({
     api: ["workspace:read", "bounties:write"],
     offline: true,
   });
   expect(defaultScopes(["workspace:read", "bounties:write"])).toEqual([
     "workspace:read",
+    "bounties:write",
   ]);
   expect(defaultScopes(["bounties:write"])).toEqual(["bounties:write"]);
   expect(requestedScopes("?scope=admin+workspace%3Aread").api).toEqual([
@@ -75,7 +76,7 @@ test("an app is offered reading by default, never more than it asked", () => {
   ]);
 });
 
-test("an owner picks a workspace and allows reading, bound by header", async () => {
+test("an owner picks a workspace and allows what was asked, bound by header", async () => {
   fetchAuth.mockImplementation(answer);
   render(
     <OAuthConsent
@@ -108,7 +109,7 @@ test("an owner picks a workspace and allows reading, bound by header", async () 
         name: /bounties:write/,
       }) as HTMLInputElement
     ).checked,
-  ).toBe(false);
+  ).toBe(true);
   fireEvent.click(allow);
   expect(await screen.findByRole("status")).toHaveProperty(
     "textContent",
@@ -120,13 +121,13 @@ test("an owner picks a workspace and allows reading, bound by header", async () 
     body: {
       accept: true,
       oauth_query: SEARCH.slice(1),
-      scope: "workspace:read offline_access",
+      scope: "workspace:read bounties:write offline_access",
     },
   });
   expect(assign).toHaveBeenCalledWith("http://127.0.0.1:33418/callback?code=x");
 });
 
-test("a sole administered workspace is chosen, and more scopes can be ticked", async () => {
+test("a sole administered workspace is chosen, and a scope can be unticked", async () => {
   fetchAuth.mockImplementation(answer);
   render(
     <OAuthConsent
@@ -146,7 +147,7 @@ test("a sole administered workspace is chosen, and more scopes can be ticked", a
     expect.objectContaining({
       headers: { [ORGANIZATION_HEADER]: "org_1" },
       body: expect.objectContaining({
-        scope: "workspace:read bounties:write offline_access",
+        scope: "workspace:read offline_access",
       }),
     }),
   );

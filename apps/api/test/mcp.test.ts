@@ -14,15 +14,18 @@ import {
 import { OAUTH_ACCESS_TOKEN_PREFIX } from "sandbox-factory";
 
 import { generateSecret, hashSecret } from "../src/api-tokens/secret.js";
-import { MCP_INSTRUCTIONS } from "../src/mcp/routes.js";
+import { challengeScope, MCP_INSTRUCTIONS } from "../src/mcp/routes.js";
 import {
   registerTools,
   toolError,
+  TOOLS,
   TOOLSETS,
+  toolsetScopes,
   type ApiCall,
   type ApiCallInit,
 } from "../src/mcp/tools.js";
 import { hashOAuthToken } from "../src/oauth/provider.js";
+import { PUBLIC_ROUTES } from "../src/public-api/registry.js";
 import { createApp } from "../src/routes.js";
 import {
   ada,
@@ -186,6 +189,8 @@ test("each endpoint lists exactly its toolset", async () => {
       "size_bounty",
       "get_decisions",
       "confirm_link",
+      "list_sandboxes",
+      "get_sandbox",
       "start_sandbox",
       "prepare",
       "get_handout",
@@ -195,6 +200,15 @@ test("each endpoint lists exactly its toolset", async () => {
     ],
     "/mcp/carveout": [
       "list_workspaces",
+      "get_usage",
+      "list_bounties",
+      "get_bounty",
+      "get_proposal",
+      "get_decisions",
+      "confirm_link",
+      "post_bounty",
+      "import_github_issue",
+      "size_bounty",
       "list_repositories",
       "get_snapshot",
       "list_sandboxes",
@@ -203,6 +217,7 @@ test("each endpoint lists exactly its toolset", async () => {
       "plan_slice",
       "start_sandbox",
       "cut_slice",
+      "prepare",
       "get_handout",
       "submit_patch",
       "retry",
@@ -210,6 +225,10 @@ test("each endpoint lists exactly its toolset", async () => {
     ],
   };
   assert.deepEqual(Object.keys(TOOLSETS), Object.keys(expected));
+  assert.deepEqual(
+    [...(TOOLSETS["/mcp"] ?? [])].sort(),
+    TOOLS.map((entry) => entry.name).sort(),
+  );
   for (const [path, names] of Object.entries(expected)) {
     const client = await connect(path, token);
     assert.equal(client.getInstructions(), MCP_INSTRUCTIONS);
@@ -232,6 +251,43 @@ test("each endpoint lists exactly its toolset", async () => {
         assert.equal(tool.annotations?.destructiveHint, false, tool.name);
     }
     await client.close();
+  }
+});
+
+/** What signing in at each endpoint asks for: every scope its tools need. */
+const SIGN_IN_SCOPES: Record<string, string> = {
+  "/mcp":
+    "workspace:read integrations:write bounties:write pricing:write specs:write sandboxes:write submissions:write offline_access",
+  "/mcp/duediligence":
+    "workspace:read bounties:write pricing:write sandboxes:write submissions:write offline_access",
+  "/mcp/carveout":
+    "workspace:read bounties:write pricing:write sandboxes:write submissions:write offline_access",
+};
+
+test("each endpoint asks for the scopes its tools need", () => {
+  for (const [path, scope] of Object.entries(SIGN_IN_SCOPES)) {
+    assert.equal(challengeScope(path), scope, path);
+    assert.deepEqual(
+      [...toolsetScopes(path), "offline_access"],
+      scope.split(" "),
+      path,
+    );
+  }
+});
+
+test("each tool declares the scope of the public route it calls", () => {
+  // Every argument a route is built from reads as "x"; the query is dropped.
+  const args = new Proxy({}, { get: () => "x" }) as Record<string, unknown>;
+  const pattern = (route: string) =>
+    new RegExp(`^${route.replace(/:[A-Za-z]+/g, "[^/]+")}$`);
+  for (const entry of TOOLS) {
+    const path = entry.route(args, "org_x").split("?")[0] ?? "";
+    const declared = PUBLIC_ROUTES.find(
+      (route) =>
+        route.method === entry.method && pattern(route.path).test(path),
+    );
+    assert.ok(declared, `${entry.name}: ${entry.method} ${path}`);
+    assert.equal(entry.scope, declared.scope, entry.name);
   }
 });
 
@@ -289,6 +345,7 @@ test("a missing scope is a tool error carrying the API's code", async () => {
     error: "This credential lacks the workspace:read scope.",
     code: "insufficient_scope",
     status: 403,
+    hint: "Sign in to this MCP server again (in Claude Code: /mcp, then re-authenticate) and keep this scope ticked on the consent page.",
   });
   await client.close();
 });
@@ -328,7 +385,7 @@ test("no credential is a 401 that says where to sign in", async () => {
     assert.equal(res.status, 401, path);
     assert.equal(
       res.headers.get("www-authenticate"),
-      `Bearer resource_metadata="${BASE}/.well-known/oauth-protected-resource${path}", scope="workspace:read offline_access"`,
+      `Bearer resource_metadata="${BASE}/.well-known/oauth-protected-resource${path}", scope="${SIGN_IN_SCOPES[path]}"`,
     );
   }
   // A session cookie is not a credential here.

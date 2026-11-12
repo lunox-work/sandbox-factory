@@ -167,8 +167,8 @@ string: exported consts are singular, column properties are camelCase.
   SHA-256. Sign-in is the web app's Google, GitHub and Atlassian.
 - **A grant binds one organization.** The web app's `/oauth/consent`
   (`features/developers/OAuthConsent.tsx`) is both login and consent page:
-  it shows the client, the requested scopes (`workspace:read` checked by
-  default) and the workspaces the person owns or administers, and posts
+  it shows the client, the requested scopes (all checked; the person may
+  untick any) and the workspaces the person owns or administers, and posts
   `/api/auth/oauth2/consent` with the choice in `x-lunox-organization`.
   `consentReferenceId` admits only an owner's or admin's workspace and
   stores it as `reference_id` on the consent (the grant, unique per person,
@@ -187,10 +187,16 @@ string: exported consts are singular, column properties are camelCase.
 Streamable HTTP transport, **stateless** (a server and transport per POST,
 no session id, JSON responses; GET and DELETE answer 405). Endpoints are
 toolsets: `POST /mcp` (all), `/mcp/duediligence`, `/mcp/carveout`
-(`TOOLSETS` in `tools.ts`). Read tools are GETs; write tools post work
-(`post_bounty`, `import_github_issue`, `import_jira_issue`, `size_bounty`,
-`respec`; the first four also on `/mcp/duediligence`) and `connect_github`,
-`connect_jira` return the connect route's link with what to do.
+(`MCP_TOOLSETS` in `packages/core/src/scopes.ts`, shared with the web app's
+MCP page). Each plugin's toolset carries its skill's whole hosted flow, from
+finding or posting a bounty to the verdict. Read tools are GETs; write tools
+post work (`post_bounty`, `import_github_issue`, `import_jira_issue`,
+`size_bounty`, `respec`) and `connect_github`, `connect_jira` return the
+connect route's link with what to do. Each tool declares its route's
+scope; an endpoint's 401 challenge and protected-resource metadata ask for
+the union over its toolset (`toolsetScopes`), so a plugin signed in through
+`/mcp` can call every write its skill names. An `insufficient_scope` tool
+error says to sign in again.
 `get_decisions` reads a spec's decisions (its assumptions, keyed `d1…`,
 hashed) and `confirm_link` returns the web page where a person confirms
 them (`POST …/decisions/confirm`, a web session only; one

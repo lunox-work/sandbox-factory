@@ -15,14 +15,11 @@
 
 import { oauthProviderAuthServerMetadata } from "@better-auth/oauth-provider";
 import type { Hono } from "hono";
-import {
-  API_SCOPES,
-  MCP_DEFAULT_SCOPES,
-  OFFLINE_ACCESS_SCOPE,
-} from "sandbox-factory";
+import { API_SCOPES, OFFLINE_ACCESS_SCOPE } from "sandbox-factory";
 
 import type { Auth } from "../auth.js";
 import type { AuthVariables } from "../http-context.js";
+import { toolsetScopes } from "../mcp/tools.js";
 import { issuerOf, MCP_PATHS, publicOrigin } from "./provider.js";
 
 const WELL_KNOWN_RESOURCE = "/.well-known/oauth-protected-resource";
@@ -41,10 +38,10 @@ export function protectedResource(baseUrl: string, path: string) {
   return {
     resource: `${publicOrigin(baseUrl)}${path}`,
     authorization_servers: [issuerOf(baseUrl)],
-    // An MCP client asks for what its read tools need, and for a refresh
-    // token; the consent page may grant more if the client asks for more.
+    // An MCP client asks for what its endpoint's tools need, and for a
+    // refresh token; the person may untick any of them on the consent page.
     scopes_supported: mcp
-      ? [...MCP_DEFAULT_SCOPES, OFFLINE_ACCESS_SCOPE]
+      ? [...toolsetScopes(path), OFFLINE_ACCESS_SCOPE]
       : [...API_SCOPES, OFFLINE_ACCESS_SCOPE],
     bearer_methods_supported: ["header"],
     resource_name: mcp ? "Lunox MCP" : "Lunox API",

@@ -326,7 +326,14 @@ test("the protected-resource documents name the server and what to ask for", asy
   assert.deepEqual(await res.json(), {
     resource: `${BASE}/mcp/carveout`,
     authorization_servers: [`${BASE}/api/auth`],
-    scopes_supported: ["workspace:read", "offline_access"],
+    scopes_supported: [
+      "workspace:read",
+      "bounties:write",
+      "pricing:write",
+      "sandboxes:write",
+      "submissions:write",
+      "offline_access",
+    ],
     bearer_methods_supported: ["header"],
     resource_name: "Lunox MCP",
   });
