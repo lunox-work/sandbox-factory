@@ -167,6 +167,9 @@ export type ContextBuilder = (typeof CONTEXT_BUILDERS)[number];
  * starter project from the bounty's own text, which is then built and
  * checked like a slice's. `submission_grade` runs a submission's patch
  * against a built version's public and hidden tests (`grading.ts`).
+ * `sandbox_import` takes a folder carveout cut and pseudonymised on the
+ * maintainer's machine, uploaded with its acceptance tests, as a version:
+ * no repository, no model, only its baseline.
  */
 export const ANALYSIS_TOOLS = [
   ...CONTEXT_BUILDERS,
@@ -176,6 +179,7 @@ export const ANALYSIS_TOOLS = [
   "fixtures",
   "sandbox_starter",
   "submission_grade",
+  "sandbox_import",
 ] as const;
 export type AnalysisTool = (typeof ANALYSIS_TOOLS)[number];
 export const GRAPHIFY_TOOL_VERSION = "graphifyy@0.4.18+driver-1";
@@ -256,13 +260,19 @@ export const FIXTURES_TOOL_VERSION = "fixtures@4";
 export const STARTER_TOOL_VERSION = "sandbox_starter@5";
 /** Bumped when the grading tree, its commands or the verdict change meaning. */
 export const SUBMISSION_GRADE_TOOL_VERSION = "submission_grade@2";
+/** Bumped when an uploaded folder's files, layout or baseline change meaning. */
+export const SANDBOX_IMPORT_TOOL_VERSION = "sandbox_import@1";
 /**
  * Tools that always read a repository snapshot. Grading reads one only for
  * a version sliced from a repository, to carry a passing submission back
  * (`snapshotFits`); every other tool runs without source.
  */
 export function readsSource(tool: AnalysisTool): boolean {
-  return tool !== "sandbox_starter" && tool !== "submission_grade";
+  return (
+    tool !== "sandbox_starter" &&
+    tool !== "submission_grade" &&
+    tool !== "sandbox_import"
+  );
 }
 /** Whether a run of the tool may be on a snapshot, or must be. */
 export function snapshotFits(tool: AnalysisTool, onSnapshot: boolean): boolean {
@@ -288,6 +298,7 @@ export function slotOf(tool: AnalysisTool): RunSlot {
     case "sandbox_build":
     case "sandbox_starter":
     case "submission_grade":
+    case "sandbox_import":
       return "agent";
     case "graphify":
     case "abstractions":
@@ -323,6 +334,8 @@ export function toolVersionOf(tool: AnalysisTool): string {
       return STARTER_TOOL_VERSION;
     case "submission_grade":
       return SUBMISSION_GRADE_TOOL_VERSION;
+    case "sandbox_import":
+      return SANDBOX_IMPORT_TOOL_VERSION;
     case "slice":
       return SLICE_TOOL_VERSION;
     case "sandbox_build":
@@ -490,6 +503,27 @@ export interface SubmissionGradeParams extends GraphifyParams {
    */
   readonly names?: "repository";
 }
+/**
+ * An uploaded hand-off folder imported as the draft version it names: its
+ * files and acceptance tests are the object stored under the version at
+ * `uploadSha256` (`uploadObjectKey`), and the folder's record hash and
+ * carveout release are what the build manifest binds to.
+ */
+export interface SandboxImportParams extends GraphifyParams {
+  readonly importer: "upload";
+  readonly sandboxVersionId: string;
+  readonly uploadSha256: string;
+  readonly recordSha256: string;
+  readonly carveoutVersion: string;
+}
+/** Where an upload's files are kept: under its workspace and version, by hash. */
+export function uploadObjectKey(
+  owner: string,
+  versionId: string,
+  uploadSha256: string,
+): string {
+  return `uploads/${owner}/${versionId}/${uploadSha256}.json`;
+}
 export type AnalysisParams =
   | GraphifyParams
   | AbstractionsParams
@@ -501,7 +535,8 @@ export type AnalysisParams =
   | ScopeParams
   | FixturesParams
   | StarterParams
-  | SubmissionGradeParams;
+  | SubmissionGradeParams
+  | SandboxImportParams;
 export function isAbstractionsParams(
   params: AnalysisParams,
 ): params is AbstractionsParams {
@@ -533,6 +568,11 @@ export function isSubmissionGradeParams(
 ): params is SubmissionGradeParams {
   return "grader" in params && params.grader === "submission";
 }
+export function isSandboxImportParams(
+  params: AnalysisParams,
+): params is SandboxImportParams {
+  return "importer" in params && params.importer === "upload";
+}
 export function isStarterParams(
   params: AnalysisParams,
 ): params is StarterParams {
@@ -551,7 +591,8 @@ export function isSandboxBuildParams(
   return (
     "sandboxVersionId" in params &&
     !("agent" in params) &&
-    !("grader" in params)
+    !("grader" in params) &&
+    !("importer" in params)
   );
 }
 export function toolOfParams(params: AnalysisParams): AnalysisTool {
@@ -560,6 +601,7 @@ export function toolOfParams(params: AnalysisParams): AnalysisTool {
   if (isFixturesParams(params)) return "fixtures";
   if (isStarterParams(params)) return "sandbox_starter";
   if (isSubmissionGradeParams(params)) return "submission_grade";
+  if (isSandboxImportParams(params)) return "sandbox_import";
   return isSliceParams(params)
     ? "slice"
     : isSandboxBuildParams(params)

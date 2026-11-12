@@ -28,6 +28,11 @@ import {
  * route outside it answers a token.
  */
 
+/** Reads that take a write scope: a passing submission's files, for carry-back. */
+const WRITE_SCOPED_READS = new Set([
+  "GET /api/v1/orgs/:orgId/sandboxes/submissions/:sid/files",
+]);
+
 test("every registry entry declares its scope, request and response schemas", () => {
   const seen = new Set<string>();
   for (const route of PUBLIC_ROUTES) {
@@ -57,8 +62,9 @@ test("every registry entry declares its scope, request and response schemas", ()
         `${key} has no response schema`,
       );
     }
-    // Reads need only `workspace:read`; writes never take it.
-    if (route.scope !== null)
+    // Reads need only `workspace:read`, but for the one that hands a
+    // contributor's work back (`submissions:write`); writes never take it.
+    if (route.scope !== null && !WRITE_SCOPED_READS.has(key))
       assert.equal(
         route.scope === "workspace:read",
         route.method === "GET" && response.status !== 302,

@@ -320,9 +320,10 @@ export function packageNameOf(specifier: string): string {
 
 /**
  * Where a version's code came from: a slice of the sandbox's repository,
- * or a starter an agent wrote from the bounty's text when it has none.
+ * a starter an agent wrote from the bounty's text when it has none, or a
+ * hand-off folder carveout cut on the maintainer's machine and uploaded.
  */
-export type VersionOrigin = "slice" | "starter";
+export type VersionOrigin = "slice" | "starter" | "upload";
 
 /**
  * What `sandbox_version_source` records, as the stores and the worker see

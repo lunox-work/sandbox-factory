@@ -34,17 +34,15 @@
  * task code runs only in processes the grader reads from outside, each
  * hidden test in its own from a fresh copy of the version's files, and no
  * other hidden test, credential or grading state is loaded beside it.
+ *
+ * Which directories are the harness, which root files configure the run
+ * and which commands run are the version's layout (`layout.ts`): the
+ * platform's own unless its build manifest records another, as an
+ * uploaded carveout folder's does.
  */
 
-import { TASK_DESCRIPTOR_PATH } from "./descriptor.js";
+import { PLATFORM_LAYOUT, type GradingLayout } from "./layout.js";
 import {
-  ENV_FILE,
-  HARNESS_DIR,
-  MOCKS_DIR,
-  MOCK_RUNTIME_PATH,
-  PRIVATE_TESTS_DIR,
-  PUBLIC_TESTS_DIR,
-  SANDBOX_RUN_ARGV,
   declarationPath,
   dirnameOf,
   isScript,
@@ -88,40 +86,10 @@ export interface GradingTree {
 export const GRADING_COMMANDS: readonly {
   readonly name: "install" | "build" | "public-tests";
   readonly argv: readonly string[];
-}[] = [
-  {
-    name: "install",
-    argv: ["npm", "ci", "--ignore-scripts", "--no-audit", "--no-fund"],
-  },
-  {
-    name: "build",
-    argv: ["node", "node_modules/typescript/bin/tsc", "-p", "tsconfig.json"],
-  },
-  { name: "public-tests", argv: SANDBOX_RUN_ARGV.test },
-];
-
-/** Top-level directories a submission never writes to. */
-const HARNESS_ROOTS = [
-  HARNESS_DIR,
-  MOCKS_DIR,
-  PUBLIC_TESTS_DIR.split("/")[0] ?? "tests",
-  PRIVATE_TESTS_DIR.split("/")[0] ?? "tests",
-  "node_modules",
-];
-/** Root files that configure the run; named for the refusal they get. */
-const CONFIG_FILES: Readonly<Record<string, string>> = {
-  "package.json":
-    "package.json is the version's; scripts and dependencies are not the submission's to change.",
-  "package-lock.json": "The lockfile is the version's.",
-  ".npmrc": ".npmrc is the version's.",
-  ".nvmrc": ".nvmrc is the version's.",
-  ".gitignore": ".gitignore is the version's.",
-  [ENV_FILE]: `${ENV_FILE} is the version's fixture environment.`,
-  [TASK_DESCRIPTOR_PATH]: `${TASK_DESCRIPTOR_PATH} is the version's.`,
-};
+}[] = PLATFORM_LAYOUT.commands;
 
 /** Why a path cannot name a file in the tree; null when it can. */
-function pathProblem(path: string): string | null {
+export function pathProblem(path: string): string | null {
   if (path === "") return "The path is empty.";
   if (path.startsWith("/") || /^[A-Za-z]:/.test(path))
     return "The path is absolute.";
@@ -159,7 +127,11 @@ const RUN_MODULES =
  * against the file's directory. Advisory only, as the header says: a
  * file this passes is not thereby safe to run beside the hidden tests.
  */
-export function taskCodeProblems(path: string, text: string): string[] {
+export function taskCodeProblems(
+  path: string,
+  text: string,
+  layout: GradingLayout = PLATFORM_LAYOUT,
+): string[] {
   const problems: string[] = [];
   if (MOCK_CONTROLS.test(text))
     problems.push(
@@ -216,10 +188,14 @@ export function taskCodeProblems(path: string, text: string): string[] {
       problems.push(`${specifier} leaves the project.`);
       continue;
     }
-    const top = target.split("/")[0];
-    if (relative && (top === HARNESS_DIR || top === MOCKS_DIR))
+    if (
+      relative &&
+      [layout.harnessDir, layout.mocksDir].some(
+        (dir) => target === dir || target.startsWith(`${dir}/`),
+      )
+    )
       problems.push(
-        `${specifier} reaches ${target.startsWith(MOCK_RUNTIME_PATH.replace(/\.js$/, "")) ? "the mock runtime" : "the harness"}; task code imports only task code, stubs and packages.`,
+        `${specifier} reaches ${target.startsWith(layout.mockRuntimePath.replace(/\.js$/, "")) ? "the mock runtime" : "the harness"}; task code imports only task code, stubs and packages.`,
       );
   }
   return [...new Set(problems)];
@@ -250,7 +226,10 @@ export function gradingTree(input: {
   /** The descriptor's `editablePaths`. */
   readonly editablePaths: readonly string[];
   readonly submission: readonly SubmittedFile[];
+  /** Where the version keeps its harness and tests; the platform's by default. */
+  readonly layout?: GradingLayout;
 }): GradingTree {
+  const layout = input.layout ?? PLATFORM_LAYOUT;
   const refused: GradingRefusal[] = [];
   const refuse = (path: string, reason: string) =>
     refused.push({ path, reason });
@@ -270,7 +249,8 @@ export function gradingTree(input: {
     input.editablePaths
       .map(dirnameOf)
       .filter(
-        (dir) => dir !== "" && !HARNESS_ROOTS.includes(dir.split("/")[0] ?? ""),
+        (dir) =>
+          dir !== "" && !layout.harnessRoots.includes(dir.split("/")[0] ?? ""),
       ),
   );
   const taken = new Map<string, string>();
@@ -297,7 +277,7 @@ export function gradingTree(input: {
       taken.set(path, file.text);
       continue;
     }
-    const why = newFileProblem(path, version, lowered, owned);
+    const why = newFileProblem(path, version, lowered, owned, layout);
     if (why !== null) {
       refuse(path, why);
       continue;
@@ -305,7 +285,8 @@ export function gradingTree(input: {
     taken.set(path, file.text);
   }
   for (const [path, text] of taken)
-    for (const reason of taskCodeProblems(path, text)) refuse(path, reason);
+    for (const reason of taskCodeProblems(path, text, layout))
+      refuse(path, reason);
   const changed = [...taken.keys()].sort(compare);
   if (refused.length > 0)
     return {
@@ -334,13 +315,14 @@ function newFileProblem(
   version: ReadonlyMap<string, GeneratedFile>,
   lowered: ReadonlyMap<string, string>,
   owned: ReadonlySet<string>,
+  layout: GradingLayout,
 ): string | null {
-  const config = CONFIG_FILES[path];
+  const config = layout.configFiles[path];
   if (config !== undefined) return config;
   if (/^tsconfig[^/]*\.json$/.test(path))
     return "Compiler configuration is the version's.";
   const top = path.split("/")[0] ?? "";
-  if (path.includes("/") && HARNESS_ROOTS.includes(top))
+  if (path.includes("/") && layout.harnessRoots.includes(top))
     return `${top}/ is the version's harness.`;
   const existing = version.get(path);
   if (existing !== undefined)

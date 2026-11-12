@@ -684,6 +684,66 @@ test("versions list newest first and read with their private source", async () =
   );
 });
 
+test("an uploaded version is kept in the starter's columns by its import run, and read back as an upload", async () => {
+  const uploadVersion = {
+    ...starterVersion,
+    id: "sbv_up",
+    source: {
+      ...starterVersion.source,
+      origin: "upload" as const,
+      importRunId: "arn_import",
+    },
+  };
+  const fake = createSequencedFakeDb([
+    [{ sandbox: sandboxRow(), sourceRepoId: null }],
+    [{ id: "arn_import" }],
+    [],
+    [{ version: 1 }],
+    [versionRow({ id: "sbv_up", version: 2 })],
+    [
+      generatedRow({
+        sandboxVersionId: "sbv_up",
+        starterRunId: "arn_import",
+        buildRunId: "arn_import",
+      }),
+    ],
+  ]);
+  const result = await createSandboxStore(fake.db).createVersion(
+    "owner",
+    "sbx_1",
+    uploadVersion,
+  );
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.equal(result.source.origin, "upload");
+  assert.equal(fake.calls[5]?.values?.["starterRunId"], "arn_import");
+  assert.equal(fake.calls[5]?.values?.["buildRunId"], "arn_import");
+  // A sandbox sliced from a repository takes no upload.
+  assert.deepEqual(
+    await createSandboxStore(
+      createSequencedFakeDb([
+        [{ sandbox: sandboxRow(), sourceRepoId: "ghr_1" }],
+      ]).db,
+    ).createVersion("owner", "sbx_1", uploadVersion),
+    { ok: false, reason: "source_linked" },
+  );
+  // Read back, the run's tool says upload; a starter's, generated.
+  const read = (starterTool: string | null) =>
+    createSandboxStore(
+      createFakeDb([
+        {
+          version: versionRow(),
+          source: generatedRow({ starterRunId: "arn_import" }),
+          commitSha: null,
+          starterTool,
+        },
+      ]).db,
+    ).getVersion("owner", "sbv_1");
+  assert.equal((await read("sandbox_import"))?.source.origin, "upload");
+  assert.equal((await read("sandbox_starter"))?.source.origin, "starter");
+  assert.equal((await read(null))?.source.origin, "starter");
+});
+
 test("a draft's transform can change and invalidates its evidence; a frozen version refuses", async () => {
   const current = {
     version: versionRow(),

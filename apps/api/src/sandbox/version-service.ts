@@ -678,6 +678,63 @@ export function versionService(options: SandboxRouteOptions) {
    * pointing at it; a version that could not be made leaves a run whose
    * version does not exist, which the worker fails.
    */
+  /**
+   * The approved task a generated or uploaded version freezes, from the
+   * bounty itself: its text, its live proposal's spec and price, and the
+   * context its sources hold now.
+   */
+  async function bountyTask(
+    owner: string,
+    actor: string,
+    bounty: StoredBounty,
+    proposal: StoredBountyProposal | null,
+    now: Date,
+  ): Promise<{
+    approvedTask: ApprovedTaskSnapshot;
+    proposalVersion: number | null;
+  }> {
+    let spec: ApprovedTaskSnapshot["spec"] = null;
+    let pricing: ApprovedTaskSnapshot["pricing"] = null;
+    // The bounty version the task is taken from, while it is approved.
+    let proposalVersion: number | null = null;
+    if (proposal !== null) {
+      const stored =
+        proposal.specRevision === null
+          ? null
+          : await options.specs.get(owner, proposal.id, proposal.specRevision);
+      if (stored !== null)
+        spec = {
+          proposalId: proposal.id,
+          specRevision: stored.revision,
+          specHash: stored.specHash,
+          draft: stored.draft,
+        };
+      if (proposal.status === "approved") proposalVersion = proposal.version;
+      pricing = {
+        proposalId: proposal.id,
+        proposalRevision: proposal.revision,
+        complexity: proposal.complexity,
+        amountMinor: proposal.amountMinor,
+        currency: proposal.currency,
+        status: proposal.status,
+        decidedAt: proposal.decidedAt,
+      };
+    }
+    const approvedTask: ApprovedTaskSnapshot = {
+      schemaVersion: APPROVED_TASK_SCHEMA_VERSION,
+      title: bounty.title,
+      summary: bounty.description,
+      spec,
+      pricing,
+      selectedBy: actor,
+      selectedAt: now.toISOString(),
+      bountyId: bounty.id,
+      // What its sources add, which the starter agent is shown too.
+      context: await taskContext(owner, bounty),
+    };
+    return { approvedTask, proposalVersion };
+  }
+
   async function generate(
     owner: string,
     actor: string,
@@ -749,45 +806,13 @@ export function versionService(options: SandboxRouteOptions) {
         { error: unsupported, code: "stack_unsupported" },
         "conflict",
       );
-    let spec: ApprovedTaskSnapshot["spec"] = null;
-    let pricing: ApprovedTaskSnapshot["pricing"] = null;
-    // The bounty version the task is taken from, while it is approved.
-    let proposalVersion: number | null = null;
-    if (proposal !== null) {
-      const stored =
-        proposal.specRevision === null
-          ? null
-          : await options.specs.get(owner, proposal.id, proposal.specRevision);
-      if (stored !== null)
-        spec = {
-          proposalId: proposal.id,
-          specRevision: stored.revision,
-          specHash: stored.specHash,
-          draft: stored.draft,
-        };
-      if (proposal.status === "approved") proposalVersion = proposal.version;
-      pricing = {
-        proposalId: proposal.id,
-        proposalRevision: proposal.revision,
-        complexity: proposal.complexity,
-        amountMinor: proposal.amountMinor,
-        currency: proposal.currency,
-        status: proposal.status,
-        decidedAt: proposal.decidedAt,
-      };
-    }
-    const approvedTask: ApprovedTaskSnapshot = {
-      schemaVersion: APPROVED_TASK_SCHEMA_VERSION,
-      title: bounty.title,
-      summary: bounty.description,
-      spec,
-      pricing,
-      selectedBy: actor,
-      selectedAt: now.toISOString(),
-      bountyId: bounty.id,
-      // What its sources add, which the starter agent is shown too.
-      context: await taskContext(owner, bounty),
-    };
+    const { approvedTask, proposalVersion } = await bountyTask(
+      owner,
+      actor,
+      bounty,
+      proposal,
+      now,
+    );
     const task = starterTaskReadiness(approvedTask);
     if (!task.ready)
       return failure(
@@ -870,6 +895,131 @@ export function versionService(options: SandboxRouteOptions) {
           )
         : created.reason === "starter_in_progress"
           ? starterInProgress()
+          : failure({ error: "Not found." }, "not-found");
+    return { ok: true as const, result: created, run: queued.run };
+  }
+
+  /**
+   * A version imported from an uploaded hand-off folder, for a sandbox
+   * with no repository: its import run is queued first, through the same
+   * admission as every run (the workspace's quota, its active runs), then
+   * the draft is created already pointing at it, as a generated one is.
+   * The folder's files are already stored at `uploadObjectKey`; the run
+   * reads them there.
+   */
+  async function upload(
+    owner: string,
+    actor: string,
+    sandbox: StoredSandbox,
+    input: {
+      readonly versionId: string;
+      readonly uploadSha256: string;
+      readonly recordSha256: string;
+      readonly carveoutVersion: string;
+      readonly title?: string | undefined;
+      readonly specSummary?: string | undefined;
+    },
+    now: Date,
+  ): Promise<
+    | ReturnType<typeof failure>
+    | { ok: true; result: StoredVersionWithSource; run: StoredAnalysisRun }
+  > {
+    const linked = () =>
+      failure(
+        {
+          error:
+            "This sandbox is sliced from its connected repository; an uploaded folder is for a bounty with none.",
+          code: "source_linked",
+        },
+        "conflict",
+      );
+    if (sandbox.sourceRepoId !== null) return linked();
+    const bounty = await options.bounties.get(owner, sandbox.bountyId);
+    if (bounty === null) return failure({ error: "Not found." }, "not-found");
+    const proposalId = await options.proposals.liveForBounty(owner, bounty.id);
+    const proposal =
+      proposalId === null
+        ? null
+        : await options.proposals.get(owner, proposalId);
+    const { approvedTask, proposalVersion } = await bountyTask(
+      owner,
+      actor,
+      bounty,
+      proposal,
+      now,
+    );
+    const queued = await options.runs.enqueue(owner, null, {
+      tool: "sandbox_import",
+      params: {
+        deadlineMinutes: AGENT_DEADLINE_MINUTES,
+        importer: "upload",
+        sandboxVersionId: input.versionId,
+        uploadSha256: input.uploadSha256,
+        recordSha256: input.recordSha256,
+        carveoutVersion: input.carveoutVersion,
+      },
+      requestedBy: actor,
+      maxActive: options.maxActive ?? 3,
+    });
+    if (!queued.ok)
+      return queued.reason === "quota_exceeded"
+        ? failure(quotaExceededBody(queued), "quota")
+        : queued.reason === "run_limit"
+          ? failure(
+              {
+                error: "The active analysis limit has been reached.",
+                code: "run_limit",
+              },
+              "conflict",
+            )
+          : failure({ error: "Not found." }, "not-found");
+    if (queued.obsoleteLogKey !== undefined)
+      await options.objects.remove(queued.obsoleteLogKey).catch(() => {});
+    const acceptanceTests: AcceptanceTest[] = [];
+    const created = await options.sandboxes.createVersion(
+      owner,
+      sandbox.id,
+      {
+        id: input.versionId,
+        title: clip((input.title ?? bounty.title).trim(), GENERATED_TITLE_MAX),
+        specSummary: clip(
+          (input.specSummary ?? bounty.description).trim() || bounty.title,
+          GENERATED_SUMMARY_MAX,
+        ),
+        complexity: proposal?.complexity ?? "unsized",
+        tags: [],
+        source: {
+          origin: "upload",
+          importRunId: queued.run.id,
+          transformConfigSha256: transformConfigHash({
+            aliasRules: [],
+            dependencyChoices: {},
+            acceptanceTests,
+          }),
+          approvedTaskSha256: approvedTaskHash(approvedTask),
+          approvedTask,
+          proposalVersion,
+          aliasRules: [],
+          dependencyChoices: {},
+          // The hidden tests stay in the upload and the run's private files.
+          acceptanceTests,
+          scope: EMPTY_SCOPE,
+        },
+      },
+      now,
+    );
+    if (!created.ok)
+      return created.reason === "source_linked"
+        ? linked()
+        : created.reason === "starter_in_progress"
+          ? failure(
+              {
+                error:
+                  "A version of this sandbox is still being generated or imported. Wait for it to finish.",
+                code: "version_in_progress",
+              },
+              "conflict",
+            )
           : failure({ error: "Not found." }, "not-found");
     return { ok: true as const, result: created, run: queued.run };
   }
@@ -1384,6 +1534,7 @@ export function versionService(options: SandboxRouteOptions) {
     fixturesFromRun,
     create,
     generate,
+    upload,
     build,
     sliceState,
     slice,

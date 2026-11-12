@@ -12,6 +12,13 @@
  * the worker), so no name the platform blocked before can leak.
  */
 
+import {
+  unionVocabularyLeaks,
+  vocabularyLeaks as leaksNow,
+  vocabularyLeaksV1,
+  type VocabularyLeak as Leak,
+} from "carveout/pseudonyms";
+
 export {
   VOCABULARY_TERM_MIN,
   emailNames,
@@ -26,3 +33,18 @@ export {
   type VocabularyLeak,
   type VocabularyName,
 } from "carveout/pseudonyms";
+
+/**
+ * The check a build, a starter and an upload block on: the workspace's
+ * names found in public files by carveout's scan and by the platform's
+ * before it, merged term by term (`unionVocabularyLeaks`).
+ */
+export function publicVocabularyLeaks(
+  files: readonly { readonly path: string; readonly text: string }[],
+  vocabulary: readonly string[],
+): Leak[] {
+  return unionVocabularyLeaks(
+    leaksNow(files, vocabulary),
+    vocabularyLeaksV1(files, vocabulary),
+  );
+}

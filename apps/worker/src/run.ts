@@ -11,7 +11,11 @@ import type {
 } from "@sandbox-factory/db";
 import { sourceArchiveKey } from "@sandbox-factory/db";
 import type { SubmissionStore } from "@sandbox-factory/db";
-import { parseSubmittedFiles, readsSource } from "sandbox-factory";
+import {
+  parseSubmittedFiles,
+  readsSource,
+  uploadObjectKey,
+} from "sandbox-factory";
 import { fetchSource } from "./fetch-source.js";
 import type { SourceCache } from "./source-cache.js";
 import { progressRecorder } from "./progress.js";
@@ -144,6 +148,13 @@ export async function executeRun(
       if (bytes === undefined) return null;
       const files = parseSubmittedFiles(Buffer.from(bytes).toString("utf8"));
       return files === null ? null : { submission: found, files };
+    },
+    // The key is the run's own workspace's: an upload of another is never named.
+    readUpload: async (versionId, uploadSha256) => {
+      const bytes = await options.objects.get(
+        uploadObjectKey(run.organizationId, versionId, uploadSha256),
+      );
+      return bytes === undefined ? null : Buffer.from(bytes).toString("utf8");
     },
     finishSubmission: async (submissionId, runId, outcome) => {
       if (options.submissions === undefined) return false;

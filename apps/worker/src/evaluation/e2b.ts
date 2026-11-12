@@ -20,9 +20,10 @@
  * sandbox's own lifetime at E2B, so a worker that dies leaves nothing
  * running for long) and an output cap; after each, every process the job's
  * user still runs is killed, so a server a command started does not outlive
- * it. A hidden test (`privateTestArgv`'s shape) runs in a fresh copy of the
- * job's files as they stood before the first one ran, removed and copied
- * again for the next, so no run leaves state for another.
+ * it. A hidden test (`privateTestArgv`'s shape, or any command marked
+ * `fresh`, as a layout's hidden test is) runs in a fresh copy of the job's
+ * files as they stood before the first one ran, removed and copied again
+ * for the next, so no run leaves state for another.
  *
  * The SDK sits behind `E2BClient` (`e2bClient` adapts it), so tests drive a
  * fake and never call E2B.
@@ -417,7 +418,7 @@ export function createE2BProvider(
             cut = true;
           }
           let root = WORK;
-          if (isHiddenTestRun(command.argv)) {
+          if (command.fresh === true || isHiddenTestRun(command.argv)) {
             if (!pristine) {
               await housekeep(
                 `cp -a ${shellQuote(WORK)} ${shellQuote(PRISTINE)}`,

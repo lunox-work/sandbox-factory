@@ -238,8 +238,22 @@ test("private provenance, the approved task and replay answers keep their exact 
     }).success,
     true,
   );
+  // An uploaded hand-off folder is kept as generated, by its import run.
   assert.equal(
-    sandboxVersionSourceDtoSchema.safeParse({ ...source, origin: "upload" })
+    sandboxVersionSourceDtoSchema.safeParse({
+      ...source,
+      origin: "upload",
+      sourceSnapshotId: null,
+      sourceCommitSha: null,
+      sliceRunId: null,
+      manifestSha256: null,
+      contractSha256: null,
+      starterRunId: "arn_import",
+    }).success,
+    true,
+  );
+  assert.equal(
+    sandboxVersionSourceDtoSchema.safeParse({ ...source, origin: "pasted" })
       .success,
     false,
   );

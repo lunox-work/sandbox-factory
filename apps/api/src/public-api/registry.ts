@@ -46,6 +46,9 @@ import {
   postBountySchema,
   sandboxHandoutSchema,
   createSubmissionSchema,
+  createUploadSchema,
+  submissionFilesResponseSchema,
+  uploadResponseSchema,
   submissionListSchema,
   submissionResponseSchema,
   proposalDecisionsResponseSchema,
@@ -711,6 +714,17 @@ export const PUBLIC_ROUTES: readonly PublicRoute[] = [
     request: createSandboxSchema,
     response: created(startSandboxResponseSchema),
   },
+  {
+    method: "POST",
+    path: `${SBX}/uploads`,
+    idempotent: true,
+    scope: "sandboxes:write",
+    summary:
+      "Upload a public, pseudonymised carveout hand-off folder as a bounty's version (owners and admins)",
+    tag: "Sandboxes",
+    request: createUploadSchema,
+    response: accepted(uploadResponseSchema),
+  },
   read(`${SBX}/:id`, "One sandbox", "Sandboxes", sandboxResponseSchema),
   {
     method: "PUT",
@@ -799,6 +813,16 @@ export const PUBLIC_ROUTES: readonly PublicRoute[] = [
     tag: "Sandboxes",
     request: createSubmissionSchema,
     response: accepted(submissionResponseSchema),
+  },
+  {
+    method: "GET",
+    path: `${SBX}/submissions/:sid/files`,
+    scope: "submissions:write",
+    summary:
+      "A passing submission's changed files on an uploaded version, never a hidden test (owners and admins)",
+    tag: "Sandboxes",
+    request: null,
+    response: ok(submissionFilesResponseSchema),
   },
   read(
     `${SBX}/versions/:vid/submissions`,

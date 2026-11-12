@@ -437,6 +437,8 @@ function fixture(
     mergeBack: unknown;
     /** What a grading run `arn_grade` wrote, by path. */
     gradeRun: Record<string, string>;
+    /** The stored version's source carries a hidden test. */
+    hiddenTests: boolean;
     /** The credential the caller signed in with; a session unless said. */
     via: "session" | "token" | "oauth" | "device";
     /** The build is still running, and has written its project only. */
@@ -498,21 +500,35 @@ function fixture(
   const stored = {
     version: { ...version, frozenAt: overrides.frozen === true ? stamp : null },
     source:
-      overrides.blocked === true
+      overrides.hiddenTests === true
         ? {
             ...source,
-            scope: {
-              ...source.scope,
-              blockers: [
-                { code: "dependency_unresolved" as const, detail: "x" },
-              ],
-            },
+            acceptanceTests: [
+              {
+                path: "tests/private/fix.test.ts",
+                text: "assert.equal(fix(2), 4);",
+                expectedBaseline: "fail" as const,
+              },
+            ],
           }
-        : overrides.noSpec === true
-          ? { ...source, approvedTask: { ...source.approvedTask, spec: null } }
-          : overrides.built === true
-            ? { ...source, buildRunId: buildRun.id }
-            : source,
+        : overrides.blocked === true
+          ? {
+              ...source,
+              scope: {
+                ...source.scope,
+                blockers: [
+                  { code: "dependency_unresolved" as const, detail: "x" },
+                ],
+              },
+            }
+          : overrides.noSpec === true
+            ? {
+                ...source,
+                approvedTask: { ...source.approvedTask, spec: null },
+              }
+            : overrides.built === true
+              ? { ...source, buildRunId: buildRun.id }
+              : source,
   };
   const objects = new Map<string, Buffer>([
     [
@@ -1261,6 +1277,29 @@ test("a sandbox made without a repository has the one its sizing touches linked 
     403,
   );
   assert.deepEqual(f.linked.length, 3);
+});
+
+test("outside a web session a version's source answers its hidden tests as none", async () => {
+  const answered = async (via: "session" | "token" | "oauth" | "device") => {
+    const response = await fixture("owner", { hiddenTests: true, via }).request(
+      "GET",
+      "/versions/sbv_1",
+    );
+    assert.equal(response.status, 200, via);
+    const text = await response.text();
+    return {
+      tests: (JSON.parse(text) as { source: StoredVersionSource }).source
+        .acceptanceTests,
+      text,
+    };
+  };
+  assert.equal((await answered("session")).tests.length, 1);
+  for (const via of ["token", "oauth", "device"] as const) {
+    const { tests, text } = await answered(via);
+    assert.deepEqual(tests, [], via);
+    assert.equal(text.includes("fix.test.ts"), false, via);
+    assert.equal(text.includes("fix(2)"), false, via);
+  }
 });
 
 test("a version pins the slice artifacts by hash, snapshots the approved task and writes the scope", async () => {
@@ -2260,6 +2299,7 @@ function starterFixture(
       role,
       organizationId: c.req.param("orgId"),
     } as never);
+    c.set("principal", { via: "session" } as never);
     await next();
   });
   mountSandboxRoutes(app, options);

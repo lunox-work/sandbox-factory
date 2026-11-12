@@ -70,8 +70,9 @@ const REPOSITORY_PROPOSALS_PAGE = 50;
 const publicArtifact = ({ objectKey: _key, ...dto }: StoredArtifact) => dto;
 /**
  * Runs whose artifacts are a version's private sandbox: a build's hidden
- * tests and the table its names were changed by are among them, as is a
- * legacy sandbox preparation. They are
+ * tests and the table its names were changed by are among them, as are an
+ * uploaded folder's acceptance tests (`sandbox_import`) and a legacy
+ * sandbox preparation. They are
  * read through the sandbox routes, owners and admins only, so here a member
  * is not shown them, and asking for one by id is answered as for any run
  * that is not there.
@@ -79,6 +80,7 @@ const publicArtifact = ({ objectKey: _key, ...dto }: StoredArtifact) => dto;
 const SANDBOX_TOOLS: ReadonlySet<AnalysisTool> = new Set([
   "sandbox_build",
   "sandbox_starter",
+  "sandbox_import",
 ]);
 export const hiddenFrom = (role: string, run: StoredAnalysisRun) =>
   (SANDBOX_TOOLS.has(run.tool) || preparation(run)) && !isAtLeastAdmin(role);
@@ -99,7 +101,7 @@ export const holdsHiddenTests = (run: StoredAnalysisRun) =>
   HIDDEN_TEST_TOOLS.has(run.tool) || preparation(run);
 /** Whether this request's credential is a person's web session. */
 export const inWebSession = (c: Context) =>
-  c.get("principal").via === "session";
+  c.get("principal")?.via === "session";
 /**
  * A legacy preparation run (a `fixtures` run with `pseudonyms`, queued
  * before 2026-10-19) wrote a name table too, so it is one of them.
