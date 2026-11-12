@@ -17,6 +17,7 @@
     "@sandbox-factory/db": "*",
     "@sandbox-factory/github": "*",
     "@sandbox-factory/shared": "*",
+    "carveout": "0.2.0",
     "duediligence": "0.3.1",
     "e2b": "2.63.0",
     "libpg-query": "18.1.5",

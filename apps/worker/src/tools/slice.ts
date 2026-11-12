@@ -46,6 +46,13 @@ import type {
 } from "sandbox-factory";
 import type { StoredAnalysisRun, StoredArtifact } from "@sandbox-factory/db";
 import { AnalysisError } from "../errors.js";
+import {
+  CARVEOUT_WALK_ENGINE,
+  walkWithCarveout,
+} from "./slice/carveout-walk.js";
+
+/** Which walk a slice takes: carveout's from the source, or graphify's graph. */
+export type SliceWalker = "graph" | "carveout";
 import { snapshotOf } from "./adapter.js";
 import {
   workspaceModuleResolver,
@@ -357,14 +364,25 @@ export async function analyseSlice(input: {
    * or when it fails, every package is untyped.
    */
   readonly packageTypes?: PackageTypesFetcher;
+  /**
+   * Which walk chooses the files: `carveout` (`carveout-walk.ts`, the
+   * compiler's own resolution, from the source) or `graph` (graphify's
+   * graph walked by `reach`, the default).
+   */
+  readonly walker?: SliceWalker;
 }): Promise<SliceAnalysis> {
   const { params, graph } = input;
   const graphRun = graph.run;
   const graphBytes = graph.bytes;
   input.signal.throwIfAborted();
-  const walk = reach(graph.graph, params.entryPoints, params.budget, {
-    includeInferred: params.includeInferred,
-  });
+  const walkEngine =
+    input.walker === "carveout" ? CARVEOUT_WALK_ENGINE : undefined;
+  const walk =
+    input.walker === "carveout"
+      ? walkWithCarveout(input.sourceDir, params)
+      : reach(graph.graph, params.entryPoints, params.budget, {
+          includeInferred: params.includeInferred,
+        });
   input.log(
     `Slice reached ${walk.included.length} files with ${walk.cuts.outbound.length} outbound and ${walk.cuts.inbound.length} inbound cuts.`,
   );
@@ -821,6 +839,7 @@ export async function analyseSlice(input: {
     sourceCommitSha: input.run.commitSha,
     graphRunId: graphRun.id,
     graphSha256: sha256(graphBytes),
+    ...(walkEngine === undefined ? {} : { walkEngine }),
     params,
     entryPoints: walk.entries,
     budget: params.budget,
@@ -855,7 +874,10 @@ export async function analyseSlice(input: {
 }
 
 export function createSliceAdapter(
-  options: { readonly packageTypes?: PackageTypesFetcher } = {},
+  options: {
+    readonly packageTypes?: PackageTypesFetcher;
+    readonly walker?: SliceWalker;
+  } = {},
 ): ToolAdapter {
   return {
     name: "slice",
@@ -881,6 +903,7 @@ export function createSliceAdapter(
           ...(options.packageTypes === undefined
             ? {}
             : { packageTypes: options.packageTypes }),
+          ...(options.walker === undefined ? {} : { walker: options.walker }),
         });
       // The touched communities' wiki pages, so the reader has the narrative.
       const pages: string[] = [];

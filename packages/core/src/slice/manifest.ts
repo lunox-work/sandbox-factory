@@ -218,6 +218,11 @@ export interface SliceManifest {
   readonly sourceCommitSha: string;
   readonly graphRunId: string;
   readonly graphSha256: string;
+  /**
+   * The walk that chose the files: `carveout@<version>` (carveout's
+   * TypeScript walk), or absent for graphify's graph walked by `reach`.
+   */
+  readonly walkEngine?: string;
   readonly params: SliceParams;
   readonly entryPoints: readonly string[];
   readonly budget: SliceBudget;
