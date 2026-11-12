@@ -34,6 +34,7 @@ import type {
 
 import { mountApiTokenRoutes } from "./api-tokens/routes.js";
 import { credentialGuard } from "./credentials.js";
+import { mountMcpRoutes } from "./mcp/routes.js";
 import {
   mountDiscoveryRoutes,
   resourceMetadataUrl,
@@ -172,7 +173,7 @@ export interface AppOptions {
   oauthGrants?: OAuthGrantStore | undefined;
   /**
    * Public origin of the API (`BETTER_AUTH_URL`), which OAuth discovery
-   * names. Without it discovery is not mounted.
+   * and MCP's sign-in challenges name. Without it neither is mounted.
    */
   publicUrl?: string | undefined;
   /** Run counts for `/usage`; not mounted without it. */
@@ -276,9 +277,14 @@ export function createApp({
    */
   app.all("/api/auth/*", (c) => auth.handler(c.req.raw));
 
-  /** OAuth discovery, at the origin's root where clients look for it. */
+  /**
+   * OAuth discovery and the MCP endpoints, at the origin's root where
+   * clients look for them. MCP reaches data only by calling the routes
+   * below with the caller's own credential; see `mcp/routes.ts`.
+   */
   if (publicUrl !== undefined) {
     mountDiscoveryRoutes(app, { auth, baseUrl: publicUrl });
+    mountMcpRoutes(app, { baseUrl: publicUrl });
   }
 
   /**

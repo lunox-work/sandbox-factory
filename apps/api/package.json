@@ -18,6 +18,7 @@
     "@better-auth/core": "^1.7.12",
     "@better-auth/oauth-provider": "^1.7.12",
     "@hono/node-server": "^2.1.1",
+    "@modelcontextprotocol/sdk": "^1.32.2",
     "@sandbox-factory/db": "*",
     "@sandbox-factory/github": "*",
     "@sandbox-factory/jira": "*",
