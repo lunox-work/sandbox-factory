@@ -10,6 +10,7 @@ import { createGraphifyAdapter } from "../dist/tools/graphify.js";
 import { createSliceAdapter } from "../dist/tools/slice.js";
 import { createSandboxBuildAdapter } from "../dist/tools/sandbox-build.js";
 import { createLocalProcessProvider } from "../dist/evaluation/local-process.js";
+import { createE2BProvider, e2bClient } from "../dist/evaluation/e2b.js";
 import {
   canonicalJson,
   resolveScope,
@@ -338,8 +339,22 @@ try {
   );
   Object.assign(sandboxVersion.source, hashes);
   const buildLog = [];
+  // SMOKE_EVALUATION_PROVIDER=e2b runs the build's baseline in a real E2B
+  // sandbox (needs E2B_API_KEY; E2B_TEMPLATE optional); the default is the
+  // local development provider.
+  const evaluation = process.env.SMOKE_EVALUATION_PROVIDER ?? "local-process";
+  assert.ok(["local-process", "e2b"].includes(evaluation), evaluation);
+  if (evaluation === "e2b") assert.ok(process.env.E2B_API_KEY, "E2B_API_KEY");
   const builder = createSandboxBuildAdapter({
-    provider: createLocalProcessProvider(),
+    provider:
+      evaluation === "e2b"
+        ? createE2BProvider({
+            client: e2bClient(process.env.E2B_API_KEY),
+            ...(process.env.E2B_TEMPLATE
+              ? { template: process.env.E2B_TEMPLATE }
+              : {}),
+          })
+        : createLocalProcessProvider(),
   });
   const built = await builder.run({
     sourceDir: join(directory, "checkout-a"),
@@ -391,6 +406,14 @@ try {
     JSON.stringify(buildManifest.baseline, null, 2),
   );
   assert.equal(buildManifest.ready, true);
+  if (evaluation === "e2b") {
+    // It ran in E2B, its network was cut after the install, and the sandbox
+    // was torn down.
+    const [execution] = buildManifest.baseline.executions;
+    assert.equal(buildManifest.evaluator.provider, "e2b");
+    assert.equal(execution.egressCut, true, JSON.stringify(execution));
+    assert.equal(execution.teardown, "destroyed", JSON.stringify(execution));
+  }
   assert.ok(built.some((f) => f.path === "project/src/util.ts"));
   assert.ok(built.some((f) => f.path === "private/helper.test.ts"));
   // Exercise the real archive -> Graphify -> streaming upload -> finish lifecycle.
@@ -629,7 +652,7 @@ try {
     { signal: new AbortController().signal },
   );
   console.log(
-    "Worker smoke passed: deterministic graph, import resolution, omissions, slice stubs and blockers, a sandbox build with a local baseline, deterministic abstractions and data model, archive validation, and artifact lifecycle.",
+    `Worker smoke passed: deterministic graph, import resolution, omissions, slice stubs and blockers, a sandbox build with a ${evaluation} baseline, deterministic abstractions and data model, archive validation, and artifact lifecycle.`,
   );
 } finally {
   await rm(directory, { recursive: true, force: true });

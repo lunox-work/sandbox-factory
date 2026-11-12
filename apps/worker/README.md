@@ -467,17 +467,24 @@ changes go through CD.
 Hosted sandbox builds need the `e2b` evaluator, in this order:
 
 1. Create an E2B account and an API key.
-2. Build or choose a template with Node 22.12 or later, npm, the default
-   `user` and no start command (for example `Template().fromNodeImage("22")`,
-   built with `Template.build`); `base`, the default, has whichever Node
-   E2B ships, and a job refuses one older than 22.12.
+2. Build the template `sandbox-factory-node22` (Node 22, the default `user`,
+   no start command) and check it end to end. `base`, the default, ships
+   Node 20 (checked 2026-11-12), which a job refuses. The smoke asserts the
+   baseline ran in E2B, its egress was cut and the sandbox was destroyed.
+
+   ```sh
+   E2B_API_KEY=… node apps/worker/scripts/e2b-template.mjs
+   E2B_API_KEY=… E2B_TEMPLATE=sandbox-factory-node22 \
+     SMOKE_EVALUATION_PROVIDER=e2b npm run smoke --workspace @sandbox-factory/worker
+   ```
+
 3. `terraform apply` in `infra/`: it creates the `/sandbox-factory/e2b-api-key`
    parameter (worker only, never the API) and lets the task execution role
    read it.
 4. Put the key there, read from a file rather than the command line:
    `aws ssm put-parameter --overwrite --type SecureString --name /sandbox-factory/e2b-api-key --value file://<path>`.
-5. Set the repository variables `WORKER_EVALUATION_PROVIDER=e2b` and, for
-   a template other than `base`, `WORKER_E2B_TEMPLATE`, then deploy: CD
+5. Set the repository variables `WORKER_EVALUATION_PROVIDER=e2b` and
+   `WORKER_E2B_TEMPLATE=sandbox-factory-node22`, then deploy: CD
    registers the worker revision with `EVALUATION_PROVIDER`, `E2B_TEMPLATE`
    and the key. `none` turns builds off again; unset keeps the latest
    revision's settings.
