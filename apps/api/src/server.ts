@@ -84,6 +84,7 @@ import { GithubReconciler } from "./github/reconcile.js";
 import { GithubSnapshotter } from "./github/snapshot.js";
 import { resolveImageDigest } from "./image-digest.js";
 import { jiraClientFor, jiraClientsFor } from "./jira/credential.js";
+import { createGithubOidcVerifier } from "./judge/oidc.js";
 import { createApp } from "./routes.js";
 import { SandboxCutter } from "./sandbox/cutter.js";
 import { SandboxPreparer } from "./sandbox/preparer.js";
@@ -753,6 +754,29 @@ const webhookEmitter = new WebhookEmitter({
 const runChanges = createRunChangeHub();
 const app = createApp({
   corsOrigins: env.CORS_ORIGINS,
+  // The CI judge: a pull request's own Actions run, proved by GitHub's
+  // OIDC token for this platform's origin, judged on its sliced version.
+  ...(sandbox === undefined || github === undefined
+    ? {}
+    : {
+        judge: {
+          verifier: createGithubOidcVerifier({ audience: env.BETTER_AUTH_URL }),
+          sandboxes: sandboxStore,
+          repos: githubRepos,
+          installationHealthy: async (
+            organizationId: string,
+            connectionId: string,
+          ) =>
+            (await github.connections.get(organizationId, connectionId))
+              ?.healthy === true,
+          submissions: sandbox.submissions,
+          objects: sandbox.objects,
+          runs: analysisRuns,
+          ensureWorker: sandbox.ensureWorker,
+          onLaunchError: sandbox.onLaunchError,
+          maxActive: env.MAX_ACTIVE_RUNS_PER_ORG,
+        },
+      }),
   auth,
   emails,
   profiles,

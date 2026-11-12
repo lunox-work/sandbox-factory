@@ -1,4 +1,5 @@
 import { mountBountyContextRoutes } from "./bounties/context.js";
+import { mountJudgeRoutes, type JudgeRouteOptions } from "./judge/routes.js";
 import type { AuthVariables } from "./http-context.js";
 export type { AuthVariables } from "./http-context.js";
 /**
@@ -94,6 +95,11 @@ import {
 
 export interface AppOptions {
   corsOrigins: readonly string[];
+  /**
+   * The CI judge (`judge/routes.ts`), authenticated by a GitHub Actions
+   * OIDC token rather than a credential. Absent, it is not mounted.
+   */
+  judge?: JudgeRouteOptions | undefined;
   /** Omit only in tests. Without it no data route is mounted. */
   auth?: Auth | undefined;
   /**
@@ -218,6 +224,7 @@ type AppEnv = { Variables: AuthVariables };
 
 export function createApp({
   corsOrigins,
+  judge,
   auth,
   emails,
   profiles,
@@ -356,6 +363,12 @@ export function createApp({
       snapshotter: github.snapshots?.snapshotter,
     });
   }
+
+  /**
+   * The CI judge. Outside `/api/v1`, as the webhook is: a workflow run has
+   * no session, and proves its repository with GitHub's OIDC token.
+   */
+  if (judge !== undefined) mountJudgeRoutes(app, judge);
 
   /**
    * Everything under /api/v1 requires a credential: a session (the web

@@ -287,6 +287,7 @@ export const submissionGradeParamsSchema = z.strictObject({
   submissionId: z.string().min(1),
   sandboxVersionId: z.string().min(1),
   patchSha256: sha256Schema,
+  names: z.literal("repository").optional(),
 });
 export const analysisRunDtoSchema = z.discriminatedUnion("tool", [
   z.strictObject({

@@ -563,6 +563,19 @@ opens one pull request per submission (`submission_merge`) with
 (`SandboxSubmissions.tsx`). The repository's CI result is not read back
 yet: the App holds no `checks` or `statuses` read.
 
+**CI judge.** `POST /api/judge` and `GET /api/judge/:id?workspace=`
+(`apps/api/src/judge/`), outside `/api/v1` as the webhook is, take a pull
+request's files from its own Actions run (`duediligence ci --platform`,
+duediligence's `action.yml`). The run's GitHub OIDC token, for the
+platform's origin (`BETTER_AUTH_URL`), is verified against GitHub's
+published keys (`oidc.ts`); it is admitted only when its `repository_id`
+is the repository the published version was sliced from, through a healthy
+installation, and any other refusal reads as not found. Grading takes
+`names: "repository"`: the files are carried forward with `forwardChange`
+on the snapshot, only editable files and files new to the repository are
+judged, and nothing is carried back. The job's own exit is the check; no
+`checks` permission is needed.
+
 **Nobody picks the repository.** `POST .../sandboxes` takes `bountyId` and cuts
 from the one repository the live proposal says the work touches
 (`bounty_proposal.repositories`). None or several makes a sandbox with no
