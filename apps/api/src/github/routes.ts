@@ -59,6 +59,7 @@ import {
   type InstallationTokens,
 } from "@sandbox-factory/github";
 import {
+  connectUrlResponseSchema,
   type GithubAvailableInstallationDto,
   type GithubConnectionDto,
   type GithubConnectOutcome,
@@ -83,6 +84,7 @@ import {
   safePath,
   signState,
   verifyState,
+  wantsJson,
 } from "../connect-state.js";
 import { type Authority, authorityOver, type Person } from "./authority.js";
 import {
@@ -257,16 +259,18 @@ export function mountGithubRoutes<Env extends GithubAppEnv>(
       );
     }
     const returnTo = safePath(c.req.query("returnTo") ?? "", DEFAULT_RETURN);
-    if (c.req.query("install") === "1") {
-      return c.redirect(installUrl(organizationId, c.get("user").id, returnTo));
-    }
-    return c.redirect(
-      authorizeUrl({
-        clientId,
-        redirectUri,
-        state: stateFor(organizationId, c.get("user").id, returnTo),
-      }),
-    );
+    const url =
+      c.req.query("install") === "1"
+        ? installUrl(organizationId, c.get("user").id, returnTo)
+        : authorizeUrl({
+            clientId,
+            redirectUri,
+            state: stateFor(organizationId, c.get("user").id, returnTo),
+          });
+    // An API client gets the URL to hand a person; a browser goes there.
+    return wantsJson(c.req.header("accept"))
+      ? c.json(connectUrlResponseSchema.parse({ url }))
+      : c.redirect(url);
   });
 
   /**

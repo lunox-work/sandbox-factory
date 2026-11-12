@@ -468,6 +468,17 @@ test("connect redirects to Atlassian with the Jira scopes", async () => {
   assert.ok(scopes.includes("offline_access"));
 });
 
+test("connect answers an API client the Atlassian URL as JSON", async () => {
+  const { app } = appWith();
+  const response = await app.request("/api/v1/orgs/org_1/jira/connect", {
+    headers: { ...signedIn, accept: "application/json; charset=utf-8" },
+  });
+  assert.equal(response.status, 200);
+  const { url } = (await response.json()) as { url: string };
+  assert.equal(new URL(url).origin, "https://auth.atlassian.com");
+  assert.equal(new URL(url).searchParams.get("prompt"), "consent");
+});
+
 test("connect uses the second app's client id, not the sign-in one", async () => {
   // The whole reason for two apps: sharing one would make each grant
   // overwrite the other's scopes.

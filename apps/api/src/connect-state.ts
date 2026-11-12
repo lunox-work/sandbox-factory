@@ -240,3 +240,14 @@ export function redirectTarget(
   }
   return url.toString();
 }
+
+/**
+ * Whether a connect route's caller asked for JSON, the URL to hand a
+ * person, rather than a redirect: an API client or MCP tool sends
+ * `Accept: application/json`; a browser navigating never puts it first.
+ */
+export function wantsJson(accept: string | undefined): boolean {
+  if (accept === undefined) return false;
+  const [first = ""] = accept.split(",");
+  return first.split(";")[0]?.trim().toLowerCase() === "application/json";
+}

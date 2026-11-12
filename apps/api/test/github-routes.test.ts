@@ -196,6 +196,29 @@ test("connect sends an owner to the App's OAuth authorize URL, not the install p
   );
 });
 
+test("connect answers an API client the URL a browser would be sent to", async () => {
+  const { app } = appWith();
+  const response = await app.request("/api/v1/orgs/org_1/github/connect", {
+    headers: { ...signedIn, accept: "application/json" },
+  });
+  assert.equal(response.status, 200);
+  const { url } = (await response.json()) as { url: string };
+  const location = new URL(url);
+  assert.equal(
+    location.origin + location.pathname,
+    "https://github.com/login/oauth/authorize",
+  );
+  assert.equal(location.searchParams.get("client_id"), "Iv1.app");
+  // A browser's Accept, which lists JSON only after HTML, still redirects.
+  const browser = await app.request("/api/v1/orgs/org_1/github/connect", {
+    headers: {
+      ...signedIn,
+      accept: "text/html,application/xhtml+xml,application/json;q=0.9",
+    },
+  });
+  assert.equal(browser.status, 302);
+});
+
 test("a plain member may not start the flow", async () => {
   const { app } = appWith({ role: "member" });
 

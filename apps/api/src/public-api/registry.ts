@@ -34,6 +34,7 @@ import {
   artifactListSchema,
   artifactUrlSchema,
   bountyListResponseSchema,
+  connectUrlResponseSchema,
   bountyResponseSchema,
   bountyRunListResponseSchema,
   bountyRunResponseSchema,
@@ -121,8 +122,12 @@ export type PublicResponse =
   | { readonly status: 200 | 201 | 202; readonly schema: z.ZodType }
   /** No body: a removal. */
   | { readonly status: 204 }
-  /** A browser step: the answer is a `Location` to follow, not data. */
-  | { readonly status: 302 };
+  /**
+   * A browser step: the answer is a `Location` to follow, not data; or,
+   * when `schema` is given, that body to a client sending
+   * `Accept: application/json`.
+   */
+  | { readonly status: 302; readonly schema?: z.ZodType };
 
 export interface PublicRoute {
   readonly method: PublicMethod;
@@ -152,7 +157,11 @@ const ok = (schema: z.ZodType) => ({ status: 200, schema }) as const;
 const created = (schema: z.ZodType) => ({ status: 201, schema }) as const;
 const accepted = (schema: z.ZodType) => ({ status: 202, schema }) as const;
 const removed = { status: 204 } as const;
-const redirect = { status: 302 } as const;
+/** A connect flow: a redirect, or its URL as JSON to an API client. */
+const connectStep = {
+  status: 302,
+  schema: connectUrlResponseSchema,
+} as const;
 
 /** Reads: `workspace:read`, no body. */
 function read(
@@ -246,10 +255,11 @@ export const PUBLIC_ROUTES: readonly PublicRoute[] = [
     method: "GET",
     path: `${GH}/connect`,
     scope: "integrations:write",
-    summary: "Redirect to GitHub to connect the App (a browser step)",
+    summary:
+      "Connect the GitHub App (a browser step): redirects, or answers `{ url }` to `Accept: application/json` for a person to open",
     tag: "Integrations",
     request: null,
-    response: redirect,
+    response: connectStep,
   },
   read(
     `${GH}/connections`,
@@ -309,10 +319,11 @@ export const PUBLIC_ROUTES: readonly PublicRoute[] = [
     method: "GET",
     path: `${JIRA}/connect`,
     scope: "integrations:write",
-    summary: "Redirect to Atlassian to connect a Jira site (a browser step)",
+    summary:
+      "Connect a Jira site (a browser step): redirects, or answers `{ url }` to `Accept: application/json` for a person to open",
     tag: "Integrations",
     request: null,
-    response: redirect,
+    response: connectStep,
   },
   read(
     `${JIRA}/connections`,

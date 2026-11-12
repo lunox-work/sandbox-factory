@@ -171,6 +171,25 @@ function operation(route: PublicRoute, components: Json): Json {
         }),
     responses: {
       [String(route.response.status)]: successResponse(route, id, components),
+      // A browser step that also answers JSON to an API client.
+      ...(route.response.status === 302 && route.response.schema !== undefined
+        ? {
+            "200": {
+              description:
+                "With `Accept: application/json`: the URL, for a person to open while signed in.",
+              content: {
+                "application/json": {
+                  schema: jsonSchema(
+                    route.response.schema,
+                    "output",
+                    `${id}_json`,
+                    components,
+                  ),
+                },
+              },
+            },
+          }
+        : {}),
       "400": errors("The request was malformed."),
       "401": errors("No valid credential."),
       "403": errors(

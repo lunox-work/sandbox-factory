@@ -228,5 +228,8 @@ export * from "./audit.js";
 /** Webhooks out: endpoints, deliveries and the event they carry. */
 export * from "./webhooks.js";
 
+/** A connect flow's URL, for an API client to hand a person. */
+export * from "./connect.js";
+
 export * from "./slice-artifacts.js";
 export { normalizeSpecText } from "sandbox-factory";

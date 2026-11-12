@@ -176,6 +176,8 @@ test("the document describes bodies, queries, redirects and removals", () => {
   const connect =
     document.paths["/api/v1/orgs/{orgId}/github/connect"]?.["get"];
   assert.ok((connect?.["responses"] as Record<string, unknown>)["302"]);
+  // And the URL as JSON, for a client that asks for it.
+  assert.ok((connect?.["responses"] as Record<string, unknown>)["200"]);
   const remove =
     document.paths["/api/v1/orgs/{orgId}/bounties/{id}"]?.["delete"];
   assert.ok((remove?.["responses"] as Record<string, unknown>)["204"]);
