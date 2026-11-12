@@ -217,10 +217,11 @@ export function credentialGuard(
       );
     }
 
+    // Set before the verdict, so the audit trail can name who was refused.
+    c.set("principal", principal);
     const refusal = admit(principal, answeringRoute(c));
     if (refusal !== undefined) return c.json(refusal, 403);
 
-    c.set("principal", principal);
     c.set("user", principal.user);
     c.set("sessionId", principal.credentialId);
     await next();

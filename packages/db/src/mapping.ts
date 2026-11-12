@@ -55,6 +55,8 @@ export const ID_PREFIXES = [
   "sbm",
   /** A workspace API token. */
   "tok",
+  /** One audit log entry: a change a machine credential made. */
+  "aud",
 ] as const;
 
 export type IdPrefix = (typeof ID_PREFIXES)[number];

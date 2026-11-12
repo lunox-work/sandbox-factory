@@ -5,7 +5,9 @@
 
 import { serve } from "@hono/node-server";
 import {
+  AUDIT_RETENTION_DAYS,
   createApiTokenStore,
+  createAuditStore,
   createOAuthGrantStore,
   createBountyRunStore,
   createAnalysisRunStore,
@@ -128,6 +130,8 @@ const contextFor = (
   bounty: Parameters<typeof heldContext>[2],
 ) => heldContext({ contexts: bountyContexts }, organizationId, bounty);
 const rateCards = createRateCardStore(connection.db);
+/** What machine credentials changed; kept `AUDIT_RETENTION_DAYS`. */
+const audit = createAuditStore(connection.db);
 const bountyWritebacks = createBountyWritebackStore(connection.db);
 
 const auth = createAuth({
@@ -708,6 +712,7 @@ const app = createApp({
   oauthGrants: createOAuthGrantStore(connection.db),
   publicUrl: env.BETTER_AUTH_URL,
   usage: createUsageStore(connection.db),
+  audit,
   buildInfo: build,
   originVerify: env.ORIGIN_VERIFY,
 });
@@ -715,6 +720,12 @@ const app = createApp({
 const bountyWatchdog = new BountyWatchdog({
   runs: bountyRuns,
   writebacks: bountyWritebacks,
+  retention: [
+    (now) =>
+      audit.prune(
+        new Date(now.getTime() - AUDIT_RETENTION_DAYS * 24 * 60 * 60_000),
+      ),
+  ],
   onError: (code) => console.error(code),
 });
 bountyWatchdog.start();

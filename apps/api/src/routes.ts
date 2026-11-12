@@ -19,11 +19,13 @@ import { Hono } from "hono";
 import { mountEventRoutes, type EventRouteOptions } from "./events.js";
 import { mountFlowRoutes, type FlowRouteOptions } from "./flows.js";
 import { cors } from "hono/cors";
+import { requestId } from "hono/request-id";
 import type { ErrorHandler } from "hono";
 
 import { NotFoundError, RepositoryInUseError } from "@sandbox-factory/db";
 import type {
   ApiTokenStore,
+  AuditStore,
   EmailStore,
   OAuthGrantStore,
   OrganizationStore,
@@ -34,6 +36,8 @@ import type {
 
 import { mountApiTokenRoutes } from "./api-tokens/routes.js";
 import { mountSelfRevokeRoute } from "./api-tokens/self.js";
+import { mountAuditRoutes } from "./audit/routes.js";
+import { auditTrail } from "./audit/trail.js";
 import { credentialGuard } from "./credentials.js";
 import { mountMcpRoutes } from "./mcp/routes.js";
 import {
@@ -179,6 +183,12 @@ export interface AppOptions {
   publicUrl?: string | undefined;
   /** Run counts for `/usage`; not mounted without it. */
   usage?: UsageStore | undefined;
+  /**
+   * The audit log: what machine credentials changed, and credential and
+   * webhook management. Without it nothing is recorded and `/audit` is not
+   * mounted, as in a test with no database.
+   */
+  audit?: AuditStore | undefined;
   /** The clock tokens expire by. Tests only. */
   now?: (() => Date) | undefined;
 }
@@ -208,6 +218,7 @@ export function createApp({
   oauthGrants,
   publicUrl,
   usage,
+  audit,
   now,
 }: AppOptions): Hono<AppEnv> {
   const app = new Hono<AppEnv>();
@@ -235,6 +246,8 @@ export function createApp({
       allowMethods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     }),
   );
+  // Answered as `X-Request-Id` and kept on audit entries.
+  app.use("/api/*", requestId());
 
   // Unauthenticated, for containers and uptime checks. Carries the version so
   // the same probe can watch a rollout.
@@ -315,6 +328,11 @@ export function createApp({
    * token (`Bearer lnx_…`). A token reaches only the public registry's
    * routes, with their scopes; see `credentials.ts`.
    */
+  /**
+   * Before the guard, so a bound credential's refusals are recorded too;
+   * see `audit/trail.ts`.
+   */
+  if (audit !== undefined) app.use("/api/v1/*", auditTrail({ audit }));
   app.use(
     "/api/v1/*",
     credentialGuard({
@@ -601,6 +619,7 @@ export function createApp({
     if (oauthGrants !== undefined)
       mountOAuthGrantRoutes(app, { grants: oauthGrants });
     if (usage !== undefined) mountUsageRoutes(app, { usage, now });
+    if (audit !== undefined) mountAuditRoutes(app, { audit });
 
     /** The organization, plus the caller's role in it. Members only. */
     app.get("/api/v1/orgs/:orgId", async (c) => {

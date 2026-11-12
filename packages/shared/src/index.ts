@@ -222,5 +222,8 @@ export * from "./web-api.js";
 /** The public API's credentials: workspace tokens, CLI sign-in, usage. */
 export * from "./developer.js";
 
+/** What machine credentials changed, as the audit log answers it. */
+export * from "./audit.js";
+
 export * from "./slice-artifacts.js";
 export { normalizeSpecText } from "sandbox-factory";

@@ -182,6 +182,14 @@ export type {
   ResolvedApiToken,
   StoredApiToken,
 } from "./api-tokens.js";
+export { AUDIT_RETENTION_DAYS, createAuditStore } from "./audit.js";
+export type {
+  AuditEntry,
+  AuditListOptions,
+  AuditStore,
+  AuditVia,
+  NewAuditEntry,
+} from "./audit.js";
 export { createOAuthGrantStore } from "./oauth-grants.js";
 export type {
   OAuthGrant,

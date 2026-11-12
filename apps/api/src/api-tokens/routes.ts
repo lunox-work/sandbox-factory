@@ -25,6 +25,7 @@ import type { Context, Hono } from "hono";
 import { cliScopes, type ApiScope } from "sandbox-factory";
 
 import { isAtLeastAdmin } from "../access.js";
+import { noteAuditResource } from "../audit/trail.js";
 import type { AuthVariables } from "../http-context.js";
 import { displayPrefix, generateSecret, hashSecret } from "./secret.js";
 
@@ -111,6 +112,7 @@ export function mountApiTokenRoutes(
           ? null
           : new Date(at.getTime() + input.days * DAY_MS),
     });
+    noteAuditResource(c, token.id);
     // The secret is in this body and nowhere else; keep it out of caches.
     c.header("Cache-Control", "no-store");
     return c.json({ token: toApiTokenDto(token), secret }, 201);

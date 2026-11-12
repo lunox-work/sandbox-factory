@@ -13,4 +13,8 @@ export interface AuthVariables {
    * `requireMembership` on `/api/v1/orgs/:orgId/*`. Absent elsewhere.
    */
   member: { organizationId: string; role: string };
+  /** Hono's `requestId`: the caller's `X-Request-Id`, or one made up. */
+  requestId: string;
+  /** A create's new id, for its audit entry (`audit/trail.ts`). */
+  auditResourceId: string;
 }
