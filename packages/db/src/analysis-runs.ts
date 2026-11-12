@@ -26,7 +26,7 @@ import {
   isFixturesParams,
   isScopeParams,
   isSliceParams,
-  readsSource,
+  snapshotFits,
   slotOf,
   toolOfParams,
   toolsOfSlot,
@@ -536,8 +536,8 @@ export function createAnalysisRunStore(db: Database): AnalysisRunStore {
         const tool = input.tool ?? "graphify";
         if (toolOfParams(input.params) !== tool)
           throw new Error("Analysis parameters do not match the tool.");
-        // A tool reads a snapshot exactly when it reads source.
-        if (readsSource(tool) !== (snapshotId !== null))
+        // A tool reads a snapshot when it reads source, grading when it may.
+        if (!snapshotFits(tool, snapshotId !== null))
           throw new Error("Analysis snapshot does not match the tool.");
         let repoId: string | null = null;
         if (snapshotId !== null) {

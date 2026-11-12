@@ -250,10 +250,18 @@ export const FIXTURES_TOOL_VERSION = "fixtures@3";
 /** Bumped when the starter agent's tools, prompt, set or project change meaning. */
 export const STARTER_TOOL_VERSION = "sandbox_starter@4";
 /** Bumped when the grading tree, its commands or the verdict change meaning. */
-export const SUBMISSION_GRADE_TOOL_VERSION = "submission_grade@1";
-/** Tools that read a repository snapshot; every other one runs without source. */
+export const SUBMISSION_GRADE_TOOL_VERSION = "submission_grade@2";
+/**
+ * Tools that always read a repository snapshot. Grading reads one only for
+ * a version sliced from a repository, to carry a passing submission back
+ * (`snapshotFits`); every other tool runs without source.
+ */
 export function readsSource(tool: AnalysisTool): boolean {
   return tool !== "sandbox_starter" && tool !== "submission_grade";
+}
+/** Whether a run of the tool may be on a snapshot, or must be. */
+export function snapshotFits(tool: AnalysisTool, onSnapshot: boolean): boolean {
+  return tool === "submission_grade" || readsSource(tool) === onSnapshot;
 }
 /**
  * Which of a worker's slots a run takes. An agent run spends its time

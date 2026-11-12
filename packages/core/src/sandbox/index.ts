@@ -10,6 +10,7 @@ export * from "./aliases.js";
 export * from "./approved-task.js";
 export * from "./provenance.js";
 export * from "./build.js";
+export * from "./carry.js";
 export * from "./confined.js";
 export * from "./descriptor.js";
 export * from "./project.js";

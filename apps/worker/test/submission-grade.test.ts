@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -10,9 +10,11 @@ import type {
 } from "sandbox-factory";
 import type { ToolInputs, ToolRunInput } from "../src/tools/adapter.js";
 import {
+  MERGE_PATCH_PATH,
   SUBMISSION_RESULT_PATH,
   createSubmissionGradeAdapter,
   resultOf,
+  sourceText,
 } from "../src/tools/submission-grade.js";
 
 const TAP_PASSED =
@@ -29,7 +31,15 @@ const built: Record<string, string> = {
   }),
   "private/s1-returns-a-value.test.ts": "hidden one\n",
   "private/s2-handles-the-edge.test.ts": "hidden two\n",
-  "private/pseudonym.lunox": "not a test\n",
+  "private/pseudonym.lunox": JSON.stringify({ schemaVersion: 1, rules: [] }),
+  "build-manifest.json": JSON.stringify({
+    renames: [],
+    files: [
+      { path: "src/feature.ts", class: "source", public: true },
+      { path: "sandbox/mocks/ledger.ts", class: "mock", public: true },
+      { path: "tests/public/helpers.ts", class: "test-public", public: true },
+    ],
+  }),
 };
 
 function provider(
@@ -74,8 +84,14 @@ function provider(
 async function grade(
   files: { path: string; text: string }[],
   outcome: (argv: readonly string[]) => { exitCode?: number; stdout?: string },
+  /** The version's repository at its commit, for a sliced version. */
+  source?: Record<string, string>,
 ) {
   const outDir = await mkdtemp(join(tmpdir(), "grade-"));
+  for (const [path, text] of Object.entries(source ?? {})) {
+    await mkdir(join(outDir, "source", path, ".."), { recursive: true });
+    await writeFile(join(outDir, "source", path), text);
+  }
   const finished: { id: string; runId: string; outcome: unknown }[] = [];
   const fake = provider(outcome);
   const inputs = {
@@ -123,7 +139,7 @@ async function grade(
   const logged: string[] = [];
   const input: ToolRunInput = {
     runId: "arn_grade",
-    sourceDir: outDir,
+    sourceDir: join(outDir, "source"),
     outDir,
     params: {
       deadlineMinutes: 60,
@@ -132,7 +148,10 @@ async function grade(
       sandboxVersionId: "sbv_1",
       patchSha256: "a".repeat(64),
     } as never,
-    run: { snapshotId: "", commitSha: "" },
+    run:
+      source === undefined
+        ? null
+        : { snapshotId: "snp_1", commitSha: "c0ffee" },
     inputs,
     signal: new AbortController().signal,
     log: (line) => logged.push(line),
@@ -144,7 +163,12 @@ async function grade(
     const result = JSON.parse(
       await readFile(join(outDir, SUBMISSION_RESULT_PATH), "utf8"),
     ) as SubmissionResult;
-    return { written, result, finished, fake, logged };
+    const patch = written.some((file) => file.path === MERGE_PATCH_PATH)
+      ? (JSON.parse(
+          await readFile(join(outDir, MERGE_PATCH_PATH), "utf8"),
+        ) as unknown)
+      : null;
+    return { written, result, finished, fake, logged, patch };
   } finally {
     await rm(outDir, { recursive: true, force: true });
   }
@@ -169,7 +193,10 @@ test("a submission that passes both suites passes, and only counts and the verdi
   assert.deepEqual(finished, [
     { id: "sbm_1", runId: "arn_grade", outcome: result },
   ]);
-  assert.equal(written[0]?.path, SUBMISSION_RESULT_PATH);
+  assert.deepEqual(
+    written.map((file) => file.path),
+    [SUBMISSION_RESULT_PATH],
+  );
   // Each hidden test ran twice, as on a baseline, in one evaluation job.
   assert.equal(fake.commands.filter(runsHidden).length, 4);
   // No hidden test's name reaches the result.
@@ -277,4 +304,57 @@ test("a submission that tells a test run from a real one is refused by carveout'
   assert.equal(result.refused?.[0]?.path, "src/feature.ts");
   assert.match(result.refused?.[0]?.reason ?? "", /without the code/);
   assert.equal(fake.jobs(), 0);
+});
+
+const passing = (argv: readonly string[]) =>
+  runsHidden(argv) ? { stdout: TAP_PASSED } : {};
+const repository = { "src/feature.ts": "export const feature = () => 0;\n" };
+
+test("a pass on a sliced version is carried back to the repository at its commit, for merge-back", async () => {
+  const { result, patch, written } = await grade(change, passing, repository);
+  assert.equal(result.verdict, "passed");
+  assert.deepEqual(patch, {
+    schemaVersion: 1,
+    commitSha: "c0ffee",
+    files: [
+      { path: "src/feature.ts", text: "export const feature = () => 1;\n" },
+    ],
+  });
+  assert.deepEqual(
+    written.map((file) => file.path),
+    [MERGE_PATCH_PATH, SUBMISSION_RESULT_PATH],
+  );
+});
+
+test("a pass that cannot be carried back is refused, and its run is a failure", async () => {
+  const { result, finished, patch } = await grade(
+    [
+      {
+        path: "src/feature.ts",
+        text: 'import { helper } from "../tests/public/helpers.js";\nexport const feature = () => 1;\n',
+      },
+    ],
+    passing,
+    repository,
+  );
+  assert.equal(result.verdict, "refused");
+  assert.match(result.refused?.[0]?.reason ?? "", /harness/);
+  assert.equal(patch, null);
+  assert.deepEqual(finished[0]?.outcome, result);
+  // A failing run on a sliced version carries nothing back.
+  const failing = await grade(change, () => ({ exitCode: 1 }), repository);
+  assert.equal(failing.patch, null);
+});
+
+test("source is read inside the extracted tree only", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "source-"));
+  try {
+    await writeFile(join(dir, "a.ts"), "a");
+    assert.equal(sourceText(dir, "a.ts"), "a");
+    assert.equal(sourceText(dir, "missing.ts"), null);
+    assert.equal(sourceText(dir, "../a.ts"), null);
+    assert.equal(sourceText(dir, ""), null);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });

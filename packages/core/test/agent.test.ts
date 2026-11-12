@@ -11,6 +11,7 @@ import {
   readsBuilders,
   readsGraph,
   readsSource,
+  snapshotFits,
   CONTEXT_BUILDERS,
   scenarioProblems,
   AUTO_SLICE_LIMITS,
@@ -67,6 +68,12 @@ test("slices, scopes and the map-reading builders read a graph", () => {
   assert.deepEqual(ANALYSIS_TOOLS.filter(readsBuilders), ["brief"]);
   assert.equal(readsSource("graphify"), true);
   assert.equal(readsSource("sandbox_starter"), false);
+  // Grading runs either way: on its version's snapshot when it has one.
+  assert.equal(snapshotFits("submission_grade", true), true);
+  assert.equal(snapshotFits("submission_grade", false), true);
+  assert.equal(snapshotFits("graphify", true), true);
+  assert.equal(snapshotFits("graphify", false), false);
+  assert.equal(snapshotFits("sandbox_starter", true), false);
   for (const builder of CONTEXT_BUILDERS)
     assert.ok(ANALYSIS_TOOLS.includes(builder));
 });
