@@ -32,8 +32,9 @@ product proposals and historical explainers are optional design context.
   `GET /api/v1/openapi.json`. Command-line clients sign in by device flow
   and mint their own token. MCP clients sign in over OAuth 2.1, consenting
   for one workspace, and call read tools at `/mcp` (toolsets
-  `/mcp/duediligence`, `/mcp/carveout`). Not built: write tools, webhooks
-  and the developer portal pages.
+  `/mcp/duediligence`, `/mcp/carveout`). Owners and admins manage tokens
+  and connected apps at `/o/:slug/developers`. Not built: write tools,
+  webhooks, and the portal's webhook, CI and audit pages.
 - The VS Code extension can run a local task. Its sign-in flow is not built.
 - Not built: contributor submission, adjudication, escrow, payouts,
   reputation, merge-back, Slack and knowledge integrations. See the

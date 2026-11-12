@@ -274,6 +274,16 @@ with three tabs, `?tab=scope|price|sandbox`. A new one is written at
 `/sandboxes/:workspace/:versionId?path=`, outside the shell. A repository's
 page is `/o/:slug/repositories/:repoId`; settings are `/o/:slug/settings`.
 
+**Developers** (`features/developers/DevelopersPage.tsx`,
+`/o/:slug/developers[/tokens|apps|mcp|reference|usage]`) is the portal for
+owners and admins; members see a notice. `/developers` opens on the
+workspace in the rail and is rewritten to its address. A new token's secret
+lives only in the tokens page's state until dismissed, never in the query
+cache. Connected apps read a 404 from the grants list as not available. The
+API reference is its own chunk, read from `GET /api/v1/openapi.json`; MCP
+toolsets are restated in `features/developers/snippets.ts` and must follow
+the API's `TOOLSETS`.
+
 ## API structure
 
 `apps/api/src/http-context.ts` and `access.ts` hold request context and access
