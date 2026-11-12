@@ -76,6 +76,8 @@ test("the API reads exactly the documented environment variables", () => {
       "WORKER_SECURITY_GROUP",
       "WORKER_MAX_TASKS",
       "MAX_ACTIVE_RUNS_PER_ORG",
+      // The oldest command-line clients served; refuses, never widens.
+      "MIN_CLIENT_VERSIONS",
       // Reporting only.
       "BUILD_VERSION",
       "BUILD_SHA",

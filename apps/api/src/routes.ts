@@ -39,6 +39,7 @@ import { mountApiTokenRoutes } from "./api-tokens/routes.js";
 import { mountSelfRevokeRoute } from "./api-tokens/self.js";
 import { mountAuditRoutes } from "./audit/routes.js";
 import { auditTrail } from "./audit/trail.js";
+import { clientVersionFloor } from "./client-version.js";
 import { credentialGuard } from "./credentials.js";
 import { idempotency } from "./idempotency.js";
 import { mountMcpRoutes } from "./mcp/routes.js";
@@ -202,6 +203,12 @@ export interface AppOptions {
    * `Idempotency-Key`. Without it the header is ignored.
    */
   idempotencyKeys?: IdempotencyStore | undefined;
+  /**
+   * The oldest version of each command-line client served
+   * (`MIN_CLIENT_VERSIONS`); an older one is answered 426. Absent or
+   * empty, no floor.
+   */
+  minClientVersions?: Readonly<Record<string, string>> | undefined;
   /** The clock tokens expire by. Tests only. */
   now?: (() => Date) | undefined;
 }
@@ -234,6 +241,7 @@ export function createApp({
   audit,
   webhooks,
   idempotencyKeys,
+  minClientVersions,
   now,
 }: AppOptions): Hono<AppEnv> {
   const app = new Hono<AppEnv>();
@@ -263,6 +271,18 @@ export function createApp({
   );
   // Answered as `X-Request-Id` and kept on audit entries.
   app.use("/api/*", requestId());
+  /**
+   * Before any credential is read: an outdated command-line client is told
+   * to upgrade, wherever it calls (the API and the MCP endpoints).
+   */
+  if (
+    minClientVersions !== undefined &&
+    Object.keys(minClientVersions).length > 0
+  ) {
+    app.use("/api/*", clientVersionFloor(minClientVersions));
+    app.use("/mcp/*", clientVersionFloor(minClientVersions));
+    app.use("/mcp", clientVersionFloor(minClientVersions));
+  }
 
   // Unauthenticated, for containers and uptime checks. Carries the version so
   // the same probe can watch a rollout.

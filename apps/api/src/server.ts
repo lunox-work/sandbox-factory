@@ -815,6 +815,7 @@ const app = createApp({
   },
   buildInfo: build,
   originVerify: env.ORIGIN_VERIFY,
+  minClientVersions: env.MIN_CLIENT_VERSIONS,
 });
 
 const bountyWatchdog = new BountyWatchdog({
