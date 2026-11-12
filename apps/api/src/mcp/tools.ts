@@ -218,7 +218,7 @@ export const TOOLS = [
     name: "get_usage",
     scope: "workspace:read",
     description:
-      "Count the workspace's sizing and analysis runs by kind and state over recent days, to see what has been running.",
+      "Count the workspace's sizing and analysis runs by kind and state over recent days, and show the model tokens its runs spent this calendar month (UTC) against its monthly limit and when that resets. Runs that call a model are refused with quota_exceeded once the limit is reached.",
     input: {
       days: z
         .number()

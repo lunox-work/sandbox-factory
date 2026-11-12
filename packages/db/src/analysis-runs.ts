@@ -45,6 +45,12 @@ import type {
 } from "sandbox-factory";
 import type { Database, QueryExecutor } from "./errors.js";
 import { generateId } from "./mapping.js";
+import {
+  MODEL_TOOLS,
+  quotaExceeded,
+  type QuotaExceeded,
+  type TokenQuota,
+} from "./model-usage.js";
 import { announceChange, notifyChange } from "./run-events.js";
 import {
   analysisRun,
@@ -203,7 +209,8 @@ export type EnqueueAnalysisResult =
   | {
       ok: false;
       reason: "not-found" | "run_limit" | "graph_mismatch" | "slice_mismatch";
-    };
+    }
+  | QuotaExceeded;
 export interface AnalysisRunStore {
   /**
    * One run per `(snapshot, tool, version, params)`: an existing run that
@@ -218,7 +225,9 @@ export interface AnalysisRunStore {
    * snapshot: `snapshotId` is null, and its cache is the organization's.
    * `maxActive` caps the organization's queued and running runs of the
    * tool's slot (`slotOf`): agent runs and builds are counted apart, as a
-   * worker runs them apart.
+   * worker runs them apart. A store made with a `TokenQuota` also refuses
+   * a new run of a `MODEL_TOOLS` tool once the organization's month is
+   * spent (`quota_exceeded`); a cached run is still answered.
    */
   enqueue(
     organizationId: string,
@@ -451,7 +460,10 @@ function sharedClaims(tools: Map<AnalysisTool, number>): number {
   }
 }
 
-export function createAnalysisRunStore(db: Database): AnalysisRunStore {
+export function createAnalysisRunStore(
+  db: Database,
+  options: { readonly tokenQuota?: TokenQuota } = {},
+): AnalysisRunStore {
   // Left: a run with no snapshot has no repository either.
   const joined = (tx = db) =>
     tx
@@ -623,6 +635,12 @@ export function createAnalysisRunStore(db: Database): AnalysisRunStore {
             run: toRun(existing, repoId),
             created: false,
           } as const;
+        // Admission only: a run already under way is never stopped for
+        // tokens. It records what it spends, and the next one is refused.
+        if (options.tokenQuota !== undefined && MODEL_TOOLS.has(tool)) {
+          const refused = await quotaExceeded(tx, owner, options.tokenQuota);
+          if (refused !== null) return refused;
+        }
         const maxActive = input.maxActive ?? 3;
         const active = await tx
           .select({ id: analysisRun.id })

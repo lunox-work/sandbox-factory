@@ -381,7 +381,9 @@ without a key every agent run fails `agent_unavailable`. A run stops when
 its submit tool accepts an answer, at `AGENT_TOKEN_BUDGET` tokens (every
 token the provider reports; default 4,000,000) or `AGENT_MAX_TURNS` turns
 (default 40), or when the model declines; the agent is told to submit at
-80 % of either. No answer is `agent_incomplete`.
+80 % of either. No answer is `agent_incomplete`. Every turn's tokens are
+written to the `model_usage` ledger against the run (`src/agent/metered.ts`),
+which the API's monthly quota counts; nothing here stops a run for it.
 
 The agents read only through tools: `list_files`, `read_file` (numbered
 lines, capped) and `search` (a literal, case-insensitive match, never a

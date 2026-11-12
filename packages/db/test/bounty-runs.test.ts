@@ -619,3 +619,84 @@ test("model calls are written only once a run has ended", async () => {
     false,
   );
 });
+
+/** The ledger's sum, as `quotaExceeded` reads it. */
+const spent = (total: number) => [
+  {
+    inputTokens: 0,
+    outputTokens: total,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+  },
+];
+const tokenQuota = {
+  monthlyLimit: 10,
+  now: () => new Date("2026-11-12T08:30:00.000Z"),
+};
+
+test("a sizing run is refused at the monthly token limit, and admitted under it", async () => {
+  // Request id, board, active run, then the ledger.
+  const full = createSequencedFakeDb([[], [{ id: "jrb_1" }], [], spent(10)]);
+  assert.deepEqual(
+    await createBountyRunStore(full.db, { tokenQuota }).create("org_1", input),
+    {
+      ok: false,
+      reason: "quota_exceeded",
+      used: 10,
+      limit: 10,
+      resetsAt: new Date("2026-12-01T00:00:00.000Z"),
+    },
+  );
+  assert.equal(full.calls.length, 4);
+  const room = createSequencedFakeDb([
+    [],
+    [{ id: "jrb_1" }],
+    [],
+    spent(9),
+    [row()],
+  ]);
+  const created = await createBountyRunStore(room.db, { tokenQuota }).create(
+    "org_1",
+    input,
+  );
+  assert.equal(created.ok && created.created, true);
+  assert.equal(room.calls[4]?.kind, "insert");
+  // A replay of its request is answered before the ledger is read.
+  const replay = createFakeDb([row()]);
+  const again = await createBountyRunStore(replay.db, {
+    tokenQuota: { ...tokenQuota, monthlyLimit: 0 },
+  }).create("org_1", input);
+  assert.equal(again.ok && again.created, false);
+  assert.equal(replay.calls.length, 1);
+});
+
+test("a spec change that only trims asks no model, so it is not held to the token limit", async () => {
+  const spec = {
+    ...input,
+    kind: "respec",
+    sourceProposalId: "bpr_1",
+    sourceRevision: 3,
+  } as const;
+  const spentQuota = { tokenQuota: { ...tokenQuota, monthlyLimit: 1 } };
+  const trim = { mode: "trim", removeScenarioIds: ["s2"] } as const;
+  // Request id, board, active run, insert: no ledger read.
+  const trimmed = createSequencedFakeDb([
+    [],
+    [{ id: "jrb_1" }],
+    [],
+    [row({ kind: "respec", sourceProposalId: "bpr_1", respec: trim })],
+  ]);
+  const created = await createBountyRunStore(trimmed.db, spentQuota).create(
+    "org_1",
+    { ...spec, respec: trim },
+  );
+  assert.equal(created.ok && created.created, true);
+  assert.equal(trimmed.calls[3]?.kind, "insert");
+  // An expansion writes scenarios with a model, so it is refused.
+  const expand = createSequencedFakeDb([[], [{ id: "jrb_1" }], [], spent(1)]);
+  const refused = await createBountyRunStore(expand.db, spentQuota).create(
+    "org_1",
+    { ...spec, respec: { mode: "expand" } },
+  );
+  assert.equal(!refused.ok && refused.reason, "quota_exceeded");
+});

@@ -43,6 +43,7 @@ import type { Context, Hono } from "hono";
 import { isAtLeastAdmin } from "../access.js";
 import type { AuthVariables } from "../http-context.js";
 import { textOf } from "../object-text.js";
+import { quotaExceededResponse } from "../quota.js";
 import { enqueueAnalysis } from "./enqueue.js";
 
 export interface AnalysisRouteOptions {
@@ -544,11 +545,13 @@ export function mountAnalysisRoutes(
     if (!result.ok && graph.run.status === "queued")
       await options.ensureWorker().catch(() => options.onLaunchError?.());
     if (!result.ok)
-      return result.reason === "run_limit"
-        ? runLimit(c)
-        : result.reason === "graph_mismatch"
-          ? graphMismatch(c)
-          : c.json({ error: "Not found." }, 404);
+      return result.reason === "quota_exceeded"
+        ? quotaExceededResponse(c, result)
+        : result.reason === "run_limit"
+          ? runLimit(c)
+          : result.reason === "graph_mismatch"
+            ? graphMismatch(c)
+            : c.json({ error: "Not found." }, 404);
     await options.ensureWorker().catch(() => options.onLaunchError?.());
     return c.json(
       enqueueSliceResponseSchema.parse({
@@ -606,17 +609,19 @@ export function mountAnalysisRoutes(
       },
     );
     if (!result.ok)
-      return result.reason === "run_limit"
-        ? runLimit(c)
-        : result.reason === "slice_mismatch"
-          ? c.json(
-              {
-                error: "The slice has not succeeded.",
-                code: "slice_not_ready",
-              },
-              409,
-            )
-          : c.json({ error: "Not found." }, 404);
+      return result.reason === "quota_exceeded"
+        ? quotaExceededResponse(c, result)
+        : result.reason === "run_limit"
+          ? runLimit(c)
+          : result.reason === "slice_mismatch"
+            ? c.json(
+                {
+                  error: "The slice has not succeeded.",
+                  code: "slice_not_ready",
+                },
+                409,
+              )
+            : c.json({ error: "Not found." }, 404);
     await options.ensureWorker().catch(() => options.onLaunchError?.());
     return c.json(analysisRunResponseSchema.parse({ run: result.run }), 202);
   });

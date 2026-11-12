@@ -68,6 +68,7 @@ import { isAtLeastAdmin } from "../access.js";
 import { connectedRepositories } from "../bounties/held-context.js";
 import type { AuthVariables } from "../http-context.js";
 import { textOf } from "../object-text.js";
+import { setRetryAfter } from "../quota.js";
 import { hiddenSha256 } from "duediligence/api";
 import { createHash } from "node:crypto";
 import { submittedFilesText } from "sandbox-factory";
@@ -118,8 +119,10 @@ const versionResponse = (
   });
 
 /** A refusal the version service settled on, answered with its status. */
-const failed = (c: Context, refusal: Failure): Response =>
-  c.json(refusal.body, FAILURE_STATUS[refusal.reason]);
+const failed = (c: Context, refusal: Failure): Response => {
+  if (refusal.reason === "quota") setRetryAfter(c, refusal.body);
+  return c.json(refusal.body, FAILURE_STATUS[refusal.reason]);
+};
 
 /**
  * The repository a bounty's sandbox is cut from: the one its live

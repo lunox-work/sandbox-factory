@@ -70,6 +70,7 @@ export function createAnthropicModel(options: {
       return {
         content: message.content,
         stopReason: message.stop_reason,
+        model: message.model,
         usage: {
           inputTokens: message.usage.input_tokens,
           outputTokens: message.usage.output_tokens,

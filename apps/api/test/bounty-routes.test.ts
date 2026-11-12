@@ -1234,6 +1234,34 @@ test("proposing is refused when it could not start", async () => {
   );
 });
 
+test("proposing is refused with 429 once the month's model tokens are spent", async () => {
+  const state = harness({
+    bounties: [written(SCOPED)],
+    runCreate: {
+      ok: false,
+      reason: "quota_exceeded",
+      used: 10_000_123,
+      limit: 10_000_000,
+      resetsAt: new Date("2099-12-01T00:00:00.000Z"),
+    },
+  });
+  const response = await state.request("POST", "bounties/bty_7/propose", {
+    requestId,
+  });
+  assert.equal(response.status, 429);
+  assert.ok(Number(response.headers.get("retry-after")) > 0);
+  assert.deepEqual(await response.json(), {
+    error:
+      "This workspace has reached its monthly model-token limit (10,000,123 of 10,000,000 tokens). Runs that call a model are refused until it resets at 2099-12-01T00:00:00.000Z, the start of next month (UTC).",
+    code: "quota_exceeded",
+    used: 10_000_123,
+    limit: 10_000_000,
+    resetsAt: "2099-12-01T00:00:00.000Z",
+  });
+  // Nothing was started.
+  assert.deepEqual(state.starts, []);
+});
+
 test("a bounty written here is proposed when Jira is not configured at all", async () => {
   // Nothing here needs Jira: the deployment has none.
   const state = harness({ jira: false, bounties: [written(SCOPED)] });
@@ -1384,6 +1412,31 @@ test("a re-price refused for a run in the way names that run", async () => {
   const body = (await response.json()) as { code: string; runId: string };
   assert.equal(body.code, "run_active");
   assert.equal(body.runId, "brn_9");
+});
+
+test("a re-price is refused with 429 once the month's model tokens are spent", async () => {
+  const bounty = written(SCOPED);
+  const state = harness({
+    bounties: [bounty],
+    live: { bty_7: proposalOf(bounty) },
+    runCreate: {
+      ok: false,
+      reason: "quota_exceeded",
+      used: 11,
+      limit: 10,
+      resetsAt: new Date("2099-12-01T00:00:00.000Z"),
+    },
+  });
+  const response = await state.request("POST", "proposals/bpr_1/reprice", {
+    expectedRevision: 1,
+    requestId,
+  });
+  assert.equal(response.status, 429);
+  assert.equal(
+    ((await response.json()) as { code: string }).code,
+    "quota_exceeded",
+  );
+  assert.deepEqual(state.starts, []);
 });
 
 test("an owner or admin approves the scope, and takes that back", async () => {

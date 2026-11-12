@@ -766,3 +766,121 @@ test("timing is written only for an ended run, and a claim clears it", async () 
   const claim = claims.calls.find((call) => call.kind === "update");
   assert.equal(claim?.values?.["timing"], null);
 });
+
+/** The ledger's sum, as `quotaExceeded` reads it. */
+const spent = (total: number) => [
+  {
+    inputTokens: total,
+    outputTokens: 0,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+  },
+];
+const tokenQuota = {
+  monthlyLimit: 5_000,
+  now: () => new Date("2026-11-12T08:30:00.000Z"),
+};
+const scopeParams = {
+  deadlineMinutes: 30,
+  agent: "scope" as const,
+  graphRunId: "graph",
+  proposalId: "p1",
+  specRevision: 2,
+  specHash: "h",
+};
+const scopeRun = {
+  tool: "scope" as const,
+  params: scopeParams,
+  requestedBy: "user",
+};
+
+test("a new model run is refused at the monthly token limit, before the spend cap or a write", async () => {
+  const fake = createSequencedFakeDb([
+    [{ id: "owner" }],
+    [{ repoId: "repo" }],
+    [{ id: "graph" }],
+    // No cached run, so a new one would be made: the ledger is read.
+    [],
+    spent(5_000),
+  ]);
+  assert.deepEqual(
+    await createAnalysisRunStore(fake.db, { tokenQuota }).enqueue(
+      "owner",
+      "snapshot",
+      scopeRun,
+    ),
+    {
+      ok: false,
+      reason: "quota_exceeded",
+      used: 5_000,
+      limit: 5_000,
+      resetsAt: new Date("2026-12-01T00:00:00.000Z"),
+    },
+  );
+  assert.equal(fake.calls.length, 5);
+  assert.ok(fake.calls.every((call) => call.kind === "select"));
+});
+
+test("under the token limit a model run is queued as before", async () => {
+  const fake = createSequencedFakeDb([
+    [{ id: "owner" }],
+    [{ repoId: "repo" }],
+    [{ id: "graph" }],
+    [],
+    spent(4_999),
+    [],
+    [
+      row({
+        tool: "scope",
+        toolVersion: SCOPE_TOOL_VERSION,
+        params: scopeParams,
+      }),
+    ],
+  ]);
+  const result = await createAnalysisRunStore(fake.db, { tokenQuota }).enqueue(
+    "owner",
+    "snapshot",
+    scopeRun,
+  );
+  assert.equal(result.ok && result.created, true);
+  assert.equal(fake.calls[6]?.kind, "insert");
+});
+
+test("a cached run, and a run that calls no model, are not held to the token limit", async () => {
+  const quota = { tokenQuota: { ...tokenQuota, monthlyLimit: 1 } };
+  const cached = createSequencedFakeDb([
+    [{ id: "owner" }],
+    [{ repoId: "repo" }],
+    [{ id: "graph" }],
+    [
+      row({
+        tool: "scope",
+        toolVersion: SCOPE_TOOL_VERSION,
+        params: scopeParams,
+        status: "succeeded",
+      }),
+    ],
+  ]);
+  const answer = await createAnalysisRunStore(cached.db, quota).enqueue(
+    "owner",
+    "snapshot",
+    scopeRun,
+  );
+  assert.equal(answer.ok && answer.created, false);
+  assert.equal(cached.calls.length, 4);
+  // graphify: lock, snapshot, cache, spend cap, insert. No ledger read.
+  const graph = createSequencedFakeDb([
+    [{ id: "owner" }],
+    [{ repoId: "repo" }],
+    [],
+    [],
+    [row()],
+  ]);
+  const queued = await createAnalysisRunStore(graph.db, quota).enqueue(
+    "owner",
+    "snapshot",
+    input,
+  );
+  assert.equal(queued.ok && queued.created, true);
+  assert.equal(graph.calls[4]?.kind, "insert");
+});

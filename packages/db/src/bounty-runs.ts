@@ -23,6 +23,11 @@ import {
 
 import { isUniqueViolation, type Database } from "./errors.js";
 import { generateId } from "./mapping.js";
+import {
+  quotaExceeded,
+  type QuotaExceeded,
+  type TokenQuota,
+} from "./model-usage.js";
 import { announceChange } from "./run-events.js";
 import { bountyRun, jiraBoard, bounty } from "./schema.js";
 import type { BountyRunRow } from "./schema.js";
@@ -67,9 +72,16 @@ export type CreateBountyRunResult =
     }
   | { readonly ok: false; readonly reason: "not-found" }
   | { readonly ok: false; readonly reason: "request-conflict" }
-  | { readonly ok: false; readonly reason: "active"; readonly runId: string };
+  | { readonly ok: false; readonly reason: "active"; readonly runId: string }
+  | QuotaExceeded;
 
 export interface BountyRunStore {
+  /**
+   * A new run, or the one its `requestId` already made. A store made with
+   * a `TokenQuota` refuses a new one once the organization's month is
+   * spent (`quota_exceeded`): every kind of run asks a model, but for a
+   * spec change that only trims.
+   */
   create(
     organizationId: string,
     input: CreateBountyRunInput,
@@ -381,7 +393,10 @@ function sameRequest(row: BountyRunRow, input: CreateBountyRunInput): boolean {
   );
 }
 
-export function createBountyRunStore(db: Database): BountyRunStore {
+export function createBountyRunStore(
+  db: Database,
+  options: { readonly tokenQuota?: TokenQuota } = {},
+): BountyRunStore {
   /** Tells the pages following a run that it changed. */
   const changed = (organizationId: string, id: string) =>
     announceChange(db, { organizationId, kind: "bounty", id });
@@ -438,6 +453,20 @@ export function createBountyRunStore(db: Database): BountyRunStore {
       const active = await activeFor(db, organizationId, input);
       if (active !== undefined) {
         return { ok: false, reason: "active", runId: active.id };
+      }
+      // Admission only: a run already under way is never stopped for
+      // tokens. It records what it spends, and the next one is refused.
+      // A trim takes scenarios out without asking a model, so it is free.
+      if (
+        options.tokenQuota !== undefined &&
+        !(kind === "respec" && input.respec?.mode === "trim")
+      ) {
+        const refused = await quotaExceeded(
+          db,
+          organizationId,
+          options.tokenQuota,
+        );
+        if (refused !== null) return refused;
       }
 
       try {

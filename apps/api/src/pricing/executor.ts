@@ -10,6 +10,7 @@ import {
   type JiraBoardSummary,
   type JiraIssueStore,
   type LatestBountyContext,
+  type ModelUsageStore,
   type NewBountyProfile,
   type NewBountySpec,
   type ProposalRepository,
@@ -63,6 +64,7 @@ import {
 
 import {
   SizerError,
+  type SizingReply,
   type SizingRequestOptions,
   type SizingUsage,
   type StructuredCall,
@@ -176,6 +178,12 @@ export interface BountyExecutorOptions {
   readonly specs: BountySpecStore;
   /** The model behind every call a run makes: the spec draft and the size. */
   readonly caller: StructuredCaller;
+  /**
+   * The token ledger every reply a run's calls got is written to, against
+   * the run's organization and the run (`model-usage.ts`). Absent, nothing
+   * is recorded and the monthly quota counts none of it.
+   */
+  readonly modelUsage?: Pick<ModelUsageStore, "record">;
   /**
    * A Jira site's client. Only a board's run and a bounty still following
    * its Jira issue ask for one; a deployment without Jira answers
@@ -359,14 +367,54 @@ export class BountyExecutor {
         ok: answer !== null,
       });
     };
+    // Every reply that reached a model, failed attempts included, so a
+    // call that throws still writes what it cost.
+    const replies: SizingReply[] = [];
     try {
-      const answer = await this.#options.caller.call(tool, input, options);
+      const answer = await this.#options.caller.call(tool, input, {
+        ...options,
+        onReply: (reply) => {
+          replies.push(reply);
+          options.onReply?.(reply);
+        },
+      });
       record(answer);
       return answer;
     } catch (error) {
       record(null);
       throw error;
+    } finally {
+      await this.#recordTokens(run, tool.name, replies);
     }
+  }
+
+  /**
+   * Writes a call's replies to the token ledger. A write that fails is
+   * logged and costs the run nothing: the call has already been paid for,
+   * and failing the run would only throw its answer away.
+   */
+  async #recordTokens(
+    run: StoredBountyRun,
+    kind: string,
+    replies: readonly SizingReply[],
+  ): Promise<void> {
+    const ledger = this.#options.modelUsage;
+    if (ledger === undefined) return;
+    for (const { model, usage } of replies)
+      await ledger
+        .record(run.organizationId, {
+          runFamily: "sizing",
+          runId: run.id,
+          kind,
+          model,
+          inputTokens: usage.inputTokens,
+          outputTokens: usage.outputTokens,
+          cacheReadTokens: usage.cacheReadTokens ?? 0,
+          cacheWriteTokens: usage.cacheWriteTokens ?? 0,
+        })
+        .catch((error: unknown) =>
+          this.#options.onBackgroundError?.("model_usage_record_failed", error),
+        );
   }
 
   /** A board's backlog, or one of its bounties a person picked (`issue`). */

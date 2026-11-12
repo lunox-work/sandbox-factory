@@ -484,3 +484,59 @@ test("FakeCaller answers by tool name, from a queue or a function", async () => 
     /other/,
   );
 });
+
+test("every reply is reported with its cache tokens, the rejected attempt's too", async () => {
+  const responses = [
+    message(
+      { complexity: "gigantic", rationale: "malformed" },
+      {
+        usage: {
+          input_tokens: 12,
+          output_tokens: 8,
+          cache_read_input_tokens: 300,
+          cache_creation_input_tokens: 40,
+        },
+      },
+    ),
+    message({
+      complexity: "S",
+      confidence: "medium",
+      rationale: "A localized change.",
+    }),
+  ];
+  const caller = new AnthropicCaller({
+    model: "requested-model",
+    messages: {
+      create: () => {
+        const next = responses.shift();
+        return next === undefined
+          ? Promise.reject(new Error("no more"))
+          : Promise.resolve(next);
+      },
+    },
+  });
+  const replies: unknown[] = [];
+  await caller.call(sizeBountyTool, input, {
+    onReply: (reply) => replies.push(reply),
+  });
+  assert.deepEqual(replies, [
+    {
+      model: "actual-model",
+      usage: {
+        inputTokens: 12,
+        outputTokens: 8,
+        cacheReadTokens: 300,
+        cacheWriteTokens: 40,
+      },
+    },
+    {
+      model: "actual-model",
+      usage: {
+        inputTokens: 12,
+        outputTokens: 8,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+      },
+    },
+  ]);
+});

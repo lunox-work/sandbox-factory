@@ -615,6 +615,26 @@ test("worker launch config is optional locally and complete in production", () =
   assert.throws(() => parseEnv({ ...required, MAX_ACTIVE_RUNS_PER_ORG: "0" }));
 });
 
+test("the monthly model-token quota defaults to ten million and parses like the other limits", () => {
+  assert.equal(parseEnv(required).MONTHLY_MODEL_TOKENS_PER_ORG, 10_000_000);
+  // Compose passes an unset variable as "", which is the default too.
+  assert.equal(
+    parseEnv({ ...required, MONTHLY_MODEL_TOKENS_PER_ORG: "" })
+      .MONTHLY_MODEL_TOKENS_PER_ORG,
+    10_000_000,
+  );
+  assert.equal(
+    parseEnv({ ...required, MONTHLY_MODEL_TOKENS_PER_ORG: "250000" })
+      .MONTHLY_MODEL_TOKENS_PER_ORG,
+    250_000,
+  );
+  for (const value of ["0", "-1", "1.5", "lots"])
+    assert.throws(
+      () => parseEnv({ ...required, MONTHLY_MODEL_TOKENS_PER_ORG: value }),
+      /MONTHLY_MODEL_TOKENS_PER_ORG/,
+    );
+});
+
 test("public S3 URLs can use a browser-reachable gateway distinct from API storage", () => {
   const env = parseEnv({
     ...required,

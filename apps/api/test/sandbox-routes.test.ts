@@ -404,6 +404,15 @@ const sandboxBounties: Record<string, string> = {
   sbx_raced: "bty_raced",
 };
 
+/** The run store's refusal once the month's model tokens are spent. */
+const quotaRefusal = {
+  ok: false,
+  reason: "quota_exceeded",
+  used: 10_000_000,
+  limit: 10_000_000,
+  resetsAt: new Date("2099-12-01T00:00:00.000Z"),
+};
+
 function fixture(
   role = "owner",
   overrides: Partial<{
@@ -413,6 +422,7 @@ function fixture(
     contract: unknown;
     unparsable: boolean;
     limit: boolean;
+    quota: boolean;
     sliceStatus: string;
     recordFails: boolean;
     conflict: boolean;
@@ -751,6 +761,7 @@ function fixture(
                           : null,
       enqueue: async (_owner: string, snapshotId: string, input: unknown) => {
         enqueued.push({ snapshotId, ...(input as object) });
+        if (overrides.quota === true) return quotaRefusal;
         return overrides.limit === true
           ? { ok: false, reason: "run_limit" }
           : {
@@ -2057,6 +2068,7 @@ function starterFixture(
     /** Approved unless said: a draft proposal is not generated from. */
     proposalStatus: "proposed" | "approved";
     limit: boolean;
+    quota: boolean;
     created: "ok" | "source_linked" | "not-found" | "starter_in_progress";
     /** The newest version's starter run, still under way. */
     inFlight: boolean;
@@ -2127,6 +2139,7 @@ function starterFixture(
         input: { params: { sandboxVersionId: string } },
       ) => {
         enqueued.push({ snapshotId, input });
+        if (overrides.quota === true) return quotaRefusal;
         return overrides.limit === true
           ? { ok: false, reason: "run_limit" }
           : {
@@ -3925,4 +3938,23 @@ test("merge-back is refused for a token, a member, a submission that did not pas
     "/submissions/sbm_x/merge",
   );
   assert.equal(missing.status, 404);
+});
+
+test("a build and a generated version are refused with 429 once the month's model tokens are spent", async () => {
+  for (const [f, path] of [
+    [fixture("owner", { quota: true }), "/versions/sbv_1/build"],
+    [starterFixture("owner", { quota: true }), "/sbx_1/starter"],
+  ] as const) {
+    const response = await f.request("POST", path);
+    assert.equal(response.status, 429, path);
+    const body = (await response.json()) as {
+      error: string;
+      code: string;
+      resetsAt: string;
+    };
+    assert.equal(body.code, "quota_exceeded", path);
+    assert.equal(body.resetsAt, "2099-12-01T00:00:00.000Z", path);
+    assert.match(body.error, /monthly model-token limit/, path);
+    assert.ok(Number(response.headers.get("retry-after")) > 0, path);
+  }
 });

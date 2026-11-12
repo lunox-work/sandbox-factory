@@ -113,6 +113,17 @@ test("usage asks for the window it is given", async () => {
     runs: [
       { family: "sizing", kind: "backlog", status: "succeeded", count: 3 },
     ],
+    modelTokens: {
+      from: at,
+      resetsAt: "2026-12-01T00:00:00.000Z",
+      used: 1_500,
+      limit: 10_000_000,
+      remaining: 9_998_500,
+      inputTokens: 1_000,
+      outputTokens: 200,
+      cacheReadTokens: 250,
+      cacheWriteTokens: 50,
+    },
   };
   const { client, asked } = fake(() => usage);
   assert.deepEqual(await client.usage("org_1", 7), usage);

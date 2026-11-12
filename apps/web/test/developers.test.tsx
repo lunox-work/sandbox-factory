@@ -29,6 +29,18 @@ const {
 const { trailFor } = await import("../src/Breadcrumbs");
 
 const at = "2026-11-01T08:00:00.000Z";
+/** This month's model tokens, as every usage answer carries them. */
+const modelTokens = {
+  from: "2026-11-01T00:00:00.000Z",
+  resetsAt: "2026-12-01T00:00:00.000Z",
+  used: 0,
+  limit: 10_000_000,
+  remaining: 10_000_000,
+  inputTokens: 0,
+  outputTokens: 0,
+  cacheReadTokens: 0,
+  cacheWriteTokens: 0,
+};
 const acme: MembershipDto = {
   id: "org_1",
   name: "Acme",
@@ -72,6 +84,7 @@ beforeEach(() => {
     usage: (days) => ({
       window: { from: at, to: at, days },
       runs: [],
+      modelTokens,
     }),
     calls: [],
     bodies: [],
@@ -348,6 +361,7 @@ test("no connected apps points at MCP setup", async () => {
 test("usage reads the chosen window again when it changes", async () => {
   server.usage = (days) => ({
     window: { from: at, to: at, days },
+    modelTokens,
     runs:
       days === 30
         ? [

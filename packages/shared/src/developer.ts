@@ -113,7 +113,14 @@ export const usageQuerySchema = z.object({
 
 export const RUN_FAMILIES = ["sizing", "analysis"] as const;
 
-/** Runs started in a window, counted by family, kind and state. */
+const tokenCount = z.number().int().nonnegative();
+
+/**
+ * Runs started in a window, counted by family, kind and state, and the
+ * model tokens the workspace's runs spent this calendar month (UTC) against
+ * its monthly limit. The month is not the window: the limit resets at
+ * `modelTokens.resetsAt` whatever `days` asked for.
+ */
 export const usageResponseSchema = z.object({
   window: z.object({
     from: z.iso.datetime(),
@@ -130,6 +137,21 @@ export const usageResponseSchema = z.object({
       count: z.number().int().nonnegative(),
     }),
   ),
+  modelTokens: z.object({
+    /** The month's first instant, UTC. */
+    from: z.iso.datetime(),
+    /** The next month's first instant, when `used` starts again from zero. */
+    resetsAt: z.iso.datetime(),
+    /** Input, output and cache tokens together: what the limit counts. */
+    used: tokenCount,
+    limit: z.number().int().positive(),
+    /** Zero once the limit is reached; new model runs are then refused. */
+    remaining: tokenCount,
+    inputTokens: tokenCount,
+    outputTokens: tokenCount,
+    cacheReadTokens: tokenCount,
+    cacheWriteTokens: tokenCount,
+  }),
 });
 
 export type ApiScopeDto = z.infer<typeof apiScopeSchema>;

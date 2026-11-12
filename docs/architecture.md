@@ -253,6 +253,17 @@ registry and scopes in [Auth](#auth):
 - **Retention**: `BountyWatchdog`'s hourly `retention` passes prune audit
   entries past 180 days, expired idempotency keys and webhook deliveries
   past 30 days.
+- **Model-token quota** (`packages/db/src/model-usage.ts`, `model_usage`,
+  `apps/api/src/quota.ts`): every model reply the platform pays for (a
+  worker agent's turn, `apps/worker/src/agent/metered.ts`; each sizing
+  attempt, `BountyExecutor`) writes its input, output and cache tokens
+  against the workspace and run. Once a workspace's tokens this calendar
+  month (UTC) reach `MONTHLY_MODEL_TOKENS_PER_ORG` (default 10,000,000), a
+  new `scope`, `fixtures`, `sandbox_build` or `sandbox_starter` run, or any
+  sizing run but a trim, is refused 429
+  `{ error, code: "quota_exceeded", used, limit, resetsAt }` with
+  `Retry-After`. Admission only: a run under way is never stopped.
+  `GET /orgs/:orgId/usage` reports the month as `modelTokens`.
 
 ### Webhooks
 

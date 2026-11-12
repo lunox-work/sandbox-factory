@@ -73,6 +73,7 @@ import {
 } from "sandbox-factory";
 
 import type { z } from "zod";
+import { quotaExceededBody } from "../quota.js";
 import type { SandboxRouteOptions } from "./options.js";
 const sha256 = (text: string | Uint8Array) =>
   createHash("sha256").update(text).digest("hex");
@@ -131,7 +132,8 @@ export function approvedTaskHash(snapshot: ApprovedTaskSnapshot): string {
 
 /** The owner is the path's; it is not repeated in the body. */
 
-type FailureReason = "invalid" | "not-found" | "conflict" | "unavailable";
+type FailureReason =
+  "invalid" | "not-found" | "conflict" | "quota" | "unavailable";
 /** A refusal, as its body and a reason the routes answer with a status. */
 export interface Failure {
   readonly ok: false;
@@ -143,6 +145,8 @@ export const FAILURE_STATUS = {
   invalid: 400,
   "not-found": 404,
   conflict: 409,
+  /** The workspace's monthly model tokens are spent (`quota.ts`). */
+  quota: 429,
   unavailable: 502,
 } as const satisfies Record<FailureReason, number>;
 const failure = <T extends object>(body: T, reason: FailureReason) => ({
@@ -810,15 +814,17 @@ export function versionService(options: SandboxRouteOptions) {
       maxActive: options.maxActive ?? 3,
     });
     if (!queued.ok)
-      return queued.reason === "run_limit"
-        ? failure(
-            {
-              error: "The active analysis limit has been reached.",
-              code: "run_limit",
-            },
-            "conflict",
-          )
-        : failure({ error: "Not found." }, "not-found");
+      return queued.reason === "quota_exceeded"
+        ? failure(quotaExceededBody(queued), "quota")
+        : queued.reason === "run_limit"
+          ? failure(
+              {
+                error: "The active analysis limit has been reached.",
+                code: "run_limit",
+              },
+              "conflict",
+            )
+          : failure({ error: "Not found." }, "not-found");
     if (queued.obsoleteLogKey !== undefined)
       await options.objects.remove(queued.obsoleteLogKey).catch(() => {});
     const acceptanceTests: AcceptanceTest[] = [];
@@ -947,15 +953,17 @@ export function versionService(options: SandboxRouteOptions) {
       maxActive: options.maxActive ?? 3,
     });
     if (!result.ok)
-      return result.reason === "run_limit"
-        ? failure(
-            {
-              error: "The active analysis limit has been reached.",
-              code: "run_limit",
-            },
-            "conflict",
-          )
-        : failure({ error: "Not found." }, "not-found");
+      return result.reason === "quota_exceeded"
+        ? failure(quotaExceededBody(result), "quota")
+        : result.reason === "run_limit"
+          ? failure(
+              {
+                error: "The active analysis limit has been reached.",
+                code: "run_limit",
+              },
+              "conflict",
+            )
+          : failure({ error: "Not found." }, "not-found");
     if (result.obsoleteLogKey !== undefined)
       await options.objects.remove(result.obsoleteLogKey).catch(() => {});
     // Asked again for the build the draft already points at: the same run,

@@ -996,7 +996,14 @@ function routeHarness(
     create?:
       | { ok: true; created: boolean }
       | { ok: false; reason: "active"; runId: string }
-      | { ok: false; reason: "request-conflict" };
+      | { ok: false; reason: "request-conflict" }
+      | {
+          ok: false;
+          reason: "quota_exceeded";
+          used: number;
+          limit: number;
+          resetsAt: Date;
+        };
   } = {},
 ) {
   const created: Record<string, unknown>[] = [];
@@ -1185,6 +1192,24 @@ test("a spec change is refused before the run when it could only fail", async ()
     assert.equal(((await response.json()) as { code: string }).code, code);
     assert.equal(state.created.length, 0, code);
   }
+});
+
+test("a spec change is refused with 429 once the month's model tokens are spent", async () => {
+  const spent = routeHarness({
+    create: {
+      ok: false,
+      reason: "quota_exceeded",
+      used: 20,
+      limit: 10,
+      resetsAt: new Date("2099-12-01T00:00:00.000Z"),
+    },
+  });
+  const response = await spent.post(trimBody);
+  assert.equal(response.status, 429);
+  const body = (await response.json()) as { code: string; resetsAt: string };
+  assert.equal(body.code, "quota_exceeded");
+  assert.equal(body.resetsAt, "2099-12-01T00:00:00.000Z");
+  assert.deepEqual(spent.starts, []);
 });
 
 test("a change already in flight on the proposal is named, not started twice", async () => {
