@@ -281,6 +281,13 @@ export const starterParamsSchema = z.strictObject({
   /** The names the workspace goes by, which no public file may carry. */
   vocabulary: z.array(z.string().min(1)).optional(),
 });
+export const submissionGradeParamsSchema = z.strictObject({
+  deadlineMinutes: z.number().int().min(1).max(120).default(60),
+  grader: z.literal("submission"),
+  submissionId: z.string().min(1),
+  sandboxVersionId: z.string().min(1),
+  patchSha256: sha256Schema,
+});
 export const analysisRunDtoSchema = z.discriminatedUnion("tool", [
   z.strictObject({
     ...runCommon,
@@ -331,6 +338,11 @@ export const analysisRunDtoSchema = z.discriminatedUnion("tool", [
     ...runCommon,
     tool: z.literal("sandbox_starter"),
     params: starterParamsSchema,
+  }),
+  z.strictObject({
+    ...runCommon,
+    tool: z.literal("submission_grade"),
+    params: submissionGradeParamsSchema,
   }),
 ]);
 /**

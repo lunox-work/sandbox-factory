@@ -19,6 +19,7 @@ import {
   createBountyProposalStore,
   createBountySpecStore,
   createDecisionConfirmationStore,
+  createSubmissionStore,
   createEmailStore,
   createGithubConnectionStore,
   createGithubGrantStore,
@@ -527,6 +528,7 @@ const sandbox =
     : {
         sandboxes: sandboxStore,
         cuts: sandboxStore,
+        submissions: createSubmissionStore(connection.db),
         runs: analysisRuns,
         artifacts: analysis.artifacts,
         objects: analysis.objects,

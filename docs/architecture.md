@@ -200,7 +200,11 @@ version from a slice run) and `prepare` (its build, which writes and
 calibrates hidden tests) post work; `get_handout`
 (`GET …/versions/:vid/handout`) reads the public files and duediligence's
 `hiddenSha256` over the hidden suite, never a hidden test's name or body.
-Approving, publishing and confirming decisions have no tool. A request needs a
+`submit_patch`/`judge` (`POST …/versions/:vid/submissions`, a published
+version only) store the files canonically (`submittedFilesText`) and queue a
+`submission_grade` run; `get_verdict` reads duediligence's verdict
+(passed, overfit, incomplete, refused), the counts and the failing
+scenarios' keys. Approving, publishing and confirming decisions have no tool. A request needs a
 bearer `lnx_` or `lnxat_` token, else 401 with
 `WWW-Authenticate: Bearer resource_metadata="…/.well-known/oauth-protected-resource/mcp…"`.
 **Every tool wraps one public route**, called in-process with the caller's

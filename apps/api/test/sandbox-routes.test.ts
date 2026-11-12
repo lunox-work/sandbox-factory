@@ -419,6 +419,8 @@ function fixture(
     noSpec: boolean;
     seam: boolean;
     built: boolean;
+    /** The submissions store the routes are given; absent, none. */
+    submissions: unknown;
     /** The build is still running, and has written its project only. */
     previewing: boolean;
     /** The version has no passing build to publish. */
@@ -774,7 +776,13 @@ function fixture(
       remove: async (key: string) => {
         removed.push(key);
       },
+      put: async (key: string, body: Uint8Array) => {
+        objects.set(key, Buffer.from(body));
+      },
     },
+    ...(overrides.submissions === undefined
+      ? {}
+      : { submissions: overrides.submissions as never }),
     previews: {
       preview: async (owner: string, runId: string) =>
         overrides.previewing === true &&
@@ -3382,5 +3390,194 @@ test("a built version's handout lists its public files and commits to its hidden
   assert.equal(
     (await fixture().request("GET", "/versions/sbv_x/handout")).status,
     404,
+  );
+});
+
+/** A submissions store that records what the routes ask of it. */
+function submissionsFake(reason?: "not_frozen" | "not-found") {
+  const made: unknown[] = [];
+  const stored = (overrides: object = {}) => ({
+    id: "sbm_1",
+    sandboxVersionId: "sbv_1",
+    submittedBy: "user_1",
+    patchSha256: "a".repeat(64),
+    patchKey: "submissions/org_1/sbv_1/key.json",
+    status: "passed" as const,
+    result: {
+      public: { passed: 1, total: 1 },
+      hidden: { passed: 1, total: 2 },
+      verdict: "overfit" as const,
+      failedScenarios: ["s2"],
+    },
+    runId: "arn_grade",
+    createdAt: stamp,
+    updatedAt: stamp,
+    ...overrides,
+  });
+  let seen = false;
+  return {
+    made,
+    store: {
+      create: async (
+        owner: string,
+        input: { patchSha256: string; patchKey: string },
+      ) => {
+        made.push({ owner, ...input });
+        if (reason !== undefined) return { ok: false, reason };
+        const created = !seen;
+        seen = true;
+        return {
+          ok: true,
+          created,
+          submission: stored({
+            status: "queued",
+            result: null,
+            runId: null,
+            patchSha256: input.patchSha256,
+          }),
+        };
+      },
+      get: async (owner: string, id: string) =>
+        owner === "org_1" && id === "sbm_1" ? stored() : null,
+      list: async (owner: string) => (owner === "org_1" ? [stored()] : []),
+    },
+  };
+}
+
+test("files submitted against a version are stored, hashed and graded once; the verdict shows counts and scenario keys only", async () => {
+  const submissions = submissionsFake();
+  const f = fixture("admin", { submissions: submissions.store });
+  const files = [
+    { path: "src/b.ts", text: "b" },
+    { path: "src/a.ts", text: "a" },
+  ];
+  const first = await f.request("POST", "/versions/sbv_1/submissions", {
+    files,
+  });
+  assert.equal(first.status, 202);
+  const body = (await first.json()) as {
+    submission: { status: string; patchKey?: string };
+  };
+  assert.equal(body.submission.status, "queued");
+  assert.equal("patchKey" in body.submission, false);
+  // Stored canonically: the same files in another order are the same hash.
+  const text = JSON.stringify({
+    files: [
+      { path: "src/a.ts", text: "a" },
+      { path: "src/b.ts", text: "b" },
+    ],
+  });
+  const sha = createHash("sha256").update(text).digest("hex");
+  assert.deepEqual(submissions.made[0], {
+    owner: "org_1",
+    sandboxVersionId: "sbv_1",
+    submittedBy: "user_1",
+    patchKey: `submissions/org_1/sbv_1/${sha}.json`,
+    patchSha256: sha,
+  });
+  assert.deepEqual(f.enqueued.at(-1), {
+    snapshotId: null,
+    tool: "submission_grade",
+    params: {
+      deadlineMinutes: 60,
+      grader: "submission",
+      submissionId: "sbm_1",
+      sandboxVersionId: "sbv_1",
+      patchSha256: sha,
+    },
+    requestedBy: "user_1",
+    maxActive: 3,
+  });
+  // Again: the submission already made, and no second run.
+  const again = await f.request("POST", "/versions/sbv_1/submissions", {
+    files: [...files].reverse(),
+  });
+  assert.equal(again.status, 200);
+  assert.equal(
+    f.enqueued.filter(
+      (run) => (run as { tool: string }).tool === "submission_grade",
+    ).length,
+    1,
+  );
+
+  const read = (await (
+    await f.request("GET", "/submissions/sbm_1")
+  ).json()) as {
+    submission: Record<string, unknown>;
+  };
+  assert.deepEqual(
+    {
+      verdict: read.submission["verdict"],
+      hidden: read.submission["hidden"],
+      failedScenarios: read.submission["failedScenarios"],
+      refused: read.submission["refused"],
+    },
+    {
+      verdict: "overfit",
+      hidden: { passed: 1, total: 2 },
+      failedScenarios: ["s2"],
+      refused: [],
+    },
+  );
+  assert.equal(JSON.stringify(read).includes("patchKey"), false);
+  const listed = (await (
+    await f.request("GET", "/versions/sbv_1/submissions")
+  ).json()) as {
+    submissions: unknown[];
+  };
+  assert.equal(listed.submissions.length, 1);
+  assert.equal((await f.request("GET", "/submissions/sbm_x")).status, 404);
+});
+
+test("submissions are refused when invalid, against a draft, for members, or where none are taken", async () => {
+  const files = [{ path: "src/a.ts", text: "a" }];
+  const draft = fixture("admin", {
+    submissions: submissionsFake("not_frozen").store,
+  });
+  const refused = await draft.request("POST", "/versions/sbv_1/submissions", {
+    files,
+  });
+  assert.equal(refused.status, 409);
+  assert.equal(((await refused.json()) as { code: string }).code, "not_frozen");
+  const gone = fixture("admin", {
+    submissions: submissionsFake("not-found").store,
+  });
+  assert.equal(
+    (await gone.request("POST", "/versions/sbv_x/submissions", { files }))
+      .status,
+    404,
+  );
+  const ok = fixture("admin", { submissions: submissionsFake().store });
+  assert.equal(
+    (await ok.request("POST", "/versions/sbv_1/submissions", { files: [] }))
+      .status,
+    400,
+  );
+  const member = fixture("member", { submissions: submissionsFake().store });
+  for (const [method, path] of [
+    ["POST", "/versions/sbv_1/submissions"],
+    ["GET", "/submissions/sbm_1"],
+    ["GET", "/versions/sbv_1/submissions"],
+  ] as const)
+    assert.equal(
+      (
+        await member.request(
+          method,
+          path,
+          method === "POST" ? { files } : undefined,
+        )
+      ).status,
+      403,
+    );
+  const none = fixture("admin");
+  assert.equal(
+    (await none.request("POST", "/versions/sbv_1/submissions", { files }))
+      .status,
+    503,
+  );
+  assert.equal((await none.request("GET", "/submissions/sbm_1")).status, 404);
+  assert.deepEqual(
+    await (await none.request("GET", "/versions/sbv_1/submissions")).json(),
+    { submissions: [] },
   );
 });

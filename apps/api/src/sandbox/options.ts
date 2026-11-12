@@ -13,6 +13,7 @@
  * no public repository is pushed yet.
  */
 
+import type { SubmissionStore } from "@sandbox-factory/db";
 import type {
   AnalysisRunStore,
   ArtifactStore,
@@ -32,7 +33,10 @@ export interface SandboxRouteOptions {
   readonly sandboxes: SandboxStore;
   readonly runs: Pick<AnalysisRunStore, "get" | "enqueue">;
   readonly artifacts: Pick<ArtifactStore, "list">;
-  readonly objects: Pick<ObjectStore, "get" | "remove">;
+  readonly objects: Pick<ObjectStore, "get" | "remove"> &
+    Partial<Pick<ObjectStore, "put">>;
+  /** Submissions; absent, versions take none. */
+  readonly submissions?: Pick<SubmissionStore, "create" | "get" | "list">;
   /**
    * What a build still running has written before its baseline, served as
    * the version's files until it commits. Absent, they arrive at commit.

@@ -127,6 +127,8 @@ const WRITE_TOOLS = new Set([
   "start_sandbox",
   "cut_slice",
   "prepare",
+  "submit_patch",
+  "judge",
 ]);
 
 function textOf(result: unknown): string {
@@ -163,6 +165,9 @@ test("each endpoint lists exactly its toolset", async () => {
       "cut_slice",
       "prepare",
       "get_handout",
+      "submit_patch",
+      "judge",
+      "get_verdict",
       "connect_github",
       "connect_jira",
     ],
@@ -182,6 +187,8 @@ test("each endpoint lists exactly its toolset", async () => {
       "start_sandbox",
       "prepare",
       "get_handout",
+      "judge",
+      "get_verdict",
     ],
     "/mcp/carveout": [
       "list_workspaces",
@@ -194,6 +201,8 @@ test("each endpoint lists exactly its toolset", async () => {
       "start_sandbox",
       "cut_slice",
       "get_handout",
+      "submit_patch",
+      "get_verdict",
     ],
   };
   assert.deepEqual(Object.keys(TOOLSETS), Object.keys(expected));
@@ -582,6 +591,21 @@ test("slice, sandbox, prepare and handout tools call their one route each", asyn
       name: "get_handout",
       arguments: { versionId: "sbv_1" },
       path: `/api/v1/orgs/${ORG}/sandboxes/versions/sbv_1/handout`,
+    },
+    ...(["submit_patch", "judge"] as const).map((name) => ({
+      name,
+      arguments: {
+        versionId: "sbv_1",
+        files: [{ path: "src/a.ts", text: "a" }],
+      },
+      path: `/api/v1/orgs/${ORG}/sandboxes/versions/sbv_1/submissions`,
+      method: "POST",
+      body: { files: [{ path: "src/a.ts", text: "a" }] },
+    })),
+    {
+      name: "get_verdict",
+      arguments: { submissionId: "sbm_1" },
+      path: `/api/v1/orgs/${ORG}/sandboxes/submissions/sbm_1`,
     },
   ];
   for (const [index, entry] of cases.entries()) {

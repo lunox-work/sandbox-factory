@@ -194,6 +194,17 @@ schemas in `packages/shared/src/analysis.ts`; the same-snapshot graph check in
 `src/main.ts` and `src/tools/<builder>.ts`; and `labels.ts`, `BuilderRow.tsx`
 and a result component in `apps/web/src/features/analysis/`.
 
+### Grading
+
+A `submission_grade` run (`src/tools/submission-grade.ts`) applies a
+submission's files to the built version it names (`gradingTree`: refused
+when it touches the version's own files) and runs the version's baseline on
+the result in a fresh job, every hidden test expected to pass. duediligence's
+`verdict` decides passed, overfit, incomplete or refused; the submission
+records counts, that verdict and the scenario keys (`s1`, from the hidden
+test's file name) of failing hidden tests, never a hidden test's name, body
+or output. Its files are read from the key the submission row names.
+
 ### Slice
 
 A slice run (`src/tools/slice.ts`) names the succeeded graphify run on the

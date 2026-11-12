@@ -10,6 +10,7 @@ import {
   createConnection,
   createObjectStore,
   createSandboxStore,
+  createSubmissionStore,
   RUN_ENDED_CHANNEL,
   RUN_QUEUED_CHANNEL,
   workerApplicationName,
@@ -41,6 +42,7 @@ import { createScopeAdapter } from "./tools/scope.js";
 import { createSliceAdapter } from "./tools/slice.js";
 import { npmPackageTypes } from "./tools/slice/package-types.js";
 import { createStarterAdapter } from "./tools/starter.js";
+import { createSubmissionGradeAdapter } from "./tools/submission-grade.js";
 
 const env = parseWorkerEnv();
 // Named, so the launcher sees this worker while it is idle and has no run
@@ -54,6 +56,7 @@ const connection = createConnection({
 const runs = createAnalysisRunStore(connection.db);
 const artifacts = createArtifactStore(connection.db);
 const sandboxes = createSandboxStore(connection.db);
+const submissions = createSubmissionStore(connection.db);
 const tasks = createTaskReader(
   createBountyProposalStore(connection.db),
   createBountySpecStore(connection.db),
@@ -170,6 +173,8 @@ function adapterFor(run: ClaimedAnalysisRun): ToolAdapter {
       return createFixturesAdapter(agent);
     case "sandbox_starter":
       return createStarterAdapter({ agent, provider: evaluation });
+    case "submission_grade":
+      return createSubmissionGradeAdapter({ provider: evaluation });
   }
 }
 const stopClaiming = new AbortController();
@@ -211,6 +216,7 @@ try {
         runs,
         artifacts,
         sandboxes,
+        submissions,
         tasks,
         objects,
         tool: adapterFor(run),

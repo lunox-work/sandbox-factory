@@ -161,3 +161,16 @@ test("a submission starts once, and finishes with the verdict its counts give", 
     null,
   );
 });
+
+test("one submission is read under its owner, with the key its files are under", async () => {
+  const fake = createFakeDb([row()]);
+  const found = await createSubmissionStore(fake.db).get("org_1", "sbm_1");
+  assert.equal(found?.id, row().id);
+  assert.equal(found?.patchKey, row().patchKey);
+  assert.equal(fake.calls[0]?.filtered, true);
+  assert.equal(fake.calls[0]?.limited, 1);
+  assert.equal(
+    await createSubmissionStore(createFakeDb([]).db).get("org_1", "sbm_x"),
+    null,
+  );
+});

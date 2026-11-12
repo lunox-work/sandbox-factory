@@ -41,6 +41,30 @@ declare module "duediligence/api" {
       readonly reason: string;
     }[];
   };
+  /**
+   * The judge's rule over a submission's outcomes: refused, incomplete,
+   * regressed, passed or overfit, with the counts.
+   */
+  export function verdict(outcomes: {
+    readonly public: SuiteResult | null;
+    readonly hidden: SuiteResult | null;
+    readonly publicIds: readonly string[];
+    readonly kept: readonly string[];
+    readonly refused?: readonly {
+      readonly path: string;
+      readonly change: string;
+      readonly reason: string;
+    }[];
+  }): {
+    readonly verdict:
+      "passed" | "overfit" | "incomplete" | "regressed" | "refused";
+    readonly public: { readonly passed: number; readonly total: number };
+    readonly hidden: { readonly passed: number; readonly total: number };
+    readonly failures: readonly {
+      readonly id: string;
+      readonly message: string;
+    }[];
+  };
   /** The absolute path of prompts/<name>.md inside the package. */
   export function promptPath(name: string): string;
   /** prompts/<name>.md with each `{{key}}` filled; a missing key throws. */
