@@ -29,6 +29,8 @@
  * - `schema/flows.ts` — views of how long people wait, read from the rows
  *   above; no tables.
  * - `schema/developer.ts` — the public API's workspace tokens.
+ * - `schema/oauth.ts` — the OAuth provider plugin's clients, grants and
+ *   tokens, for MCP clients and other apps.
  *
  * `auth.ts` and `organizations.ts` import each other; see the note in
  * `organizations.ts` for why the foreign-key thunks make that safe.
@@ -154,3 +156,18 @@ export { flowWait, flowWaitSample } from "./schema/flows.js";
 
 export { apiToken } from "./schema/developer.js";
 export type { ApiTokenRow, NewApiTokenRow } from "./schema/developer.js";
+
+export {
+  oauthAccessToken,
+  oauthClient,
+  oauthClientAssertion,
+  oauthClientResource,
+  oauthConsent,
+  oauthRefreshToken,
+  oauthResource,
+} from "./schema/oauth.js";
+export type {
+  OAuthAccessTokenRow,
+  OAuthClientRow,
+  OAuthConsentRow,
+} from "./schema/oauth.js";

@@ -519,6 +519,13 @@
       "when": 1794439547759,
       "tag": "0073_dear_spot",
       "breakpoints": true
+    },
+    {
+      "idx": 74,
+      "version": "7",
+      "when": 1794441208831,
+      "tag": "0074_oauth_provider",
+      "breakpoints": true
     }
   ]
 }

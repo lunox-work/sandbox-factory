@@ -182,6 +182,12 @@ export type {
   ResolvedApiToken,
   StoredApiToken,
 } from "./api-tokens.js";
+export { createOAuthGrantStore } from "./oauth-grants.js";
+export type {
+  OAuthGrant,
+  OAuthGrantStore,
+  ResolvedOAuthAccessToken,
+} from "./oauth-grants.js";
 export { createUsageStore } from "./usage.js";
 export type { RunCount, UsageStore } from "./usage.js";
 export type {
