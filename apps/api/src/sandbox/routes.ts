@@ -42,6 +42,7 @@ import {
   SANDBOX_FILE_TEXT_MAX_BYTES,
   sandboxFileContentSchema,
   sandboxFileListSchema,
+  sandboxHandoutSchema,
   sandboxListSchema,
   sandboxResponseSchema,
   sandboxSliceResponseSchema,
@@ -63,6 +64,7 @@ import { isAtLeastAdmin } from "../access.js";
 import { connectedRepositories } from "../bounties/held-context.js";
 import type { AuthVariables } from "../http-context.js";
 import { textOf } from "../object-text.js";
+import { hiddenSha256 } from "duediligence/api";
 
 const sandboxDto = ({ organizationId: _owner, ...dto }: StoredSandbox) => dto;
 const sourceDto = (source: StoredVersionSource) => ({
@@ -898,6 +900,66 @@ export function mountSandboxRoutes(
       );
     const text = textOf(bytes);
     return text === null ? answer(null, "binary") : answer(text, null);
+  });
+
+  /*
+    The handout: the public project a developer clones, as the build
+    committed it (`project/…`, at its project path), and of the hidden
+    tests only their count and duediligence's commitment hash over them
+    (each file at `tests/private/…`, every file a kept test). No hidden
+    test's path or body leaves here, so an agent may read it.
+  */
+  app.get(`${base}/versions/:vid/handout`, async (c) => {
+    if (!isAtLeastAdmin(c.get("member").role))
+      return c.json(
+        { error: "Only owners and admins can read a version's handout." },
+        403,
+      );
+    const owner = c.get("member").organizationId;
+    const stored = await options.sandboxes.getVersion(
+      owner,
+      c.req.param("vid"),
+    );
+    if (stored === null) return c.json({ error: "Not found." }, 404);
+    const runId = stored.source.buildRunId;
+    const run = runId === null ? null : await options.runs.get(owner, runId);
+    // Only what a run committed: a running build's preview may change.
+    const files =
+      run === null ? [] : await options.artifacts.list(owner, run.id);
+    const hidden = files.filter((file) => file.path.startsWith("private/"));
+    let hash: string | null = null;
+    if (hidden.length > 0) {
+      const map: Record<string, Uint8Array> = {};
+      for (const file of hidden) {
+        const bytes = await options.objects.get(file.objectKey);
+        if (bytes === undefined)
+          return c.json(
+            {
+              error: "The hidden tests could not be read.",
+              code: "artifacts_unavailable",
+            },
+            502,
+          );
+        map[`tests/private/${file.path.slice("private/".length)}`] = bytes;
+      }
+      hash = hiddenSha256(map, Object.keys(map).sort());
+    }
+    c.header("Cache-Control", "no-store");
+    return c.json(
+      sandboxHandoutSchema.parse({
+        versionId: stored.version.id,
+        run: run === null ? null : { id: run.id, status: run.status },
+        files: files
+          .filter((file) => file.path.startsWith("project/"))
+          .map(({ path, sizeBytes, sha256 }) => ({
+            path: path.slice("project/".length),
+            sizeBytes,
+            sha256,
+          })),
+        hiddenTests: hidden.length,
+        hiddenSha256: hash,
+      }),
+    );
   });
 
   /** What a replay would use. Never the current branch head. */

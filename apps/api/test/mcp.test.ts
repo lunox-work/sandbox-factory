@@ -123,6 +123,10 @@ const WRITE_TOOLS = new Set([
   "import_jira_issue",
   "size_bounty",
   "respec",
+  "plan_slice",
+  "start_sandbox",
+  "cut_slice",
+  "prepare",
 ]);
 
 function textOf(result: unknown): string {
@@ -154,6 +158,11 @@ test("each endpoint lists exactly its toolset", async () => {
       "import_jira_issue",
       "size_bounty",
       "respec",
+      "plan_slice",
+      "start_sandbox",
+      "cut_slice",
+      "prepare",
+      "get_handout",
       "connect_github",
       "connect_jira",
     ],
@@ -170,6 +179,9 @@ test("each endpoint lists exactly its toolset", async () => {
       "size_bounty",
       "get_decisions",
       "confirm_link",
+      "start_sandbox",
+      "prepare",
+      "get_handout",
     ],
     "/mcp/carveout": [
       "list_workspaces",
@@ -178,6 +190,10 @@ test("each endpoint lists exactly its toolset", async () => {
       "list_sandboxes",
       "get_sandbox",
       "get_run",
+      "plan_slice",
+      "start_sandbox",
+      "cut_slice",
+      "get_handout",
     ],
   };
   assert.deepEqual(Object.keys(TOOLSETS), Object.keys(expected));
@@ -490,6 +506,96 @@ test("connect tools ask for JSON and answer the link with what to do", async () 
   // No link in the answer is an error, not a sentence without one.
   const jira = await client.callTool({ name: "connect_jira", arguments: {} });
   assert.equal(jira.isError, true);
+  await client.close();
+});
+
+test("slice, sandbox, prepare and handout tools call their one route each", async () => {
+  const { client, routed } = await overFakeApi(() => ({
+    status: 202,
+    body: { ok: true },
+  }));
+  const cases: Array<{
+    name: string;
+    arguments: Record<string, unknown>;
+    path: string;
+    method?: string;
+    body?: unknown;
+  }> = [
+    {
+      name: "plan_slice",
+      arguments: {
+        repositoryId: "ghr_1",
+        entryPoints: ["src/b.ts", "src/a.ts", "src/a.ts"],
+      },
+      path: `/api/v1/orgs/${ORG}/github/repositories/ghr_1/slices`,
+      method: "POST",
+      body: { entryPoints: ["src/a.ts", "src/b.ts"] },
+    },
+    {
+      name: "plan_slice",
+      arguments: {
+        repositoryId: "ghr_1",
+        entryPoints: ["src/a.ts"],
+        maxDepth: 1,
+      },
+      path: `/api/v1/orgs/${ORG}/github/repositories/ghr_1/slices`,
+      method: "POST",
+      body: {
+        entryPoints: ["src/a.ts"],
+        budget: { maxFiles: 40, maxDepth: 1 },
+      },
+    },
+    {
+      name: "start_sandbox",
+      arguments: { bountyId: "bty_1" },
+      path: `/api/v1/orgs/${ORG}/sandboxes/start`,
+      method: "POST",
+      body: { bountyId: "bty_1" },
+    },
+    {
+      name: "cut_slice",
+      arguments: {
+        sandboxId: "sbx_1",
+        sliceRunId: "arn_1",
+        proposalId: "bpr_1",
+        title: "Retry payouts",
+        specSummary: "Retry failed payouts.",
+        complexity: "M",
+      },
+      path: `/api/v1/orgs/${ORG}/sandboxes/sbx_1/versions`,
+      method: "POST",
+      body: {
+        sliceRunId: "arn_1",
+        proposalId: "bpr_1",
+        title: "Retry payouts",
+        specSummary: "Retry failed payouts.",
+        complexity: "M",
+      },
+    },
+    {
+      name: "prepare",
+      arguments: { versionId: "sbv_1" },
+      path: `/api/v1/orgs/${ORG}/sandboxes/versions/sbv_1/build`,
+      method: "POST",
+    },
+    {
+      name: "get_handout",
+      arguments: { versionId: "sbv_1" },
+      path: `/api/v1/orgs/${ORG}/sandboxes/versions/sbv_1/handout`,
+    },
+  ];
+  for (const [index, entry] of cases.entries()) {
+    const result = await client.callTool({
+      name: entry.name,
+      arguments: entry.arguments,
+    });
+    assert.notEqual(result.isError, true, entry.name);
+    const sent = routed()[index];
+    assert.equal(sent?.path, entry.path, entry.name);
+    assert.equal(sent?.init.method, entry.method, entry.name);
+    if (entry.body !== undefined)
+      assert.deepEqual(sent?.init.body, entry.body, entry.name);
+  }
   await client.close();
 });
 
