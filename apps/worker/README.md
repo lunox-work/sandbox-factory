@@ -284,6 +284,16 @@ by an agent during the build (`fixtures.ts` via `writeFixtures`,
 `hidden-tests.ts`, `pseudonyms.ts`), kept only once its own check passes,
 and settled on the draft when the run commits (`build-transform.json`; a
 set written here names the build run as its `fixtureRunId`).
+Hidden tests the agent wrote are then calibrated (`calibration.ts`, on
+the pinned `duediligence/api`): a reference agent, told duediligence's
+`prompts/repo/reference` brief, implements the bounty with the hidden tests
+in view, and they run on it in a fresh job. A test expected to fail stays
+only if `calibrate` keeps it (fails on the sandbox, passes on the
+reference); a guard expected to pass stays only if the reference passes it.
+A smaller set is run through its baseline again; none expected to fail left
+is no set. The reference is never part of the version; the transform's
+`hiddenTests.calibration` records the engine, kept, dropped with reasons,
+the reference's paths and summary, and its usage.
 A set an agent could not settle leaves the draft without, and the build
 goes on. An older preparation run's set and table (`preparedRunId`, below)
 are taken first.

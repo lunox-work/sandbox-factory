@@ -587,7 +587,10 @@ Hidden tests are written by an agent beside the first
 baseline (`hidden-tests.ts`), its first prompt quoting the project and a
 test file per scenario drafted by rule (`hiddenTestScaffold`: the path, the
 imports that resolve from it, the steps as comments); it may
-submit the set its last passing run ran without writing it again. The build
+submit the set its last passing run ran without writing it again. A
+reference agent then calibrates that set on duediligence's rule
+(`calibration.ts`, `duediligence/api` pinned exactly): only tests a
+reference implementation passes stand. The build
 reads the slice, the preparation and the repository's names at once, and
 shows its preview while the baseline runs. Agents run
 at the effort their work needs (`AgentEffort`): `medium` where a

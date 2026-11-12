@@ -91,6 +91,8 @@ import { AnalysisError } from "../errors.js";
 import { snapshotOf } from "./adapter.js";
 import type { ArtifactFile, ToolAdapter, ToolRunInput } from "./adapter.js";
 import { writeHiddenTests } from "./hidden-tests.js";
+import { calibrateHiddenTests } from "./calibration.js";
+import type { HiddenTestsCalibration } from "./calibration.js";
 import { loadPreparation, packageVocabulary } from "./preparation.js";
 import type { Preparation } from "./preparation.js";
 import {
@@ -115,6 +117,13 @@ export interface SandboxBuildOptions {
   readonly provider: EvaluationProvider | null;
   /** Writes hidden tests for a draft that has none; without a model, none are. */
   readonly agent?: AgentSettings;
+  /**
+   * How hidden tests the agent wrote are calibrated: `reference` (the
+   * default) has a reference implementation decide which stand, on
+   * duediligence's rule (`calibration.ts`); `off` keeps the set its
+   * baseline accepted.
+   */
+  readonly calibration?: "reference" | "off";
   readonly now?: () => Date;
 }
 
@@ -1422,6 +1431,7 @@ export function createSandboxBuildAdapter(
       let evaluator: EvaluationEnvironment | null =
         firstBaseline?.evaluator ?? null;
       let hidden: Awaited<ReturnType<typeof writeHiddenTests>> = null;
+      let calibration: HiddenTestsCalibration | null = null;
       if (generate !== null && speculative && lacksTests(baseline)) {
         if (agent === null)
           input.log(
@@ -1430,6 +1440,39 @@ export function createSandboxBuildAdapter(
         else {
           if (early.failed) throw early.error;
           hidden = hiddenWritten;
+          if (
+            hidden !== null &&
+            (options.calibration ?? "reference") === "reference"
+          ) {
+            const calibrated = await calibrateHiddenTests({
+              ...agent,
+              task: {
+                title: publicListing.title,
+                summary: publicListing.specSummary,
+                spec: publicSpec,
+              },
+              entryPoints,
+              written: hidden,
+              generate,
+              baseline: (candidateFiles, candidateBlockers, tests) =>
+                reportedBaselineOf(provider, {
+                  label: version.id,
+                  files: candidateFiles,
+                  acceptanceTests: tests,
+                  blockers: candidateBlockers,
+                  signal: input.signal,
+                  log: input.log,
+                  now,
+                  timing: input.timing,
+                }),
+              signal: input.signal,
+              log: input.log,
+              step: input.step,
+              timing: input.timing,
+            });
+            hidden = calibrated.written;
+            calibration = calibrated.calibration;
+          }
           if (hidden !== null) {
             files = hidden.files;
             blockers.splice(0, blockers.length, ...hidden.blockers);
@@ -1488,7 +1531,11 @@ export function createSandboxBuildAdapter(
               ? {}
               : {
                   acceptanceTests: hidden.tests,
-                  hiddenTests: { summary: hidden.summary, usage: hidden.usage },
+                  hiddenTests: {
+                    summary: hidden.summary,
+                    usage: hidden.usage,
+                    ...(calibration === null ? {} : { calibration }),
+                  },
                 }),
             ...(pseudonyms === null
               ? {}
