@@ -18,13 +18,18 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import type { Context, Hono } from "hono";
-import { MCP_DEFAULT_SCOPES, OFFLINE_ACCESS_SCOPE } from "sandbox-factory";
+import { OFFLINE_ACCESS_SCOPE } from "sandbox-factory";
 
 import { bearerApiToken } from "../api-tokens/secret.js";
 import type { AuthVariables } from "../http-context.js";
 import { resourceMetadataUrl } from "../oauth/discovery.js";
 import { bearerOAuthToken } from "../oauth/provider.js";
-import { registerTools, TOOLSETS, type ApiCall } from "./tools.js";
+import {
+  registerTools,
+  toolsetScopes,
+  TOOLSETS,
+  type ApiCall,
+} from "./tools.js";
 
 type Env = { Variables: AuthVariables };
 
@@ -39,8 +44,10 @@ export const MCP_INSTRUCTIONS =
   "app: approving a price or a slice, publishing a sandbox and confirming " +
   "decisions are a person's act there.";
 
-/** What MCP clients are told to ask for when they sign in. */
-const CHALLENGE_SCOPE = [...MCP_DEFAULT_SCOPES, OFFLINE_ACCESS_SCOPE].join(" ");
+/** What an MCP client signing in at `path` is told to ask for. */
+export function challengeScope(path: string): string {
+  return [...toolsetScopes(path), OFFLINE_ACCESS_SCOPE].join(" ");
+}
 
 /** Headers an in-process call carries over from the caller's request. */
 const FORWARDED = ["authorization", "x-origin-verify"] as const;
@@ -51,12 +58,13 @@ export function mountMcpRoutes(
 ): void {
   for (const [path, toolset] of Object.entries(TOOLSETS)) {
     const metadata = resourceMetadataUrl(baseUrl, path);
+    const scope = challengeScope(path);
 
     /** RFC 6750 and RFC 9728: where to sign in, and why this failed. */
     const challenge = (c: Context<Env>, invalid: boolean) => {
       c.header(
         "WWW-Authenticate",
-        `Bearer resource_metadata="${metadata}", scope="${CHALLENGE_SCOPE}"` +
+        `Bearer resource_metadata="${metadata}", scope="${scope}"` +
           (invalid ? ', error="invalid_token"' : ""),
       );
       return c.json(

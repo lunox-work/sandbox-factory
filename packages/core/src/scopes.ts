@@ -44,8 +44,8 @@ export const OAUTH_REFRESH_TOKEN_PREFIX = "lnxrt_";
 export const OFFLINE_ACCESS_SCOPE = "offline_access";
 
 /**
- * What an MCP client is offered by default: the read tools need nothing
- * more. A person may grant more on the consent page if the client asks.
+ * The scope every MCP endpoint asks for; each also asks for the scopes its
+ * own write tools need (`toolsetScopes` in the API).
  */
 export const MCP_DEFAULT_SCOPES = [
   "workspace:read",
@@ -81,3 +81,96 @@ export function isCliClient(value: string): value is CliClient {
 export function cliScopes(client: CliClient): readonly ApiScope[] {
   return CLI_CLIENTS[client];
 }
+
+/**
+ * The tools each MCP endpoint serves, by path: `/mcp` serves every tool,
+ * and each plugin's endpoint what its skill's hosted mode names. The API
+ * registers them (`apps/api/src/mcp/tools.ts`, which checks every name is a
+ * tool) and the web app's MCP page lists them.
+ */
+export const MCP_TOOLSETS = {
+  "/mcp": [
+    "list_workspaces",
+    "get_usage",
+    "list_bounties",
+    "get_bounty",
+    "get_proposal",
+    "get_decisions",
+    "confirm_link",
+    "list_repositories",
+    "get_snapshot",
+    "list_boards",
+    "search_issues",
+    "list_sandboxes",
+    "get_sandbox",
+    "get_run",
+    "post_bounty",
+    "import_github_issue",
+    "import_jira_issue",
+    "size_bounty",
+    "respec",
+    "plan_slice",
+    "start_sandbox",
+    "cut_slice",
+    "prepare",
+    "get_handout",
+    "submit_patch",
+    "judge",
+    "retry",
+    "get_verdict",
+    "connect_github",
+    "connect_jira",
+  ],
+  "/mcp/duediligence": [
+    "list_workspaces",
+    "list_bounties",
+    "get_bounty",
+    "get_proposal",
+    "get_run",
+    "get_usage",
+    "post_bounty",
+    "import_github_issue",
+    "import_jira_issue",
+    "size_bounty",
+    "get_decisions",
+    "confirm_link",
+    "list_sandboxes",
+    "get_sandbox",
+    "start_sandbox",
+    "prepare",
+    "get_handout",
+    "judge",
+    "retry",
+    "get_verdict",
+  ],
+  // A slice is cut for a bounty with an approved proposal and built before
+  // it is handed out, so carveout reaches the bounty, its sizing and
+  // decisions, and the build, not only the slice.
+  "/mcp/carveout": [
+    "list_workspaces",
+    "get_usage",
+    "list_bounties",
+    "get_bounty",
+    "get_proposal",
+    "get_decisions",
+    "confirm_link",
+    "post_bounty",
+    "import_github_issue",
+    "size_bounty",
+    "list_repositories",
+    "get_snapshot",
+    "list_sandboxes",
+    "get_sandbox",
+    "get_run",
+    "plan_slice",
+    "start_sandbox",
+    "cut_slice",
+    "prepare",
+    "get_handout",
+    "submit_patch",
+    "retry",
+    "get_verdict",
+  ],
+} as const satisfies Readonly<Record<string, readonly string[]>>;
+
+export type McpPath = keyof typeof MCP_TOOLSETS;

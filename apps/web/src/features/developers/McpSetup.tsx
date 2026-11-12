@@ -29,7 +29,7 @@ export function McpSetup() {
         <SectionHeader
           id="developers-mcp"
           title="MCP servers"
-          description="Streamable HTTP, read tools only for now. Each tool calls one public API route as you, so the same scopes and roles apply."
+          description="Streamable HTTP. Each tool calls one public API route as you, so the same scopes and roles apply. Approving, publishing and confirming decisions stay in the web app."
         />
         <ul aria-label="MCP servers" className="divide-y rounded-lg border">
           {MCP_SERVERS.map((server) => (

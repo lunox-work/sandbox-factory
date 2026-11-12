@@ -6,59 +6,30 @@
  * stack and production's name production.
  */
 
-/**
- * The MCP endpoints, each a toolset (`TOOLSETS` in the API's
- * `mcp/tools.ts`). Restated here because apps do not import each other;
- * read tools only for now.
- */
+import { MCP_TOOLSETS } from "sandbox-factory";
+
+/** The MCP endpoints, each a toolset (`MCP_TOOLSETS` in core, as the API serves them). */
 export const MCP_SERVERS = [
   {
     path: "/mcp",
     title: "Everything",
     description:
-      "Every read tool: workspaces, bounties, proposals, repositories, boards, sandboxes, runs and usage.",
-    tools: [
-      "list_workspaces",
-      "get_usage",
-      "list_bounties",
-      "get_bounty",
-      "get_proposal",
-      "list_repositories",
-      "get_snapshot",
-      "list_boards",
-      "search_issues",
-      "list_sandboxes",
-      "get_sandbox",
-      "get_run",
-    ],
+      "Every tool: read the workspace, post and size bounties, slice, build and hand out sandboxes, submit and read verdicts, and connect GitHub or Jira.",
+    tools: MCP_TOOLSETS["/mcp"],
   },
   {
     path: "/mcp/duediligence",
     title: "duediligence",
     description:
-      "What the duediligence plugin reads: bounties, their proposals and runs, and usage.",
-    tools: [
-      "list_workspaces",
-      "list_bounties",
-      "get_bounty",
-      "get_proposal",
-      "get_run",
-      "get_usage",
-    ],
+      "What the duediligence plugin uses: bounties and their specs' decisions, sizing, building a sandbox with calibrated hidden tests, and judging an implementation against them.",
+    tools: MCP_TOOLSETS["/mcp/duediligence"],
   },
   {
     path: "/mcp/carveout",
     title: "carveout",
     description:
-      "What the carveout plugin reads: repositories, snapshots, sandboxes and runs.",
-    tools: [
-      "list_workspaces",
-      "list_repositories",
-      "get_snapshot",
-      "list_sandboxes",
-      "get_sandbox",
-      "get_run",
-    ],
+      "What the carveout plugin uses: bounties, repositories, slicing one into a sandbox, building and handing it out, and grading a contractor's patch.",
+    tools: MCP_TOOLSETS["/mcp/carveout"],
   },
 ] as const;
 

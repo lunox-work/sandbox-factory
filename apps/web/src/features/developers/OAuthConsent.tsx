@@ -5,8 +5,8 @@
  * Better Auth's authorization endpoint sends the browser here with a
  * signed query naming the client and the scopes it asked for; a signed-out
  * person first sees sign-in, which returns to this same address. The page
- * shows the client's name, the requested scopes (reading checked by
- * default, more only if the person ticks them) and the workspaces the
+ * shows the client's name, the requested scopes (all checked: an MCP
+ * endpoint asks for exactly what its tools need; the person may untick any) and the workspaces the
  * person owns or administers. Approving posts the decision to
  * `/oauth2/consent` with the chosen workspace in `x-lunox-organization`;
  * the API refuses a workspace the person cannot administer, and every
@@ -19,7 +19,6 @@ import type { MembershipDto } from "@sandbox-factory/shared";
 import { useEffect, useState } from "react";
 import {
   API_SCOPES,
-  MCP_DEFAULT_SCOPES,
   OFFLINE_ACCESS_SCOPE,
   rankAtLeast,
   type ApiScope,
@@ -69,12 +68,13 @@ export function requestedScopes(search: string): {
   };
 }
 
-/** Reading only, when asked for; otherwise everything asked for. */
+/**
+ * Everything asked for: an MCP endpoint asks for what its own tools need
+ * (`toolsetScopes` in the API), so a plugin signed in here can use the
+ * tools its skill names. The person may untick any scope before allowing.
+ */
 export function defaultScopes(api: readonly ApiScope[]): ApiScope[] {
-  const reading = api.filter((scope) =>
-    (MCP_DEFAULT_SCOPES as readonly string[]).includes(scope),
-  );
-  return reading.length > 0 ? reading : [...api];
+  return [...api];
 }
 
 interface PublicClient {
