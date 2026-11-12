@@ -21,7 +21,6 @@ import {
   generateStarterProject,
   starterProblems,
   vocabularyBlockers,
-  vocabularyLeaks,
 } from "sandbox-factory";
 import type {
   GeneratedProject,
@@ -30,6 +29,7 @@ import type {
   StarterSubmission,
 } from "sandbox-factory";
 import { compileFixture } from "carveout/extract";
+import { publicLeaks } from "./vocabulary-check.js";
 
 const PROBLEMS_MAX = 40;
 
@@ -94,7 +94,7 @@ export function checkStarter(input: {
     (blocker) => blocker.code !== "starter_invalid",
   );
   const leaks = vocabularyBlockers(
-    vocabularyLeaks(
+    publicLeaks(
       project.files.filter((file) => file.public),
       input.vocabulary,
     ),

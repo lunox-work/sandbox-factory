@@ -64,7 +64,6 @@ import {
   privateTestArgv,
   transformConfigOf,
   vocabularyBlockers,
-  vocabularyLeaks,
   workspaceVocabulary,
 } from "sandbox-factory";
 import type {
@@ -112,6 +111,8 @@ import type { WrittenPseudonyms } from "./pseudonyms.js";
 import { loadSliceRun, readIncludedSource } from "./slice-run.js";
 import type { RunTiming } from "../timing.js";
 import { together } from "../together.js";
+import { BUILD_ENGINES } from "./engines.js";
+import { publicLeaks } from "./vocabulary-check.js";
 
 export interface SandboxBuildOptions {
   /**
@@ -635,6 +636,7 @@ export async function writeBuildOutputs(input: {
     ...input.bindings,
     toolchain: SANDBOX_TOOLCHAIN,
     toolchainDigest: sha256(canonicalJson(SANDBOX_TOOLCHAIN)),
+    engines: BUILD_ENGINES,
     evaluator: input.evaluator,
     files: records,
     importRewrites: input.importRewrites,
@@ -1220,7 +1222,7 @@ export function createSandboxBuildAdapter(
         ...privatePackageNames(manifest.requiredBuildInputs.packages),
       ]);
       const leaksOf = (generated: readonly GeneratedFile[]) =>
-        vocabularyLeaks(
+        publicLeaks(
           generated.filter((file) => file.public),
           vocabulary,
         );

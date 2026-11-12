@@ -570,7 +570,8 @@ grading state loaded beside task code.
 **Merge-back (gate 3).** Grading a version sliced from a repository runs on
 its snapshot (`snapshotFits`), and a pass is carried back to the
 repository's names at the sliced commit by `reverseSubmission`
-(`packages/core/src/sandbox/carry.ts`): kept lines are the original's byte
+(`packages/core/src/sandbox/carry.ts`, carveout's; under the renaming the
+build manifest's `engines.carveout` names, `ALIASES_V1` without it): kept lines are the original's byte
 for byte, added lines are renamed and refused unless they map back, and an
 added import of the harness is refused. The result is the grading run's
 `private/merge-patch.json`; one that cannot be carried is the verdict

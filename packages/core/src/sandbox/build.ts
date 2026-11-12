@@ -250,6 +250,13 @@ export interface SandboxBuildManifest {
   readonly approvedTaskSha256: string;
   readonly toolchain: Toolchain;
   readonly toolchainDigest: string;
+  /**
+   * The engines the build ran on: the carveout release that renamed it,
+   * checked its vocabulary and extracted its stubs. Absent from a build made
+   * before carveout 0.3.0, whose names carry back under the platform's
+   * renaming of then (`ALIASES_V1`); present, under the release's.
+   */
+  readonly engines?: { readonly carveout: string };
   readonly evaluator: EvaluationEnvironment | null;
   readonly files: readonly BuildFileRecord[];
   readonly importRewrites: readonly ImportRewrite[];

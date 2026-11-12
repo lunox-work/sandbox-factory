@@ -15,7 +15,6 @@
  * platform's before it, carveout's NOTICE.md lists it.
  */
 
-import { createRequire } from "node:module";
 import { CutError, analyse } from "carveout/api";
 import type { Analysis, PackageTypesFetcher } from "carveout/api";
 import {
@@ -28,14 +27,8 @@ import {
   type SliceParams,
 } from "sandbox-factory";
 import { AnalysisError } from "../../errors.js";
+import { CARVEOUT_VERSION } from "../engines.js";
 import { sha256 } from "carveout/extract";
-
-/** The carveout release installed, as package.json pins it. */
-export const CARVEOUT_VERSION = (
-  createRequire(import.meta.url)("carveout/package.json") as {
-    version: string;
-  }
-).version;
 
 /** The manifest's `walkEngine` for every slice carveout walks. */
 export const CARVEOUT_WALK_ENGINE = `carveout@${CARVEOUT_VERSION}`;

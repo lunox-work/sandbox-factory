@@ -53,6 +53,7 @@ import { stubModules } from "../src/tools/slice-run.js";
 import { sha256 } from "carveout/extract";
 import type { ToolInputs, ToolRunInput } from "../src/tools/adapter.js";
 import type { contextRun } from "./context-fixtures.js";
+import { CARVEOUT_VERSION } from "../src/tools/engines.js";
 import { fixture, sha, slice, sliceRun, stamp } from "./fixture-slice.js";
 import type { SliceOutput } from "./fixture-slice.js";
 import { timingRecorder } from "../src/timing.js";
@@ -517,6 +518,8 @@ test("a build produces a standalone project, hidden tests apart, a verified base
   assert.equal(manifest.evaluator?.provider, "fake");
   assert.equal(manifest.evaluator?.templateDigest, "sha256:template");
   assert.match(manifest.toolchainDigest, /^[a-f0-9]{64}$/);
+  // The carveout release that renamed it, which its names carry back under.
+  assert.deepEqual(manifest.engines, { carveout: CARVEOUT_VERSION });
   assert.deepEqual(manifest.importRewrites, [
     { file: "src/app.ts", from: "@lib/alias", to: "../lib/alias.js" },
   ]);

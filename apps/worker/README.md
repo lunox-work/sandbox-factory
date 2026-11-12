@@ -208,7 +208,8 @@ Before anything runs, carveout's `gainedIntegrity` refuses a file that
 gains a way to pass without the code. On a version sliced from a
 repository the run is on its snapshot, and a pass is carried back
 (`reverseSubmission`) to `private/merge-patch.json`, or refused when it
-cannot be.
+cannot be, under the renaming the build was made with (`src/tools/engines.ts`:
+carveout's when its manifest has `engines.carveout`, else `ALIASES_V1`).
 
 ### Slice
 
@@ -301,7 +302,9 @@ when a lockfile resolves it from the public registry and no configuration
 sends its scope elsewhere; any other is mocked by default, and one from
 another registry can never be approved. Every build scans the public files
 for the workspace's names (`packages/core/src/sandbox/vocabulary.ts`; an
-organization's distinctive words too, and the scope, or multi-word name, of each workspace or private-registry package the slice imports) and blocks `vocabulary_leaked`, and for
+organization's distinctive words too, and the scope, or multi-word name, of each workspace or private-registry package the slice imports) and blocks `vocabulary_leaked`
+on what carveout's scan or the platform's before it finds
+(`src/tools/vocabulary-check.ts`), and for
 credentials (`packages/core/src/sandbox/secrets.ts`) and blocks `secret_found`
 by file, line and rule, never the value. Starters are scanned the same way.
 `.gitignore` names only public files' output.
@@ -365,8 +368,9 @@ fails every build `evaluation_failed` before anything is generated.
 
 Outputs: `build-manifest.json` (every generated file hashed and classified
 public or private; harness, test and project hashes; the toolchain and its
-digest; the evaluator environment; import rewrites, renames, dependencies,
-blockers and the baseline report), `baseline.json`, `project/<path>` for
+digest; `engines.carveout`, the release that renamed it; the evaluator
+environment; import rewrites, renames, dependencies, blockers and the
+baseline report), `baseline.json`, `project/<path>` for
 every public file including the lockfile, `private/<path>` for hidden
 tests, and `private/pseudonym.lunox` (kind `pseudonyms`), the alias rules
 the public files were renamed by; the private sandbox is `project/` read
