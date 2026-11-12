@@ -32,7 +32,8 @@ Docker or dev scripts. It preserves the setup and testing constraints.
 
 - Apps never import each other; shared logic belongs in packages.
   `npm run lint:deps` enforces the import rules in this section.
-- `packages/core` owns domain rules and has zero dependencies.
+- `packages/core` owns domain rules. Its one dependency is carveout's pure
+  `carveout/pseudonyms` entry (no `typescript`, no `node:*`), pinned exactly.
 - `packages/client` uses `fetch` only: no `node:*`, `vscode` or `@types/node`.
   Keep its `types: []`. Only `apps/extension` may import `vscode`.
 - Auth table constants stay singular (`user`), column properties camelCase
@@ -75,7 +76,7 @@ Docker or dev scripts. It preserves the setup and testing constraints.
   `make relink` is the manual repair. Never use `down -v` for dependency repair:
   it deletes database and object-storage volumes.
 - Dependabot handles routine dependency bumps. Explain any added dependency
-  and its workspace in the PR; keep core dependency-free.
+  and its workspace in the PR; keep core free of any other dependency.
 - Keep secrets out of files committed to git and out of output. When editing
   `.env.example`, align `.env.development` and `.env.production` in the same task:
   matching line counts, key positions, comments, headers and blank lines.

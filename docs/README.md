@@ -64,7 +64,8 @@ product proposals and historical explainers are optional design context.
 
 ## Workspaces
 
-Apps use packages; apps never import each other. Core has no dependencies.
+Apps use packages; apps never import each other. Core depends only on
+carveout's pure `carveout/pseudonyms` entry.
 The full import rules are in [architecture](./architecture.md#dependency-direction).
 
 | Directory                | Workspace name              | Responsibility                                                                      |

@@ -22,10 +22,14 @@ module.exports = {
   forbidden: [
     {
       name: "core-has-no-external-dependencies",
-      comment: "Domain code may import other core source files only.",
+      comment:
+        "Domain code may import other core source files only, and carveout's pure pseudonyms entry (no typescript, no node: module; carveout's test/pseudonyms-entry.test.ts holds it to that).",
       severity: "error",
       from: { path: "^packages/core/src/" },
-      to: { pathNot: "^packages/core/src/" },
+      to: {
+        pathNot:
+          "^packages/core/src/|^node_modules/carveout/dist/src/pseudonyms\\.(d\\.ts|js)$",
+      },
     },
     {
       name: "packages-do-not-import-apps",

@@ -35,8 +35,10 @@ The one accepted runtime cycle (auth and organization schema modules) is in
 
 Three rules are load-bearing:
 
-- **`packages/core` has zero dependencies.** It is bundled into a browser, a
-  Node server and an extension host, and is the one publishable package.
+- **`packages/core` depends on `carveout/pseudonyms` alone**, carveout's pure
+  entry (no `typescript`, no `node:*`; `.dependency-cruiser.cjs` allows
+  nothing else). It is bundled into a browser, a Node server and an extension
+  host, and is the one publishable package.
 - **`packages/client` is platform-neutral**: `fetch` only. Its tsconfig sets
   `types: []`, so a `node:*` import fails to compile. `lib` includes `DOM`
   only for the web-standard fetch types.

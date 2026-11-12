@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -33,7 +34,13 @@ import {
   toolVersionOf,
   validateAliasRules,
   isPublicationLive,
+  MOCK_RUNTIME_PATH,
+  MOCK_RUNTIME_TYPES,
 } from "../src/index.js";
+import {
+  MOCK_RUNTIME,
+  MOCK_RUNTIME_TYPES as CARVEOUT_MOCK_RUNTIME_TYPES,
+} from "carveout/pseudonyms";
 import type {
   AliasRule,
   ApprovedTaskSnapshot,
@@ -1973,4 +1980,25 @@ test("a credential in any public file blocks the project, by file and line", () 
     ],
   );
   assert.equal(JSON.stringify(leaked.blockers).includes(key), false);
+});
+
+test("the mock runtime and its types are carveout's, byte for byte the text the platform held before them", () => {
+  const sha = (text: string) => createHash("sha256").update(text).digest("hex");
+  // project.ts's MOCK_RUNTIME and MOCK_RUNTIME_TYPES until carveout 0.3.0.
+  assert.equal(
+    sha(MOCK_RUNTIME),
+    "b1ad2ef9689472cf72a84ad16237f3aa69902671dbcb0ad3167b374a4e67ffbd",
+  );
+  assert.equal(
+    sha(MOCK_RUNTIME_TYPES),
+    "57d44baf2fe9de25df8432a3c89234526356b777beb5f0ca4fb546d930218d99",
+  );
+  assert.equal(MOCK_RUNTIME_TYPES, CARVEOUT_MOCK_RUNTIME_TYPES);
+  const { files } = project();
+  const text = (path: string) => files.find((file) => file.path === path)?.text;
+  assert.equal(text(MOCK_RUNTIME_PATH), MOCK_RUNTIME);
+  assert.equal(
+    text(MOCK_RUNTIME_PATH.replace(/\.js$/, ".d.ts")),
+    MOCK_RUNTIME_TYPES,
+  );
 });
