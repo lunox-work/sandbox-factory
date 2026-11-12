@@ -248,6 +248,11 @@ phase 6.
 
 ## 6. Decisions to make first (phase 0)
 
+Decided 2026-11-12: (1) the platform's key, metered per workspace against
+a monthly token quota on the Usage page, hosted runs refused over it;
+(2) E2B; (3) workspace tokens only; (4) `/api/v1` public as is; (5) owners
+and admins only. Phase 7 stops at merge-back until payouts are decided.
+
 1. **Who pays for hosted model sessions.** Locally duediligence runs on the
    person's `claude` login (about $1–7 a spec); hosted it is the platform's
    key. A per-workspace quota, or a workspace's own key stored like the
