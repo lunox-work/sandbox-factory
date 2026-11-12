@@ -5,7 +5,7 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { test } from "node:test";
+import { beforeEach, test } from "node:test";
 import ts from "typescript-compiler";
 import type { StoredAnalysisRun, StoredArtifact } from "@sandbox-factory/db";
 import type { SliceManifest, BoundaryContract } from "sandbox-factory";
@@ -33,6 +33,9 @@ import {
   stubPathFor,
 } from "../src/tools/slice/typescript.js";
 import type { ToolInputs, ToolRunInput } from "../src/tools/adapter.js";
+import { goldenRun, goldenScenario } from "./slice-golden.js";
+
+beforeEach((t) => goldenScenario(t.name));
 
 const fixture = fileURLToPath(
   new URL("../../fixtures/slice/", import.meta.url),
@@ -245,9 +248,10 @@ async function runSlice(
     signal: new AbortController().signal,
     log: (line) => messages.push(line),
   };
-  const files = await createSliceAdapter(
+  const files = await goldenRun(
     options.walker === undefined ? {} : { walker: options.walker },
-  ).run(input);
+    input,
+  );
   const read = async (path: string) => readFile(join(outDir, path), "utf8");
   const manifest = JSON.parse(
     await read("slice-manifest.json"),
@@ -831,26 +835,29 @@ test("a public package's fetched types reach the stubs and the check, and a fail
       const out = await scratch("typed");
       try {
         const messages: string[] = [];
-        await createSliceAdapter({
-          packageTypes: async (requests) => {
-            asked.push(requests);
-            return fetched;
+        await goldenRun(
+          {
+            packageTypes: async (requests) => {
+              asked.push(requests);
+              return fetched;
+            },
           },
-        }).run({
-          sourceDir: source,
-          outDir: out,
-          params: {
-            deadlineMinutes: 30,
-            graphRunId: graphRun.id,
-            entryPoints: ["apps/svc/src/main.ts"],
-            budget: { maxFiles: 40, maxDepth: 3 },
-            includeInferred: false,
+          {
+            sourceDir: source,
+            outDir: out,
+            params: {
+              deadlineMinutes: 30,
+              graphRunId: graphRun.id,
+              entryPoints: ["apps/svc/src/main.ts"],
+              budget: { maxFiles: 40, maxDepth: 3 },
+              includeInferred: false,
+            },
+            run: { snapshotId: "rsn_1", commitSha: "a".repeat(40) },
+            inputs: inputsFor(graph),
+            signal: new AbortController().signal,
+            log: (line) => messages.push(line),
           },
-          run: { snapshotId: "rsn_1", commitSha: "a".repeat(40) },
-          inputs: inputsFor(graph),
-          signal: new AbortController().signal,
-          log: (line) => messages.push(line),
-        });
+        );
         const read = (path: string) => readFile(join(out, path), "utf8");
         return {
           messages,

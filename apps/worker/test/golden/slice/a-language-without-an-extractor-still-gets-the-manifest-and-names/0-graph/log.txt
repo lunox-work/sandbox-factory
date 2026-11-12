@@ -1,0 +1,3 @@
+Slice started.
+Slice reached 1 files with 1 outbound and 0 inbound cuts.
+Slice completed as diagnostic output (names-only, 2 blockers).

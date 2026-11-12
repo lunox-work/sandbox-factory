@@ -1,0 +1,4 @@
+Slice started.
+Slice reached 1 files with 1 outbound and 0 inbound cuts.
+Fixture compiled with stubs in place.
+Slice completed with full declaration coverage.

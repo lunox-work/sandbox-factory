@@ -1,0 +1,6 @@
+Slice started.
+Slice reached 1 files with 0 outbound and 0 inbound cuts.
+Package types could not be fetched (offline); packages stay untyped.
+Fixture compiled with stubs in place.
+2 errors the source has too with its packages untyped were not counted.
+Slice completed with full declaration coverage.

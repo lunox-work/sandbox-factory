@@ -1,0 +1,4 @@
+Slice started.
+Slice reached 2 files with 2 outbound and 0 inbound cuts.
+Fixture compiled with stubs in place.
+Slice completed as diagnostic output (full, 1 blockers).
