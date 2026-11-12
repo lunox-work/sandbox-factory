@@ -71,7 +71,11 @@ import { textOf } from "../object-text.js";
 import { hiddenSha256 } from "duediligence/api";
 import { createHash } from "node:crypto";
 import { submittedFilesText } from "sandbox-factory";
-import type { StoredSubmission } from "@sandbox-factory/db";
+import type {
+  StoredSubmission,
+  StoredSubmissionMerge,
+} from "@sandbox-factory/db";
+import { GithubAuthError } from "@sandbox-factory/github";
 
 const sandboxDto = ({ organizationId: _owner, ...dto }: StoredSandbox) => dto;
 const sourceDto = (source: StoredVersionSource) => ({
@@ -976,7 +980,10 @@ export function mountSandboxRoutes(
     submission already made. Owners and admins for now; contributors with
     the marketplace.
   */
-  const submissionOf = (stored: StoredSubmission): SubmissionDto => ({
+  const submissionOf = (
+    stored: StoredSubmission,
+    merge: StoredSubmissionMerge | null = null,
+  ): SubmissionDto => ({
     id: stored.id,
     sandboxVersionId: stored.sandboxVersionId,
     status: stored.status,
@@ -987,6 +994,15 @@ export function mountSandboxRoutes(
     refused: [...(stored.result?.refused ?? [])],
     runId: stored.runId,
     retryOf: stored.retryOf,
+    merge:
+      merge === null
+        ? null
+        : {
+            pullRequestNumber: merge.pullRequestNumber,
+            pullRequestUrl: merge.pullRequestUrl,
+            branch: merge.branch,
+            createdAt: merge.createdAt,
+          },
     createdAt: stored.createdAt,
     updatedAt: stored.updatedAt,
   });
@@ -1045,18 +1061,28 @@ export function mountSandboxRoutes(
     made: { submission: StoredSubmission; created: boolean },
   ) => {
     if (made.created) {
-      const queued = await options.runs.enqueue(owner, null, {
-        tool: "submission_grade",
-        params: {
-          deadlineMinutes: 60,
-          grader: "submission",
-          submissionId: made.submission.id,
-          sandboxVersionId: made.submission.sandboxVersionId,
-          patchSha256: made.submission.patchSha256,
+      // A version sliced from a repository is graded on its snapshot, so
+      // a pass can be carried back to the commit it was cut at.
+      const version = await options.sandboxes.getVersion(
+        owner,
+        made.submission.sandboxVersionId,
+      );
+      const queued = await options.runs.enqueue(
+        owner,
+        version?.source.sourceSnapshotId ?? null,
+        {
+          tool: "submission_grade",
+          params: {
+            deadlineMinutes: 60,
+            grader: "submission",
+            submissionId: made.submission.id,
+            sandboxVersionId: made.submission.sandboxVersionId,
+            patchSha256: made.submission.patchSha256,
+          },
+          requestedBy: c.get("user").id,
+          maxActive: options.maxActive ?? 3,
         },
-        requestedBy: c.get("user").id,
-        maxActive: options.maxActive ?? 3,
-      });
+      );
       if (!queued.ok)
         return c.json(
           {
@@ -1139,8 +1165,13 @@ export function mountSandboxRoutes(
     );
     if (found === undefined || found === null)
       return c.json({ error: "Not found." }, 404);
+    const merge =
+      (await options.merges?.get(c.get("member").organizationId, found.id)) ??
+      null;
     return c.json(
-      submissionResponseSchema.parse({ submission: submissionOf(found) }),
+      submissionResponseSchema.parse({
+        submission: submissionOf(found, merge),
+      }),
     );
   });
   app.get(`${base}/versions/:vid/submissions`, async (c) => {
@@ -1149,13 +1180,155 @@ export function mountSandboxRoutes(
         { error: "Only owners and admins can read submissions." },
         403,
       );
+    const owner = c.get("member").organizationId;
     const listed =
-      (await options.submissions?.list(
-        c.get("member").organizationId,
-        c.req.param("vid"),
-      )) ?? [];
+      (await options.submissions?.list(owner, c.req.param("vid"))) ?? [];
+    const merges = new Map(
+      (
+        (await options.merges?.list(
+          owner,
+          listed.map((item) => item.id),
+        )) ?? []
+      ).map((merge) => [merge.submissionId, merge]),
+    );
     return c.json(
-      submissionListSchema.parse({ submissions: listed.map(submissionOf) }),
+      submissionListSchema.parse({
+        submissions: listed.map((item) =>
+          submissionOf(item, merges.get(item.id) ?? null),
+        ),
+      }),
+    );
+  });
+
+  /*
+    Merge-back (gate 3): a passing submission, carried back to the
+    repository's names by its grading run (`private/merge-patch.json`),
+    becomes a pull request on the commit the version was cut at. A
+    person's act in the web app: no token reaches it. One per submission.
+  */
+  const MERGE_REFUSALS = {
+    not_passed: "Only a passing submission is merged back.",
+    not_sliced:
+      "Only a submission on a version sliced from a repository is merged back.",
+    repository_unavailable:
+      "The repository is gone, or its GitHub installation is not healthy.",
+    merge_forbidden:
+      "The GitHub App cannot write to this repository. Accept its new permissions (contents and pull requests: write) on the installation.",
+  } as const;
+  app.post(`${base}/submissions/:sid/merge`, async (c) => {
+    const refuse = (code: keyof typeof MERGE_REFUSALS) =>
+      c.json({ error: MERGE_REFUSALS[code], code }, 409);
+    if (c.get("principal").via !== "session")
+      return c.json(
+        {
+          error: "A merge-back is opened from a signed-in session.",
+          code: "session_required",
+        },
+        403,
+      );
+    if (!isAtLeastAdmin(c.get("member").role))
+      return c.json(
+        { error: "Only owners and admins can open a merge-back." },
+        403,
+      );
+    if (
+      options.submissions === undefined ||
+      options.merges === undefined ||
+      options.mergeBack === undefined
+    )
+      return c.json(
+        {
+          error: "Merge-back is not available on this deployment.",
+          code: "merge_unavailable",
+        },
+        503,
+      );
+    const owner = c.get("member").organizationId;
+    const found = await options.submissions.get(owner, c.req.param("sid"));
+    if (found === null) return c.json({ error: "Not found." }, 404);
+    if (found.status !== "passed" || found.result?.verdict !== "passed")
+      return refuse("not_passed");
+    const existing = await options.merges.get(owner, found.id);
+    if (existing !== null)
+      return c.json(
+        submissionResponseSchema.parse({
+          submission: submissionOf(found, existing),
+        }),
+      );
+    const artifact =
+      found.runId === null
+        ? undefined
+        : (await options.artifacts.list(owner, found.runId)).find(
+            (file) => file.path === "private/merge-patch.json",
+          );
+    const stored = await options.sandboxes.getVersion(
+      owner,
+      found.sandboxVersionId,
+    );
+    const sandbox =
+      stored === null
+        ? null
+        : await options.sandboxes.get(owner, stored.version.sandboxId);
+    const repoId = sandbox?.sourceRepoId ?? null;
+    if (artifact === undefined || stored === null || repoId === null)
+      return refuse("not_sliced");
+    const bytes = await options.objects.get(artifact.objectKey);
+    if (bytes === undefined)
+      return c.json(
+        {
+          error: "The carried-back patch could not be read.",
+          code: "artifacts_unavailable",
+        },
+        502,
+      );
+    const patch = JSON.parse(Buffer.from(bytes).toString("utf8")) as {
+      commitSha: string;
+      files: { path: string; text: string }[];
+    };
+    const target = await options.mergeBack.target(owner, repoId);
+    if (target === null) return refuse("repository_unavailable");
+    const title = stored.source.approvedTask.title;
+    const branch = `lunox/${found.id}`;
+    let opened;
+    try {
+      opened = await target.writer.open({
+        fullName: target.fullName,
+        baseCommit: patch.commitSha,
+        base: target.defaultBranch,
+        branch,
+        title,
+        commitMessage: title,
+        body: [
+          `Carried back from sandbox submission \`${found.id}\`, which passed the version's public tests (${found.result.public.passed}/${found.result.public.total}) and hidden tests (${found.result.hidden.passed}/${found.result.hidden.total}).`,
+          "",
+          `Based on ${patch.commitSha}; GitHub shows whether it still merges onto ${target.defaultBranch}. This repository's own CI is the last gate.`,
+        ].join("\n"),
+        files: patch.files,
+      });
+    } catch (error) {
+      if (error instanceof GithubAuthError) return refuse("merge_forbidden");
+      return c.json(
+        {
+          error: "GitHub did not open the pull request.",
+          code: "github_failed",
+        },
+        502,
+      );
+    }
+    const merge = await options.merges.record(owner, {
+      submissionId: found.id,
+      repositoryFullName: target.fullName,
+      branch,
+      commitSha: opened.commitSha,
+      pullRequestNumber: opened.number,
+      pullRequestUrl: opened.url,
+      openedBy: c.get("user").id,
+    });
+    return c.json(
+      submissionResponseSchema.parse({
+        submission: submissionOf(found, merge),
+      }),
+      201,
     );
   });
 

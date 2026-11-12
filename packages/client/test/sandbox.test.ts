@@ -330,3 +330,58 @@ test("approving a slice posts the run and request shown, and reads the slice bac
   assert.equal(calls[0]?.init?.method, "POST");
   assert.deepEqual(JSON.parse(String(calls[0]?.init?.body)), request);
 });
+
+test("submissions: listed, read, submitted, retried and merged back, each at its route", async () => {
+  const submission = {
+    id: "sbm_1",
+    sandboxVersionId: "sbv_1",
+    status: "passed",
+    verdict: "passed",
+    public: { passed: 1, total: 1 },
+    hidden: { passed: 2, total: 2 },
+    failedScenarios: [],
+    refused: [],
+    runId: "arn_grade",
+    retryOf: null,
+    merge: null,
+    createdAt: stamp,
+    updatedAt: stamp,
+  };
+  const calls: { url: string; init?: RequestInit }[] = [];
+  const fetch = (async (input: unknown, init?: RequestInit) => {
+    calls.push({ url: String(input), init });
+    const body =
+      String(input).endsWith("/submissions") && init?.method === undefined
+        ? { submissions: [submission] }
+        : { submission };
+    return new Response(JSON.stringify(body), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+  }) as typeof globalThis.fetch;
+  const client = new SandboxClient({
+    baseUrl: "https://api.test/",
+    fetch,
+    getToken: () => "token",
+  });
+  const files = [{ path: "src/a.ts", text: "a" }];
+  assert.deepEqual(await client.sandboxSubmissions("org 1", "sbv 1"), [
+    submission,
+  ]);
+  assert.equal((await client.sandboxSubmission("org 1", "sbm 1")).id, "sbm_1");
+  await client.submitToSandbox("org 1", "sbv 1", files);
+  await client.retrySubmission("org 1", "sbm 1", files);
+  await client.mergeSubmission("org 1", "sbm 1");
+  const base = "https://api.test/api/v1/orgs/org%201/sandboxes";
+  assert.deepEqual(
+    calls.map((call) => [call.init?.method ?? "GET", call.url]),
+    [
+      ["GET", `${base}/versions/sbv%201/submissions`],
+      ["GET", `${base}/submissions/sbm%201`],
+      ["POST", `${base}/versions/sbv%201/submissions`],
+      ["POST", `${base}/submissions/sbm%201/retry`],
+      ["POST", `${base}/submissions/sbm%201/merge`],
+    ],
+  );
+  assert.equal(calls[2]?.init?.body, JSON.stringify({ files }));
+});

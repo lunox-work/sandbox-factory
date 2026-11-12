@@ -13,7 +13,11 @@
  * no public repository is pushed yet.
  */
 
-import type { SubmissionStore } from "@sandbox-factory/db";
+import type {
+  SubmissionMergeStore,
+  SubmissionStore,
+} from "@sandbox-factory/db";
+import type { PullRequestWriter } from "@sandbox-factory/github";
 import type {
   AnalysisRunStore,
   ArtifactStore,
@@ -40,6 +44,23 @@ export interface SandboxRouteOptions {
     SubmissionStore,
     "create" | "get" | "list" | "retry"
   >;
+  /** Merge-backs; absent with `mergeBack`, no pull request is opened. */
+  readonly merges?: Pick<SubmissionMergeStore, "get" | "list" | "record">;
+  /**
+   * The repository a merge-back writes to, with a writer whose token is
+   * narrowed to it and `MERGE_BACK_PERMISSIONS`; null when it is gone or
+   * its installation is unhealthy.
+   */
+  readonly mergeBack?: {
+    target(
+      organizationId: string,
+      repoId: string,
+    ): Promise<{
+      readonly fullName: string;
+      readonly defaultBranch: string;
+      readonly writer: Pick<PullRequestWriter, "open">;
+    } | null>;
+  };
   /**
    * What a build still running has written before its baseline, served as
    * the version's files until it commits. Absent, they arrive at commit.

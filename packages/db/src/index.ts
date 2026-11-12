@@ -118,6 +118,12 @@ export type {
 } from "./workspace-settings.js";
 export { createBountySpecStore } from "./bounty-specs.js";
 export { createDecisionConfirmationStore } from "./decision-confirmations.js";
+export { createSubmissionMergeStore } from "./submission-merges.js";
+export type {
+  NewSubmissionMerge,
+  StoredSubmissionMerge,
+  SubmissionMergeStore,
+} from "./submission-merges.js";
 export type {
   DecisionConfirmationStore,
   StoredDecisionConfirmation,

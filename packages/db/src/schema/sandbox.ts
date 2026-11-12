@@ -306,4 +306,34 @@ export type SandboxSourceRow = typeof sandboxSource.$inferSelect;
 export type SandboxVersionRow = typeof sandboxVersion.$inferSelect;
 export type SandboxVersionSourceRow = typeof sandboxVersionSource.$inferSelect;
 export type SubmissionRow = typeof submission.$inferSelect;
+
+/**
+ * Merge-back (gate 3): the pull request a passing submission was carried
+ * back to the repository as. One per submission.
+ */
+export const submissionMerge = pgTable(
+  "submission_merge",
+  {
+    id: text("id").primaryKey(),
+    organizationId: owner(),
+    submissionId: text("submission_id")
+      .notNull()
+      .references(() => submission.id, { onDelete: "cascade" }),
+    /** `owner/name` when it was opened; a renamed repository keeps its pull requests. */
+    repositoryFullName: text("repository_full_name").notNull(),
+    branch: text("branch").notNull(),
+    commitSha: text("commit_sha").notNull(),
+    pullRequestNumber: integer("pull_request_number").notNull(),
+    pullRequestUrl: text("pull_request_url").notNull(),
+    openedBy: text("opened_by").references(() => user.id, {
+      onDelete: "set null",
+    }),
+    createdAt: ts("created_at").notNull().defaultNow(),
+  },
+  (t) => [
+    unique("submission_merge_submission_unique").on(t.submissionId),
+    index("submission_merge_organization_id_idx").on(t.organizationId),
+  ],
+);
+export type SubmissionMergeRow = typeof submissionMerge.$inferSelect;
 export type NewSubmissionRow = typeof submission.$inferInsert;

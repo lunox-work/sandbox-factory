@@ -10,6 +10,7 @@ import {
 import {
   grantTokenSource,
   installationClient,
+  mergeBackWriter,
   noteGrantFailure,
   userClientFor,
 } from "../src/github/credential.js";
@@ -217,4 +218,58 @@ test("an installation client works with the default fetch wiring", () => {
   );
 
   assert.equal(client.rateLimit, undefined);
+});
+
+test("a merge-back writer's token reaches one repository, with write to contents and pull requests only", async () => {
+  const minted: unknown[] = [];
+  const tokens = installationTokens((async (
+    input: string | URL | Request,
+    init?: RequestInit,
+  ) => {
+    if (String(input).endsWith("/app/installations/9/access_tokens")) {
+      minted.push(JSON.parse(String(init?.body)) as unknown);
+      return new Response(
+        JSON.stringify({
+          token: "ghs_write",
+          expires_at: new Date(NOW + 3_600_000).toISOString(),
+        }),
+        { status: 201, headers: { "Content-Type": "application/json" } },
+      );
+    }
+    throw new Error(`unexpected ${String(input)}`);
+  }) as typeof globalThis.fetch);
+  const seen: string[] = [];
+  const writer = mergeBackWriter(tokens, "9", "42", (async (
+    _input: string | URL | Request,
+    init?: RequestInit,
+  ) => {
+    seen.push(new Headers(init?.headers).get("authorization") ?? "");
+    return new Response("{}", { status: 404 });
+  }) as typeof globalThis.fetch);
+  await assert.rejects(
+    writer.open({
+      fullName: "acme/shop",
+      baseCommit: "c0ffee",
+      base: "main",
+      branch: "lunox/sbm_1",
+      title: "t",
+      body: "b",
+      commitMessage: "t",
+      files: [],
+    }),
+  );
+  assert.deepEqual(minted, [
+    {
+      repository_ids: [42],
+      permissions: {
+        contents: "write",
+        pull_requests: "write",
+        metadata: "read",
+      },
+    },
+  ]);
+  assert.deepEqual(seen, ["Bearer ghs_write"]);
+  assert.throws(() => mergeBackWriter(tokens, "9", "acme/shop"), /numeric/);
+  // Constructed without an injected fetch, as the server does.
+  assert.ok(mergeBackWriter(tokens, "9", "42"));
 });

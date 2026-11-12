@@ -42,6 +42,8 @@ import {
   sandboxVersionResponseSchema,
   sliceVersionResponseSchema,
   startSandboxResponseSchema,
+  submissionListSchema,
+  submissionResponseSchema,
 } from "@sandbox-factory/shared";
 import type {
   ApproveSliceInput,
@@ -478,6 +480,70 @@ export class SandboxClient extends GithubAnalysisClient {
         { signal },
       ),
     );
+  }
+  /** A version's submissions and their verdicts, newest first. */
+  async sandboxSubmissions(
+    owner: string,
+    versionId: string,
+    signal?: AbortSignal,
+  ) {
+    return submissionListSchema.parse(
+      await this.request(
+        `${this.#sandboxes(owner)}/versions/${encodeURIComponent(versionId)}/submissions`,
+        { signal },
+      ),
+    ).submissions;
+  }
+  /** One submission's verdict: counts and failing scenario keys only. */
+  async sandboxSubmission(
+    owner: string,
+    submissionId: string,
+    signal?: AbortSignal,
+  ) {
+    return submissionResponseSchema.parse(
+      await this.request(
+        `${this.#sandboxes(owner)}/submissions/${encodeURIComponent(submissionId)}`,
+        { signal },
+      ),
+    ).submission;
+  }
+  /** Submits files against a published version, to be graded. */
+  async submitToSandbox(
+    owner: string,
+    versionId: string,
+    files: readonly { path: string; text: string }[],
+  ) {
+    return submissionResponseSchema.parse(
+      await this.request(
+        `${this.#sandboxes(owner)}/versions/${encodeURIComponent(versionId)}/submissions`,
+        { method: "POST", body: JSON.stringify({ files }) },
+      ),
+    ).submission;
+  }
+  /** A failed submission's one retry, with new files. */
+  async retrySubmission(
+    owner: string,
+    submissionId: string,
+    files: readonly { path: string; text: string }[],
+  ) {
+    return submissionResponseSchema.parse(
+      await this.request(
+        `${this.#sandboxes(owner)}/submissions/${encodeURIComponent(submissionId)}/retry`,
+        { method: "POST", body: JSON.stringify({ files }) },
+      ),
+    ).submission;
+  }
+  /**
+   * Merges a passing submission back: a pull request on the repository it
+   * was sliced from. A signed-in session's act; a token is refused.
+   */
+  async mergeSubmission(owner: string, submissionId: string) {
+    return submissionResponseSchema.parse(
+      await this.request(
+        `${this.#sandboxes(owner)}/submissions/${encodeURIComponent(submissionId)}/merge`,
+        { method: "POST" },
+      ),
+    ).submission;
   }
   /** What replaying the version would use, or why it cannot be replayed. */
   async sandboxReplay(owner: string, versionId: string, signal?: AbortSignal) {

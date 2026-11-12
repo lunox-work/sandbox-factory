@@ -38,6 +38,7 @@ export const ID_PREFIXES = [
   "bpf",
   /** A person's confirmation of a spec revision's decisions. */
   "dcf",
+  "smg",
   /** One durable Jira write intent. */
   "bwo",
   /** GitHub: connection (an installation), a person's grant, a repository. */
