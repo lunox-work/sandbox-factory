@@ -440,6 +440,25 @@ export const sandboxFileDtoSchema = z.strictObject({
  * to private storage. `run` is null before a build was queued, and `files`
  * is empty until the run commits.
  */
+/**
+ * `GET /versions/:vid/handout`: what a developer or an agent is given of a
+ * built version, and nothing of its hidden tests but how many there are and
+ * the commitment hash over them (duediligence's `hiddenSha256`), so a
+ * graded party can check the suite was fixed before they submitted.
+ */
+export const sandboxHandoutSchema = z.object({
+  versionId: z.string(),
+  run: z
+    .object({ id: z.string(), status: z.enum(ANALYSIS_STATUSES) })
+    .nullable(),
+  /** The public project's files, at their paths in the project. */
+  files: z.array(sandboxFileDtoSchema),
+  hiddenTests: z.number().int().nonnegative(),
+  /** Null until a build has committed hidden tests. */
+  hiddenSha256: z.string().length(64).nullable(),
+});
+export type SandboxHandout = z.infer<typeof sandboxHandoutSchema>;
+
 export const sandboxFileListSchema = z.object({
   run: z
     .object({ id: z.string(), status: z.enum(ANALYSIS_STATUSES) })

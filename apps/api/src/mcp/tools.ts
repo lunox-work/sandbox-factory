@@ -19,7 +19,7 @@ import { randomUUID } from "node:crypto";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { respecRequestSchema } from "@sandbox-factory/shared";
-import { BOUNTY_LIMITS } from "sandbox-factory";
+import { BOUNTY_LIMITS, PRICED_BOUNTY_COMPLEXITIES } from "sandbox-factory";
 import { z } from "zod";
 
 /** What a call sends besides the caller's credential; a GET by default. */
@@ -458,6 +458,86 @@ const TOOLS = [
     }),
   }),
   tool({
+    name: "plan_slice",
+    description:
+      "Slice a connected repository from entry points: which files a sandbox copies, which modules it cuts to stubs, its public surface and what blocks it. It runs in the background; read it with get_run. Nothing is cut or published.",
+    input: {
+      repositoryId: id("repository"),
+      entryPoints: z
+        .array(z.string().min(1).max(500))
+        .min(1)
+        .max(20)
+        .describe("Repository paths the slice starts from."),
+      maxFiles: z.number().int().min(1).max(200).optional(),
+      maxDepth: z.number().int().min(0).max(10).optional(),
+    },
+    scoped: true,
+    method: "POST",
+    path: ({ repositoryId }, workspace) =>
+      `${org(workspace)}/github/repositories/${enc(repositoryId)}/slices`,
+    body: ({ entryPoints, maxFiles, maxDepth }) => ({
+      entryPoints: [...new Set(entryPoints)].sort(),
+      ...(maxFiles === undefined && maxDepth === undefined
+        ? {}
+        : { budget: { maxFiles: maxFiles ?? 40, maxDepth: maxDepth ?? 3 } }),
+    }),
+  }),
+  tool({
+    name: "start_sandbox",
+    description:
+      "Start the sandbox for a bounty: where its versions are cut, built and published. Starting one that exists answers it.",
+    input: { bountyId: id("bounty") },
+    scoped: true,
+    method: "POST",
+    path: (_args, workspace) => `${org(workspace)}/sandboxes/start`,
+    body: ({ bountyId }) => ({ bountyId }),
+  }),
+  tool({
+    name: "cut_slice",
+    description:
+      "Cut a draft version of a sandbox from a succeeded slice run (plan_slice), priced from the bounty's approved proposal. A wide slice still waits for a person's approval in the web app.",
+    input: {
+      sandboxId: id("sandbox"),
+      sliceRunId: id("slice run"),
+      proposalId: id("approved proposal"),
+      title: z.string().trim().min(1).max(120),
+      specSummary: z.string().trim().min(1).max(4_000),
+      complexity: z
+        .enum(PRICED_BOUNTY_COMPLEXITIES)
+        .describe("The proposal's size."),
+    },
+    scoped: true,
+    method: "POST",
+    path: ({ sandboxId }, workspace) =>
+      `${org(workspace)}/sandboxes/${enc(sandboxId)}/versions`,
+    body: ({ sliceRunId, proposalId, title, specSummary, complexity }) => ({
+      sliceRunId,
+      proposalId,
+      title,
+      specSummary,
+      complexity,
+    }),
+  }),
+  tool({
+    name: "prepare",
+    description:
+      "Build a draft version: the standalone project, its baseline, and, when it has none, hidden tests written from the approved spec and calibrated by a reference implementation (duediligence's rule). It runs in the background; read it with get_run, then get_handout. Publishing stays a person's act in the web app.",
+    input: { versionId: id("version") },
+    scoped: true,
+    method: "POST",
+    path: ({ versionId }, workspace) =>
+      `${org(workspace)}/sandboxes/versions/${enc(versionId)}/build`,
+  }),
+  tool({
+    name: "get_handout",
+    description:
+      "Read what a developer gets of a built version: its public files, and of its hidden tests only how many there are and the commitment hash over them. No hidden test's name or body is shown.",
+    input: { versionId: id("version") },
+    scoped: true,
+    path: ({ versionId }, workspace) =>
+      `${org(workspace)}/sandboxes/versions/${enc(versionId)}/handout`,
+  }),
+  tool({
     name: "connect_github",
     description:
       "Get the link that connects the workspace's GitHub repositories. Connecting is a browser step: give the person the link to open.",
@@ -497,6 +577,9 @@ export const TOOLSETS: Readonly<Record<string, readonly ToolName[]>> = {
     "size_bounty",
     "get_decisions",
     "confirm_link",
+    "start_sandbox",
+    "prepare",
+    "get_handout",
   ],
   "/mcp/carveout": [
     "list_workspaces",
@@ -505,6 +588,10 @@ export const TOOLSETS: Readonly<Record<string, readonly ToolName[]>> = {
     "list_sandboxes",
     "get_sandbox",
     "get_run",
+    "plan_slice",
+    "start_sandbox",
+    "cut_slice",
+    "get_handout",
   ],
 };
 

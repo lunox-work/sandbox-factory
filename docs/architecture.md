@@ -194,8 +194,13 @@ toolsets: `POST /mcp` (all), `/mcp/duediligence`, `/mcp/carveout`
 `get_decisions` reads a spec's decisions (its assumptions, keyed `d1…`,
 hashed) and `confirm_link` returns the web page where a person confirms
 them (`POST …/decisions/confirm`, a web session only; one
-`decision_confirmation` per spec revision and hash). Approving, publishing
-and confirming decisions have no tool. A request needs a
+`decision_confirmation` per spec revision and hash). `plan_slice`
+(`POST …/repositories/:id/slices`), `start_sandbox`, `cut_slice` (a draft
+version from a slice run) and `prepare` (its build, which writes and
+calibrates hidden tests) post work; `get_handout`
+(`GET …/versions/:vid/handout`) reads the public files and duediligence's
+`hiddenSha256` over the hidden suite, never a hidden test's name or body.
+Approving, publishing and confirming decisions have no tool. A request needs a
 bearer `lnx_` or `lnxat_` token, else 401 with
 `WWW-Authenticate: Bearer resource_metadata="…/.well-known/oauth-protected-resource/mcp…"`.
 **Every tool wraps one public route**, called in-process with the caller's

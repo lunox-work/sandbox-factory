@@ -3320,3 +3320,67 @@ test("a sandbox is made with its first version generated, when its sizing touche
   assert.equal(limited.status, 409);
   assert.equal(((await limited.json()) as { code: string }).code, "run_limit");
 });
+
+test("a built version's handout lists its public files and commits to its hidden tests without naming them", async () => {
+  const f = fixture("admin", { built: true });
+  const response = await f.request("GET", "/versions/sbv_1/handout");
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("Cache-Control"), "no-store");
+  const body = (await response.json()) as {
+    versionId: string;
+    run: { id: string; status: string } | null;
+    files: { path: string }[];
+    hiddenTests: number;
+    hiddenSha256: string | null;
+  };
+  assert.equal(body.versionId, "sbv_1");
+  assert.deepEqual(body.run, { id: "arn_build", status: "succeeded" });
+  assert.deepEqual(
+    body.files.map(({ path }) => path),
+    ["src/index.ts", "logo.png", "huge.json"],
+  );
+  assert.equal(body.hiddenTests, 1);
+  // duediligence's commitment over tests/private/hidden.test.ts, kept.
+  const fileHex = createHash("sha256")
+    .update("test('hidden', () => {});\n")
+    .digest("hex");
+  const keptHex = createHash("sha256")
+    .update(JSON.stringify(["tests/private/hidden.test.ts"]))
+    .digest("hex");
+  assert.equal(
+    body.hiddenSha256,
+    createHash("sha256")
+      .update(
+        `${fileHex}  tests/private/hidden.test.ts\n${keptHex}  calibration.kept\n`,
+      )
+      .digest("hex"),
+  );
+  // No hidden test's path or body is in it.
+  const text = JSON.stringify(body);
+  assert.equal(text.includes("hidden.test.ts"), false);
+  assert.equal(text.includes("test('hidden'"), false);
+
+  assert.equal(
+    (
+      await fixture("member", { built: true }).request(
+        "GET",
+        "/versions/sbv_1/handout",
+      )
+    ).status,
+    403,
+  );
+  assert.deepEqual(
+    await (await fixture().request("GET", "/versions/sbv_1/handout")).json(),
+    {
+      versionId: "sbv_1",
+      run: null,
+      files: [],
+      hiddenTests: 0,
+      hiddenSha256: null,
+    },
+  );
+  assert.equal(
+    (await fixture().request("GET", "/versions/sbv_x/handout")).status,
+    404,
+  );
+});
