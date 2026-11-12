@@ -86,6 +86,8 @@ async function grade(
   outcome: (argv: readonly string[]) => { exitCode?: number; stdout?: string },
   /** The version's repository at its commit, for a sliced version. */
   source?: Record<string, string>,
+  /** `repository`: the files are a pull request's (the CI judge). */
+  names?: "repository",
 ) {
   const outDir = await mkdtemp(join(tmpdir(), "grade-"));
   for (const [path, text] of Object.entries(source ?? {})) {
@@ -147,6 +149,7 @@ async function grade(
       submissionId: "sbm_1",
       sandboxVersionId: "sbv_1",
       patchSha256: "a".repeat(64),
+      ...(names === undefined ? {} : { names }),
     } as never,
     run:
       source === undefined
@@ -357,4 +360,51 @@ test("source is read inside the extracted tree only", async () => {
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+test("the CI judge: a pull request's files are carried forward to the version, and only what the slice lets change is judged", async () => {
+  const { result, patch, logged, fake } = await grade(
+    [
+      { path: "src/feature.ts", text: "export const feature = () => 1;\n" },
+      // The rest of the repository is its own CI's.
+      { path: "README.md", text: "changed\n" },
+    ],
+    passing,
+    { ...repository, "README.md": "readme\n" },
+    "repository",
+  );
+  assert.equal(result.verdict, "passed");
+  // Already in the repository's names: nothing is carried back.
+  assert.equal(patch, null);
+  assert.ok(logged.some((line) => /Carried 1 file.*1 outside/.test(line)));
+  assert.equal(fake.jobs(), 1);
+});
+
+test("the CI judge refuses a pull request with nothing in the slice, one that does not carry, or a version with no repository", async () => {
+  const nothing = await grade(
+    [{ path: "README.md", text: "changed\n" }],
+    passing,
+    { ...repository, "README.md": "readme\n" },
+    "repository",
+  );
+  assert.equal(nothing.result.verdict, "refused");
+  assert.match(
+    nothing.result.refused?.[0]?.reason ?? "",
+    /no file the sandbox lets/,
+  );
+  assert.equal(nothing.fake.jobs(), 0);
+
+  const generated = await grade(change, passing, undefined, "repository");
+  assert.equal(generated.result.verdict, "refused");
+  assert.match(generated.result.refused?.[0]?.reason ?? "", /not sliced/);
+
+  // A file that does not line up with the version's copy cannot be carried.
+  const unaligned = await grade(
+    [{ path: "src/feature.ts", text: "export const feature = () => 2;\n" }],
+    passing,
+    { "src/feature.ts": "line one\nline two\n" },
+    "repository",
+  );
+  assert.equal(unaligned.result.verdict, "refused");
+  assert.match(unaligned.result.refused?.[0]?.reason ?? "", /line up/);
 });

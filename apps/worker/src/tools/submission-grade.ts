@@ -32,8 +32,10 @@ import {
   PSEUDONYMS_FILE,
   SUBMISSION_GRADE_TOOL_VERSION,
   TASK_DESCRIPTOR_PATH,
+  forwardChange,
   gradingTree,
   isSubmissionGradeParams,
+  projectPathOf,
   reverseSubmission,
 } from "sandbox-factory";
 import type {
@@ -143,11 +145,9 @@ export function sourceText(sourceDir: string, path: string): string | null {
  * A passing submission carried back to the repository at the version's
  * commit, from the build's name table and moved paths.
  */
-export async function carriedBack(
-  input: Pick<ToolRunInput, "inputs" | "sourceDir">,
+async function buildTables(
+  input: Pick<ToolRunInput, "inputs">,
   buildRunId: string,
-  versionFiles: readonly GeneratedFile[],
-  submitted: readonly { readonly path: string; readonly text: string }[],
 ) {
   const manifestText = await buildArtifactText(
     input,
@@ -166,22 +166,67 @@ export async function carriedBack(
     "renames" | "files"
   >;
   const table = JSON.parse(tableText) as { rules: AliasRule[] };
-  const project = new Map(
+  return { manifest, rules: table.rules };
+}
+
+const projectOf = (versionFiles: readonly GeneratedFile[]) =>
+  new Map(
     versionFiles
       .filter((file) => file.public)
       .map((file) => [file.path, file.text]),
   );
+
+export async function carriedBack(
+  input: Pick<ToolRunInput, "inputs" | "sourceDir">,
+  buildRunId: string,
+  versionFiles: readonly GeneratedFile[],
+  submitted: readonly { readonly path: string; readonly text: string }[],
+) {
+  const { manifest, rules } = await buildTables(input, buildRunId);
+  const project = projectOf(versionFiles);
   return reverseSubmission({
     submitted,
     publicText: (path) => project.get(path) ?? null,
     repositoryText: (path) => sourceText(input.sourceDir, path),
-    rules: table.rules,
+    rules,
     renames: manifest.renames,
     // A stub stands for a module the repository has; the rest it has not.
     harness: manifest.files
       .filter((record) => HARNESS_CLASSES.has(record.class))
       .map((record) => record.path),
   });
+}
+
+/**
+ * A pull request's files, at the repository's paths and in its names,
+ * carried forward to the version's (`forwardChange`): the CI judge. Only
+ * what the slice lets a contribution change is judged, an editable file or
+ * a file new to the repository; the rest of the PR is the repository's own
+ * CI's, and is counted in `ignored`.
+ */
+export async function carriedForward(
+  input: Pick<ToolRunInput, "inputs" | "sourceDir">,
+  buildRunId: string,
+  versionFiles: readonly GeneratedFile[],
+  changed: readonly { readonly path: string; readonly text: string }[],
+  editablePaths: readonly string[],
+) {
+  const { manifest, rules } = await buildTables(input, buildRunId);
+  const project = projectOf(versionFiles);
+  const editable = new Set(editablePaths);
+  const judged = changed.filter(
+    (file) =>
+      sourceText(input.sourceDir, file.path) === null ||
+      editable.has(projectPathOf(file.path, manifest.renames, rules)),
+  );
+  const carried = forwardChange({
+    changed: judged,
+    publicText: (path) => project.get(path) ?? null,
+    repositoryText: (path) => sourceText(input.sourceDir, path),
+    rules,
+    renames: manifest.renames,
+  });
+  return { ...carried, ignored: changed.length - judged.length };
 }
 
 /**
@@ -342,14 +387,49 @@ export function createSubmissionGradeAdapter(options: {
       const editablePaths =
         (JSON.parse(descriptor?.text ?? "{}") as { editablePaths?: string[] })
           .editablePaths ?? [];
+      // The CI judge's files are the repository's, carried forward first.
+      const fromRepository = params.names === "repository";
+      let submitted: readonly { path: string; text: string }[] = read.files;
+      const carryRefused: { path: string; reason: string }[] = [];
+      if (fromRepository) {
+        if (input.run === null)
+          carryRefused.push({
+            path: ".",
+            reason:
+              "The version was not sliced from a repository, so a pull request cannot be judged on it.",
+          });
+        else {
+          const forward = await carriedForward(
+            input,
+            buildRunId,
+            versionFiles,
+            read.files,
+            editablePaths,
+          );
+          input.log(
+            `Carried ${forward.files.length} file(s) of the pull request to the version; ${forward.ignored} outside what it lets change.`,
+          );
+          submitted = forward.files;
+          carryRefused.push(...forward.refused);
+          if (forward.files.length === 0 && forward.refused.length === 0)
+            carryRefused.push({
+              path: ".",
+              reason:
+                "The pull request changes no file the sandbox lets a contribution change.",
+            });
+        }
+      }
       const tree = gradingTree({
         versionFiles,
         editablePaths,
-        submission: read.files,
+        submission: submitted,
       });
       const refused = [
-        ...tree.refused,
-        ...integrityRefusals(versionFiles, read.files),
+        ...carryRefused,
+        ...(carryRefused.length > 0 ? [] : tree.refused),
+        ...(carryRefused.length > 0
+          ? []
+          : integrityRefusals(versionFiles, submitted)),
       ];
       const hiddenPaths = versionFiles
         .filter((file) => file.class === "test-private")
@@ -380,7 +460,12 @@ export function createSubmissionGradeAdapter(options: {
       let result = resultOf({ hiddenPaths, baseline, refused });
       const written: ArtifactFile[] = [];
       // A version sliced from a repository: carry a pass back to it.
-      if (result.verdict === "passed" && input.run !== null) {
+      // A pull request is already in the repository's names: nothing to carry back.
+      if (
+        result.verdict === "passed" &&
+        input.run !== null &&
+        !fromRepository
+      ) {
         const carried = await carriedBack(
           input,
           buildRunId,

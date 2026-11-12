@@ -478,6 +478,12 @@ export interface SubmissionGradeParams extends GraphifyParams {
   readonly submissionId: string;
   readonly sandboxVersionId: string;
   readonly patchSha256: string;
+  /**
+   * `repository`: the files are a pull request's, at the repository's
+   * paths and in its names (the CI judge), carried forward to the
+   * version's before grading. Absent: they are the version's own.
+   */
+  readonly names?: "repository";
 }
 export type AnalysisParams =
   | GraphifyParams

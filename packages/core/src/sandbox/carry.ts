@@ -338,6 +338,21 @@ export function reverseSubmission(input: ReverseInput): CarriedChange {
   });
 }
 
+/**
+ * Where a repository file is in the version's project: where the build
+ * moved it, else where the name table's path rules put it.
+ */
+export function projectPathOf(
+  path: string,
+  renames: readonly { readonly from: string; readonly to: string }[],
+  rules: readonly AliasRule[],
+): string {
+  return (
+    renames.find((rename) => rename.from === path)?.to ??
+    renameFile({ path, text: "" }, rules).path
+  );
+}
+
 export interface ForwardInput {
   /** A change's files, at their repository paths. */
   readonly changed: readonly { readonly path: string; readonly text: string }[];
@@ -354,13 +369,8 @@ export interface ForwardInput {
  */
 export function forwardChange(input: ForwardInput): CarriedChange {
   const inverse = invertAliasRules(input.rules);
-  const projectPathOf = new Map(
-    input.renames.map(({ from, to }) => [from, to]),
-  );
   const files = input.changed.map((file): CarriedFile => {
-    const toPath =
-      projectPathOf.get(file.path) ??
-      renameFile({ path: file.path, text: "" }, input.rules).path;
+    const toPath = projectPathOf(file.path, input.renames, input.rules);
     return {
       fromPath: file.path,
       toPath,

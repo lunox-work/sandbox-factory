@@ -42,7 +42,8 @@ export interface StoredSubmission {
 
 export interface NewSubmission {
   readonly sandboxVersionId: string;
-  readonly submittedBy: string;
+  /** The person; null for a pull request the CI judge took, which has none. */
+  readonly submittedBy: string | null;
   readonly patchKey: string;
   readonly patchSha256: string;
 }
