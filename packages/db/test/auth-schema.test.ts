@@ -13,12 +13,22 @@ import { authSchema } from "../src/auth-schema.js";
 
 test("authSchema is keyed by Better Auth's singular model names", () => {
   // The adapter resolves `schema[modelName]`; `users` would not be found.
-  // The last three belong to the organization plugin, which resolves its
-  // models the same way.
+  // `invitation`, `member` and `organization` belong to the organization
+  // plugin, `deviceCode` to the device-authorization plugin and the
+  // `oauth*` models to the OAuth provider, which resolve their models the
+  // same way.
   assert.deepEqual(Object.keys(authSchema).sort(), [
     "account",
+    "deviceCode",
     "invitation",
     "member",
+    "oauthAccessToken",
+    "oauthClient",
+    "oauthClientAssertion",
+    "oauthClientResource",
+    "oauthConsent",
+    "oauthRefreshToken",
+    "oauthResource",
     "organization",
     "session",
     "user",
@@ -142,4 +152,69 @@ test("one provider identity can belong to only one user", () => {
     "account_id",
     "provider_id",
   ]);
+});
+
+test("a device sign-in's codes are unique and go with their user", () => {
+  // The plugin looks a code up by either value and retries on a collision.
+  const columns = getTableConfig(authSchema.deviceCode).columns;
+  for (const name of ["device_code", "user_code"])
+    assert.equal(columns.find((c) => c.name === name)?.isUnique, true, name);
+  const reference = getTableConfig(authSchema.deviceCode).foreignKeys.find(
+    (key) => key.reference().foreignTable === authSchema.user,
+  );
+  assert.equal(reference?.onDelete, "cascade");
+});
+
+test("a session records the command-line client a device sign-in was for", () => {
+  // The API confines such a session to minting that client's token.
+  assert.equal(authSchema.session.deviceClientId.name, "device_client_id");
+  assert.equal(authSchema.session.deviceClientId.notNull, false);
+});
+
+test("OAuth tokens and grants go with their person, client and organization", () => {
+  // A grant binds one organization: deleting it, the person or the client
+  // must leave no token that still resolves.
+  for (const table of [
+    authSchema.oauthAccessToken,
+    authSchema.oauthRefreshToken,
+    authSchema.oauthConsent,
+  ]) {
+    const keys = getTableConfig(table).foreignKeys;
+    for (const target of [
+      authSchema.user,
+      authSchema.organization,
+      authSchema.oauthClient,
+    ]) {
+      const key = keys.find(
+        (candidate) => candidate.reference().foreignTable === target,
+      );
+      assert.equal(key?.onDelete, "cascade", getTableConfig(table).name);
+    }
+  }
+});
+
+test("an OAuth token is stored by its hash, which is unique", () => {
+  for (const table of [
+    authSchema.oauthAccessToken,
+    authSchema.oauthRefreshToken,
+  ]) {
+    const token = getTableConfig(table).columns.find(
+      (column) => column.name === "token",
+    );
+    assert.equal(token?.isUnique, true);
+    assert.equal(token?.notNull, true);
+  }
+});
+
+test("one grant per person, client and organization", () => {
+  // The guard joins a token to its grant on these three; a duplicate would
+  // make that join ambiguous.
+  const unique = getTableConfig(authSchema.oauthConsent).indexes.find(
+    (candidate) => candidate.config.name === "oauth_consent_grant_unique",
+  );
+  assert.equal(unique?.config.unique, true);
+  assert.deepEqual(
+    unique?.config.columns.map((column) => (column as { name: string }).name),
+    ["client_id", "user_id", "reference_id"],
+  );
 });

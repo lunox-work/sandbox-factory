@@ -18,6 +18,7 @@ import {
 import type { Auth } from "../src/auth.js";
 import {
   DISCOVERY_PERMISSIONS,
+  ISSUES_READ_PERMISSIONS,
   narrowingFor,
   REPOSITORY_READ_PERMISSIONS,
 } from "../src/github/credential.js";
@@ -544,10 +545,17 @@ test("scopes narrow discovery to metadata and a repository to its id", () => {
     repositoryIds: [42],
     permissions: REPOSITORY_READ_PERMISSIONS,
   });
-  // Neither asks for a write, whatever the installation holds.
+  // An issue import's token reads issues on one repository, not contents.
+  assert.deepEqual(narrowingFor({ kind: "issues", repositoryId: "42" }), {
+    repositoryIds: [42],
+    permissions: ISSUES_READ_PERMISSIONS,
+  });
+  assert.equal("contents" in ISSUES_READ_PERMISSIONS, false);
+  // None asks for a write, whatever the installation holds.
   for (const permissions of [
     DISCOVERY_PERMISSIONS,
     REPOSITORY_READ_PERMISSIONS,
+    ISSUES_READ_PERMISSIONS,
   ]) {
     assert.ok(Object.values(permissions).every((level) => level === "read"));
   }

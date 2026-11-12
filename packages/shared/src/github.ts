@@ -171,6 +171,24 @@ export const githubBlobResponseSchema = z
   })
   .loose();
 
+/**
+ * `GET /repos/{owner}/{repo}/issues/{number}`: what a bounty is imported
+ * from. GitHub answers a pull request here too, marked `pull_request`.
+ */
+export const githubIssueResponseSchema = z
+  .object({
+    number: z.number().int(),
+    title: z.string(),
+    body: z.string().nullable().optional(),
+    html_url: z.string(),
+    state: z.string().optional(),
+    labels: z
+      .array(z.union([z.string(), z.object({ name: z.string() }).loose()]))
+      .default([]),
+    pull_request: z.unknown().optional(),
+  })
+  .loose();
+
 /** `POST /app/installations/{id}/access_tokens`. */
 export const githubInstallationTokenResponseSchema = z
   .object({
@@ -677,6 +695,7 @@ export type GithubRepositoryResponse = z.infer<
 export type GithubUserResponse = z.infer<typeof githubUserResponseSchema>;
 export type GithubTreeResponse = z.infer<typeof githubTreeResponseSchema>;
 export type GithubBlobResponse = z.infer<typeof githubBlobResponseSchema>;
+export type GithubIssueResponse = z.infer<typeof githubIssueResponseSchema>;
 export type GithubTreeEntryResponse = z.infer<
   typeof githubTreeEntryResponseSchema
 >;

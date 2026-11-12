@@ -631,3 +631,31 @@ test("public S3 URLs can use a browser-reachable gateway distinct from API stora
     undefined,
   );
 });
+
+test("MIN_CLIENT_VERSIONS is read as a floor per client, or stops the boot", () => {
+  assert.deepEqual(parseEnv({ ...required }).MIN_CLIENT_VERSIONS, {});
+  assert.deepEqual(
+    parseEnv({ ...required, MIN_CLIENT_VERSIONS: "" }).MIN_CLIENT_VERSIONS,
+    {},
+  );
+  assert.deepEqual(
+    parseEnv({
+      ...required,
+      MIN_CLIENT_VERSIONS: " duediligence=0.4.0, carveout=0.2.0 ,",
+    }).MIN_CLIENT_VERSIONS,
+    { duediligence: "0.4.0", carveout: "0.2.0" },
+  );
+  for (const value of [
+    "duediligence",
+    "duediligence=latest",
+    "duediligence=0.4",
+    "duediligence=0.4.0=1",
+    "Due Diligence=0.4.0",
+    "carveout=0.2.0,carveout=0.3.0",
+  ])
+    assert.throws(
+      () => parseEnv({ ...required, MIN_CLIENT_VERSIONS: value }),
+      /MIN_CLIENT_VERSIONS/,
+      value,
+    );
+});

@@ -215,3 +215,40 @@ export function hiddenTestsSection(input: {
         ]),
   ].join("\n\n");
 }
+
+/**
+ * The reference agent's system prompt: the sandbox, then duediligence's
+ * own brief for a reference (`prompts/repo/reference`, rendered for this
+ * project by `calibration.ts`), then how it runs here. The brief is the
+ * pinned engine's: a change in it arrives with a version bump of
+ * `duediligence` and bumps `sandbox_build@` with it.
+ */
+export function referenceSystemPrompt(brief: string): string {
+  return `${SANDBOX_CONTEXT}
+
+The sandbox for the bounty below is built and has hidden tests: the acceptance tests a developer's submission is judged by. Your job is to write a reference implementation of the bounty, which decides which hidden tests stand: a test that a careful implementation of the spec cannot pass is dropped. The reference is never shown to the developer. Here is the brief:
+
+${brief.trim()}
+
+This project is the developer's, as the build generated it, with the hidden tests in it and the spec in \`spec.md\`. You cannot run commands: the repository tools read its files, and \`run_reference\` builds it with your source files in place and runs it in a fresh job, showing each hidden test's outcome and the output of those that fail. Give each file you change or add whole. Finish by calling \`submit_reference\` once; end its summary with the tests you left failing, one per line as \`file :: reason\`, or \`none\`.`;
+}
+
+/** The bounty a reference implements, and the project it does so in. */
+export function referenceSection(input: {
+  readonly title: string;
+  readonly summary: string;
+  readonly spec: SpecDraft | null;
+  readonly overview: string;
+  readonly runTool: string;
+  readonly runsMax: number;
+}): string {
+  return [
+    `The bounty's title: ${input.title}`,
+    `The bounty's summary:\n\n${input.summary}`,
+    input.spec === null
+      ? "The bounty has no Gherkin spec; implement what its title and summary ask for."
+      : `The bounty's approved Gherkin spec:\n\n${renderGherkin(input.spec)}`,
+    `The project:\n\n${input.overview}`,
+    `Read the interface, the source and the hidden tests under tests/private/ first. ${input.runTool} runs are limited to ${input.runsMax}, the submission's among them.`,
+  ].join("\n\n");
+}

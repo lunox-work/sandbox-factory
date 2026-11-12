@@ -7,7 +7,10 @@
  * The VS Code extension cannot work this way and uses a bearer token instead.
  */
 
-import { organizationClient } from "better-auth/client/plugins";
+import {
+  deviceAuthorizationClient,
+  organizationClient,
+} from "better-auth/client/plugins";
 import { createAuthClient } from "better-auth/react";
 
 /**
@@ -19,7 +22,9 @@ import { createAuthClient } from "better-auth/react";
  * through `/api/v1` instead; see `useOrganizations`.
  */
 export const authClient = createAuthClient({
-  plugins: [organizationClient()],
+  // `deviceAuthorizationClient` adds `authClient.device(…)` and its
+  // `approve` and `deny`, which the `/device` page uses.
+  plugins: [organizationClient(), deviceAuthorizationClient()],
 });
 
 export const { useSession, signOut } = authClient;

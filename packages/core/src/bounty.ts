@@ -14,8 +14,12 @@
  * bounty's text came from Jira or from the form.
  */
 
-/** Where a bounty's text came from when it was made. Never changes. */
-export const BOUNTY_ORIGINS = ["manual", "jira"] as const;
+/**
+ * Where a bounty's text came from when it was made. Never changes. A
+ * `github` bounty was imported from an issue, whose URL it keeps as its
+ * source; its text is the workspace's from then on.
+ */
+export const BOUNTY_ORIGINS = ["manual", "jira", "github"] as const;
 export type BountyOrigin = (typeof BOUNTY_ORIGINS)[number];
 
 /**

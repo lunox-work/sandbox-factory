@@ -1163,7 +1163,58 @@ test("worker validates credentials, modes, and bounded limits", () => {
     parseWorkerEnv({ ...env, EVALUATION_PROVIDER: "" }).EVALUATION_PROVIDER,
     "none",
   );
-  assert.throws(() => parseWorkerEnv({ ...env, EVALUATION_PROVIDER: "e2b" }));
+  // E2B is the hosted provider: it needs its key, and runs in production.
+  assert.throws(
+    () => parseWorkerEnv({ ...env, EVALUATION_PROVIDER: "e2b" }),
+    /EVALUATION_PROVIDER=e2b needs E2B_API_KEY/,
+  );
+  assert.throws(
+    () =>
+      parseWorkerEnv({
+        ...env,
+        EVALUATION_PROVIDER: "e2b",
+        E2B_API_KEY: "REPLACE_ME",
+      }),
+    /needs E2B_API_KEY/,
+  );
+  const hosted = parseWorkerEnv({
+    ...env,
+    NODE_ENV: "production",
+    EVALUATION_PROVIDER: "e2b",
+    E2B_API_KEY: "e2b_key",
+    E2B_TEMPLATE: "",
+  });
+  assert.equal(hosted.EVALUATION_PROVIDER, "e2b");
+  assert.equal(hosted.E2B_TEMPLATE, undefined);
+  assert.equal(hosted.E2B_JOB_TIMEOUT_SECONDS, 1_200);
+  assert.equal(
+    parseWorkerEnv({
+      ...env,
+      EVALUATION_PROVIDER: "e2b",
+      E2B_API_KEY: "e2b_key",
+      E2B_TEMPLATE: "sandbox-node22",
+      E2B_JOB_TIMEOUT_SECONDS: "900",
+    }).E2B_JOB_TIMEOUT_SECONDS,
+    900,
+  );
+  for (const bad of [
+    { E2B_TEMPLATE: "has space" },
+    { E2B_JOB_TIMEOUT_SECONDS: "30" },
+    { E2B_JOB_TIMEOUT_SECONDS: "7200" },
+  ])
+    assert.throws(() =>
+      parseWorkerEnv({
+        ...env,
+        EVALUATION_PROVIDER: "e2b",
+        E2B_API_KEY: "e2b_key",
+        ...bad,
+      }),
+    );
+  // A key alone selects nothing.
+  assert.equal(
+    parseWorkerEnv({ ...env, E2B_API_KEY: "e2b_key" }).EVALUATION_PROVIDER,
+    "none",
+  );
   // Local processes are no boundary for contributor code: a production
   // worker refuses them at startup, and runs without a provider still.
   assert.throws(

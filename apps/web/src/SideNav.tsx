@@ -40,7 +40,7 @@
  * toggling only moves the edge: nothing the eye was tracking jumps.
  */
 
-import { Box, Building2, House, Rocket } from "lucide-react";
+import { Box, Building2, CodeXml, House, Rocket } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import type { MembershipDto } from "@sandbox-factory/shared";
@@ -68,6 +68,8 @@ export type Screen =
   /** One bounty opened as a page of its own. Carries a workspace and an id. */
   | "bounty"
   | "create-org"
+  /** The workspace's developer portal: tokens, apps, MCP, reference, usage. */
+  | "developers"
   /** An address that names no page. */
   | "not-found";
 
@@ -240,6 +242,23 @@ export function SideNav({
             onClick={() => onNavigate("bounties")}
           >
             <Box strokeWidth={1.6} />
+          </RailButton>
+        )}
+
+        {/*
+          The developer portal of the workspace in the rail: API tokens,
+          connected apps, MCP and the API reference. Offered with the work,
+          not during onboarding, which stays the one destination until done.
+        */}
+        {!onboardingOnly && (
+          <RailButton
+            label="Developers"
+            href={pathForScreen("developers")}
+            expanded={expanded}
+            current={screen === "developers"}
+            onClick={() => onNavigate("developers")}
+          >
+            <CodeXml strokeWidth={1.6} />
           </RailButton>
         )}
 

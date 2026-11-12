@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { BountyWatchdog } from "../src/pricing/watchdog.js";
+import {
+  BountyWatchdog,
+  RETENTION_INTERVAL_MS,
+} from "../src/pricing/watchdog.js";
 
 test("the watchdog fails expired work per organization", async () => {
   const calls: string[] = [];
@@ -52,4 +55,32 @@ test("start sweeps immediately, observes failures, and stop clears its timer", a
     "bounty_watchdog_failed",
   ]);
   assert.equal(cleared, true);
+});
+
+test("retention passes run hourly beside the sweep, and a failure is reported", async () => {
+  let now = new Date("2026-11-12T00:00:00Z");
+  const ran: Date[] = [];
+  const errors: string[] = [];
+  const watchdog = new BountyWatchdog({
+    runs: {
+      organizationsWithExpiredRuns: () => Promise.resolve([]),
+      failExpired: () => Promise.resolve(0),
+    },
+    retention: [
+      (at) => {
+        ran.push(at);
+        return Promise.resolve(1);
+      },
+      () => Promise.reject(new Error("offline")),
+    ],
+    now: () => now,
+    onError: (code) => errors.push(code),
+  });
+  await watchdog.sweep();
+  now = new Date(now.getTime() + 30_000);
+  await watchdog.sweep();
+  now = new Date(now.getTime() + RETENTION_INTERVAL_MS);
+  await watchdog.sweep();
+  assert.equal(ran.length, 2);
+  assert.deepEqual(errors, ["retention_pass_failed", "retention_pass_failed"]);
 });

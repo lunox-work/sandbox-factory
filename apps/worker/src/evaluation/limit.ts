@@ -52,12 +52,14 @@ export function limitJobs(
       }
       let released = false;
       const created = job;
+      const egressCut = created.egressCut?.bind(created);
       return {
         id: created.id,
         environment: created.environment,
         stage: (files) => created.stage(files),
         exec: (command) => created.exec(command),
         read: (path) => created.read(path),
+        ...(egressCut === undefined ? {} : { egressCut }),
         async destroy() {
           try {
             await created.destroy();

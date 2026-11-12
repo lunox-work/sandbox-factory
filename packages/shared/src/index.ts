@@ -155,6 +155,12 @@ export const inviteMemberSchema = z
     { message: "Provide either a handle or an email address, not both." },
   );
 
+/** `GET /api/v1/orgs/:orgId`: the organization, and the caller's role in it. */
+export const organizationResponseSchema = z.object({
+  organization: organizationSummarySchema,
+  role: heldOrganizationRolesSchema,
+});
+
 export const errorSchema = z.object({
   error: z.string(),
   /** A stable reason a caller can branch on, where the route gives one. */
@@ -166,6 +172,9 @@ export type OrganizationRole = z.infer<typeof organizationRoleSchema>;
 export type OrganizationKind = z.infer<typeof organizationKindSchema>;
 export type OrganizationSummaryDto = z.infer<typeof organizationSummarySchema>;
 export type MembershipDto = z.infer<typeof membershipSchema>;
+export type OrganizationResponseDto = z.infer<
+  typeof organizationResponseSchema
+>;
 export type WorkspaceSetupDto = z.infer<typeof workspaceSetupSchema>;
 export type MembershipListDto = z.infer<typeof membershipListSchema>;
 export type OrganizationMemberDto = z.infer<typeof organizationMemberSchema>;
@@ -209,6 +218,18 @@ export * from "./identicon.js";
 export * from "./diagram-skin.js";
 
 export * from "./web-api.js";
+
+/** The public API's credentials: workspace tokens, CLI sign-in, usage. */
+export * from "./developer.js";
+
+/** What machine credentials changed, as the audit log answers it. */
+export * from "./audit.js";
+
+/** Webhooks out: endpoints, deliveries and the event they carry. */
+export * from "./webhooks.js";
+
+/** A connect flow's URL, for an API client to hand a person. */
+export * from "./connect.js";
 
 export * from "./slice-artifacts.js";
 export { normalizeSpecText } from "sandbox-factory";

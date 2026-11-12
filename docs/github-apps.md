@@ -56,7 +56,7 @@ App's client id and secret are `GITHUB_APP_CLIENT_ID` / `_SECRET`.
 | Webhook → Active                                       | On                                                                                       |
 | Webhook URL                                            | `https://platform.lunox.work/api/github/webhook`                                         |
 | Webhook secret                                         | `openssl rand -hex 32` → `GITHUB_APP_WEBHOOK_SECRET`                                     |
-| Repository permissions                                 | Contents: **Read**, Metadata: **Read**; nothing else                                     |
+| Repository permissions                                 | Contents: **Read**, Issues: **Read**, Metadata: **Read**; nothing else                   |
 | Organization and account permissions                   | none                                                                                     |
 | Subscribe to events                                    | Push, Repository (Installation and Installation repositories arrive without subscribing) |
 | Where can this GitHub App be installed?                | Any account                                                                              |
@@ -69,6 +69,11 @@ Why the less obvious ones:
   `GET /user/installations`, and then only when it is theirs: their own
   personal account, or an organization's installation covering nothing they
   cannot read themselves. Without the user token there is nothing to check.
+- **Issues: Read is for importing a bounty from an issue** (`POST
+.../bounties` with `source.githubIssue`). That token is minted for one
+  repository with `issues: read` alone; an App without the permission
+  fails the mint and the import answers `github_unavailable`. Existing
+  installations must accept the added permission on GitHub.
 - **No organization permissions, on purpose.** Members: read would let the
   API check that the person administers an organization instead of the
   repository count above, at the cost of every client approving one more

@@ -15,10 +15,11 @@ import {
 } from "@sandbox-factory/db";
 import { APIError, betterAuth } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
-import { bearer, organization } from "better-auth/plugins";
-import { normalizeHandle } from "sandbox-factory";
+import { bearer, deviceAuthorization, organization } from "better-auth/plugins";
+import { isCliClient, normalizeHandle } from "sandbox-factory";
 
 import { admitsPicture, type AvatarKind } from "./avatars/keys.js";
+import { oauthProviderPlugin } from "./oauth/provider.js";
 
 /**
  * The address a provider asserted during this request, keyed by provider id.
@@ -50,6 +51,11 @@ type AuthDatabase = Parameters<typeof drizzleAdapter>[0];
 
 export interface AuthOptions {
   db: AuthDatabase;
+  /**
+   * Tests only: an adapter in place of the Drizzle one over `db`, so the
+   * OAuth flow can run end to end without Postgres.
+   */
+  database?: Parameters<typeof betterAuth>[0]["database"] | undefined;
   /** Records addresses proven by a provider link. Optional for tests. */
   emails?: EmailStore | undefined;
   /**
@@ -83,6 +89,21 @@ export interface AuthOptions {
   atlassian: OAuthCredentials;
   /** Set when the API and web app are on different subdomains; see below. */
   crossSubDomainCookies?: { domain: string } | undefined;
+}
+
+/**
+ * The command-line client a device sign-in's session is for, read when
+ * Better Auth creates a session: only the device-token endpoint's carries
+ * one, and only a known client's. Exported so it is testable without a
+ * database behind the hook.
+ */
+export function deviceClientOf(
+  context: { path?: string | undefined; body?: unknown } | null | undefined,
+): string | null {
+  if (context?.path !== "/device/token") return null;
+  const body = context.body as { client_id?: unknown } | null | undefined;
+  const client = body?.client_id;
+  return typeof client === "string" && isCliClient(client) ? client : null;
 }
 
 export interface OAuthCredentials {
@@ -145,6 +166,7 @@ export function guardUserPicture(
 
 export function createAuth({
   db,
+  database,
   emails,
   lookupEmail,
   handles,
@@ -252,12 +274,14 @@ export function createAuth({
     "Change it in Account settings.";
 
   return betterAuth({
-    database: drizzleAdapter(db, {
-      provider: "pg",
-      // The auth models only; the adapter has no business with this
-      // product's own tables.
-      schema: authSchema,
-    }),
+    database:
+      database ??
+      drizzleAdapter(db, {
+        provider: "pg",
+        // The auth models only; the adapter has no business with this
+        // product's own tables.
+        schema: authSchema,
+      }),
     baseURL: baseUrl,
     secret,
     /**
@@ -341,6 +365,15 @@ export function createAuth({
       // Most requests answer from a signed cookie instead of a SELECT on
       // `session`. Revocation lags by up to this window, so keep it small.
       cookieCache: { enabled: true, maxAge: 5 * 60 },
+      /**
+       * The command-line client a device sign-in was for; null otherwise.
+       * Written only by the session-create hook below, never from input.
+       * The API guard confines a session carrying one to minting that
+       * client's workspace token (`api-tokens/routes.ts`).
+       */
+      additionalFields: {
+        deviceClientId: { type: "string", required: false, input: false },
+      },
     },
 
     account: {
@@ -422,6 +455,14 @@ export function createAuth({
       },
     },
     databaseHooks: {
+      session: {
+        create: {
+          /** Marks a device sign-in's session with its client; see above. */
+          before: async (created, context) => ({
+            data: { ...created, deviceClientId: deviceClientOf(context) },
+          }),
+        },
+      },
       user: {
         /**
          * `update-user` accepts any `image` string from the client. Only null
@@ -588,6 +629,33 @@ export function createAuth({
       // Accepts `Authorization: Bearer <token>` in place of the cookie, for
       // the VS Code extension, which has no cookie jar.
       bearer(),
+      /**
+       * Device sign-in (RFC 8628) for the command-line clients: the client
+       * asks `/device/code`, a signed-in person approves the code on the
+       * web app's `/device` page, and the client's poll of `/device/token`
+       * gets a session it may use only to mint its workspace API token.
+       * Unknown clients are refused before a code is issued.
+       */
+      deviceAuthorization({
+        verificationUri: new URL("/device", appUrl).href,
+        validateClient: (clientId) => isCliClient(clientId),
+        expiresIn: "15m",
+        interval: "5s",
+      }),
+      /**
+       * The OAuth 2.1 authorization server for MCP clients and other apps:
+       * dynamic registration, authorization code with PKCE, consent bound
+       * to one workspace an owner or admin chooses. See `oauth/provider.ts`.
+       */
+      oauthProviderPlugin({
+        baseUrl,
+        appUrl,
+        roleOf:
+          organizations === undefined
+            ? undefined
+            : (userId, organizationId) =>
+                organizations.roleOf(userId, organizationId),
+      }),
       /**
        * Organizations: the second principal. The plugin owns every write to
        * `organization`, `member` and `invitation`, and serves them under

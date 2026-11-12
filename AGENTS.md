@@ -36,7 +36,7 @@ Docker or dev scripts. It preserves the setup and testing constraints.
 - `packages/client` uses `fetch` only: no `node:*`, `vscode` or `@types/node`.
   Keep its `types: []`. Only `apps/extension` may import `vscode`.
 - Auth table constants stay singular (`user`), column properties camelCase
-  (`emailVerified`). Better Auth resolves names at runtime. Keep all seven
+  (`emailVerified`). Better Auth resolves names at runtime. Keep all fifteen
   tables in `authSchema`; see `packages/db/test/auth-schema.test.ts`.
 - Handle validation lives in `packages/core/src/handle.ts`; do not duplicate
   its length or character rules in schemas, stores or forms.
@@ -48,8 +48,9 @@ Docker or dev scripts. It preserves the setup and testing constraints.
   organizations share the path; `refusePersonal` in `apps/api/src/auth.ts`
   guards personal-organization deletion and membership changes.
 - Email/password sign-in stays off. `createApp` without auth serves 503 under
-  `/api/*`; `/api/v1` is session-guarded. Routes outside it need deliberate access
-  rules. The API requires `DATABASE_URL`; in-memory stores are test doubles.
+  `/api/*`; `/api/v1` is credential-guarded. Routes outside it need deliberate
+  access rules. API tokens reach only routes in
+  `apps/api/src/public-api/registry.ts`; adding a route there makes it public. The API requires `DATABASE_URL`; in-memory stores are test doubles.
 - Read the relevant [architecture](./docs/architecture.md) section before
   changing ownership, auth, bounties, integration credentials or sandbox flows.
 

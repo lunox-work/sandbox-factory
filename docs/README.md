@@ -10,9 +10,10 @@ product proposals and historical explainers are optional design context.
   its status is the last one done: **New**, **Scoped**, **Priced** or
   **Live**. The words are defined once, in
   [architecture.md](./architecture.md#vocabulary).
-- Bounties are written here or imported from a connected Jira board's free
-  backlog scan, with scope and Jira context filled and nothing sized. Nothing
-  is sized until someone sizes a ticket or asks for a whole board.
+- Bounties are written here, imported from a connected repository's GitHub
+  issue, or imported from a connected Jira board's free backlog scan (scope
+  and Jira context filled). Nothing is sized until someone sizes a ticket
+  or asks for a whole board.
 - A bounty names no repository: its work may touch any the workspace has
   connected, and sizing says which. Jira is synced into it on request as
   versioned context; repository documents are pinned at a built commit each.
@@ -27,6 +28,17 @@ product proposals and historical explainers are optional design context.
 - The available evaluator is opt-in `local-process`, for development; it is
   not an isolation boundary. With the default provider `none`, builds fail
   closed.
+- `/api/v1` is the public API for workspace API tokens (`lnx_…`, scoped,
+  one workspace each) on the routes its registry lists, described at
+  `GET /api/v1/openapi.json`. Command-line clients sign in by device flow
+  and mint their own token, and revoke it on logout. MCP clients sign in
+  over OAuth 2.1, consenting for one workspace, and read and post work at
+  `/mcp` (toolsets `/mcp/duediligence`, `/mcp/carveout`). Creates take an
+  `Idempotency-Key`; machine credentials' changes are audited; signed
+  webhooks report finished runs, prices, builds, publications and failed
+  writebacks. Owners and admins manage tokens and connected apps at
+  `/o/:slug/developers`. Not built: the portal's webhook, CI and audit
+  pages. See [Public API conventions](./architecture.md#public-api-conventions).
 - The VS Code extension can run a local task. Its sign-in flow is not built.
 - Not built: contributor submission, adjudication, escrow, payouts,
   reputation, merge-back, Slack and knowledge integrations. See the
@@ -38,6 +50,9 @@ product proposals and historical explainers are optional design context.
 | ----------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Setup and daily development   | [Run it](../README.md#run-it), [development](./development.md)                                                                            | `Makefile`, `docker-compose.yml`, `package.json`                                                                                                   |
 | Auth and ownership            | [Auth](./architecture.md#auth), [organizations](./architecture.md#organizations)                                                          | `apps/api/src/auth.ts`, `apps/api/src/routes.ts`, `packages/db/src/schema.ts`                                                                      |
+| Public API and tokens         | [Auth](./architecture.md#auth), [conventions](./architecture.md#public-api-conventions)                                                   | `apps/api/src/credentials.ts`, `apps/api/src/public-api/`, `apps/api/src/api-tokens/`, `apps/api/src/idempotency.ts`, `apps/api/src/audit/`        |
+| Webhooks out                  | [Webhooks](./architecture.md#webhooks)                                                                                                    | `apps/api/src/webhooks/`, `packages/db/src/webhooks.ts`, `packages/shared/src/webhooks.ts`                                                         |
+| OAuth provider and MCP        | [Auth](./architecture.md#auth), [MCP](./architecture.md#mcp)                                                                              | `apps/api/src/oauth/`, `apps/api/src/mcp/`, `apps/web/src/features/developers/OAuthConsent.tsx`                                                    |
 | Bounties and Jira             | [Bounties](./architecture.md#bounties)                                                                                                    | `apps/api/src/bounties/routes.ts`, `apps/api/src/jira/`, `packages/core/src/bounty.ts`                                                             |
 | Pricing and specs             | [Pricing](./architecture.md#pricing)                                                                                                      | `packages/core/src/sizing.ts`, `packages/core/src/pricing/`, `apps/api/src/sizing/`, `apps/api/src/pricing/`                                       |
 | GitHub snapshots              | [GitHub](./architecture.md#github), [App setup](./github-apps.md)                                                                         | `apps/api/src/github/`, `packages/github/`                                                                                                         |

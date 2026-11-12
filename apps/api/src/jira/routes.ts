@@ -38,6 +38,7 @@ import {
 } from "@sandbox-factory/jira";
 import {
   boardSelectionSchema,
+  connectUrlResponseSchema,
   registerBoardSchema,
   updateBoardSchema,
 } from "@sandbox-factory/shared";
@@ -55,6 +56,7 @@ import {
   safePath,
   signState,
   verifyState,
+  wantsJson,
 } from "../connect-state.js";
 
 /** What the routes need. Supplied by `createApp`, faked in tests. */
@@ -276,7 +278,10 @@ export function mountJiraRoutes<Env extends JiraAppEnv>(
     // consented, and the connection dies in an hour with nothing to renew it.
     url.searchParams.set("prompt", "consent");
 
-    return c.redirect(url.toString());
+    // An API client gets the URL to hand a person; a browser goes there.
+    return wantsJson(c.req.header("accept"))
+      ? c.json(connectUrlResponseSchema.parse({ url: url.toString() }))
+      : c.redirect(url.toString());
   });
 
   /**

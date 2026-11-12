@@ -550,3 +550,24 @@ test("a blob is read by its object id and decoded as text", async () => {
     GithubApiError,
   );
 });
+
+test("an issue is read by number, with its labels however GitHub spells them", async () => {
+  const { client, fetch } = clientWith(() =>
+    json({
+      number: 12,
+      title: "Retry failed payouts",
+      body: null,
+      html_url: "https://github.com/acme/app/issues/12",
+      labels: ["bug", { name: "payments", color: "fff" }],
+    }),
+  );
+  const issue = await client.issue("acme/app", 12);
+  assert.equal(issue.title, "Retry failed payouts");
+  assert.deepEqual(issue.labels, ["bug", { name: "payments", color: "fff" }]);
+  assert.equal(
+    fetch.calls[0]?.url,
+    "https://api.github.com/repos/acme/app/issues/12",
+  );
+  const missing = clientWith(() => json({ message: "Not Found" }, 404));
+  await assert.rejects(missing.client.issue("acme/app", 13), GithubNotFound);
+});

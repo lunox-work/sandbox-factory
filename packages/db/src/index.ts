@@ -175,6 +175,50 @@ export type {
   StoredRepoSnapshot,
 } from "./repo-snapshots.js";
 export { createOrganizationStore } from "./organizations.js";
+export { createApiTokenStore } from "./api-tokens.js";
+export type {
+  ApiTokenStore,
+  NewApiToken,
+  ResolvedApiToken,
+  StoredApiToken,
+} from "./api-tokens.js";
+export { AUDIT_RETENTION_DAYS, createAuditStore } from "./audit.js";
+export type {
+  AuditEntry,
+  AuditListOptions,
+  AuditStore,
+  AuditVia,
+  NewAuditEntry,
+} from "./audit.js";
+export {
+  createWebhookStore,
+  deliveryState,
+  WEBHOOK_DELIVERY_RETENTION_DAYS,
+} from "./webhooks.js";
+export type {
+  ClaimedWebhookDelivery,
+  NewWebhookEndpoint,
+  StoredWebhookDelivery,
+  StoredWebhookEndpoint,
+  WebhookAttempt,
+  WebhookEndpointChange,
+  WebhookEvent,
+  WebhookStore,
+} from "./webhooks.js";
+export { createIdempotencyStore, IDEMPOTENCY_TTL_MS } from "./idempotency.js";
+export type {
+  IdempotencyBegin,
+  IdempotencyClaim,
+  IdempotencyStore,
+} from "./idempotency.js";
+export { createOAuthGrantStore } from "./oauth-grants.js";
+export type {
+  OAuthGrant,
+  OAuthGrantStore,
+  ResolvedOAuthAccessToken,
+} from "./oauth-grants.js";
+export { createUsageStore } from "./usage.js";
+export type { RunCount, UsageStore } from "./usage.js";
 export type {
   Membership,
   OrganizationMember,
@@ -186,6 +230,8 @@ export { createObjectStore, isNotFound, sourceArchiveKey } from "./objects.js";
 export type { ObjectStore, ObjectStoreOptions, PutOptions } from "./objects.js";
 export {
   account,
+  apiToken,
+  deviceCode,
   invitation,
   member,
   organization,
@@ -197,6 +243,8 @@ export {
 } from "./schema.js";
 export type {
   AccountRow,
+  ApiTokenRow,
+  DeviceCodeRow,
   InvitationRow,
   OrganizationKind,
   MemberRow,

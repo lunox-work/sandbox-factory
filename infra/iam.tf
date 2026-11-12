@@ -34,7 +34,7 @@ resource "aws_iam_role_policy_attachment" "task_execution" {
 data "aws_iam_policy_document" "read_secrets" {
   statement {
     actions   = ["ssm:GetParameters"]
-    resources = [for p in aws_ssm_parameter.app : p.arn]
+    resources = concat([for p in aws_ssm_parameter.app : p.arn], [for p in aws_ssm_parameter.worker : p.arn])
   }
 }
 

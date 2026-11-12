@@ -46,7 +46,7 @@ test("normalizes only whitespace at line ends and around the text", () => {
 });
 
 test("declares a bounty's origins and bounds", () => {
-  assert.deepEqual([...BOUNTY_ORIGINS], ["manual", "jira"]);
+  assert.deepEqual([...BOUNTY_ORIGINS], ["manual", "jira", "github"]);
   assert.deepEqual(BOUNTY_LIMITS, { title: 255, description: 20_000 });
   assert.ok(BOUNTY_RUN_KINDS.includes("bounty"));
   // A bounty id is private provenance, like the pointers it replaced.

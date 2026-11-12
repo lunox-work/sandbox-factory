@@ -7,6 +7,8 @@ import {
   decideBountySchema,
   createSandboxSchema,
   createBountySchema,
+  importGithubIssueSchema,
+  postBountySchema,
   proposeBountySchema,
   bountyDtoSchema,
   bountyListFilterSchema,
@@ -379,4 +381,34 @@ test("a bounty list is narrowed by how far its bounties have got", () => {
     false,
   );
   assert.equal(bountyListFilterSchema.parse({}).status, undefined);
+});
+
+test("a bounty is imported from a github.com issue URL, and nothing else", () => {
+  const parsed = importGithubIssueSchema.parse({
+    source: { githubIssue: "https://github.com/acme/app/issues/12" },
+  });
+  assert.deepEqual(parsed.stack, []);
+  for (const githubIssue of [
+    "https://github.com/acme/app/pull/12",
+    "https://github.com/acme/app/issues/0",
+    "http://github.com/acme/app/issues/12",
+    "https://gitlab.com/acme/app/issues/12",
+    "https://github.com/acme/app/issues/12?x=1",
+  ])
+    assert.equal(
+      importGithubIssueSchema.safeParse({ source: { githubIssue } }).success,
+      false,
+      githubIssue,
+    );
+  assert.equal(
+    postBountySchema.safeParse({ title: "Fix login" }).success,
+    true,
+  );
+  assert.equal(
+    postBountySchema.safeParse({
+      title: "Fix login",
+      source: { githubIssue: "https://github.com/acme/app/issues/12" },
+    }).success,
+    false,
+  );
 });

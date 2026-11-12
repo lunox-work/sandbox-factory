@@ -31,6 +31,9 @@ const SandboxFilesPage = lazy(() =>
     default: SandboxFilesPage,
   })),
 );
+import { DeviceApprovalPage } from "./features/developers/DeviceApproval";
+import { DevelopersPage } from "./features/developers/DevelopersPage";
+import { OAuthConsentPage } from "./features/developers/OAuthConsent";
 import { newBountyUrl } from "./features/onboarding/prefill";
 import { setupComplete } from "./features/onboarding/setup";
 import { useWorkspaceSetup } from "./features/onboarding/useWorkspaceSetup";
@@ -43,6 +46,10 @@ import {
   pathForScreen,
   repositoryForPath,
   sandboxFilesForPath,
+  deviceCodeForPath,
+  developerSectionForPath,
+  developersPath,
+  isOAuthConsentPath,
   type ConnectionTab,
   screenForPath,
   slugForPath,
@@ -52,9 +59,12 @@ import { useOrganizations } from "./useOrganizations";
 
 export function App() {
   const { data: session, isPending } = useSession();
-  const { pathname } = useLocation();
+  const { pathname, search } = useLocation();
   // A version's files open in a tab of their own, outside the shell.
   const sandboxFiles = sandboxFilesForPath(pathname);
+  // So does approving a command-line client's sign-in, or an app's.
+  const deviceCode = deviceCodeForPath(pathname, search);
+  const oauthConsent = isOAuthConsentPath(pathname);
 
   // Three states, not two: rendering sign-in while the session resolves would
   // flash it at a signed-in user on every reload.
@@ -79,7 +89,11 @@ export function App() {
   return (
     <ServerDataProvider key={session.user.id} userId={session.user.id}>
       <Leaving />
-      {sandboxFiles !== undefined ? (
+      {deviceCode !== undefined ? (
+        <DeviceApprovalPage initialCode={deviceCode} />
+      ) : oauthConsent ? (
+        <OAuthConsentPage search={search} />
+      ) : sandboxFiles !== undefined ? (
         <Suspense
           fallback={
             <main className="grid min-h-dvh place-items-center">
@@ -121,6 +135,7 @@ function Signed({
   const location = useLocation();
   const screen = screenForPath(location.pathname);
   const repositoryId = repositoryForPath(location.pathname);
+  const developerSection = developerSectionForPath(location.pathname);
 
   // An old `/organizations` or `/o/acme/jira` link opens the page, then the
   // address bar is brought up to date. Replaced rather than pushed: it is the
@@ -141,6 +156,25 @@ function Signed({
    * active last.
    */
   const organizations = useOrganizations(slugForPath(location.pathname));
+
+  /*
+    `/developers` names no workspace: it opens on the one in the rail, and
+    the address becomes that workspace's own once it is known. Replaced,
+    not pushed: it is the same page.
+  */
+  const activeSlug = organizations.active?.slug;
+  const unscopedDevelopers =
+    developerSection !== undefined &&
+    slugForPath(location.pathname) === undefined;
+  useEffect(() => {
+    if (unscopedDevelopers && activeSlug !== undefined) {
+      replaceLocation(
+        developersPath(activeSlug, developerSection) +
+          window.location.search +
+          window.location.hash,
+      );
+    }
+  }, [unscopedDevelopers, activeSlug, developerSection]);
 
   /**
    * The bounty on its own page, reported up by `BountyPage` so the trail can
@@ -226,13 +260,15 @@ function Signed({
                   ? "Bounties"
                   : screen === "new-bounty"
                     ? "New bounty"
-                    : screen === "bounty"
-                      ? (bountyName ?? "Bounty")
-                      : screen === "org-repository"
-                        ? (repositoryName ?? "Repository")
-                        : screen === "not-found"
-                          ? "Page not found"
-                          : (organizations.active?.name ?? "Workspace");
+                    : screen === "developers"
+                      ? "Developers"
+                      : screen === "bounty"
+                        ? (bountyName ?? "Bounty")
+                        : screen === "org-repository"
+                          ? (repositoryName ?? "Repository")
+                          : screen === "not-found"
+                            ? "Page not found"
+                            : (organizations.active?.name ?? "Workspace");
     document.title = `${page} · Lunox`;
   }, [bountyName, organizations.active?.name, repositoryName, screen]);
 
@@ -377,6 +413,8 @@ function Signed({
             navigate("org-settings", organization.slug);
           } else if (screen === "org-repository") {
             navigate("org-settings", organization.slug, undefined, "github");
+          } else if (screen === "developers") {
+            visit(developersPath(organization.slug, developerSection));
           }
         }}
         onNavigate={navigate}
@@ -557,6 +595,34 @@ function Signed({
           />
         ) : screen === "not-found" ? (
           <NotFound onOpenHome={() => navigate("home")} />
+        ) : screen === "developers" ? (
+          organizations.active === null || developerSection === undefined ? (
+            <NoOrganization
+              loading={organizations.loading}
+              notFound={organizations.notFound}
+              error={organizations.error}
+              onRetry={organizations.retry}
+              onOpenOrganizations={() => navigate("organizations")}
+              onCreateWorkspace={() => navigate("create-org")}
+            />
+          ) : (
+            <DevelopersPage
+              // Keyed by id, so another workspace's tokens or a half-filled
+              // form never carry over a switch.
+              key={organizations.active.id}
+              organization={organizations.active}
+              section={developerSection}
+              onNavigate={visit}
+              onOpenConnection={(tab) =>
+                navigate(
+                  "org-settings",
+                  organizations.active?.slug,
+                  undefined,
+                  tab,
+                )
+              }
+            />
+          )
         ) : screen === "org-settings" ? (
           organizations.active === null ? (
             <NoOrganization

@@ -5,6 +5,10 @@
 
 import { serve } from "@hono/node-server";
 import {
+  AUDIT_RETENTION_DAYS,
+  createApiTokenStore,
+  createAuditStore,
+  createOAuthGrantStore,
   createBountyRunStore,
   createAnalysisRunStore,
   createArtifactStore,
@@ -31,7 +35,11 @@ import {
   createSandboxStore,
   createTokenCipher,
   createFlowWaitStore,
+  createUsageStore,
   createWorkspaceSetupStore,
+  createWebhookStore,
+  createIdempotencyStore,
+  WEBHOOK_DELIVERY_RETENTION_DAYS,
   parseRunChange,
   RUN_CHANGED_CHANNEL,
   RUN_ENDED_CHANNEL,
@@ -65,6 +73,10 @@ import { AnalysisWatchdog } from "./analysis/watchdog.js";
 import { hiddenFrom } from "./analysis/routes.js";
 import { isAtLeastAdmin } from "./access.js";
 import { createRunChangeHub } from "./events.js";
+import { WebhookEmitter } from "./webhooks/emitter.js";
+import { WebhookSender } from "./webhooks/sender.js";
+import { isLocalOrigin } from "./webhooks/ssrf.js";
+import { nodeTransport } from "./webhooks/transport.js";
 import { GithubReconciler } from "./github/reconcile.js";
 import { GithubSnapshotter } from "./github/snapshot.js";
 import { resolveImageDigest } from "./image-digest.js";
@@ -125,6 +137,10 @@ const contextFor = (
   bounty: Parameters<typeof heldContext>[2],
 ) => heldContext({ contexts: bountyContexts }, organizationId, bounty);
 const rateCards = createRateCardStore(connection.db);
+/** What machine credentials changed; kept `AUDIT_RETENTION_DAYS`. */
+const audit = createAuditStore(connection.db);
+/** Creates' first answers, replayed to retries for a day. */
+const idempotencyKeys = createIdempotencyStore(connection.db, tokenCipher);
 const bountyWritebacks = createBountyWritebackStore(connection.db);
 
 const auth = createAuth({
@@ -247,6 +263,21 @@ const bountyDelivery =
             : { ok: false, reason: result.failure.reason };
         },
         onBackgroundError: (code) => console.error(code),
+        // Declared below; called only once a writeback has run.
+        onFailed: (organizationId, writeback) => {
+          void webhookEmitter.emit(
+            organizationId,
+            "writeback.failed",
+            `${writeback.id}:${writeback.updatedAt}`,
+            {
+              writebackId: writeback.id,
+              proposalId: writeback.proposalId,
+              step: writeback.step,
+              status: writeback.status,
+              errorCode: writeback.errorCode,
+            },
+          );
+        },
       });
 /*
   Sizing needs a model and nothing else: a bounty written here is sized with
@@ -518,6 +549,29 @@ const sandbox =
           sandboxCutter?.kick();
           sandboxPreparer?.kick();
         },
+        onPublished: (
+          organizationId: string,
+          published: {
+            sandboxId: string;
+            versionId: string;
+            version: number;
+            expiresAt: Date;
+            at: Date;
+          },
+        ) => {
+          void webhookEmitter.emit(
+            organizationId,
+            "sandbox.published",
+            `${published.versionId}:${published.at.toISOString()}`,
+            {
+              sandboxId: published.sandboxId,
+              sandboxVersionId: published.versionId,
+              version: published.version,
+              state: "published",
+              expiresAt: published.expiresAt.toISOString(),
+            },
+          );
+        },
         ensureWorker: () => workerLauncher.ensureWorker(),
         maxActive: env.MAX_ACTIVE_RUNS_PER_ORG,
         onLaunchError: () => console.error("analysis_worker_launch_failed"),
@@ -641,6 +695,28 @@ const githubContext =
             }),
       };
 
+/**
+ * Webhooks out: the store (secrets under the integration cipher), the
+ * sender that delivers what is due, and the emitter that turns changes
+ * into deliveries. http to localhost only when this server is local.
+ */
+const webhookStore = createWebhookStore(connection.db, tokenCipher);
+const webhookPolicy = { allowLocalHttp: isLocalOrigin(env.BETTER_AUTH_URL) };
+const webhookSender = new WebhookSender({
+  store: webhookStore,
+  transport: nodeTransport(),
+  policy: webhookPolicy,
+  onError: (code) => console.error(code),
+});
+const webhookEmitter = new WebhookEmitter({
+  store: webhookStore,
+  analysisRuns,
+  bountyRuns,
+  sandboxes: sandboxStore,
+  onEnqueued: () => webhookSender.kick(),
+  onError: (code) => console.error(code),
+});
+
 /** What the pages following runs are told, from the database's announcements. */
 const runChanges = createRunChangeHub();
 const app = createApp({
@@ -664,6 +740,31 @@ const app = createApp({
     contexts: bountyContexts,
     repos: githubRepos,
     ...(githubContext === undefined ? {} : { githubContext }),
+    ...(github === undefined
+      ? {}
+      : {
+          // An imported issue is read with a token narrowed to its
+          // repository and `issues: read`.
+          githubIssues: {
+            repos: githubRepos,
+            issuesFor: async (
+              organizationId: string,
+              repo: { connectionId: string; externalId: string },
+            ) => {
+              const found = await github.connections.get(
+                organizationId,
+                repo.connectionId,
+              );
+              return found === null || !found.healthy
+                ? null
+                : installationClient(
+                    github.installations,
+                    found.installationId,
+                    { kind: "issues", repositoryId: repo.externalId },
+                  );
+            },
+          },
+        }),
     profiles: bountyProfiles,
     connections: jiraConnections,
     writebacks: bountyWritebacks,
@@ -701,13 +802,38 @@ const app = createApp({
   },
   setup: createWorkspaceSetupStore(connection.db),
   flows: { waits: createFlowWaitStore(connection.db) },
+  apiTokens: createApiTokenStore(connection.db),
+  oauthGrants: createOAuthGrantStore(connection.db),
+  publicUrl: env.BETTER_AUTH_URL,
+  usage: createUsageStore(connection.db),
+  audit,
+  idempotencyKeys,
+  webhooks: {
+    webhooks: webhookStore,
+    policy: webhookPolicy,
+    onEnqueued: () => webhookSender.kick(),
+  },
   buildInfo: build,
   originVerify: env.ORIGIN_VERIFY,
+  minClientVersions: env.MIN_CLIENT_VERSIONS,
 });
 
 const bountyWatchdog = new BountyWatchdog({
   runs: bountyRuns,
   writebacks: bountyWritebacks,
+  retention: [
+    (now) =>
+      audit.prune(
+        new Date(now.getTime() - AUDIT_RETENTION_DAYS * 24 * 60 * 60_000),
+      ),
+    (now) => idempotencyKeys.prune(now),
+    (now) =>
+      webhookStore.pruneDeliveries(
+        new Date(
+          now.getTime() - WEBHOOK_DELIVERY_RETENTION_DAYS * 24 * 60 * 60_000,
+        ),
+      ),
+  ],
   onError: (code) => console.error(code),
 });
 bountyWatchdog.start();
@@ -716,6 +842,7 @@ bountyProfiler?.start();
 sandboxCutter?.start();
 sandboxPreparer?.start();
 githubReconciler?.start();
+webhookSender.start();
 // The worker announces each run it ends; the profiler moves on it at once
 // rather than on its next sweep, which stays for a notification missed.
 if (bountyProfiler !== undefined)
@@ -730,7 +857,10 @@ if (bountyProfiler !== undefined)
 connection
   .listen(RUN_CHANGED_CHANNEL, (payload) => {
     const change = parseRunChange(payload);
-    if (change !== null) runChanges.publish(change);
+    if (change === null) return;
+    runChanges.publish(change);
+    // Every process hears it; the event's id keeps it one delivery.
+    void webhookEmitter.onRunChange(change);
   })
   .catch((error: unknown) =>
     console.error("run_changed_listen_failed", describeError(error)),
@@ -757,6 +887,7 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
       sandboxCutter?.stop(),
       sandboxPreparer?.stop(),
       githubSnapshotter?.stop(),
+      webhookSender.stop(),
     ]).then(() => {
       server.close(() => {
         void connection.close().then(() => process.exit(0));

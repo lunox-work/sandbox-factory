@@ -512,6 +512,48 @@
       "when": 1792343358576,
       "tag": "0072_rubric_measured_wait",
       "breakpoints": true
+    },
+    {
+      "idx": 73,
+      "version": "7",
+      "when": 1794439547759,
+      "tag": "0073_dear_spot",
+      "breakpoints": true
+    },
+    {
+      "idx": 74,
+      "version": "7",
+      "when": 1794441208831,
+      "tag": "0074_oauth_provider",
+      "breakpoints": true
+    },
+    {
+      "idx": 75,
+      "version": "7",
+      "when": 1794447218524,
+      "tag": "0075_audit_log",
+      "breakpoints": true
+    },
+    {
+      "idx": 76,
+      "version": "7",
+      "when": 1794447595142,
+      "tag": "0076_webhooks",
+      "breakpoints": true
+    },
+    {
+      "idx": 77,
+      "version": "7",
+      "when": 1794448249778,
+      "tag": "0077_bounty_source_url",
+      "breakpoints": true
+    },
+    {
+      "idx": 78,
+      "version": "7",
+      "when": 1794448728848,
+      "tag": "0078_idempotency_keys",
+      "breakpoints": true
     }
   ]
 }

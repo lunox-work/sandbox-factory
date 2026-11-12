@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { readPrivateKey } from "@sandbox-factory/github";
 import { AGENT_LIMITS_DEFAULT } from "./agent/loop.js";
+import { E2B_JOB_BUDGET_MS } from "./evaluation/e2b.js";
 import { JOB_UID_MAX, JOB_UID_MIN } from "./evaluation/isolation.js";
 const blank = (value: unknown) => (value === "" ? undefined : value);
 /** An unset secret: empty, or the placeholder the deploy's secrets start as. */
@@ -50,13 +51,40 @@ const schema = z.object({
     z.coerce.number().int().positive().max(100_000).default(20_000),
   ),
   /**
-   * Where sandbox builds run their baseline. `local-process` is a
-   * development provider, not an isolation boundary, so it is opt-in; with
-   * `none` a build fails with `evaluation_failed`.
+   * Where sandbox builds run their baseline. `e2b` runs each job in a fresh
+   * E2B sandbox (`evaluation/e2b.ts`) and needs `E2B_API_KEY`.
+   * `local-process` is a development provider, not an isolation boundary, so
+   * it is opt-in; with `none` a build fails with `evaluation_failed`.
    */
   EVALUATION_PROVIDER: z.preprocess(
     (value) => (value === "" ? undefined : value),
-    z.enum(["none", "local-process"]).default("none"),
+    z.enum(["none", "local-process", "e2b"]).default("none"),
+  ),
+  /** The E2B key; read by the worker only, never sent into a sandbox. */
+  E2B_API_KEY: z.preprocess(unsetSecret, z.string().min(1).optional()),
+  /**
+   * The E2B template jobs start from, by name or id: one with Node 22.12 or
+   * later and no start command. The SDK's `base` when unset.
+   */
+  E2B_TEMPLATE: z.preprocess(
+    blank,
+    z
+      .string()
+      .regex(/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$/)
+      .optional(),
+  ),
+  /**
+   * One job's whole budget, every command included, and so the sandbox's
+   * lifetime at E2B (plus a minute). Within E2B's one-hour Hobby limit.
+   */
+  E2B_JOB_TIMEOUT_SECONDS: z.preprocess(
+    blank,
+    z.coerce
+      .number()
+      .int()
+      .min(60)
+      .max(60 * 60)
+      .default(E2B_JOB_BUDGET_MS / 1000),
   ),
   /**
    * The first of the uids a root worker runs `local-process` jobs as, one
@@ -115,6 +143,10 @@ export function parseWorkerEnv(
   )
     throw new Error(
       "EVALUATION_PROVIDER=local-process is a development provider, not an isolation boundary; it is refused with NODE_ENV=production.",
+    );
+  if (env.EVALUATION_PROVIDER === "e2b" && env.E2B_API_KEY === undefined)
+    throw new Error(
+      "EVALUATION_PROVIDER=e2b needs E2B_API_KEY; set it, or unset EVALUATION_PROVIDER to run without builds.",
     );
   if (Boolean(env.S3_ACCESS_KEY_ID) !== Boolean(env.S3_SECRET_ACCESS_KEY))
     throw new Error("Object storage keys must be configured together.");

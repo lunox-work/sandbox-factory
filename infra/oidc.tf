@@ -263,7 +263,7 @@ resource "aws_iam_role_policy_attachment" "github_plan_readonly" {
 # .github/workflows/terraform.yml.
 output "plan_unrefreshable_resources" {
   description = "Resources the read-only plan role cannot refresh, because it is denied their values. The plan workflow excludes them explicitly."
-  value       = ["aws_ssm_parameter.app"]
+  value       = ["aws_ssm_parameter.app", "aws_ssm_parameter.worker"]
 }
 
 # Defence in depth: an explicit deny overrides any allow a future policy

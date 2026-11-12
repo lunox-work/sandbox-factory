@@ -8,6 +8,8 @@ import { unknownBuildInfo, type BuildInfoDto } from "@sandbox-factory/shared";
 import type { KeyObject } from "node:crypto";
 import { z } from "zod";
 
+import { parseClientFloors } from "./client-version.js";
+
 /**
  * An optional secret that has no value. Terraform seeds every secret with
  * `REPLACE_ME` (infra/secrets.tf) and compose passes an unset var as "", and
@@ -172,6 +174,21 @@ const envSchema = z.object({
   // Unset, the check is not installed. Set in the CloudFront-to-Fargate deploy
   // in `infra/`, where the task is internet-reachable with no upstream filter.
   ORIGIN_VERIFY: z.string().optional(),
+  /**
+   * The oldest version of each command-line client served, as
+   * `client=semver` pairs (`duediligence=0.4.0,carveout=0.2.0`). A client
+   * sending an older `Lunox-Client-Version` is answered 426. Unset or
+   * empty: no floor. A value that does not parse stops the boot.
+   */
+  MIN_CLIENT_VERSIONS: z
+    .string()
+    .optional()
+    .transform((value, context) => {
+      const parsed = parseClientFloors(value);
+      if (parsed.ok) return parsed.floors;
+      context.addIssue({ code: "custom", message: parsed.reason });
+      return z.NEVER;
+    }),
 
   // Optional as a pair. Existing API features stay available without sizing.
   ANTHROPIC_API_KEY: z.preprocess(unsetSecret, z.string().min(1).optional()),

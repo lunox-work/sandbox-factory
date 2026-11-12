@@ -56,6 +56,9 @@ import type { contextRun } from "./context-fixtures.js";
 import { fixture, sha, slice, sliceRun, stamp } from "./fixture-slice.js";
 import type { SliceOutput } from "./fixture-slice.js";
 import { timingRecorder } from "../src/timing.js";
+import { createE2BProvider } from "../src/evaluation/e2b.js";
+import { fakeE2B } from "./e2b-fake.js";
+import type { FakeOutcome } from "./e2b-fake.js";
 
 /**
  * What the test runner reports for a hidden test that failed as one should:
@@ -281,6 +284,8 @@ async function runBuild(
     served: readonly ReturnType<typeof contextRun>[];
     /** The slice run's outputs, when not the fixture's own. */
     slice: SliceOutput;
+    /** The build's calibration; off unless a test is about it. */
+    calibration: "reference" | "off";
   }> = {},
 ) {
   const { artifacts, objects } = options.slice ?? (await slice());
@@ -348,6 +353,7 @@ async function runBuild(
   const adapter = createSandboxBuildAdapter({
     provider,
     ...(options.agent === undefined ? {} : { agent: options.agent }),
+    calibration: options.calibration ?? "off",
     now: () => new Date(stamp),
   });
   const files = await adapter.run(input);
@@ -1426,6 +1432,131 @@ test("provider failures are evaluation failures and the job is still torn down",
     (error: unknown) =>
       error instanceof AnalysisError && error.code === "evaluation_failed",
   );
+});
+
+/** An E2B provider on a fake client that answers commands like `fakeProvider`. */
+function fakeE2BProvider(
+  script: (command: string) => FakeOutcome | Error | undefined = () =>
+    undefined,
+  options: Parameters<typeof fakeE2B>[1] & { budgetMs?: number } = {},
+) {
+  const fake = fakeE2B(script, {
+    ...options,
+    // The lockfile npm prepares, as `fakeProvider` reads it back.
+    files: { "/home/user/job/work/package-lock.json": '{"lockfileVersion":3}' },
+  });
+  return {
+    fake,
+    provider: createE2BProvider({
+      client: fake.client,
+      now: fake.now,
+      ...(options.budgetMs === undefined ? {} : { budgetMs: options.budgetMs }),
+    }),
+  };
+}
+
+test("an e2b job reports the baseline a scripted job does, its egress cut on the record", async () => {
+  const local = await runBuild(
+    fakeProvider((argv) => (runsHiddenTest(argv) ? TAP_FAILED : {})).provider,
+  );
+  const { fake, provider } = fakeE2BProvider((command) =>
+    command.includes("'--test-reporter=tap'") ? TAP_FAILED : undefined,
+  );
+  const hosted = await runBuild(provider);
+  const { executions: localRuns, ...localReport } = local.manifest.baseline ?? {
+    executions: [],
+  };
+  const { executions: hostedRuns, ...hostedReport } = hosted.manifest
+    .baseline ?? { executions: [] };
+  assert.deepEqual(hostedReport, localReport);
+  assert.equal(hosted.manifest.ready, true);
+  assert.deepEqual(
+    hosted.files.map((file) => file.path).sort(),
+    local.files.map((file) => file.path).sort(),
+  );
+  assert.equal(
+    await hosted.read("project/package-lock.json"),
+    await local.read("project/package-lock.json"),
+  );
+  const [record] = hostedRuns;
+  const [fakeRecord] = localRuns;
+  assert.deepEqual(
+    { ...record, environment: null, jobId: null },
+    { ...fakeRecord, environment: null, jobId: null, egressCut: true },
+  );
+  assert.equal(record?.jobId, "sbx_1");
+  assert.equal(record?.environment.provider, "e2b");
+  assert.equal(hosted.manifest.evaluator?.provider, "e2b");
+  assert.equal(fake.killed(), 1);
+  // Each hidden test ran twice, each time from a fresh copy.
+  assert.equal(
+    fake.runs.filter((run) => run.command.includes("'--test-reporter=tap'"))
+      .length,
+    2,
+  );
+  assert.ok(
+    fake.runs
+      .filter((run) => run.command.includes("'--test-reporter=tap'"))
+      .every((run) => run.cwd === "/home/user/job/fresh"),
+  );
+});
+
+test("an e2b job is torn down after success, failure, a timeout, a thrown error and a spent budget", async () => {
+  // A failing step: recorded, not ready, torn down.
+  const failing = fakeE2BProvider((command) =>
+    command.startsWith("exec 'npm' 'run' 'build'")
+      ? { exitCode: 2, stderr: "error TS2304" }
+      : undefined,
+  );
+  const failed = await runBuild(failing.provider);
+  assert.equal(failed.manifest.ready, false);
+  assert.match(
+    failed.manifest.baseline?.reasons.join(" ") ?? "",
+    /build exited with 2/,
+  );
+  assert.equal(failing.fake.killed(), 1);
+  // A step past its own timeout.
+  const slow = fakeE2BProvider((command) =>
+    command.startsWith("exec 'npm' 'ci'") ? { timedOut: true } : undefined,
+  );
+  const timedOut = await runBuild(slow.provider);
+  assert.match(
+    timedOut.manifest.baseline?.reasons.join(" ") ?? "",
+    /install timed out/,
+  );
+  assert.equal(timedOut.manifest.baseline?.executions[0]?.egressCut, false);
+  assert.equal(slow.fake.killed(), 1);
+  // The SDK throwing mid-job, and the budget running out: the job failed.
+  for (const { fake, provider } of [
+    fakeE2BProvider((command) =>
+      command.startsWith("exec 'npm' 'run' 'build'")
+        ? new Error("sandbox unreachable")
+        : undefined,
+    ),
+    fakeE2BProvider(
+      (command) =>
+        command.startsWith("exec 'npm' 'ci'")
+          ? { timedOut: true, advanceMs: 10_000 }
+          : undefined,
+      { budgetMs: 5_000 },
+    ),
+  ]) {
+    await assert.rejects(
+      runBuild(provider),
+      (error: unknown) =>
+        error instanceof AnalysisError && error.code === "evaluation_failed",
+    );
+    assert.equal(fake.killed(), 1);
+  }
+  // A teardown that fails is recorded as such.
+  const stuck = fakeE2BProvider(
+    (command) =>
+      command.includes("'--test-reporter=tap'") ? TAP_FAILED : undefined,
+    { killFails: true },
+  );
+  const kept = await runBuild(stuck.provider);
+  assert.equal(kept.manifest.baseline?.executions[0]?.teardown, "failed");
+  assert.equal(kept.manifest.ready, true);
 });
 
 test("the nearest tsconfig's raw compiler options are carried, and none when there is no tsconfig", async () => {
@@ -2624,5 +2755,209 @@ test("the hidden-tests agent reads the project while the first baseline runs, an
   assert.deepEqual(events.slice(0, 2), ["baseline started", "agent turn"]);
   assert.ok(
     built.messages.includes("Hidden-tests agent wrote 1 hidden test(s)."),
+  );
+});
+
+/**
+ * A provider whose hidden tests pass only in a job that staged the
+ * reference's own file, `src/reference.ts`; a test whose file is named
+ * `stubborn` never passes. Each job's files are those staged since the last
+ * job's preparation began.
+ */
+function referenceProvider() {
+  let seen = 0;
+  let withReference = false;
+  const fake = fakeProvider((argv) => {
+    if (argv.includes("--package-lock-only")) {
+      withReference = fake.staged.slice(seen).includes("src/reference.ts");
+      seen = fake.staged.length;
+    }
+    if (!runsHiddenTest(argv)) return {};
+    return withReference && !argv.some((arg) => arg.includes("stubborn"))
+      ? TAP_PASSED
+      : TAP_FAILED;
+  });
+  return fake;
+}
+const referenceFile = {
+  path: "src/reference.ts",
+  text: "export const described = true;\n",
+};
+type Transform = {
+  acceptanceTests: { path: string }[];
+  hiddenTests: {
+    summary: string;
+    calibration?: {
+      engine: string;
+      status: string;
+      kept: string[];
+      dropped: { path: string; reason: string }[];
+      reference: { files: string[]; summary: string } | null;
+      usage: { turns: number };
+    };
+  };
+};
+
+test("hidden tests a reference passes are calibrated and kept, with the reference recorded but never shipped", async () => {
+  const fake = referenceProvider();
+  const model = scripted([
+    turn([call("run_hidden_tests", { tests: [hiddenTest] })]),
+    turn([
+      call("submit_hidden_tests", {
+        tests: null,
+        summary: "Checks the described thing.",
+      }),
+    ]),
+    // The reference: a file that is not the slice's own is refused first.
+    turn([
+      call("run_reference", {
+        files: [{ path: "package.json", text: "{}" }],
+      }),
+    ]),
+    turn([call("run_reference", { files: [referenceFile] })]),
+    turn([
+      call("submit_reference", {
+        files: null,
+        summary: "Describes the thing.\nnone",
+      }),
+    ]),
+  ]);
+  const built = await runBuild(fake.provider, {
+    version: await versionFor({
+      acceptance: false,
+      aliasRules: named,
+      fixtures: given,
+    }),
+    agent: { model, limits },
+    calibration: "reference",
+  });
+  assert.equal(
+    built.manifest.ready,
+    true,
+    JSON.stringify(built.manifest.baseline?.reasons),
+  );
+  // The first baseline, the hidden run, the reference's run: no rerun, as
+  // every test stood.
+  assert.equal(jobsOf(fake.calls), 3);
+  // The hidden agent's run, then the reference's two.
+  assert.match(
+    model.results[1]?.[0]?.content ?? "",
+    /package\.json: not the slice's source/,
+  );
+  assert.match(
+    model.results[2]?.[0]?.content ?? "",
+    /^Every hidden test passes\./,
+  );
+  // The reference saw the hidden test and duediligence's brief.
+  assert.match(model.prompts[1] ?? "", /tests\/private/);
+  const transform = JSON.parse(
+    await built.read(BUILD_TRANSFORM_PATH),
+  ) as Transform;
+  assert.deepEqual(
+    transform.acceptanceTests.map((test) => test.path),
+    [hiddenTest.path],
+  );
+  const calibration = transform.hiddenTests.calibration;
+  assert.match(calibration?.engine ?? "", /^duediligence@\d+\.\d+\.\d+$/);
+  assert.equal(calibration?.status, "ok");
+  assert.deepEqual(calibration?.kept, [hiddenTest.path]);
+  assert.deepEqual(calibration?.dropped, []);
+  assert.deepEqual(calibration?.reference, {
+    files: ["src/reference.ts"],
+    summary: "Describes the thing.\nnone",
+  });
+  assert.equal(calibration?.usage.turns, 3);
+  // The reference is evidence: no file of it is in the version.
+  assert.ok(!built.files.some((file) => file.path.endsWith("reference.ts")));
+  assert.ok(
+    built.messages.includes(
+      `Calibration kept all 1 hidden test(s) (${calibration?.engine}).`,
+    ),
+  );
+});
+
+test("a hidden test the reference cannot pass is dropped, and the build is the baseline of the set kept", async () => {
+  const fake = referenceProvider();
+  const stubborn = {
+    ...hiddenTest,
+    path: "tests/private/stubborn.test.ts",
+  };
+  const model = scripted([
+    turn([call("run_hidden_tests", { tests: [hiddenTest, stubborn] })]),
+    turn([call("submit_hidden_tests", { tests: null, summary: "Two." })]),
+    turn([
+      call("submit_reference", {
+        files: [referenceFile],
+        summary: `${stubborn.path} :: contradicts the spec`,
+      }),
+    ]),
+  ]);
+  const built = await runBuild(fake.provider, {
+    version: await versionFor({
+      acceptance: false,
+      aliasRules: named,
+      fixtures: given,
+    }),
+    agent: { model, limits },
+    calibration: "reference",
+  });
+  assert.equal(built.manifest.ready, true);
+  // The first baseline, the hidden run, the reference's, and the kept
+  // set's own.
+  assert.equal(jobsOf(fake.calls), 4);
+  assert.deepEqual(
+    built.manifest.baseline?.privateTests.map((outcome) => outcome.path),
+    [hiddenTest.path],
+  );
+  const transform = JSON.parse(
+    await built.read(BUILD_TRANSFORM_PATH),
+  ) as Transform;
+  assert.deepEqual(
+    transform.acceptanceTests.map((test) => test.path),
+    [hiddenTest.path],
+  );
+  assert.deepEqual(transform.hiddenTests.calibration?.kept, [hiddenTest.path]);
+  assert.deepEqual(
+    transform.hiddenTests.calibration?.dropped.map((item) => item.path),
+    [stubborn.path],
+  );
+  assert.match(
+    transform.hiddenTests.calibration?.dropped[0]?.reason ?? "",
+    /reference cannot satisfy it/,
+  );
+  assert.ok(!built.files.some((file) => file.path.includes("stubborn")));
+});
+
+test("with no reference, no hidden test stands, and the build stays diagnostic", async () => {
+  const fake = referenceProvider();
+  const model = scripted([
+    turn([call("run_hidden_tests", { tests: [hiddenTest] })]),
+    turn([call("submit_hidden_tests", { tests: null, summary: "One." })]),
+    // The reference agent stops without submitting.
+  ]);
+  const built = await runBuild(fake.provider, {
+    version: await versionFor({
+      acceptance: false,
+      aliasRules: named,
+      fixtures: given,
+    }),
+    agent: { model, limits },
+    calibration: "reference",
+  });
+  assert.equal(built.manifest.ready, false);
+  assert.ok(
+    built.manifest.baseline?.reasons.includes(
+      "No hidden test judges a submission.",
+    ),
+  );
+  assert.ok(
+    built.messages.some((line) =>
+      line.startsWith(`Calibration dropped ${hiddenTest.path}:`),
+    ),
+  );
+  assert.ok(
+    built.messages.some((line) =>
+      line.startsWith("Calibration kept no hidden test that should fail"),
+    ),
   );
 });

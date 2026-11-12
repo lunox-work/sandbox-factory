@@ -57,6 +57,8 @@ export interface StoredBounty extends BountyContent {
   readonly id: string;
   readonly organizationId: string;
   readonly origin: BountyOrigin;
+  /** The GitHub issue a `github` bounty was imported from; null otherwise. */
+  readonly sourceUrl: string | null;
   /**
    * What the bounty adds to the stack detected in the workspace's
    * repositories, any of which its work may touch.
@@ -142,14 +144,23 @@ export interface BountyProposalSummary {
 /** A bounty as a list shows it: without its longer text, with its proposal. */
 export type ListedBounty = Omit<
   StoredBounty,
-  "description" | "components" | "inputTruncated" | "createdBy" | "textEditedAt"
+  | "description"
+  | "components"
+  | "inputTruncated"
+  | "createdBy"
+  | "textEditedAt"
+  | "sourceUrl"
 > & { readonly proposal: BountyProposalSummary | null };
 
-/** A bounty written here. */
+/** A bounty written here, or imported from a GitHub issue. */
 export interface NewBounty {
   readonly title: string;
   readonly description: string;
   readonly stack: readonly string[];
+  /** The issue it was imported from; absent for one written here. */
+  readonly source?: { readonly origin: "github"; readonly url: string };
+  /** The source's text was longer than a bounty keeps. */
+  readonly inputTruncated?: boolean;
 }
 
 /** A change to a bounty; an absent field is left as it is. */
@@ -178,6 +189,11 @@ export interface BountyStore {
     input: NewBounty,
   ): Promise<StoredBounty>;
   get(organizationId: string, bountyId: string): Promise<StoredBounty | null>;
+  /** The bounty imported from the issue at `url`, if one was. */
+  findBySource(
+    organizationId: string,
+    url: string,
+  ): Promise<StoredBounty | null>;
   /** Newest first, a page at a time, narrowed by `options`' filters. */
   list(
     organizationId: string,
@@ -458,6 +474,7 @@ function toBounty(
     components: row.components,
     inputTruncated: row.inputTruncated,
     origin: row.origin,
+    sourceUrl: row.sourceUrl,
     stack: row.stack,
     categories: row.categories,
     createdBy: row.createdBy,
@@ -834,7 +851,9 @@ export function createBountyStore(db: Database): BountyStore {
         insertBounty(tx, organizationId, {
           title: input.title,
           description: input.description,
-          origin: "manual",
+          origin: input.source?.origin ?? "manual",
+          sourceUrl: input.source?.url ?? null,
+          inputTruncated: input.inputTruncated ?? false,
           stack: [...input.stack],
           createdBy,
         }),
@@ -843,6 +862,22 @@ export function createBountyStore(db: Database): BountyStore {
     },
 
     get: (organizationId, bountyId) => readBounty(db, organizationId, bountyId),
+
+    async findBySource(organizationId, url) {
+      const [found] = await db
+        .select({ id: bounty.id })
+        .from(bounty)
+        .where(
+          and(
+            eq(bounty.organizationId, organizationId),
+            eq(bounty.sourceUrl, url),
+          ),
+        )
+        .limit(1);
+      return found === undefined
+        ? null
+        : readBounty(db, organizationId, found.id);
+    },
 
     list: (organizationId, options = {}) =>
       listBounties(db, eq(bounty.organizationId, organizationId), options),

@@ -29,6 +29,7 @@ function bountyRow(overrides: Partial<BountyRow> = {}): BountyRow {
     components: [],
     inputTruncated: false,
     origin: "jira",
+    sourceUrl: null,
     stack: [],
     categories: [],
     createdBy: null,

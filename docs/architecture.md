@@ -98,10 +98,11 @@ development proves nothing about IAM.
 
 Better Auth, configured in `apps/api/src/auth.ts` and mounted at
 `/api/auth/*`. Google, GitHub and Atlassian only; `emailAndPassword` is never
-enabled. The seven auth tables are bundled as `authSchema` in
-`packages/db/src/auth-schema.ts`. Two naming rules fail at runtime, not
-compile time, because the adapter resolves names by string: exported consts
-are singular, column properties are camelCase.
+enabled. The fifteen auth tables (with the device plugin's `device_code` and
+the OAuth provider's seven `oauth_*`) are bundled as `authSchema` in
+`packages/db/src/auth-schema.ts`. Two naming rules
+fail at runtime, not compile time, because the adapter resolves names by
+string: exported consts are singular, column properties are camelCase.
 
 - **Account linking is implicit; `trustedProviders` makes it safe.** A
   provider whose verified email matches an existing verified account merges
@@ -116,14 +117,153 @@ are singular, column properties are camelCase.
   cookie; the extension sends `Authorization: Bearer` through the `bearer()`
   plugin. The guard in `routes.ts` hands Better Auth the whole header set.
   `packages/client` sends `credentials: "include"`.
-- **`/api/v1` requires a session**; `/health`, `/version` and `/api/auth/*` do
-  not. `createApp` without `auth` serves 503 on `/api/*`, so a deploy missing
-  the auth environment fails closed.
+- **`/api/v1` requires a credential**; `/health`, `/version`,
+  `/api/auth/*` and `GET /api/v1/openapi.json` do not. `createApp` without
+  `auth` serves 503 on `/api/*`, so a deploy missing the auth environment
+  fails closed.
+- **Every credential is one `Principal`** (`principal.ts`): user,
+  organization, scopes and `via`, one of `session`, `token`, `device` and
+  `oauth`. The guard is `credentials.ts`.
+  - _Session_: cookie or `bearer()` token, no organization, every scope; roles
+    decide, as before.
+  - _Workspace API token_: `Authorization: Bearer lnx_…`, table `api_token`
+    (SHA-256 only; secret shown once). Bound to one organization, any other
+    `:orgId` is 404. Acts as its creator, who must still be owner or admin
+    there on every use; `last_used_at` is written at most once a minute.
+  - _Device session_: from Better Auth's `device-authorization` plugin
+    (`duediligence`, `carveout`, approved at the web app's `/device`);
+    `session.device_client_id` marks it. It reaches only `GET /me`,
+    `GET /me/orgs` and `POST /orgs/:orgId/tokens/cli`, which mints that
+    client's token (90 days, scopes within `CLI_CLIENTS`) and ends the
+    session.
+  - _OAuth access token_: `Authorization: Bearer lnxat_…`, issued by the
+    OAuth provider below; resolves like an API token to its grant's
+    organization and scopes, acting as the person who consented. Refused
+    (401) once expired, its grant revoked, or that person is no longer owner
+    or admin there. Any other bearer is still Better Auth's session.
+- **Tokens are deny by default.** A bound credential reaches only routes in
+  `apps/api/src/public-api/registry.ts`, matched by Hono pattern, holding the
+  scope listed there (`API_SCOPES` in `packages/core/src/scopes.ts`). An
+  unlisted route is 403 `not_public`; a missing scope 403
+  `insufficient_scope`. A scope never widens a role. A _self_ route
+  (`scope: null`) needs none and acts only on the presenting credential:
+  `POST /tokens/self/revoke` (`api-tokens/self.ts`) revokes an API token,
+  or an OAuth access token and its refresh token (the grant stands); the
+  CLIs' `logout` calls it. Token management
+  (`/orgs/:orgId/tokens`) is session-only, for owners and admins; tokens
+  never manage tokens. Each registry entry names its request and response
+  schemas from `packages/shared`; `public-api/openapi.ts` serves them as
+  OpenAPI 3.1, and `apps/api/test/public-api.test.ts` fails on an entry
+  without schemas or a mounted route a token can reach outside the registry.
+- **OAuth 2.1 provider** (`oauth/provider.ts`): Better Auth's
+  `@better-auth/oauth-provider`, for MCP clients and other apps. Issuer
+  `<BETTER_AUTH_URL>/api/auth`; discovery at
+  `/.well-known/oauth-authorization-server[/api/auth]` and RFC 9728
+  `/.well-known/oauth-protected-resource[/mcp…]` (`oauth/discovery.ts`); no
+  `openid` scope, so no ID tokens or OIDC discovery. Authorization code with
+  PKCE (S256 only), open dynamic registration (public clients allowed;
+  clients are never managed from a session), refresh on `offline_access`,
+  opaque 15-minute access tokens and `lnxrt_` refresh tokens stored as
+  SHA-256. Sign-in is the web app's Google, GitHub and Atlassian.
+- **A grant binds one organization.** The web app's `/oauth/consent`
+  (`features/developers/OAuthConsent.tsx`) is both login and consent page:
+  it shows the client, the requested scopes (`workspace:read` checked by
+  default) and the workspaces the person owns or administers, and posts
+  `/api/auth/oauth2/consent` with the choice in `x-lunox-organization`.
+  `consentReferenceId` admits only an owner's or admin's workspace and
+  stores it as `reference_id` on the consent (the grant, unique per person,
+  client and organization) and every token. Connected apps,
+  `GET /orgs/:orgId/oauth/grants` and `POST …/grants/:id/revoke`, are
+  session-only, owners and admins; revoking deletes the grant's tokens.
 - **A session says who is asking, not what they may read.** Every store
   method takes the owner first and puts it in the query. Another owner's id
   returns 404, not 403, so ids cannot be enumerated.
 - `account` has a unique `(provider_id, account_id)`; Better Auth throws on a
   collision rather than tolerating one.
+
+## MCP
+
+`apps/api/src/mcp/`: a remote MCP server on the SDK's Web-standard
+Streamable HTTP transport, **stateless** (a server and transport per POST,
+no session id, JSON responses; GET and DELETE answer 405). Endpoints are
+toolsets: `POST /mcp` (all), `/mcp/duediligence`, `/mcp/carveout`
+(`TOOLSETS` in `tools.ts`). Read tools are GETs; write tools post work
+(`post_bounty`, `import_github_issue`, `import_jira_issue`, `size_bounty`,
+`respec`; the first four also on `/mcp/duediligence`) and `connect_github`,
+`connect_jira` return the connect route's link with what to do. Approving,
+publishing and confirming decisions have no tool. A request needs a
+bearer `lnx_` or `lnxat_` token, else 401 with
+`WWW-Authenticate: Bearer resource_metadata="…/.well-known/oauth-protected-resource/mcp…"`.
+**Every tool wraps one public route**, called in-process with the caller's
+own `Authorization`, so the guard, registry, scopes and `requireMembership`
+decide; a refusal is a tool error carrying the API's `code`. Tools take
+the workspace from `GET /me/orgs`. CloudFront routes `/mcp*` and
+`/.well-known/*` to the API uncached (`infra/cloudfront.tf`).
+
+## Public API conventions
+
+What every `/api/v1` route a machine credential reaches shares, beside the
+registry and scopes in [Auth](#auth):
+
+- **Client floor** (`client-version.ts`): `Lunox-Client-Version:
+<client>/<semver>` below its floor in `MIN_CLIENT_VERSIONS`
+  (`duediligence=0.4.0,carveout=0.2.0`; empty, none) is 426
+  `{ error, code: "client_too_old", minimumVersion }`, before any
+  credential is read, on `/api` and `/mcp*`. No header, another client or
+  an unparsable version is served.
+- **Idempotency** (`idempotency.ts`, `idempotency_key`): registry entries
+  marked `idempotent` (the creates: bounties, webhooks, runs, builds,
+  sandbox start and versions) and `POST .../tokens/cli` take
+  `Idempotency-Key` from a `token`, `oauth` or `device` principal. The
+  first 2xx or 4xx answer is kept 24 h per organization, route pattern and
+  key, encrypted, and replayed with `Idempotent-Replayed: true`; another
+  request under the key is 422 `idempotency_key_reused`, one still running
+  409 `idempotency_key_in_use`; a 5xx or 429 frees the key.
+- **Audit log** (`audit/trail.ts`, `audit_entry`): every POST, PUT, PATCH
+  and DELETE by a `token`, `oauth` or `device` principal, refusals
+  included, and a session's token, grant or webhook management: credential,
+  client, person, method, route pattern, resource id, status, request id
+  (`X-Request-Id`). Never a body, secret or query string.
+  `GET /orgs/:orgId/audit` is session-only, owners and admins, cursor-paged.
+  Kept 180 days (`AUDIT_RETENTION_DAYS`).
+- **Connect links**: `GET .../github/connect` and `.../jira/connect`
+  redirect a browser and answer `{ url }` when `Accept` puts
+  `application/json` first; connecting stays a person's browser step.
+- **Retention**: `BountyWatchdog`'s hourly `retention` passes prune audit
+  entries past 180 days, expired idempotency keys and webhook deliveries
+  past 30 days.
+
+### Webhooks
+
+`apps/api/src/webhooks/`, tables `webhook_endpoint` and `webhook_delivery`
+(`packages/db/src/webhooks.ts`). Routes under `/orgs/:orgId/webhooks`, owners
+and admins, in the registry (reads `workspace:read`, writes
+`webhooks:write`): list, get, create (answers the `whsec_` signing secret
+once), update, delete, `rotate-secret` (once), `deliveries`,
+`deliveries/:deliveryId/redeliver`, `ping`. The secret is encrypted like
+integration credentials.
+
+- **Events** (`WEBHOOK_EVENT_TYPES`, `emitter.ts`): `run.finished` and
+  `proposal.priced` (each proposal a sizing run made) and
+  `sandbox.build.finished` from the run change channel; `sandbox.published`
+  from the publish route; `writeback.failed` from `BountyDelivery`. A body is
+  `{ id, type, createdAt, organizationId, data }`, `data` ids and states
+  only. An event's id is derived from what it is about and a delivery is
+  unique per endpoint and event, so each API process hearing a change owes
+  one delivery. A change lost to a restart is lost, as for pages.
+- **Sender** (`sender.ts`): a loop in the API process claims due deliveries
+  (leased, `FOR UPDATE SKIP LOCKED`), POSTs with
+  `Lunox-Signature: t=<unix>,v1=<hex HMAC-SHA256 of "t.body">`,
+  `Lunox-Event-Id`, `Lunox-Event-Type`, 10 s timeout. Only 2xx succeeds;
+  eight attempts over about 23 h (`WEBHOOK_RETRY_DELAYS_MS`); 20 failed
+  attempts in a row disable the endpoint with the reason, and enabling
+  clears it.
+- **SSRF guard** (`ssrf.ts`, `transport.ts`): https only (http to localhost
+  only when `BETTER_AUTH_URL` is local), no credentials in the URL; every
+  resolved address is checked in the socket's own lookup, so the address
+  checked is the one connected to: private, loopback, link-local and
+  metadata, CGNAT, multicast, reserved, documentation, and IPv4 inside IPv6
+  by the IPv4 it carries. Redirects are not followed.
 
 ## Organizations
 
@@ -207,10 +347,20 @@ with three tabs, `?tab=scope|price|sandbox`. A new one is written at
 `/sandboxes/:workspace/:versionId?path=`, outside the shell. A repository's
 page is `/o/:slug/repositories/:repoId`; settings are `/o/:slug/settings`.
 
+**Developers** (`features/developers/DevelopersPage.tsx`,
+`/o/:slug/developers[/tokens|apps|mcp|reference|usage]`) is the portal for
+owners and admins; members see a notice. `/developers` opens on the
+workspace in the rail and is rewritten to its address. A new token's secret
+lives only in the tokens page's state until dismissed, never in the query
+cache. Connected apps read a 404 from the grants list as not available. The
+API reference is its own chunk, read from `GET /api/v1/openapi.json`; MCP
+toolsets are restated in `features/developers/snippets.ts` and must follow
+the API's `TOOLSETS`.
+
 ## API structure
 
 `apps/api/src/http-context.ts` and `access.ts` hold request context and access
-rules. `pricing/start-run.ts`, `pricing/approve-proposal.ts` and
+rules; `credentials.ts` admits each credential (see [Auth](#auth)). `pricing/start-run.ts`, `pricing/approve-proposal.ts` and
 `sandbox/version-service.ts` take explicit owner, input and dependencies;
 routes keep membership checks, parsing and HTTP mapping. `analysis/enqueue.ts`
 shares queue and log cleanup. Provider wiring is in `server.ts`: Anthropic
@@ -244,6 +394,15 @@ and its API (`/proposals/...`); the button reads "Price it".
 and any later source enrich it; none is required. A deployment with a model
 and no integrations sizes the bounties written in it and makes their
 sandboxes.
+
+**A GitHub issue is imported once** (`bounties/github-issue.ts`):
+`POST .../bounties` with `{ source: { githubIssue } }` reads the issue of a
+connected repository (`repository_not_connected` otherwise) through an
+`issues`-scoped installation token; a missing issue or a pull request is
+`issue_not_found`. The bounty takes the title, and the body with its labels
+as the description, origin `github`, and keeps the URL in
+`bounty.source_url`, unique per organization, so importing it again answers
+that bounty (200). Nothing follows the issue afterwards.
 
 **Jira enriches a bounty, never owns it.** A `jira_issue` row
 (`jira_issue.bounty_id`) is the pointer half of an imported bounty. The first
@@ -428,7 +587,10 @@ Hidden tests are written by an agent beside the first
 baseline (`hidden-tests.ts`), its first prompt quoting the project and a
 test file per scenario drafted by rule (`hiddenTestScaffold`: the path, the
 imports that resolve from it, the steps as comments); it may
-submit the set its last passing run ran without writing it again. The build
+submit the set its last passing run ran without writing it again. A
+reference agent then calibrates that set on duediligence's rule
+(`calibration.ts`, `duediligence/api` pinned exactly): only tests a
+reference implementation passes stand. The build
 reads the slice, the preparation and the repository's names at once, and
 shows its preview while the baseline runs. Agents run
 at the effort their work needs (`AgentEffort`): `medium` where a
@@ -544,8 +706,9 @@ One GitHub App, used two ways; the sign-in OAuth app is separate.
 - **Installation tokens** do everything unattended, minted from the App's key
   (`packages/github/src/installation-tokens.ts`), cached in memory and never
   stored. `installationClient` in `apps/api/src/github/credential.ts` narrows
-  every token to its call: `discovery` (`metadata: read`) or `repository`
-  (one repository, `contents: read`). A mint refused with 422 marks the
+  every token to its call: `discovery` (`metadata: read`), `repository`
+  (one repository, `contents: read`) or `issues` (one repository,
+  `issues: read`, for an issue import). A mint refused with 422 marks the
   repository `gone`.
 - **The user-to-server half** runs the connect flow. The grant in
   `github_grant` is encrypted like Jira's tokens and lives as long as the
@@ -659,3 +822,4 @@ Migrations are generated; these are the ones later readers ask about.
 | 0056–0057 | `bounty_context` versions; `bounty.categories`                                    |
 | 0059      | Dropped `bounty.repo_id` and `jira_board.source_repo_id`; `proposal.repositories` |
 | 0065–0067 | Cut requests, `repo_snapshot.built_at`, sandbox preparation                       |
+| 0073      | `api_token`, `device_code`, `session.device_client_id`                            |

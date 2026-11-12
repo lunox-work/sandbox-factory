@@ -19,15 +19,42 @@ import { Hono } from "hono";
 import { mountEventRoutes, type EventRouteOptions } from "./events.js";
 import { mountFlowRoutes, type FlowRouteOptions } from "./flows.js";
 import { cors } from "hono/cors";
+import { requestId } from "hono/request-id";
 import type { ErrorHandler } from "hono";
 
 import { NotFoundError, RepositoryInUseError } from "@sandbox-factory/db";
 import type {
+  ApiTokenStore,
+  AuditStore,
+  IdempotencyStore,
   EmailStore,
+  OAuthGrantStore,
   OrganizationStore,
+  UsageStore,
   UserProfileStore,
   WorkspaceSetupStore,
 } from "@sandbox-factory/db";
+
+import { mountApiTokenRoutes } from "./api-tokens/routes.js";
+import { mountSelfRevokeRoute } from "./api-tokens/self.js";
+import { mountAuditRoutes } from "./audit/routes.js";
+import { auditTrail } from "./audit/trail.js";
+import { clientVersionFloor } from "./client-version.js";
+import { credentialGuard } from "./credentials.js";
+import { idempotency } from "./idempotency.js";
+import { mountMcpRoutes } from "./mcp/routes.js";
+import {
+  mountDiscoveryRoutes,
+  resourceMetadataUrl,
+} from "./oauth/discovery.js";
+import { mountOAuthGrantRoutes } from "./oauth/grants.js";
+import { isBound } from "./principal.js";
+import { buildOpenApiDocument } from "./public-api/openapi.js";
+import { mountUsageRoutes } from "./usage/routes.js";
+import {
+  mountWebhookRoutes,
+  type WebhookRouteOptions,
+} from "./webhooks/routes.js";
 
 import type { Auth } from "./auth.js";
 import {
@@ -144,6 +171,46 @@ export interface AppOptions {
 
   /** The build record to report. Defaults to the unknown record. */
   buildInfo?: BuildInfoDto | undefined;
+
+  /**
+   * Workspace API tokens. Without it every `lnx_` token is refused and the
+   * token routes are not mounted, as in a test with no database.
+   */
+  apiTokens?: ApiTokenStore | undefined;
+  /**
+   * OAuth grants: resolves OAuth access tokens and serves connected apps.
+   * Without it every OAuth access token is refused, as in a test with no
+   * database.
+   */
+  oauthGrants?: OAuthGrantStore | undefined;
+  /**
+   * Public origin of the API (`BETTER_AUTH_URL`), which OAuth discovery
+   * and MCP's sign-in challenges name. Without it neither is mounted.
+   */
+  publicUrl?: string | undefined;
+  /** Run counts for `/usage`; not mounted without it. */
+  usage?: UsageStore | undefined;
+  /**
+   * The audit log: what machine credentials changed, and credential and
+   * webhook management. Without it nothing is recorded and `/audit` is not
+   * mounted, as in a test with no database.
+   */
+  audit?: AuditStore | undefined;
+  /** Webhooks out; the routes are not mounted without them. */
+  webhooks?: WebhookRouteOptions | undefined;
+  /**
+   * Replays a create's first answer to a retry under the same
+   * `Idempotency-Key`. Without it the header is ignored.
+   */
+  idempotencyKeys?: IdempotencyStore | undefined;
+  /**
+   * The oldest version of each command-line client served
+   * (`MIN_CLIENT_VERSIONS`); an older one is answered 426. Absent or
+   * empty, no floor.
+   */
+  minClientVersions?: Readonly<Record<string, string>> | undefined;
+  /** The clock tokens expire by. Tests only. */
+  now?: (() => Date) | undefined;
 }
 
 /** Shared by the app, the error handler and the factory's return type. */
@@ -167,6 +234,15 @@ export function createApp({
   flows,
   buildInfo = unknownBuildInfo,
   originVerify,
+  apiTokens,
+  oauthGrants,
+  publicUrl,
+  usage,
+  audit,
+  webhooks,
+  idempotencyKeys,
+  minClientVersions,
+  now,
 }: AppOptions): Hono<AppEnv> {
   const app = new Hono<AppEnv>();
 
@@ -193,6 +269,20 @@ export function createApp({
       allowMethods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     }),
   );
+  // Answered as `X-Request-Id` and kept on audit entries.
+  app.use("/api/*", requestId());
+  /**
+   * Before any credential is read: an outdated command-line client is told
+   * to upgrade, wherever it calls (the API and the MCP endpoints).
+   */
+  if (
+    minClientVersions !== undefined &&
+    Object.keys(minClientVersions).length > 0
+  ) {
+    app.use("/api/*", clientVersionFloor(minClientVersions));
+    app.use("/mcp/*", clientVersionFloor(minClientVersions));
+    app.use("/mcp", clientVersionFloor(minClientVersions));
+  }
 
   // Unauthenticated, for containers and uptime checks. Carries the version so
   // the same probe can watch a rollout.
@@ -207,6 +297,17 @@ export function createApp({
    * field not supplied by the build; see image-digest.ts.
    */
   app.get("/version", (c) => c.json(buildInfo));
+
+  /**
+   * The public API's OpenAPI document, built from the registry once.
+   * Sessionless: it describes routes, not anyone's data. Registered before
+   * the credential guard, which therefore never runs for it.
+   */
+  let openApi: Record<string, unknown> | undefined;
+  app.get("/api/v1/openapi.json", (c) => {
+    openApi ??= buildOpenApiDocument(undefined, buildInfo.version);
+    return c.json(openApi);
+  });
 
   if (auth === undefined) {
     // No auth configured: serve health and version only. 503 rather than 404
@@ -224,6 +325,16 @@ export function createApp({
    * callbacks, session reads and sign-out.
    */
   app.all("/api/auth/*", (c) => auth.handler(c.req.raw));
+
+  /**
+   * OAuth discovery and the MCP endpoints, at the origin's root where
+   * clients look for them. MCP reaches data only by calling the routes
+   * below with the caller's own credential; see `mcp/routes.ts`.
+   */
+  if (publicUrl !== undefined) {
+    mountDiscoveryRoutes(app, { auth, baseUrl: publicUrl });
+    mountMcpRoutes(app, { baseUrl: publicUrl });
+  }
 
   /**
    * Avatar pictures, sessionless. Under `/api/` so every proxy in front of
@@ -247,23 +358,35 @@ export function createApp({
   }
 
   /**
-   * Everything under /api/v1 requires a session. Resolving it from the headers
-   * covers both the cookie (web) and the bearer token (extension).
+   * Everything under /api/v1 requires a credential: a session (the web
+   * app's cookie, the extension's bearer session token) or a workspace API
+   * token (`Bearer lnx_…`). A token reaches only the public registry's
+   * routes, with their scopes; see `credentials.ts`.
    */
-  app.use("/api/v1/*", async (c, next) => {
-    const session = await auth.api.getSession({ headers: c.req.raw.headers });
-    if (session === null) {
-      return c.json({ error: "Authentication required." }, 401);
-    }
-    c.set("user", {
-      id: session.user.id,
-      email: session.user.email,
-      name: session.user.name,
-    });
-    c.set("sessionId", session.session.id);
-    await next();
-    return;
-  });
+  /**
+   * Before the guard, so a bound credential's refusals are recorded too;
+   * see `audit/trail.ts`.
+   */
+  if (audit !== undefined) app.use("/api/v1/*", auditTrail({ audit }));
+  app.use(
+    "/api/v1/*",
+    credentialGuard({
+      auth,
+      apiTokens,
+      oauthGrants,
+      resourceMetadata:
+        publicUrl === undefined ? undefined : resourceMetadataUrl(publicUrl),
+      roleOf:
+        organizations === undefined
+          ? undefined
+          : (userId, organizationId) =>
+              organizations.roleOf(userId, organizationId),
+      now,
+    }),
+  );
+
+  /** A bound credential ends itself: a client's logout. */
+  mountSelfRevokeRoute(app, { tokens: apiTokens, grants: oauthGrants });
 
   /**
    * Who am I? `id` is the account: permanent, and what anything durable must
@@ -408,7 +531,14 @@ export function createApp({
      * field on `/api/v1/me`.
      */
     app.get("/api/v1/me/orgs", async (c) => {
-      const listed = await organizations.listForUser(c.get("user").id);
+      const principal = c.get("principal");
+      // A token is one workspace's: it does not see the others its
+      // creator belongs to.
+      const listed = (
+        await organizations.listForUser(principal.user.id)
+      ).filter(
+        ({ id }) => !isBound(principal) || id === principal.organizationId,
+      );
       if (setup === undefined) return c.json({ organizations: listed });
       // Counted for the workspaces just listed, so only the caller's own.
       const counts = await setup.forOrganizations(listed.map(({ id }) => id));
@@ -494,7 +624,15 @@ export function createApp({
      */
     app.use("/api/v1/orgs/:orgId/*", async (c, next) => {
       const organizationId = c.req.param("orgId");
-      const role = await organizations.roleOf(c.get("user").id, organizationId);
+      const principal = c.get("principal");
+      // A bound credential names its own organization or none: another's
+      // id is as missing as one that does not exist.
+      if (isBound(principal) && principal.organizationId !== organizationId) {
+        throw new NotFoundError(organizationId);
+      }
+      const role =
+        principal.role ??
+        (await organizations.roleOf(principal.user.id, organizationId));
       if (role === undefined) {
         throw new NotFoundError(organizationId);
       }
@@ -502,9 +640,28 @@ export function createApp({
       await next();
       return;
     });
+    /** After membership: a key belongs to the path's workspace. */
+    if (idempotencyKeys !== undefined)
+      app.use(
+        "/api/v1/orgs/:orgId/*",
+        idempotency({ store: idempotencyKeys, now }),
+      );
 
     if (events !== undefined) mountEventRoutes(app, events);
     if (flows !== undefined) mountFlowRoutes(app, flows);
+    if (apiTokens !== undefined)
+      mountApiTokenRoutes(app, {
+        tokens: apiTokens,
+        // The device session's bearer token is in the headers; signing out
+        // with them deletes that session.
+        endSession: (headers) => auth.api.signOut({ headers }),
+        now,
+      });
+    if (oauthGrants !== undefined)
+      mountOAuthGrantRoutes(app, { grants: oauthGrants });
+    if (usage !== undefined) mountUsageRoutes(app, { usage, now });
+    if (audit !== undefined) mountAuditRoutes(app, { audit });
+    if (webhooks !== undefined) mountWebhookRoutes(app, { now, ...webhooks });
 
     /** The organization, plus the caller's role in it. Members only. */
     app.get("/api/v1/orgs/:orgId", async (c) => {

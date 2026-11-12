@@ -213,6 +213,87 @@ export function sandboxFilesPath(
     : `${page}?${new URLSearchParams({ path }).toString()}`;
 }
 
+/** Where a command-line client's device sign-in is approved. */
+export const DEVICE_PATH = "/device";
+
+/**
+ * The code a device-approval address carries, `""` when it carries none,
+ * or undefined for any other address.
+ */
+export function deviceCodeForPath(
+  pathname: string,
+  search: string,
+): string | undefined {
+  if (pathname.replace(/\/+$/, "") !== DEVICE_PATH) return undefined;
+  return new URLSearchParams(search).get("user_code") ?? "";
+}
+
+/**
+ * Where an app's OAuth sign-in asks for consent, as the API's
+ * `oauth/provider.ts` names it; Better Auth adds the signed query.
+ */
+export const OAUTH_CONSENT_PATH = "/oauth/consent";
+
+/** Whether `pathname` is the OAuth consent page. */
+export function isOAuthConsentPath(pathname: string): boolean {
+  return pathname.replace(/\/+$/, "") === OAUTH_CONSENT_PATH;
+}
+
+/**
+ * The developer portal's pages, in the order its sub-navigation lists them.
+ * `overview` is the default and never written to the URL.
+ */
+export const DEVELOPER_SECTIONS = [
+  "overview",
+  "tokens",
+  "apps",
+  "mcp",
+  "reference",
+  "usage",
+] as const;
+export type DeveloperSection = (typeof DEVELOPER_SECTIONS)[number];
+
+/**
+ * The portal without a workspace, `/developers[/:section]`, as
+ * platform.lunox.work/developers is shared: it opens on the workspace in the
+ * rail, and the shell rewrites the address to that workspace's own,
+ * `/o/:slug/developers[/:section]`.
+ */
+export const DEVELOPERS_PATH = "/developers";
+
+/** A portal page: the workspace's own when `slug` is known. */
+export function developersPath(
+  slug: string | undefined,
+  section: DeveloperSection = "overview",
+): string {
+  const page = section === "overview" ? "" : `/${section}`;
+  return slug === undefined
+    ? `${DEVELOPERS_PATH}${page}`
+    : `/o/${slug}/developers${page}`;
+}
+
+/**
+ * The portal page a path names, with or without a workspace; undefined for
+ * any other path, an unknown section included.
+ */
+export function developerSectionForPath(
+  pathname: string,
+): DeveloperSection | undefined {
+  const parts = pathname.replace(/\/+$/, "").split("/");
+  const rest =
+    parts[1] === "developers"
+      ? parts.slice(2)
+      : parts[1] === "o" &&
+          parts[2] !== undefined &&
+          parts[2] !== "" &&
+          parts[3] === "developers"
+        ? parts.slice(4)
+        : undefined;
+  if (rest === undefined || rest.length > 1) return undefined;
+  const [section = "overview"] = rest;
+  return DEVELOPER_SECTIONS.find((name) => name === section);
+}
+
 /** The version whose files a path is: `/sandboxes/:workspace/:versionId`. */
 export function sandboxFilesForPath(
   pathname: string,
@@ -458,6 +539,7 @@ export function screenForPath(pathname: string): Screen {
   }
   if (path === ONBOARDING_PATH) return "onboarding";
   if (path === NEW_BOUNTY_PATH) return "new-bounty";
+  if (developerSectionForPath(path) !== undefined) return "developers";
   if (bountyForPath(path) !== undefined) return "bounty";
   // The old per-workspace addresses show the page while `canonicalUrl`
   // rewrites them.
@@ -522,6 +604,8 @@ export function pathForScreen(
       return BOUNTIES_PATH;
     case "new-bounty":
       return NEW_BOUNTY_PATH;
+    case "developers":
+      return developersPath(slug);
     // A repository's own page. With no repository named, the GitHub tab of
     // settings, where the registered ones are listed.
     case "org-repository":

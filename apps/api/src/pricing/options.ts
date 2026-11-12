@@ -14,6 +14,7 @@ import {
 } from "@sandbox-factory/db";
 
 import type { GithubContextSource } from "../bounties/context.js";
+import type { GithubIssueSource } from "../bounties/github-issue.js";
 import type { BountyDelivery } from "./delivery.js";
 import type { BountyExecutor, RunClientResult } from "./executor.js";
 
@@ -40,6 +41,8 @@ export interface PricingRouteOptions {
   };
   /** Reads a repository's documents; absent without GitHub and storage. */
   readonly githubContext?: GithubContextSource;
+  /** Reads an issue a bounty is imported from; absent without GitHub. */
+  readonly githubIssues?: GithubIssueSource;
   /** Complexity profiles; absent, a proposal reads as never profiled. */
   readonly profiles?: Pick<BountyProfileStore, "latest">;
   readonly connections?: JiraConnectionStore;

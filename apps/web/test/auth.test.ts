@@ -20,6 +20,7 @@ vi.mock("better-auth/react", () => ({
 }));
 vi.mock("better-auth/client/plugins", () => ({
   organizationClient: () => ({}),
+  deviceAuthorizationClient: () => ({}),
 }));
 
 const { signInCallbackURL, signInWith } = await import("../src/auth");

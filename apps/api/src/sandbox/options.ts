@@ -71,6 +71,17 @@ export interface SandboxRouteOptions {
     Partial<Pick<BountyProfileStore, "preparationFor" | "approveSlice">>;
   /** Told when a slice is approved, so it is cut and prepared at once. */
   readonly onSliceApproved?: () => void;
+  /** Told when a version is published: the `sandbox.published` webhook. */
+  readonly onPublished?: (
+    organizationId: string,
+    published: {
+      readonly sandboxId: string;
+      readonly versionId: string;
+      readonly version: number;
+      readonly expiresAt: Date;
+      readonly at: Date;
+    },
+  ) => void;
   /** Asks the profiler for a revision's profile it does not have yet. */
   readonly requestProfile?: (
     organizationId: string,

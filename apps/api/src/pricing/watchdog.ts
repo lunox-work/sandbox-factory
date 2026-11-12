@@ -1,6 +1,8 @@
 import type { BountyRunStore, BountyWritebackStore } from "@sandbox-factory/db";
 
 const WATCHDOG_INTERVAL_MS = 30_000;
+/** Retention passes run at most this often, beside the sweep. */
+export const RETENTION_INTERVAL_MS = 60 * 60_000;
 
 export interface BountyWatchdogOptions {
   readonly runs: Pick<
@@ -11,6 +13,12 @@ export interface BountyWatchdogOptions {
     BountyWritebackStore,
     "organizationsWithExpiredWritebacks" | "classifyExpired"
   >;
+  /**
+   * Deletes what is kept for a while only (the audit log past its 180
+   * days), given the time now; run at most hourly. Each answers how many
+   * rows went.
+   */
+  readonly retention?: readonly ((now: Date) => Promise<number>)[];
   readonly now?: () => Date;
   readonly setInterval?: typeof globalThis.setInterval;
   readonly clearInterval?: typeof globalThis.clearInterval;
@@ -21,6 +29,7 @@ export interface BountyWatchdogOptions {
 export class BountyWatchdog {
   readonly #options: BountyWatchdogOptions;
   #timer: ReturnType<typeof setInterval> | undefined;
+  #retainedAt: number | undefined;
 
   constructor(options: BountyWatchdogOptions) {
     this.#options = options;
@@ -62,6 +71,25 @@ export class BountyWatchdog {
         );
       }
     }
+    await this.#retain(now);
     return failed;
+  }
+
+  async #retain(now: Date): Promise<void> {
+    const passes = this.#options.retention ?? [];
+    if (
+      passes.length === 0 ||
+      (this.#retainedAt !== undefined &&
+        now.getTime() - this.#retainedAt < RETENTION_INTERVAL_MS)
+    )
+      return;
+    this.#retainedAt = now.getTime();
+    for (const pass of passes) {
+      try {
+        await pass(now);
+      } catch {
+        this.#options.onError?.("retention_pass_failed");
+      }
+    }
   }
 }

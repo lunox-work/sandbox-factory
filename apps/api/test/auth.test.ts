@@ -4,7 +4,12 @@ import { test } from "node:test";
 import { runWithRequestState } from "@better-auth/core/context";
 import type { OrganizationStore } from "@sandbox-factory/db";
 
-import { createAuth, guardUserPicture, type AuthOptions } from "../src/auth.js";
+import {
+  createAuth,
+  deviceClientOf,
+  guardUserPicture,
+  type AuthOptions,
+} from "../src/auth.js";
 
 /**
  * These build a real Better Auth instance and inspect its configuration. No
@@ -13,8 +18,23 @@ import { createAuth, guardUserPicture, type AuthOptions } from "../src/auth.js";
  * hand.
  */
 
-/** A stand-in for the Drizzle handle; nothing here issues a query. */
-const db = {} as AuthOptions["db"];
+/**
+ * A stand-in for the Drizzle handle; nothing here issues a query. A query
+ * that is tried anyway fails as a missing table would, which is also what
+ * the OAuth provider's start-up seed expects before migrations and logs
+ * quietly.
+ */
+const db = new Proxy(
+  {},
+  {
+    get: (_target, property) =>
+      property === "then"
+        ? undefined
+        : () => {
+            throw new Error("relation does not exist: no database here");
+          },
+  },
+) as AuthOptions["db"];
 
 const options: AuthOptions = {
   db,
@@ -1362,5 +1382,82 @@ test("a personal workspace cannot be given a picture, but may be cleared", async
       member: { organizationId: "org_1" },
     }),
     undefined,
+  );
+});
+
+test("a session is marked with its device client only from the device-token endpoint", () => {
+  assert.equal(
+    deviceClientOf({ path: "/device/token", body: { client_id: "carveout" } }),
+    "carveout",
+  );
+  // Any other endpoint's session, an unknown client, or no context: none.
+  for (const context of [
+    { path: "/callback/google", body: { client_id: "carveout" } },
+    { path: "/device/token", body: { client_id: "vscode" } },
+    { path: "/device/token", body: null },
+    { path: "/device/token" },
+    null,
+    undefined,
+  ])
+    assert.equal(deviceClientOf(context), null);
+});
+
+test("the session-create hook writes the device client, or null", async () => {
+  const before = (
+    hooks(createAuth(options)) as {
+      session?: {
+        create?: {
+          before?: (
+            session: Record<string, unknown>,
+            context: unknown,
+          ) => Promise<{ data: Record<string, unknown> }>;
+        };
+      };
+    }
+  ).session?.create?.before;
+  assert.equal(typeof before, "function");
+  const session = { userId: "user_1", token: "t" };
+  assert.deepEqual(
+    await before?.(session, {
+      path: "/device/token",
+      body: { client_id: "duediligence" },
+    }),
+    { data: { ...session, deviceClientId: "duediligence" } },
+  );
+  assert.deepEqual(await before?.(session, { path: "/callback/github" }), {
+    data: { ...session, deviceClientId: null },
+  });
+  const fields = (
+    createAuth(options).options as {
+      session?: { additionalFields?: Record<string, { input?: boolean }> };
+    }
+  ).session?.additionalFields;
+  // Registered, or the adapter drops it; never taken from a request.
+  assert.equal(fields?.["deviceClientId"]?.input, false);
+});
+
+test("device sign-in is mounted, points at the web app, and refuses unknown clients", async () => {
+  const auth = createAuth(options);
+  const plugin = (
+    auth.options as {
+      plugins?: Array<{ id?: string; options?: Record<string, unknown> }>;
+    }
+  ).plugins?.find((candidate) => candidate.id === "device-authorization");
+  assert.equal(
+    plugin?.options?.["verificationUri"],
+    "http://localhost:5173/device",
+  );
+  // Refused before any code is stored, so no database is needed.
+  const res = await auth.handler(
+    new Request("http://localhost:4000/api/auth/device/code", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ client_id: "someone-else" }),
+    }),
+  );
+  assert.equal(res.status, 400);
+  assert.equal(
+    ((await res.json()) as { error: string }).error,
+    "invalid_client",
   );
 });

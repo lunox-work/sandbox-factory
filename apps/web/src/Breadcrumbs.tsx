@@ -134,6 +134,23 @@ export function trailFor(
         is a detour to settings rather than a step back up.
       */
       return [HOME, BOUNTIES, { label: bountyName ?? "Bounty" }];
+    case "developers":
+      /*
+        The workspace's portal, under the workspace whose tokens and apps it
+        holds. Until the name arrives, straight under home.
+      */
+      return organization === undefined
+        ? [HOME, { label: "Developers" }]
+        : [
+            HOME,
+            ORGANIZATIONS,
+            {
+              label: organization.name,
+              screen: "org-settings",
+              slug: organization.slug,
+            },
+            { label: "Developers" },
+          ];
     case "org-repository": {
       /*
         The GitHub crumb leads to the GitHub tab of the organization's
