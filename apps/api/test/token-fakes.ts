@@ -1,12 +1,15 @@
 /**
- * Fakes for the credential tests: an in-memory token store, an organization
- * store that answers roles, and a Better Auth stand-in that knows a browser
- * session (a cookie) and a device sign-in's session (`Bearer device-…`).
+ * Fakes for the credential tests: in-memory API token and OAuth grant
+ * stores, an organization store that answers roles, and a Better Auth
+ * stand-in that knows a browser session (a cookie) and a device sign-in's
+ * session (`Bearer device-…`).
  */
 
 import type {
   ApiTokenStore,
   NewApiToken,
+  OAuthGrant,
+  OAuthGrantStore,
   OrganizationStore,
   ResolvedApiToken,
   StoredApiToken,
@@ -159,4 +162,106 @@ export function roleStore(roles: Record<string, string>): OrganizationStore {
     touch: unused,
     setLogo: unused,
   } as OrganizationStore;
+}
+
+interface OAuthTokenRow {
+  readonly hash: string;
+  readonly id: string;
+  readonly grantId: string;
+  readonly expiresAt: Date;
+  revoked: boolean;
+}
+
+/**
+ * OAuth grants and their access tokens in memory: what the provider
+ * plugin would have written, read the way `OAuthGrantStore` reads it.
+ */
+export function memoryGrants(): OAuthGrantStore & {
+  grants: Array<OAuthGrant & { organizationId: string }>;
+  tokens: OAuthTokenRow[];
+  touches: Array<{ grantId: string; at: Date }>;
+  /** A grant for Ada in `organizationId`, and the hash of one token for it. */
+  issue(input: {
+    organizationId: string;
+    scopes: string[];
+    hash: string;
+    expiresAt: Date;
+  }): string;
+} {
+  const grants: Array<OAuthGrant & { organizationId: string }> = [];
+  const tokens: OAuthTokenRow[] = [];
+  const touches: Array<{ grantId: string; at: Date }> = [];
+  const listed = ({
+    organizationId: _owner,
+    ...grant
+  }: OAuthGrant & {
+    organizationId: string;
+  }): OAuthGrant => grant;
+  return {
+    grants,
+    tokens,
+    touches,
+    issue({ organizationId, scopes, hash, expiresAt }) {
+      const grantId = `consent_${grants.length + 1}`;
+      grants.push({
+        id: grantId,
+        organizationId,
+        client: { id: "client_1", name: "Claude Code" },
+        user: { id: ada.id, name: ada.name },
+        scopes,
+        createdAt: new Date("2026-11-12T00:00:00.000Z"),
+        updatedAt: new Date("2026-11-12T00:00:00.000Z"),
+        lastUsedAt: null,
+      });
+      tokens.push({
+        hash,
+        id: `at_${tokens.length + 1}`,
+        grantId,
+        expiresAt,
+        revoked: false,
+      });
+      return grantId;
+    },
+    findAccessToken(hash) {
+      const token = tokens.find(
+        (candidate) => candidate.hash === hash && !candidate.revoked,
+      );
+      const grant = grants.find(({ id }) => id === token?.grantId);
+      if (token === undefined || grant === undefined)
+        return Promise.resolve(undefined);
+      return Promise.resolve({
+        id: token.id,
+        clientId: grant.client.id,
+        grantId: grant.id,
+        organizationId: grant.organizationId,
+        user: ada,
+        scopes: grant.scopes,
+        expiresAt: token.expiresAt,
+        grantLastUsedAt: grant.lastUsedAt,
+      });
+    },
+    touch(_organizationId, grantId, at) {
+      touches.push({ grantId, at });
+      return Promise.resolve();
+    },
+    list(organizationId) {
+      return Promise.resolve(
+        grants
+          .filter((grant) => grant.organizationId === organizationId)
+          .map(listed),
+      );
+    },
+    revoke(organizationId, grantId) {
+      const index = grants.findIndex(
+        (grant) =>
+          grant.organizationId === organizationId && grant.id === grantId,
+      );
+      const grant = grants[index];
+      if (grant === undefined) return Promise.resolve(undefined);
+      grants.splice(index, 1);
+      for (const token of tokens)
+        if (token.grantId === grantId) token.revoked = true;
+      return Promise.resolve(listed(grant));
+    },
+  };
 }

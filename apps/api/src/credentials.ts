@@ -7,33 +7,40 @@
  *   its hash. It must be unrevoked, unexpired, and its creator must still
  *   be an owner or admin of its organization, read now, not when it was
  *   made: demoting or removing the creator stops every token they made.
+ * - `Authorization: Bearer lnxat_…` is an OAuth access token the provider
+ *   in `oauth/provider.ts` issued, looked up the same way. Its grant (the
+ *   consent: person, client, organization) must still stand, and the
+ *   person must still be an owner or admin there.
  * - Anything else is Better Auth's to answer, as it always was: the web
- *   app's cookie, or the extension's `bearer()` session token. A session a
- *   device sign-in returned is a `device` principal.
+ *   app's cookie, or the extension's `bearer()` session token (bare
+ *   alphanumerics, never one of the prefixes above). A session a device
+ *   sign-in returned is a `device` principal.
  *
  * Admission, by credential:
  *
  * - `session`: every route, unchanged; roles decide the rest.
  * - `device`: only the routes a command-line client needs to mint its
  *   token (`DEVICE_ROUTES`).
- * - `token` (and later `oauth`): only routes in the public registry, and
+ * - `token` and `oauth`: only routes in the public registry, and
  *   only with the scope the registry names for them. A route not listed is
  *   refused, whatever the scopes: deny by default. Which organization it
  *   may name is `requireMembership`'s check, in `routes.ts`.
  */
 
-import type { ApiTokenStore } from "@sandbox-factory/db";
+import type { ApiTokenStore, OAuthGrantStore } from "@sandbox-factory/db";
 import type { Context, MiddlewareHandler } from "hono";
 import { matchedRoutes } from "hono/route";
+import { isApiScope } from "sandbox-factory";
 
 import { isAtLeastAdmin } from "./access.js";
 import { bearerApiToken, hashSecret } from "./api-tokens/secret.js";
 import type { Auth } from "./auth.js";
 import type { AuthVariables } from "./http-context.js";
+import { bearerOAuthToken, hashOAuthToken } from "./oauth/provider.js";
 import { sessionPrincipal, type Principal } from "./principal.js";
 import { publicRoute } from "./public-api/registry.js";
 
-/** A use is recorded at most this often per token. */
+/** A use is recorded at most this often per token or grant. */
 export const LAST_USED_RESOLUTION_MS = 60_000;
 
 /** What a device sign-in's session may reach: who am I, where, mint. */
@@ -47,7 +54,15 @@ export interface CredentialOptions {
   readonly auth: Pick<Auth, "api">;
   /** Without it, every API token is refused. */
   readonly apiTokens?: Pick<ApiTokenStore, "findByHash" | "touch"> | undefined;
-  /** The acting role, read at use. Without it, every API token is refused. */
+  /** Without it, every OAuth access token is refused. */
+  readonly oauthGrants?:
+    Pick<OAuthGrantStore, "findAccessToken" | "touch"> | undefined;
+  /**
+   * The protected-resource metadata URL (RFC 9728) a refused bearer is
+   * pointed at, so an OAuth client knows where to sign in again.
+   */
+  readonly resourceMetadata?: string | undefined;
+  /** The acting role, read at use. Without it, every bound token is refused. */
   readonly roleOf?:
     | ((userId: string, organizationId: string) => Promise<string | undefined>)
     | undefined;
@@ -73,6 +88,17 @@ const INVALID_TOKEN = {
   code: "invalid_token",
 } as const;
 
+const INVALID_ACCESS_TOKEN = {
+  error: "This access token is not valid. Sign in again.",
+  code: "invalid_token",
+} as const;
+
+/** Whether a use at `at` should be recorded over one at `last`. */
+function stale(last: Date | null, at: Date): Date | undefined {
+  const staleBefore = new Date(at.getTime() - LAST_USED_RESOLUTION_MS);
+  return last === null || last < staleBefore ? staleBefore : undefined;
+}
+
 export function credentialGuard(
   options: CredentialOptions,
 ): MiddlewareHandler<Env> {
@@ -93,8 +119,8 @@ export function credentialGuard(
       return undefined;
     const role = await roleOf(found.createdBy.id, found.organizationId);
     if (role === undefined || !isAtLeastAdmin(role)) return undefined;
-    const staleBefore = new Date(at.getTime() - LAST_USED_RESOLUTION_MS);
-    if (found.lastUsedAt === null || found.lastUsedAt < staleBefore) {
+    const staleBefore = stale(found.lastUsedAt, at);
+    if (staleBefore !== undefined) {
       // Not awaited: bookkeeping must not slow or fail the request.
       apiTokens
         .touch(found.organizationId, found.id, at, staleBefore)
@@ -112,15 +138,62 @@ export function credentialGuard(
     };
   }
 
+  /** An OAuth access token's principal: its grant's person, workspace and scopes. */
+  async function oauthPrincipal(value: string): Promise<Principal | undefined> {
+    const { oauthGrants, roleOf } = options;
+    if (oauthGrants === undefined || roleOf === undefined) return undefined;
+    const found = await oauthGrants.findAccessToken(hashOAuthToken(value));
+    const at = now();
+    if (found === undefined || found.expiresAt.getTime() <= at.getTime())
+      return undefined;
+    const role = await roleOf(found.user.id, found.organizationId);
+    if (role === undefined || !isAtLeastAdmin(role)) return undefined;
+    const staleBefore = stale(found.grantLastUsedAt, at);
+    if (staleBefore !== undefined) {
+      oauthGrants
+        .touch(found.organizationId, found.grantId, at, staleBefore)
+        .catch((error: unknown) => {
+          console.error("Failed to record an OAuth grant's use", error);
+        });
+    }
+    return {
+      user: found.user,
+      organizationId: found.organizationId,
+      // `offline_access` reaches no route; only the API's scopes count.
+      scopes: found.scopes.filter(isApiScope),
+      via: "oauth",
+      credentialId: found.id,
+      client: found.clientId,
+      role,
+    };
+  }
+
+  /** The refusal for a bearer that names a credential no longer valid. */
+  function invalid(
+    c: Context<Env>,
+    body: typeof INVALID_TOKEN | typeof INVALID_ACCESS_TOKEN,
+  ) {
+    c.header(
+      "WWW-Authenticate",
+      options.resourceMetadata === undefined
+        ? 'Bearer error="invalid_token"'
+        : `Bearer resource_metadata="${options.resourceMetadata}", error="invalid_token"`,
+    );
+    return c.json(body, 401);
+  }
+
   return async (c, next) => {
     let principal: Principal;
-    const secret = bearerApiToken(c.req.header("authorization"));
+    const authorization = c.req.header("authorization");
+    const secret = bearerApiToken(authorization);
+    const accessToken = bearerOAuthToken(authorization);
     if (secret !== undefined) {
       const resolved = await tokenPrincipal(secret);
-      if (resolved === undefined) {
-        c.header("WWW-Authenticate", 'Bearer error="invalid_token"');
-        return c.json(INVALID_TOKEN, 401);
-      }
+      if (resolved === undefined) return invalid(c, INVALID_TOKEN);
+      principal = resolved;
+    } else if (accessToken !== undefined) {
+      const resolved = await oauthPrincipal(accessToken);
+      if (resolved === undefined) return invalid(c, INVALID_ACCESS_TOKEN);
       principal = resolved;
     } else {
       const session = await options.auth.api.getSession({
@@ -169,7 +242,7 @@ export function admit(
           code: "device_session",
         };
   }
-  // A bound credential: `token`, or later `oauth`.
+  // A bound credential: `token` or `oauth`.
   const declared =
     route === undefined ? undefined : publicRoute(route.method, route.path);
   if (declared === undefined) {

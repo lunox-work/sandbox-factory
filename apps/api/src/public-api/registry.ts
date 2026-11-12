@@ -1,6 +1,7 @@
 /**
- * The public API: every route an API token (or, later, an OAuth access
- * token) may reach, with the scope it needs and the schemas it speaks.
+ * The public API: every route an API token or an OAuth access token may
+ * reach (and so every route an MCP tool may wrap), with the scope it needs
+ * and the schemas it speaks.
  *
  * **Deny by default.** The credential guard (`credentials.ts`) admits a
  * bound credential only to a route listed here, matched by the exact Hono

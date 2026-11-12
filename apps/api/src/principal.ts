@@ -9,8 +9,10 @@
  *   while they stay owner or admin there.
  * - `device`: the session a command-line client's device sign-in returned.
  *   It may only mint that client's token (`api-tokens/routes.ts`).
- * - `oauth`: reserved for OAuth access tokens, which resolve like `token`:
- *   one organization, the scopes consented to.
+ * - `oauth`: an OAuth access token (`lnxat_…`) from the provider in
+ *   `oauth/provider.ts`. Resolves like `token`: the organization and scopes
+ *   its grant was consented to, acting as the person who consented while
+ *   they stay owner or admin there.
  *
  * Bound credentials (`token`, `oauth`) reach only the routes the public
  * registry declares, with the scope declared there; see `credentials.ts`.
@@ -28,7 +30,10 @@ export interface Principal {
   readonly via: CredentialKind;
   /** The credential itself: a session's id, or a token's. */
   readonly credentialId: string;
-  /** A device session's client (`duediligence`, `carveout`). */
+  /**
+   * A device session's client (`duediligence`, `carveout`), or an OAuth
+   * token's client id.
+   */
   readonly client?: string | undefined;
   /** A bound credential's acting role, read when it was presented. */
   readonly role?: string | undefined;

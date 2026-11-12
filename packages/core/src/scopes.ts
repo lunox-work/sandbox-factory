@@ -30,6 +30,28 @@ export function isApiScope(value: string): value is ApiScope {
 export const API_TOKEN_PREFIX = "lnx_";
 
 /**
+ * The prefixes on OAuth access and refresh tokens the platform issues to
+ * MCP clients and other apps. Distinct from `lnx_`, and never in a session
+ * token (those are bare alphanumerics), so a bearer value names its kind.
+ */
+export const OAUTH_ACCESS_TOKEN_PREFIX = "lnxat_";
+export const OAUTH_REFRESH_TOKEN_PREFIX = "lnxrt_";
+
+/**
+ * The OAuth-only scope a client adds to get a refresh token. Granted with
+ * the API scopes it accompanies, never on its own; it reaches no route.
+ */
+export const OFFLINE_ACCESS_SCOPE = "offline_access";
+
+/**
+ * What an MCP client is offered by default: the read tools need nothing
+ * more. A person may grant more on the consent page if the client asks.
+ */
+export const MCP_DEFAULT_SCOPES = [
+  "workspace:read",
+] as const satisfies readonly ApiScope[];
+
+/**
  * The command-line clients that may sign in by device flow, and the most
  * each may be granted. A client asks for a subset; anything outside its
  * list is refused rather than trimmed, so a request never silently gets

@@ -25,6 +25,7 @@ import { NotFoundError, RepositoryInUseError } from "@sandbox-factory/db";
 import type {
   ApiTokenStore,
   EmailStore,
+  OAuthGrantStore,
   OrganizationStore,
   UsageStore,
   UserProfileStore,
@@ -33,6 +34,11 @@ import type {
 
 import { mountApiTokenRoutes } from "./api-tokens/routes.js";
 import { credentialGuard } from "./credentials.js";
+import {
+  mountDiscoveryRoutes,
+  resourceMetadataUrl,
+} from "./oauth/discovery.js";
+import { mountOAuthGrantRoutes } from "./oauth/grants.js";
 import { isBound } from "./principal.js";
 import { buildOpenApiDocument } from "./public-api/openapi.js";
 import { mountUsageRoutes } from "./usage/routes.js";
@@ -158,6 +164,17 @@ export interface AppOptions {
    * token routes are not mounted, as in a test with no database.
    */
   apiTokens?: ApiTokenStore | undefined;
+  /**
+   * OAuth grants: resolves OAuth access tokens and serves connected apps.
+   * Without it every OAuth access token is refused, as in a test with no
+   * database.
+   */
+  oauthGrants?: OAuthGrantStore | undefined;
+  /**
+   * Public origin of the API (`BETTER_AUTH_URL`), which OAuth discovery
+   * names. Without it discovery is not mounted.
+   */
+  publicUrl?: string | undefined;
   /** Run counts for `/usage`; not mounted without it. */
   usage?: UsageStore | undefined;
   /** The clock tokens expire by. Tests only. */
@@ -186,6 +203,8 @@ export function createApp({
   buildInfo = unknownBuildInfo,
   originVerify,
   apiTokens,
+  oauthGrants,
+  publicUrl,
   usage,
   now,
 }: AppOptions): Hono<AppEnv> {
@@ -257,6 +276,11 @@ export function createApp({
    */
   app.all("/api/auth/*", (c) => auth.handler(c.req.raw));
 
+  /** OAuth discovery, at the origin's root where clients look for it. */
+  if (publicUrl !== undefined) {
+    mountDiscoveryRoutes(app, { auth, baseUrl: publicUrl });
+  }
+
   /**
    * Avatar pictures, sessionless. Under `/api/` so every proxy in front of
    * the API forwards it unchanged, and outside `/api/v1` so the session
@@ -289,6 +313,9 @@ export function createApp({
     credentialGuard({
       auth,
       apiTokens,
+      oauthGrants,
+      resourceMetadata:
+        publicUrl === undefined ? undefined : resourceMetadataUrl(publicUrl),
       roleOf:
         organizations === undefined
           ? undefined
@@ -561,6 +588,8 @@ export function createApp({
         endSession: (headers) => auth.api.signOut({ headers }),
         now,
       });
+    if (oauthGrants !== undefined)
+      mountOAuthGrantRoutes(app, { grants: oauthGrants });
     if (usage !== undefined) mountUsageRoutes(app, { usage, now });
 
     /** The organization, plus the caller's role in it. Members only. */

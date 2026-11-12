@@ -18,8 +18,23 @@ import {
  * hand.
  */
 
-/** A stand-in for the Drizzle handle; nothing here issues a query. */
-const db = {} as AuthOptions["db"];
+/**
+ * A stand-in for the Drizzle handle; nothing here issues a query. A query
+ * that is tried anyway fails as a missing table would, which is also what
+ * the OAuth provider's start-up seed expects before migrations and logs
+ * quietly.
+ */
+const db = new Proxy(
+  {},
+  {
+    get: (_target, property) =>
+      property === "then"
+        ? undefined
+        : () => {
+            throw new Error("relation does not exist: no database here");
+          },
+  },
+) as AuthOptions["db"];
 
 const options: AuthOptions = {
   db,

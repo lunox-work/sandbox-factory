@@ -1,7 +1,8 @@
 /**
  * The public API's credentials and what they read about themselves:
  * workspace API tokens, the token a command-line client mints after its
- * device sign-in, and the workspace's usage.
+ * device sign-in, the apps a workspace granted access over OAuth, and the
+ * workspace's usage.
  */
 
 import {
@@ -75,6 +76,36 @@ export const createCliTokenSchema = z.object({
   label: z.string().trim().min(1).max(60).optional(),
 });
 
+/**
+ * An app a workspace granted access over OAuth (an MCP client, say): one
+ * person's consent for one client in this workspace, with the scopes they
+ * approved. `offline_access` is listed when the app may refresh its token.
+ */
+export const oauthGrantDtoSchema = z.object({
+  id: z.string().min(1),
+  client: z.object({
+    id: z.string().min(1),
+    /** As the client registered it; null when it gave none. */
+    name: z.string().nullable(),
+  }),
+  /** Who approved it. The app acts as them, while they stay owner or admin. */
+  user: z.object({ id: z.string().min(1), name: z.string() }),
+  scopes: z.array(z.string()),
+  createdAt: z.iso.datetime(),
+  /** Last approved, which may have widened the scopes. */
+  updatedAt: z.iso.datetime(),
+  /** Updated at most once a minute. */
+  lastUsedAt: z.iso.datetime().nullable(),
+});
+
+export const oauthGrantListSchema = z.object({
+  grants: z.array(oauthGrantDtoSchema),
+});
+
+export const oauthGrantResponseSchema = z.object({
+  grant: oauthGrantDtoSchema,
+});
+
 /** Query for `GET /api/v1/orgs/:orgId/usage`. */
 export const usageQuerySchema = z.object({
   days: z.coerce.number().int().min(1).max(90).default(30),
@@ -107,3 +138,4 @@ export type CreateApiTokenInput = z.infer<typeof createApiTokenSchema>;
 export type CreatedApiTokenDto = z.infer<typeof createdApiTokenResponseSchema>;
 export type CreateCliTokenInput = z.infer<typeof createCliTokenSchema>;
 export type UsageDto = z.infer<typeof usageResponseSchema>;
+export type OAuthGrantDto = z.infer<typeof oauthGrantDtoSchema>;

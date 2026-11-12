@@ -19,6 +19,7 @@ import { bearer, deviceAuthorization, organization } from "better-auth/plugins";
 import { isCliClient, normalizeHandle } from "sandbox-factory";
 
 import { admitsPicture, type AvatarKind } from "./avatars/keys.js";
+import { oauthProviderPlugin } from "./oauth/provider.js";
 
 /**
  * The address a provider asserted during this request, keyed by provider id.
@@ -50,6 +51,11 @@ type AuthDatabase = Parameters<typeof drizzleAdapter>[0];
 
 export interface AuthOptions {
   db: AuthDatabase;
+  /**
+   * Tests only: an adapter in place of the Drizzle one over `db`, so the
+   * OAuth flow can run end to end without Postgres.
+   */
+  database?: Parameters<typeof betterAuth>[0]["database"] | undefined;
   /** Records addresses proven by a provider link. Optional for tests. */
   emails?: EmailStore | undefined;
   /**
@@ -160,6 +166,7 @@ export function guardUserPicture(
 
 export function createAuth({
   db,
+  database,
   emails,
   lookupEmail,
   handles,
@@ -267,12 +274,14 @@ export function createAuth({
     "Change it in Account settings.";
 
   return betterAuth({
-    database: drizzleAdapter(db, {
-      provider: "pg",
-      // The auth models only; the adapter has no business with this
-      // product's own tables.
-      schema: authSchema,
-    }),
+    database:
+      database ??
+      drizzleAdapter(db, {
+        provider: "pg",
+        // The auth models only; the adapter has no business with this
+        // product's own tables.
+        schema: authSchema,
+      }),
     baseURL: baseUrl,
     secret,
     /**
@@ -632,6 +641,20 @@ export function createAuth({
         validateClient: (clientId) => isCliClient(clientId),
         expiresIn: "15m",
         interval: "5s",
+      }),
+      /**
+       * The OAuth 2.1 authorization server for MCP clients and other apps:
+       * dynamic registration, authorization code with PKCE, consent bound
+       * to one workspace an owner or admin chooses. See `oauth/provider.ts`.
+       */
+      oauthProviderPlugin({
+        baseUrl,
+        appUrl,
+        roleOf:
+          organizations === undefined
+            ? undefined
+            : (userId, organizationId) =>
+                organizations.roleOf(userId, organizationId),
       }),
       /**
        * Organizations: the second principal. The plugin owns every write to

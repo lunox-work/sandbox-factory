@@ -3,10 +3,15 @@ import { test } from "node:test";
 
 import {
   API_SCOPES,
+  API_TOKEN_PREFIX,
   CLI_CLIENT_IDS,
   cliScopes,
   isApiScope,
   isCliClient,
+  MCP_DEFAULT_SCOPES,
+  OAUTH_ACCESS_TOKEN_PREFIX,
+  OAUTH_REFRESH_TOKEN_PREFIX,
+  OFFLINE_ACCESS_SCOPE,
 } from "../src/scopes.js";
 
 test("the scope list is the public API's, and only it is recognized", () => {
@@ -39,4 +44,23 @@ test("each command-line client holds only known scopes, reading included", () =>
   // Inherited names are not clients.
   for (const value of ["", "toString", "constructor", "vscode"])
     assert.equal(isCliClient(value), false);
+});
+
+test("OAuth tokens carry prefixes no other credential starts with", () => {
+  const prefixes = [
+    API_TOKEN_PREFIX,
+    OAUTH_ACCESS_TOKEN_PREFIX,
+    OAUTH_REFRESH_TOKEN_PREFIX,
+  ];
+  for (const prefix of prefixes) {
+    for (const other of prefixes)
+      if (other !== prefix) assert.equal(other.startsWith(prefix), false);
+    // A session token is bare alphanumerics; an underscore tells them apart.
+    assert.match(prefix, /_$/);
+  }
+});
+
+test("MCP asks for reading only by default, and offline access is no API scope", () => {
+  assert.deepEqual([...MCP_DEFAULT_SCOPES], ["workspace:read"]);
+  assert.equal(isApiScope(OFFLINE_ACCESS_SCOPE), false);
 });

@@ -6,6 +6,7 @@
 import { serve } from "@hono/node-server";
 import {
   createApiTokenStore,
+  createOAuthGrantStore,
   createBountyRunStore,
   createAnalysisRunStore,
   createArtifactStore,
@@ -704,6 +705,8 @@ const app = createApp({
   setup: createWorkspaceSetupStore(connection.db),
   flows: { waits: createFlowWaitStore(connection.db) },
   apiTokens: createApiTokenStore(connection.db),
+  oauthGrants: createOAuthGrantStore(connection.db),
+  publicUrl: env.BETTER_AUTH_URL,
   usage: createUsageStore(connection.db),
   buildInfo: build,
   originVerify: env.ORIGIN_VERIFY,

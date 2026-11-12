@@ -6,6 +6,7 @@ import {
   createApiTokenSchema,
   createCliTokenSchema,
   createdApiTokenResponseSchema,
+  oauthGrantListSchema,
   organizationResponseSchema,
   usageQuerySchema,
 } from "../src/index.js";
@@ -77,4 +78,20 @@ test("an organization read carries the caller's role", () => {
   });
   assert.equal(parsed.organization.kind, "team");
   assert.equal(parsed.role, "admin");
+});
+
+test("a granted app lists its client, the person and the scopes, never a token", () => {
+  const grant = {
+    id: "consent_1",
+    client: { id: "client_1", name: null },
+    user: { id: "user_1", name: "Ada Lovelace" },
+    scopes: ["workspace:read", "offline_access"],
+    createdAt: "2026-11-12T00:00:00.000Z",
+    updatedAt: "2026-11-12T00:00:00.000Z",
+    lastUsedAt: null,
+  };
+  const parsed = oauthGrantListSchema.parse({
+    grants: [{ ...grant, accessToken: "lnxat_secret" }],
+  });
+  assert.deepEqual(parsed.grants, [grant]);
 });
