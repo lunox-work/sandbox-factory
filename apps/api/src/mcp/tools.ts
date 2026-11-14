@@ -119,6 +119,8 @@ async function workspaceOf(
  */
 function tool<Shape extends z.ZodRawShape>(definition: {
   name: string;
+  /** A short human-readable name, sent as the tool's title and its `title` annotation. */
+  title: string;
   scope: ApiScope | null;
   description: string;
   input: Shape;
@@ -141,16 +143,23 @@ function tool<Shape extends z.ZodRawShape>(definition: {
       server.registerTool(
         definition.name,
         {
+          title: definition.title,
           description: definition.description,
           inputSchema: schema,
           annotations: writes
             ? {
+                title: definition.title,
                 readOnlyHint: false,
                 destructiveHint: false,
                 idempotentHint: false,
                 openWorldHint: false,
               }
-            : { readOnlyHint: true, openWorldHint: false },
+            : {
+                title: definition.title,
+                readOnlyHint: true,
+                destructiveHint: false,
+                openWorldHint: false,
+              },
         },
         async (args: unknown) => {
           // The SDK validated already; parsed again for the shape's type.
@@ -207,6 +216,7 @@ const id = (what: string) =>
 export const TOOLS = [
   tool({
     name: "list_workspaces",
+    title: "List workspaces",
     scope: "workspace:read",
     description:
       "Show the Lunox workspace this connection reads, your role in it and whether Jira and GitHub are connected. Call it first.",
@@ -216,6 +226,7 @@ export const TOOLS = [
   }),
   tool({
     name: "get_usage",
+    title: "Get usage",
     scope: "workspace:read",
     description:
       "Count the workspace's sizing and analysis runs by kind and state over recent days, and show the model tokens its runs spent this calendar month (UTC) against its monthly limit and when that resets. Runs that call a model are refused with quota_exceeded once the limit is reached.",
@@ -234,6 +245,7 @@ export const TOOLS = [
   }),
   tool({
     name: "list_bounties",
+    title: "List bounties",
     scope: "workspace:read",
     description:
       "List the workspace's bounties, newest first, with each one's status (new, scoped, priced, live); use it to find a bounty's id.",
@@ -258,6 +270,7 @@ export const TOOLS = [
   }),
   tool({
     name: "get_bounty",
+    title: "Get bounty",
     scope: "workspace:read",
     description:
       "Read one bounty in full: its scope text, acceptance criteria, linked Jira context and the steps done on it.",
@@ -268,6 +281,7 @@ export const TOOLS = [
   }),
   tool({
     name: "get_proposal",
+    title: "Get proposal",
     scope: "workspace:read",
     description:
       "Read one priced proposal: its size, price and whether it is still fresh against the bounty it priced.",
@@ -278,6 +292,7 @@ export const TOOLS = [
   }),
   tool({
     name: "get_decisions",
+    title: "Get decisions",
     scope: "workspace:read",
     description:
       "Read what a proposal's spec decided where the bounty was silent: its decisions (d1, d2…), whether a person confirmed them, and the spec as Gherkin with its Decided: list. Hidden tests are written to confirmed decisions.",
@@ -288,6 +303,7 @@ export const TOOLS = [
   }),
   tool({
     name: "confirm_link",
+    title: "Get decision confirmation link",
     scope: "workspace:read",
     description:
       "Get the web page where a person confirms a proposal's decisions. Decisions are confirmed by a person, never by a tool: give them the link.",
@@ -324,6 +340,7 @@ export const TOOLS = [
   }),
   tool({
     name: "list_repositories",
+    title: "List repositories",
     scope: "workspace:read",
     description:
       "List the GitHub repositories the workspace registered, to find a repository or its latest snapshot.",
@@ -333,6 +350,7 @@ export const TOOLS = [
   }),
   tool({
     name: "get_snapshot",
+    title: "Get repository snapshot",
     scope: "workspace:read",
     description:
       "Read one repository snapshot: the commit it was taken at and the facts read from its file tree.",
@@ -343,6 +361,7 @@ export const TOOLS = [
   }),
   tool({
     name: "list_boards",
+    title: "List Jira boards",
     scope: "workspace:read",
     description:
       "List the Jira boards the workspace registered and how each is sized and priced.",
@@ -352,6 +371,7 @@ export const TOOLS = [
   }),
   tool({
     name: "search_issues",
+    title: "Search Jira issues",
     scope: "workspace:read",
     description:
       "Search the issues on every registered Jira board by key or words, to find the issue a bounty came from or should.",
@@ -368,6 +388,7 @@ export const TOOLS = [
   }),
   tool({
     name: "list_sandboxes",
+    title: "List sandboxes",
     scope: "workspace:read",
     description:
       "List the workspace's sandboxes, one per bounty that reached the Sandbox step, with their versions' states.",
@@ -377,6 +398,7 @@ export const TOOLS = [
   }),
   tool({
     name: "get_sandbox",
+    title: "Get sandbox",
     scope: "workspace:read",
     description:
       "Read one sandbox: the bounty it belongs to, its source repository and its versions.",
@@ -387,6 +409,7 @@ export const TOOLS = [
   }),
   tool({
     name: "get_run",
+    title: "Get run",
     scope: "workspace:read",
     description:
       "Read one analysis run (a context builder, a slice or a sandbox build): its state, progress and outcome. Poll it after starting work.",
@@ -400,6 +423,7 @@ export const TOOLS = [
   // and role checks decide.
   tool({
     name: "post_bounty",
+    title: "Post bounty",
     scope: "bounties:write",
     description:
       "Write a new bounty in the workspace from a title and a description of the work. It is not sized; call size_bounty with its id to price it.",
@@ -434,6 +458,7 @@ export const TOOLS = [
   }),
   tool({
     name: "import_github_issue",
+    title: "Import GitHub issue",
     scope: "bounties:write",
     description:
       "Make a bounty from a GitHub issue on a repository the workspace connected, taking its title, body and labels. Importing the same issue again returns the bounty it made.",
@@ -449,6 +474,7 @@ export const TOOLS = [
   }),
   tool({
     name: "import_jira_issue",
+    title: "Import Jira issue",
     scope: "bounties:write",
     description:
       "Make a bounty from one Jira issue on a registered board, unsized. Find the board and issue ids with search_issues.",
@@ -467,6 +493,7 @@ export const TOOLS = [
   }),
   tool({
     name: "size_bounty",
+    title: "Size and price bounty",
     scope: "pricing:write",
     description:
       "Size and price one bounty with a model call; it runs in the background. Poll get_bounty until it has a proposal, then read it with get_proposal.",
@@ -479,6 +506,7 @@ export const TOOLS = [
   }),
   tool({
     name: "respec",
+    title: "Revise proposal spec",
     scope: "specs:write",
     description:
       "Change a proposal's spec: expand it with more scenarios, answer its open questions, or trim scenarios. Runs in the background against the proposal revision you read with get_proposal.",
@@ -505,6 +533,7 @@ export const TOOLS = [
   }),
   tool({
     name: "plan_slice",
+    title: "Plan slice",
     scope: "sandboxes:write",
     description:
       "Slice a connected repository from entry points: which files a sandbox copies, which modules it cuts to stubs, its public surface and what blocks it. It runs in the background; read it with get_run. Nothing is cut or published.",
@@ -531,6 +560,7 @@ export const TOOLS = [
   }),
   tool({
     name: "start_sandbox",
+    title: "Start sandbox",
     scope: "sandboxes:write",
     description:
       "Start the sandbox for a bounty: where its versions are cut, built and published. Starting one that exists answers it.",
@@ -542,6 +572,7 @@ export const TOOLS = [
   }),
   tool({
     name: "cut_slice",
+    title: "Cut slice",
     scope: "sandboxes:write",
     description:
       "Cut a draft version of a sandbox from a succeeded slice run (plan_slice), priced from the bounty's approved proposal. A wide slice still waits for a person's approval in the web app.",
@@ -569,6 +600,7 @@ export const TOOLS = [
   }),
   tool({
     name: "prepare",
+    title: "Build sandbox version",
     scope: "sandboxes:write",
     description:
       "Build a draft version: the standalone project, its baseline, and, when it has none, hidden tests written from the approved spec and calibrated by a reference implementation (duediligence's rule). It runs in the background; read it with get_run, then get_handout. Publishing stays a person's act in the web app.",
@@ -580,6 +612,7 @@ export const TOOLS = [
   }),
   tool({
     name: "get_handout",
+    title: "Get handout",
     scope: "workspace:read",
     description:
       "Read what a developer gets of a built version: its public files, and of its hidden tests only how many there are and the commitment hash over them. No hidden test's name or body is shown.",
@@ -590,6 +623,7 @@ export const TOOLS = [
   }),
   tool({
     name: "submit_patch",
+    title: "Submit patch",
     scope: "submissions:write",
     description:
       "Submit the files changed in a published sandbox version for grading against its public and hidden tests. It runs in the background; read the verdict with get_verdict. The same files again are the submission already made.",
@@ -616,6 +650,7 @@ export const TOOLS = [
   }),
   tool({
     name: "judge",
+    title: "Judge implementation",
     scope: "submissions:write",
     description:
       "Judge an implementation against a published version's hidden tests, which you never see: submit the files changed, then read the verdict (passed, overfit, incomplete or refused) with get_verdict. Only counts and the failing scenarios' keys come back.",
@@ -642,6 +677,7 @@ export const TOOLS = [
   }),
   tool({
     name: "retry",
+    title: "Retry submission",
     scope: "submissions:write",
     description:
       "Retry a failed submission once: submit the files again, changed, after reading its failing scenario keys with get_verdict. A submission has one retry, a passed one none. Read the new verdict with get_verdict.",
@@ -668,6 +704,7 @@ export const TOOLS = [
   }),
   tool({
     name: "get_verdict",
+    title: "Get verdict",
     scope: "workspace:read",
     description:
       "Read a submission's verdict: passed, overfit, incomplete or refused, the public and hidden counts, and the keys of the spec scenarios a failing hidden test covers. Never a hidden test's name or body.",
@@ -678,6 +715,7 @@ export const TOOLS = [
   }),
   tool({
     name: "connect_github",
+    title: "Connect GitHub",
     scope: "integrations:write",
     description:
       "Get the link that connects the workspace's GitHub repositories. Connecting is a browser step: give the person the link to open.",
@@ -689,6 +727,7 @@ export const TOOLS = [
   }),
   tool({
     name: "connect_jira",
+    title: "Connect Jira",
     scope: "integrations:write",
     description:
       "Get the link that connects a Jira site to the workspace. Connecting is a browser step: give the person the link to open.",

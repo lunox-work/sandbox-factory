@@ -256,8 +256,11 @@ test("each endpoint lists exactly its toolset", async () => {
         !WRITE_TOOLS.has(tool.name),
         tool.name,
       );
-      if (WRITE_TOOLS.has(tool.name))
-        assert.equal(tool.annotations?.destructiveHint, false, tool.name);
+      // Nothing deletes or overwrites, so every tool says so.
+      assert.equal(tool.annotations?.destructiveHint, false, tool.name);
+      // A title for people (the directory asks every tool for one).
+      assert.ok((tool.title ?? "").length > 0, tool.name);
+      assert.equal(tool.annotations?.title, tool.title, tool.name);
     }
     await client.close();
   }
