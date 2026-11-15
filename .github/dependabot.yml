@@ -10,6 +10,10 @@ updates:
       dev-dependencies:
         dependency-type: development
         update-types: ["minor", "patch"]
+      # better-auth and its @better-auth/* plugins type-check only at one
+      # version; bumped apart, the API's lint fails.
+      better-auth:
+        patterns: ["better-auth", "@better-auth/*"]
     ignore:
       # Must not exceed `engines.vscode` in apps/extension, or `vsce package`
       # refuses to build the VSIX. Raise both together, by hand.
