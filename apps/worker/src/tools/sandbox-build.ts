@@ -66,7 +66,6 @@ import {
   withJsonLeaves,
   buildSummary,
   canonicalJson,
-  carryHazards,
   carriedTestCandidates,
   carriedTestFile,
   carriedTestPaths,
@@ -2131,11 +2130,9 @@ export function createSandboxBuildAdapter(
               ? []
               : unresolvedImportRules(rules, candidate.renames, project.files)),
             ...vocabularyBlockers(leaksOf(project?.files ?? [])),
-          ]
-            .map(
-              (blocker) => `${blocker.file ?? blocker.code}: ${blocker.detail}`,
-            )
-            .concat(carryHazards(rules).map((hazard) => hazard.detail)),
+          ].map(
+            (blocker) => `${blocker.file ?? blocker.code}: ${blocker.detail}`,
+          ),
           applied: candidate.aliased.applied,
           findings: disclosureOf(project?.files ?? [], rules).open.map(
             findingLine,

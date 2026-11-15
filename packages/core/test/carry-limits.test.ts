@@ -36,7 +36,7 @@ test("a new file at a path the repository holds outside the slice is the carry's
   ]);
 });
 
-test("carveout's stranded-name refusal (after 0.3.1) is the carry's limit; the rest are the contributor's", () => {
+test("carveout's stranded-name refusal (carveout 0.5.0) is the carry's limit; the rest are the contributor's", () => {
   const split = carryLimitOf(
     [
       { path: "src/a.ts", reason: CARVEOUT_STRANDED_NAME_REASON },

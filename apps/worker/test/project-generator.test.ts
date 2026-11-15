@@ -6,6 +6,7 @@ import { generateProject as carveoutGenerateProject } from "carveout/api";
 import {
   PLATFORM_LAYOUT,
   SANDBOX_RUN_ARGV,
+  SANDBOX_TOOLCHAIN,
   generateProject,
   gradingTree,
 } from "sandbox-factory";
@@ -19,11 +20,8 @@ import {
   carveoutProject,
   generateOnEngine,
   platformLayers,
-  platformPackageJson,
   projectRunOf,
-  withFixtureDefaults,
   withPublicNames,
-  withSourceMaps,
 } from "../src/tools/project-generator.js";
 
 /**
@@ -444,38 +442,24 @@ test("tests at paths the platform does not keep them are blockers, as are carveo
   );
 });
 
-test("the configuration edits keep carveout's text but for what they change", () => {
-  assert.equal(
-    platformPackageJson(
-      '{"name":"x","version":"0.0.0","engines":{"node":">=22"},"scripts":{}}',
-      3,
-      "10.9.2",
-    ),
-    '{\n  "name": "x",\n  "version": "3.0.0",\n  "engines": {\n    "node": ">=22"\n  },\n  "packageManager": "npm@10.9.2",\n  "scripts": {}\n}\n',
-  );
-  assert.match(
-    platformPackageJson('{"name":"x"}', 1, "10.9.2"),
-    /"packageManager": "npm@10\.9\.2"\n\}\n$/,
-  );
-  assert.equal(
-    withSourceMaps('{"compilerOptions":{"strict":true},"include":["."]}'),
-    '{\n  "compilerOptions": {\n    "strict": true,\n    "sourceMap": true\n  },\n  "include": [\n    "."\n  ]\n}\n',
-  );
-  assert.match(withSourceMaps("{}"), /"sourceMap": true/);
-  const runtime =
-    'import { createMock } from "../mock.js";\nconst mock = createMock("module:a.ts");\nexport {};\n';
-  assert.equal(withFixtureDefaults(runtime, []), runtime);
-  assert.equal(
-    withFixtureDefaults("export {};\n", [{ path: "p", implementation: "f" }]),
-    "export {};\n",
-  );
-  assert.equal(
-    withFixtureDefaults(runtime, [
-      { path: "module:a.ts.b", implementation: "() => 2" },
-      { path: "module:a.ts.a", implementation: " () => 1 " },
-    ]),
-    'import { createMock, fixture } from "../mock.js";\nconst mock = createMock("module:a.ts");\nfixture("module:a.ts.a", () => 1);\nfixture("module:a.ts.b", () => 2);\nexport {};\n',
-  );
+test("carveout writes the version's package version, npm pin and source maps through its hooks", () => {
+  const input = carveoutInputOf(roundTripInput);
+  const toolchain = roundTripInput.toolchain ?? SANDBOX_TOOLCHAIN;
+  assert.deepEqual(input.hooks, {
+    sourceMaps: true,
+    mockDefaults: [],
+    packageVersion: `${roundTripInput.version.version}.0.0`,
+    packageManager: `npm@${toolchain.npm}`,
+  });
+  const project = carveoutProject(roundTripInput);
+  const text = (path: string) =>
+    project.files.find((file) => file.path === path)?.text ?? "";
+  const pkg = JSON.parse(text("package.json")) as Record<string, unknown>;
+  assert.equal(pkg.version, `${roundTripInput.version.version}.0.0`);
+  assert.equal(pkg.packageManager, `npm@${toolchain.npm}`);
+  assert.deepEqual(Object.keys(pkg).slice(4, 6), ["engines", "packageManager"]);
+  assert.match(text("tsconfig.json"), /"sourceMap": true/);
+  assert.match(text(".gitignore"), /^\*\.map$/m);
   assert.equal(CARVEOUT_GUIDE_PATHS.runPath, "carveout/run.ts");
 });
 

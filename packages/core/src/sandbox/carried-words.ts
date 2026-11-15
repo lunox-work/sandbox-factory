@@ -1,19 +1,20 @@
 /**
  * A carried-back submission checked for words the carry renamed that the
- * name table did not: merge-back's guard against carveout's carry (0.3.1)
- * reading a contributor's own word as a client name.
+ * name table did not: merge-back's guard against carveout's carry reading a
+ * contributor's own word as a client name.
  *
- * The carry renames a line a contributor added first by what the two
- * originals' differing lines show was renamed in that file, word by word
- * (`learnedRenames`), then by the table's inverse. A text rule that changes
- * several words at once (`wiki.orvanta.internal -> wiki.example.com`,
- * `Orvanta Payments -> Northwind Shop`) teaches it its words one by one
+ * Before 0.5.0 the carry renamed a line a contributor added first by what
+ * the two originals' differing lines show was renamed in that file, word by
+ * word (`learnedRenames`), then by the table's inverse. A text rule that
+ * changes several words at once (`wiki.orvanta.internal -> wiki.example.com`,
+ * `Orvanta Payments -> Northwind Shop`) taught it its words one by one
  * (`example -> orvanta`, `Shop -> Payments`), and an added
- * `export const Shop = 1` comes back as `export const Payments = 1`: code
+ * `export const Shop = 1` came back as `export const Payments = 1`: code
  * the contributor did not write, in the client's words. The unchanged
  * project still carries back, and so may the corrupted pass, so neither the
- * round trip nor the reversed check sees it. `carryHazards` refuses only
- * the host and address rules among them.
+ * round trip nor the reversed check sees it. carveout 0.5.0 renames by the
+ * table first and learns only what it leaves, which ends this; the check
+ * stays as a second guard.
  *
  * So each added line's carry is compared with the line renamed by the
  * table's inverse alone, scoped by its repository path. Where they differ,

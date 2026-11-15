@@ -480,9 +480,7 @@ environment; import rewrites, renames, dependencies, blockers and the
 baseline report; `gates`, the publication gates: `roundTrip`, the unchanged
 project read back through the table at each file's repository path equal to
 the slice's source but for the generator's specifier and `process.env`
-edits, and no host or address text rule merge-back would learn words from
-(`noChangeRoundTrip`, `carryHazards`; `not_applicable` for a starter or
-upload), and
+edits (`noChangeRoundTrip`; `not_applicable` for a starter or upload), and
 `disclosure`, the vocabulary and credential findings and the
 `scanDisclosure` `findings` (each marked `acknowledged` as the build read
 it), `total` and `acknowledged`; a starter's or upload's has

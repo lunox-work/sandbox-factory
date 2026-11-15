@@ -877,10 +877,10 @@ list, so its files never depend on it, and records every finding (up to
 keeps the build ready; the PUT moves neither transform nor evidence, and
 publication checks the list then (`gatesOf`, `openDisclosureFindings`). A
 starter's check still refuses any candidate with a finding (the agent
-renames it); an import records them after the baseline. The round trip also refuses a host or
-address text rule that changes words one for one (`carryHazards`):
-merge-back would learn those words; grading withholds the rest
-(`carriedWordHazards`).
+renames it); an import records them after the baseline. A carry that
+renames a contributor's word into the workspace's is withheld at grading
+(`carriedWordHazards`), a second guard since carveout 0.5.0 stopped
+learning words from text rules.
 
 **Slice checks.** A slice (`apps/worker/src/tools/slice.ts`) stubs each cut
 module from its declarations, the repository's own packages included,
