@@ -89,9 +89,9 @@ function gherkinOf(text: string): string {
  * neither.
  */
 export function documentFeature(text: string): string | null {
-  const feature = /^\s*Feature:\s*(.+)$/m.exec(gherkinOf(text))?.[1];
+  const feature = /^\s*Feature:\s*(\S.*)$/m.exec(gherkinOf(text))?.[1];
   if (feature !== undefined && line(feature) !== "") return line(feature);
-  const heading = /^#\s+(.+)$/m.exec(text)?.[1];
+  const heading = /^#\s+(\S.*)$/m.exec(text)?.[1];
   return heading === undefined || line(heading) === "" ? null : line(heading);
 }
 
@@ -139,7 +139,7 @@ export function documentOpenQuestions(text: string): string[] {
   if (start === -1) return [];
   const notes: string[] = [];
   for (const each of lines.slice(start + 1)) {
-    const note = /^#\s*-\s+(.+)$/.exec(each)?.[1];
+    const note = /^#\s*-\s+(\S.*)$/.exec(each)?.[1];
     if (note === undefined) break;
     notes.push(line(note));
   }
@@ -206,7 +206,7 @@ function stepsOf(
       continue;
     }
     const step = STEP.exec(each);
-    const star = /^\*\s+(.+)$/.exec(each);
+    const star = /^\*\s+(\S.*)$/.exec(each);
     if (step?.[1] !== undefined && step[2] !== undefined)
       steps.push({
         keyword: step[1] as StepKeyword,

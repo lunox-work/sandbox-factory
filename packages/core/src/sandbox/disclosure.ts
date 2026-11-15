@@ -180,16 +180,16 @@ const IP_PATTERN =
   /(?<![\w.])((?:25[0-5]|2[0-4]\d|1?\d?\d)(?:\.(?:25[0-5]|2[0-4]\d|1?\d?\d)){3})(?![\w]|\.\d)/g;
 const COPYRIGHT_PATTERN =
   /(?:\bcopyright\b|SPDX-FileCopyrightText:|(?=©))[ \t]*((?:\(c\)|©)?)[ \t]*((?:(?:19|20)\d{2}(?:[ \t]*[-–,][ \t]*(?:(?:19|20)\d{2}|present))*)?)[ \t]*,?[ \t]*(?:by[ \t]+)?([^\n]*)/gi;
-const AUTHOR_TAG = /@author[ \t]+([^\n]+)/g;
+const AUTHOR_TAG = /@author[ \t]+([^\s][^\n]*)/g;
 const AUTHOR_LINE =
-  /^[ \t]*(?:\/\/+|\/?\*+|#+|--|;+)[ \t]*(?:authors?|maintainers?|written by)[ \t]*:[ \t]*([^\n]+)$/gim;
+  /^[ \t]*(?:\/\/+|\/?\*+|#+|--|;+)[ \t]*(?:authors?|maintainers?|written by)[ \t]*:[ \t]*([^\s][^\n]*)$/gim;
 const AUTHOR_PROSE =
-  /^[ \t]*(?:authors?|maintainers?|written by)[ \t]*:[ \t]*([^\n]+)$/gim;
+  /^[ \t]*(?:authors?|maintainers?|written by)[ \t]*:[ \t]*([^\s][^\n]*)$/gim;
 const AUTHOR_JSON = /"(?:author|maintainer)s?"[ \t]*:[ \t]*"([^"\n]+)"/g;
 const CHANNEL_PATTERN =
   /(?<=^|[ \t])#([a-z0-9][a-z0-9_]*(?:-[a-z0-9_]+)+)(?![\w-])/gm;
 const TODO_PAREN =
-  /\b(?:TODO|FIXME|XXX|HACK|BUG|NOTE)[ \t]*\([ \t]*([^)\n]{1,60}?)[ \t]*\)/g;
+  /\b(?:TODO|FIXME|XXX|HACK|BUG|NOTE)[ \t]*\(([^)\n]{1,60})\)/g;
 const TODO_AT = /\b(?:TODO|FIXME|XXX|HACK)\b[ \t:]*@([A-Za-z][\w.-]{1,39})/g;
 /**
  * Tags a `TODO(...)` takes that are a topic, not a person: `TODO(perf)`.
@@ -358,20 +358,48 @@ function hostOf(rest: string): string {
   return lower(host.startsWith("[") ? host : host.replace(/:\d*$/, ""));
 }
 
-/** A URL without what closes the sentence or comment it ends. */
+/** What closes a sentence after a URL; a block comment's close is checked too. */
+const URL_TAIL = new Set("*.,;:!?'\")]}>");
+
+/**
+ * A URL without what closes the sentence or comment it ends. A loop from
+ * the end, not a `(…)+$` pattern: the input is uploaded text, and an
+ * anchored repetition backtracks on long runs of `*` or `!`.
+ */
 function trimUrl(url: string): string {
-  return url.replace(/(?:\*\/|\*+|[.,;:!?'")\]}>]+)+$/, "");
+  let end = url.length;
+  while (end > 0) {
+    if (url.endsWith("*/", end)) end -= 2;
+    else if (URL_TAIL.has(url[end - 1] ?? "")) end -= 1;
+    else break;
+  }
+  return url.slice(0, end);
 }
 
-/** A name, cut where its comment or line ends, spaces collapsed. */
+/** `text` up to the first `marker`, all of it without one. */
+function cutAt(text: string, marker: string): string {
+  const at = text.indexOf(marker);
+  return at === -1 ? text : text.slice(0, at);
+}
+
+/** Characters trimmed from both ends of a name once its spaces collapse. */
+const NAME_EDGE = new Set(" ,;:.*-");
+
+/**
+ * A name, cut where its comment or line ends, spaces collapsed. Cuts and
+ * trims are index scans rather than `.*$` / `[…]+$` patterns, which run
+ * in quadratic time on uploaded text.
+ */
 function cleanName(raw: string): string {
-  return raw
-    .replace(/\*\/.*$/, "")
-    .replace(/-->.*$/, "")
-    .replace(/\ball rights reserved\b.*$/i, "")
-    .replace(/\s+/g, " ")
-    .replace(/^[\s,;:.*-]+|[\s,;:.*-]+$/g, "")
-    .trim();
+  let name = cutAt(cutAt(cutAt(raw, "*/"), "-->"), "--!>");
+  const rights = name.search(/\ball rights reserved\b/i);
+  if (rights !== -1) name = name.slice(0, rights);
+  name = name.replace(/\s+/g, " ");
+  let start = 0;
+  let end = name.length;
+  while (start < end && NAME_EDGE.has(name[start] ?? "")) start += 1;
+  while (end > start && NAME_EDGE.has(name[end - 1] ?? "")) end -= 1;
+  return name.slice(start, end);
 }
 
 /** Whether `text` holds a name, once public addresses and pseudonyms go. */
@@ -545,8 +573,13 @@ export function scanDisclosure(
     for (const pattern of [TODO_PAREN, TODO_AT])
       for (const match of text.matchAll(pattern)) {
         if (!inRange(match.index, ["comment", "string"])) continue;
-        const name = cleanName(match[1] ?? "");
-        const at = match.index + match[0].indexOf(match[1] ?? "");
+        const raw = match[1] ?? "";
+        const name = cleanName(raw);
+        // Where the name starts: the group keeps the spaces inside `( … )`.
+        const at =
+          match.index +
+          match[0].indexOf(raw) +
+          (raw.length - raw.trimStart().length);
         if (
           name === "" ||
           !/[A-Za-z]{2}/.test(name) ||

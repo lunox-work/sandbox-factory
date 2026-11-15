@@ -464,3 +464,26 @@ test("text rules for a host and an address hold the round trip and carry back", 
     [],
   );
 });
+
+test("uploaded text built to backtrack scans in linear time", () => {
+  const run = 50_000;
+  const texts = [
+    `// see https://example.org/a${"*".repeat(run)}x`,
+    `// see https://example.org/a${"!".repeat(run)}x`,
+    `# author:${"\t".repeat(run)}x`,
+    `// TODO(${"\t".repeat(run)}`,
+    ` * @author ${"*/".repeat(run)}`,
+    ` * @author ${"-->".repeat(run)}`,
+    ` * @author Ada${" ,".repeat(run)}`,
+  ];
+  const started = Date.now();
+  for (const text of texts) scanDisclosure([{ path: "src/a.ts", text }]);
+  assert.ok(Date.now() - started < 2000, `${Date.now() - started} ms`);
+  assert.deepEqual(
+    scan("src/a.ts", "// TODO(  grace  ): x\n// @author Ada Lovelace */ x"),
+    ["todo_name@1:grace", "author@2:Ada Lovelace"],
+  );
+  assert.deepEqual(scan("page.html", "<!-- @author Ada Lovelace --!> -->"), [
+    "author@1:Ada Lovelace",
+  ]);
+});

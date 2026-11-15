@@ -834,7 +834,10 @@ test("an upload from, or of a folder cut by, a carveout before 0.4.0 is refused 
       version,
     );
     assert.match(old.body.error, /carveout 0\.4\.0 or later/);
-    assert.match(old.body.error, new RegExp(version.replace(/\./g, "\\.")));
+    assert.match(
+      old.body.error,
+      new RegExp(version.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
+    );
   }
   // The release that cut the folder, or a record from before receipts.
   for (const recordText of [
