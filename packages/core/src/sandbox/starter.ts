@@ -40,11 +40,15 @@ import {
   TASK_DESCRIPTOR_SCHEMA_VERSION,
   type TaskDescriptor,
 } from "./descriptor.js";
+import { contributorGuideFiles } from "./guide.js";
 import {
   AMBIENT_PATH,
   ENV_FILE,
+  GUIDE_PATHS,
   PRIVATE_TESTS_DIR,
   PUBLIC_TESTS_DIR,
+  README_GUIDE,
+  README_ONE_TEST,
   RUN_PATH,
   SANDBOX_SCRIPTS,
   ambientDeclarations,
@@ -562,6 +566,8 @@ function readme(input: {
     "",
     `Task \`${input.version.versionId}\` (version ${input.version.version}, size ${input.version.complexity}).`,
     "",
+    README_GUIDE,
+    "",
     "## Run it",
     "",
     `Node ${input.toolchain.nodeRange} and npm ${input.toolchain.npm} (\`.nvmrc\` says \`${input.toolchain.node}\`). Supported on ${input.toolchain.supportedPlatforms.join(", ")}. No account, container or remote session is needed; nothing runs until you run it.`,
@@ -592,7 +598,9 @@ function readme(input: {
     "",
     ...list(input.publicTests, "None."),
     "",
-    "Local results help you iterate. Acceptance is decided by the platform's own run of your pushed commit, including tests that are not in this repository.",
+    README_ONE_TEST,
+    "",
+    "Local results help you iterate. Acceptance is decided by the platform's own run of the files you submit, including tests that are not in this project.",
   ].join("\n")}\n`;
 }
 
@@ -751,11 +759,21 @@ export function generateStarterProject(
     .sort(compare);
   add({
     path: ".gitignore",
-    text: `${["node_modules/", ...emitted].join("\n")}\n`,
+    text: `${["node_modules/", ...emitted, "*.map"].join("\n")}\n`,
     class: "config",
     public: true,
   });
   const editable = starter.files.map((file) => file.path).sort(compare);
+  for (const file of contributorGuideFiles({
+    version: input.version,
+    spec: input.spec,
+    editable,
+    publicTests,
+    mocks: false,
+    jsx,
+    paths: GUIDE_PATHS,
+  }))
+    add(file);
   const descriptor: TaskDescriptor = {
     schemaVersion: TASK_DESCRIPTOR_SCHEMA_VERSION,
     sandboxId: input.version.sandboxId,

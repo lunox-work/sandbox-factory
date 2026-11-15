@@ -213,6 +213,8 @@ function server(
     aliasRules?: readonly object[];
     /** Sliced or generated; by default, generated when it has no table. */
     origin?: "slice" | "starter";
+    /** What `…/archive` answers; by default, a zip named by the API. */
+    archive?: () => Promise<Response>;
   } = {},
 ) {
   const calls: string[] = [];
@@ -230,6 +232,19 @@ function server(
           },
         ],
       });
+    if (url.endsWith("/sandboxes/versions/sbv_1/archive"))
+      return (
+        input.archive?.() ??
+        Promise.resolve(
+          new Response(new Uint8Array([0x50, 0x4b, 0x05, 0x06]), {
+            status: 200,
+            headers: {
+              "content-type": "application/zip",
+              "content-disposition": 'attachment; filename="sbx_1-v2.zip"',
+            },
+          }),
+        )
+      );
     if (url.includes("/files/content?")) {
       const path = new URL(url, "http://x").searchParams.get("path") ?? "";
       return json({ path, sizeBytes: 10, ...(contents[path] as object) });
@@ -336,7 +351,8 @@ test("an admin browses the private sandbox: the explorer beside the open file, r
       .getByRole("link", { name: "Lunox home" })
       .getAttribute("href"),
   ).toBe("/");
-  expect(titleBar.lastElementChild?.textContent).toBe("Acme");
+  // Whose it is at the right edge, after the project's download.
+  expect(titleBar.lastElementChild?.lastElementChild?.textContent).toBe("Acme");
   // The version at the bottom right, and the workspace only at the top.
   const statusBar = screen.getByRole("contentinfo");
   expect(statusBar.lastElementChild?.lastElementChild?.textContent).toBe(
@@ -1226,4 +1242,83 @@ test("a version that cannot be read says so, with a retry, not that it has no sp
   ).toBeDefined();
   expect(screen.getByRole("button", { name: "Try again" })).toBeDefined();
   expect(screen.queryByText(/approved without a spec/)).toBeNull();
+});
+
+test("an admin downloads the public project as the zip the API names, once a build has committed one", async () => {
+  const { calls } = server();
+  const created: Blob[] = [];
+  const saved: string[] = [];
+  // jsdom has no object URLs; the page makes one and lets it go.
+  const { createObjectURL, revokeObjectURL } = URL;
+  URL.createObjectURL = (blob: Blob) => {
+    created.push(blob);
+    return "blob:project";
+  };
+  URL.revokeObjectURL = () => undefined;
+  const click = vi
+    .spyOn(HTMLAnchorElement.prototype, "click")
+    .mockImplementation(function (this: HTMLAnchorElement) {
+      saved.push(`${this.download} ${this.href}`);
+    });
+  open();
+  const download = await screen.findByRole(
+    "button",
+    { name: "Download project" },
+    { timeout: 5_000 },
+  );
+  await userEvent.click(download);
+  await waitFor(() => expect(saved).toEqual(["sbx_1-v2.zip blob:project"]));
+  expect(calls.filter((url) => url.endsWith("/archive"))).toHaveLength(1);
+  expect(created[0]?.size).toBe(4);
+  click.mockRestore();
+  URL.createObjectURL = createObjectURL;
+  URL.revokeObjectURL = revokeObjectURL;
+});
+
+test("a refused download says so on the button, and a running build offers none", async () => {
+  server({
+    archive: () =>
+      Promise.resolve(
+        new Response(
+          JSON.stringify({
+            error: "A file in this build could not be read.",
+            code: "artifacts_unavailable",
+          }),
+          { status: 502, headers: { "content-type": "application/json" } },
+        ),
+      ),
+  });
+  open();
+  await userEvent.click(
+    await screen.findByRole(
+      "button",
+      { name: "Download project" },
+      { timeout: 5_000 },
+    ),
+  );
+  expect(await screen.findByRole("alert")).toHaveProperty(
+    "textContent",
+    "Download failed",
+  );
+  expect(screen.getByRole("button", { name: "Download project" }).title).toBe(
+    "A file in this build could not be read.",
+  );
+  cleanup();
+
+  server({
+    files: () => ({
+      ...built,
+      run: { id: "arn_build", status: "running" },
+      provisional: true,
+    }),
+  });
+  open();
+  expect(
+    await screen.findByRole(
+      "heading",
+      { name: "Invitations are not sent" },
+      { timeout: 5_000 },
+    ),
+  ).toBeDefined();
+  expect(screen.queryByRole("button", { name: "Download project" })).toBeNull();
 });

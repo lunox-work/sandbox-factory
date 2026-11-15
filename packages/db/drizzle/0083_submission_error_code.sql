@@ -1,0 +1,2 @@
+ALTER TABLE "submission" ADD COLUMN "error_code" text;--> statement-breakpoint
+ALTER TABLE "submission" ADD CONSTRAINT "submission_error_code_check" CHECK ("submission"."error_code" IS NULL OR ("submission"."status" = 'errored' AND "submission"."error_code" in ('grading_failed', 'grading_timed_out', 'grading_interrupted')));

@@ -2,14 +2,17 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { CommandExitError, FileNotFoundError, TimeoutError } from "e2b";
 import type { Sandbox, SandboxOpts } from "e2b";
-import { privateTestArgv, SANDBOX_RUN_ARGV } from "sandbox-factory";
+import {
+  hiddenTestFiles,
+  privateTestArgv,
+  SANDBOX_RUN_ARGV,
+} from "sandbox-factory";
 import {
   commandLine,
   createE2BProvider,
   E2B_JOB_BUDGET_MS,
   E2B_REGISTRY_HOST,
   e2bClient,
-  isHiddenTestRun,
   meetsNodeRange,
   shellQuote,
 } from "../src/evaluation/e2b.js";
@@ -65,10 +68,18 @@ test("an e2b job starts registry-only, stages files, cuts egress after the insta
     await job.stage([
       { path: "package.json", text: "{}" },
       { path: "src/app.ts", text: "export {};" },
+      // As the build will have emitted them.
+      { path: "tests/private/a.test.js", text: "/* a */" },
+      { path: "tests/private/b.test.js", text: "/* b */" },
     ]);
     assert.deepEqual(
       fake.writes.map((write) => write.path),
-      [`${WORK}/package.json`, `${WORK}/src/app.ts`],
+      [
+        `${WORK}/package.json`,
+        `${WORK}/src/app.ts`,
+        `${WORK}/tests/private/a.test.js`,
+        `${WORK}/tests/private/b.test.js`,
+      ],
     );
     assert.equal(job.egressCut?.(), false);
     await job.exec({ argv: PREPARE, env: {}, limits });
@@ -97,46 +108,92 @@ test("an e2b job starts registry-only, stages files, cuts egress after the insta
         durationMs: 0,
       },
     );
+    // A hidden run before the seal is refused.
+    await assert.rejects(
+      job.exec({
+        argv: privateTestArgv("tests/private/a.test.ts"),
+        env: {},
+        limits,
+        hidden: { entry: "tests/private/a.test.js", load: "memory" },
+      }),
+      /sealed/,
+    );
+    // The seal takes every hidden test's files out of the tree, keeping
+    // their text in the worker, and root copies what is left out of the
+    // user's reach.
+    const sealFrom = fake.runs.length;
+    await job.seal([
+      ...hiddenTestFiles("tests/private/a.test.ts"),
+      ...hiddenTestFiles("tests/private/b.test.ts"),
+    ]);
+    await assert.rejects(job.seal([]), /sealed once/);
+    const sealing = fake.runs.slice(sealFrom);
+    assert.equal(sealing.length, 2);
+    assert.match(sealing[0]?.command ?? "", /^rm -f -- /);
+    assert.match(
+      sealing[0]?.command ?? "",
+      /'\/home\/user\/job\/work\/tests\/private\/a\.test\.js'/,
+    );
+    assert.equal(sealing[0]?.user, undefined);
+    assert.equal(
+      sealing[1]?.command,
+      "mkdir -p -m 700 '/root/sandbox-job' && rm -rf '/root/sandbox-job/pristine' && cp -a '/home/user/job/work' '/root/sandbox-job/pristine' && chown -R -h root:root '/root/sandbox-job/pristine'",
+    );
+    assert.equal(sealing[1]?.user, "root");
     await job.exec({ argv: SANDBOX_RUN_ARGV.test, env: {}, limits });
-    // Each hidden test runs from a fresh copy of the files as they stood
-    // before the first, never the working directory.
+    // Each hidden test runs from a fresh copy of the sealed tree, never the
+    // working directory, with its own test alone, loaded from memory.
+    fake.writes.length = 0;
     const first = await job.exec({
       argv: privateTestArgv("tests/private/a.test.ts"),
       env: {},
       limits,
+      hidden: { entry: "tests/private/a.test.js", load: "memory" },
     });
     assert.equal(first.exitCode, 1);
     assert.equal(first.stdout, "not ok 1 - fails\n");
+    assert.deepEqual(
+      fake.writes.map((write) => write.path),
+      [
+        "/home/user/job/fresh/.sandbox-hidden/a.test.mjs",
+        "/home/user/job/fresh/.sandbox-hidden/a.payload",
+      ],
+    );
+    assert.equal(fake.writes[1]?.text, "/* a */");
+    fake.writes.length = 0;
     await job.exec({
       argv: privateTestArgv("tests/private/b.test.ts"),
       env: {},
       limits,
+      hidden: { entry: "tests/private/b.test.js", load: "memory" },
     });
+    assert.equal(fake.writes[1]?.text, "/* b */");
+    assert.ok(fake.writes.every((write) => !write.text.includes("/* a */")));
     assert.equal(fake.denied(), 1);
-    const commands = fake.runs.map((run) => run.command);
-    assert.equal(
-      commands.filter((command) => command.includes("/pristine'")).length,
-      3,
-      "one snapshot, then a copy of it per test",
-    );
-    assert.equal(
-      commands.filter((command) =>
-        command.startsWith(`cp -a '${WORK}' '/home/user/job/pristine'`),
-      ).length,
-      1,
-    );
     const tests = fake.runs.filter((run) =>
       run.command.includes("'--test-reporter=tap'"),
     );
     assert.deepEqual(
-      tests.map((run) => run.cwd),
-      ["/home/user/job/fresh", "/home/user/job/fresh"],
+      tests.map((run) => [run.cwd, run.command]),
+      [
+        [
+          "/home/user/job/fresh",
+          "exec 'node' '--env-file=sandbox.env' '--test' '--test-reporter=tap' '.sandbox-hidden/a.test.mjs'",
+        ],
+        [
+          "/home/user/job/fresh",
+          "exec 'node' '--env-file=sandbox.env' '--test' '--test-reporter=tap' '.sandbox-hidden/b.test.mjs'",
+        ],
+      ],
     );
-    for (const at of tests.map((run) => fake.runs.indexOf(run)))
-      assert.match(
-        fake.runs[at - 1]?.command ?? "",
-        /^rm -rf '\/home\/user\/job\/fresh' && cp -a/,
+    for (const at of tests.map((run) => fake.runs.indexOf(run))) {
+      const copy = fake.runs[at - 1];
+      assert.equal(
+        copy?.command,
+        "rm -rf '/home/user/job/fresh' && cp -a '/root/sandbox-job/pristine' '/home/user/job/fresh' && rm -rf '/home/user/job/fresh/.sandbox-hidden' && mkdir '/home/user/job/fresh/.sandbox-hidden' && chown -R -h user: '/home/user/job/fresh'",
       );
+      assert.equal(copy?.user, "root");
+    }
     // Every command the caller ran is followed by a sweep of what it left.
     const execs = fake.runs.filter((run) => run.command.startsWith("exec "));
     assert.equal(execs.length, 6);
@@ -205,7 +262,7 @@ test("an e2b job starts registry-only, stages files, cuts egress after the insta
   }
 });
 
-test("a command marked fresh runs in a fresh copy whatever its argv, as a layout's hidden test", async () => {
+test("a layout's hidden test runs in a fresh copy whatever its argv; one read from disk goes back at its path", async () => {
   const fake = fakeE2B(() => undefined);
   const provider = createE2BProvider({
     client: fake.client,
@@ -214,8 +271,16 @@ test("a command marked fresh runs in a fresh copy whatever its argv, as a layout
     now: fake.now,
   });
   const job = await provider.create({ label: "sbv_up", signal: signal() });
-  await job.stage([{ path: "package.json", text: "{}" }]);
+  await job.stage([
+    { path: "package.json", text: "{}" },
+    { path: "apps/shop/src/cart.accept.test.js", text: "/* node */" },
+    { path: "apps/shop/src/cart.vitest.test.ts", text: "/* vitest */" },
+  ]);
   await job.exec({ argv: INSTALL, env: {}, limits });
+  await job.seal([
+    "apps/shop/src/cart.accept.test.js",
+    "apps/shop/src/cart.vitest.test.ts",
+  ]);
   const hidden = [
     "node",
     "--env-file=carveout.env",
@@ -225,14 +290,42 @@ test("a command marked fresh runs in a fresh copy whatever its argv, as a layout
     "--test-reporter-destination=stdout",
     "apps/shop/src/cart.accept.test.js",
   ];
-  assert.equal(isHiddenTestRun(hidden), false);
   await job.exec({ argv: ["node", "carveout/test.js"], env: {}, limits });
-  await job.exec({ argv: hidden, env: {}, limits, fresh: true });
+  await job.exec({
+    argv: hidden,
+    env: {},
+    limits,
+    hidden: { entry: "apps/shop/src/cart.accept.test.js", load: "memory" },
+  });
+  fake.writes.length = 0;
+  const vitest = [
+    "node_modules/.bin/vitest",
+    "run",
+    "apps/shop/src/cart.vitest.test.ts",
+  ];
+  await job.exec({
+    argv: vitest,
+    env: {},
+    limits,
+    hidden: { entry: "apps/shop/src/cart.vitest.test.ts", load: "disk" },
+  });
+  // Vitest reads its own file: it goes back at its path, argv unchanged.
+  assert.deepEqual(fake.writes, [
+    {
+      path: "/home/user/job/fresh/apps/shop/src/cart.vitest.test.ts",
+      text: "/* vitest */",
+    },
+  ]);
   const runs = fake.runs.filter((run) => run.command.startsWith("exec "));
   assert.deepEqual(
     runs.map((run) => run.cwd),
-    [WORK, WORK, "/home/user/job/fresh"],
+    [WORK, WORK, "/home/user/job/fresh", "/home/user/job/fresh"],
   );
+  assert.match(
+    runs[2]?.command ?? "",
+    /'\.sandbox-hidden\/cart\.accept\.test\.mjs'$/,
+  );
+  assert.equal(runs[3]?.command, commandLine(vitest));
   await job.destroy();
 });
 
@@ -411,18 +504,12 @@ test("the limiter keeps a job's egress record", async () => {
   await job.destroy();
 });
 
-test("commands are quoted words, hidden tests are recognised by their argv, and Node is checked by range", () => {
+test("commands are quoted words and Node is checked by range", () => {
   assert.equal(shellQuote("it's"), `'it'\\''s'`);
   assert.equal(
     commandLine(["node", "-e", "console.log('$HOME')"]),
     `exec 'node' '-e' 'console.log('\\''$HOME'\\'')'`,
   );
-  assert.equal(
-    isHiddenTestRun(privateTestArgv("tests/private/x.test.ts")),
-    true,
-  );
-  assert.equal(isHiddenTestRun(SANDBOX_RUN_ARGV.test), false);
-  assert.equal(isHiddenTestRun(["node", "x.js"]), false);
   assert.equal(meetsNodeRange("v22.12.0"), true);
   assert.equal(meetsNodeRange("v24.1.0\n"), true);
   assert.equal(meetsNodeRange("v22.11.9"), false);
@@ -536,6 +623,12 @@ test("the SDK adapter sends the key to E2B only, registry-only egress, and maps 
   assert.equal(ran["retainOutput"], false);
   assert.equal(ran["timeoutMs"], 500);
   assert.deepEqual(ran["envs"], { HOME: "/home/user" });
+  // Only the provider's own copies of the sealed tree run as root.
+  await sandbox.run("ok", { ...options, user: "root" });
+  assert.equal(
+    (calls.at(-1)?.args[1] as Record<string, unknown>)["user"],
+    "root",
+  );
   assert.deepEqual(await sandbox.run("fails", options), {
     exitCode: 2,
     timedOut: false,

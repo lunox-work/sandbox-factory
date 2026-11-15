@@ -37,7 +37,7 @@ A native GitHub feature, enabled by
 
 Not a tool this repository uses, but the App the product asks clients to
 install, so the platform can read which repositories exist and where their
-default branches point. Registered under the **`lunox-work` organization**
+default branches point, and open a passing submission's pull request. Registered under the **`lunox-work` organization**
 (Settings → Developer settings → GitHub Apps → New GitHub App). How the code
 uses it is in [architecture.md](./architecture.md#github).
 
@@ -56,7 +56,7 @@ App's client id and secret are `GITHUB_APP_CLIENT_ID` / `_SECRET`.
 | Webhook → Active                                       | On                                                                                       |
 | Webhook URL                                            | `https://platform.lunox.work/api/github/webhook`                                         |
 | Webhook secret                                         | `openssl rand -hex 32` → `GITHUB_APP_WEBHOOK_SECRET`                                     |
-| Repository permissions                                 | Contents: **Read**, Issues: **Read**, Metadata: **Read**; nothing else                   |
+| Repository permissions                                 | Contents: **Write**, Pull requests: **Write**, Issues: **Read**, Metadata: **Read**      |
 | Organization and account permissions                   | none                                                                                     |
 | Subscribe to events                                    | Push, Repository (Installation and Installation repositories arrive without subscribing) |
 | Where can this GitHub App be installed?                | Any account                                                                              |
@@ -74,6 +74,15 @@ Why the less obvious ones:
   repository with `issues: read` alone; an App without the permission
   fails the mint and the import answers `github_unavailable`. Existing
   installations must accept the added permission on GitHub.
+- **Contents and Pull requests: Write are for merge-back** (`POST
+.../submissions/:sid/merge`): one commit, a `lunox/<submission>` branch and
+  a pull request, with a token minted for one repository
+  (`MERGE_BACK_PERMISSIONS`); every read token stays narrowed to read.
+  Existing installations must accept the new permissions on GitHub (the
+  installation's settings page); until then merge answers 409
+  `app_permissions_missing` and the version page disables the button and
+  links there. Checks/Statuses: Read are planned for reading the
+  repository's CI back; not requested yet.
 - **No organization permissions, on purpose.** Members: read would let the
   API check that the person administers an organization instead of the
   repository count above, at the cost of every client approving one more

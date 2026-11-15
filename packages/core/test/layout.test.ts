@@ -6,7 +6,9 @@ import {
   SANDBOX_IMPORT_TOOL_VERSION,
   gradingTree,
   hiddenArtifactPath,
+  hiddenTestFiles,
   hiddenTestPath,
+  hiddenTestRun,
   isSandboxBuildParams,
   isSandboxImportParams,
   layoutOf,
@@ -229,6 +231,76 @@ test("task code may not reach a layout's mock runtime or harness", () => {
     taskCodeProblems("src/a.ts", 'import { x } from "../sandbox/mock.js";\n')
       .length,
     1,
+  );
+});
+
+test("a hidden test's files are withheld whole, and its run says what goes back", () => {
+  assert.deepEqual(hiddenTestFiles("tests/private/s1-a.test.ts"), [
+    "tests/private/s1-a.test.ts",
+    "tests/private/s1-a.test.ts.map",
+    "tests/private/s1-a.test.js",
+    "tests/private/s1-a.test.js.map",
+    "tests/private/s1-a.test.d.ts",
+    "tests/private/s1-a.test.d.ts.map",
+  ]);
+  // node:test's emitted module is loaded from memory, by the very argv
+  // grading always ran.
+  assert.deepEqual(
+    hiddenTestRun(PLATFORM_LAYOUT, "tests/private/fix.test.ts"),
+    {
+      argv: privateTestArgv("tests/private/fix.test.ts"),
+      hidden: { entry: "tests/private/fix.test.js", load: "memory" },
+    },
+  );
+  assert.equal(
+    hiddenTestRun(PLATFORM_LAYOUT, "tests/private/fix.test.ts", "vitest"),
+    null,
+  );
+  // Vitest reads its own source, and a CommonJS file is no ES module: both
+  // go back on disk.
+  assert.deepEqual(
+    hiddenTestRun(CARVEOUT, "apps/shop/src/cart.accept.test.ts", "vitest")
+      ?.hidden,
+    { entry: "apps/shop/src/cart.accept.test.ts", load: "disk" },
+  );
+  assert.deepEqual(
+    hiddenTestRun(CARVEOUT, "apps/shop/src/cart.accept.test.cts")?.hidden,
+    { entry: "apps/shop/src/cart.accept.test.cjs", load: "disk" },
+  );
+  assert.deepEqual(
+    hiddenTestRun(CARVEOUT, "apps/shop/src/cart.accept.test.ts")?.argv,
+    layoutTestArgv(CARVEOUT, "apps/shop/src/cart.accept.test.ts"),
+  );
+});
+
+test("task code may not name the hidden tests' directory, however it spells it", () => {
+  const named =
+    "Task code must not name tests/private; the hidden tests are not task code's to read.";
+  for (const text of [
+    'const dir = "tests/private";',
+    "const dir = 'tests\\private';",
+    'const dir = "tests/" + "private";',
+    'const dir = "tests" + "/private";',
+    'const dir = join(root, "tests", "private");',
+    "const dir = `${root}/tests/private`;",
+  ])
+    assert.deepEqual(
+      taskCodeProblems("src/cart/total.ts", text),
+      [named],
+      text,
+    );
+  // Honest words and paths stay clear, as does a layout with no such
+  // directory.
+  for (const text of [
+    'const visibility = "private";',
+    "// Unit tests / private helpers live elsewhere.",
+    'const out = join(root, "tests", "public");',
+    'import { readdirSync } from "node:fs";\nexport const names = readdirSync("templates");',
+  ])
+    assert.deepEqual(taskCodeProblems("src/cart/total.ts", text), [], text);
+  assert.deepEqual(
+    taskCodeProblems("src/cart.ts", 'const dir = "tests/private";', CARVEOUT),
+    [],
   );
 });
 

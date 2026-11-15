@@ -20,6 +20,7 @@ import {
   CircleCheck,
   CircleX,
   CopyMinus,
+  Download,
   ExternalLink,
   Files,
   FlaskConical,
@@ -240,6 +241,11 @@ function SandboxFiles({
   const side: SandboxSide =
     params.get(SIDE_PARAM) === "public" ? "public" : "private";
   const allFiles = useMemo(() => listing.data?.files ?? [], [listing.data]);
+  // The project a contributor gets, once a build has committed one: what
+  // the archive packs (the handout's files), never a running build's.
+  const downloadable =
+    listing.data?.provisional === false &&
+    allFiles.some(({ path }) => isPublicPath(path));
   // The public sandbox is the project alone: no hidden tests, no manifests.
   const files = useMemo(
     () =>
@@ -598,6 +604,11 @@ function SandboxFiles({
         bountyHref={bountyHref}
         side={side}
         onSwitchSide={switchSide}
+        download={
+          downloadable ? (
+            <DownloadProject owner={owner} versionId={versionId} />
+          ) : undefined
+        }
       />
       {listing.data?.provisional === true && files.length > 0 && (
         <p
@@ -632,6 +643,7 @@ function TitleBar({
   bountyHref,
   side,
   onSwitchSide,
+  download,
 }: {
   heading: string;
   workspace: string;
@@ -639,6 +651,8 @@ function TitleBar({
   bountyHref: string | undefined;
   side: SandboxSide;
   onSwitchSide: () => void;
+  /** The project's download, once there is one to take. */
+  download?: React.ReactNode;
 }) {
   return (
     <header className="grid h-[35px] shrink-0 grid-cols-[1fr_minmax(0,38rem)_1fr] items-center gap-2 border-b border-(--wb-border) bg-(--wb-chrome) px-2">
@@ -675,10 +689,86 @@ function TitleBar({
           </a>
         )}
       </div>
-      <span className="min-w-0 justify-self-end truncate text-xs text-(--wb-muted)">
-        {workspace}
-      </span>
+      <div className="flex min-w-0 items-center gap-2 justify-self-end">
+        {download}
+        <span className="min-w-0 truncate text-xs text-(--wb-muted)">
+          {workspace}
+        </span>
+      </div>
     </header>
+  );
+}
+
+/**
+ * Saves the public project as the `.zip` a contributor opens in their
+ * editor: the handout's files under one folder, never a hidden test. The
+ * API names the file; a refusal shows in the button's title.
+ */
+function DownloadProject({
+  owner,
+  versionId,
+}: {
+  owner: string;
+  versionId: string;
+}) {
+  const [state, setState] = useState<"idle" | "saving" | "failed">("idle");
+  const [error, setError] = useState<string | null>(null);
+  const save = async () => {
+    setState("saving");
+    setError(null);
+    try {
+      const { blob, filename } = await clients.sandbox.projectArchive(
+        owner,
+        versionId,
+      );
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = filename;
+      document.body.append(link);
+      link.click();
+      link.remove();
+      // After the click has handed the file to the browser.
+      setTimeout(() => URL.revokeObjectURL(url), 0);
+      setState("idle");
+    } catch (failure) {
+      setError(
+        failure instanceof ApiError
+          ? failure.message
+          : "The project could not be downloaded.",
+      );
+      setState("failed");
+    }
+  };
+  const Icon =
+    state === "saving" ? Loader2 : state === "failed" ? CircleX : Download;
+  return (
+    <button
+      type="button"
+      onClick={() => void save()}
+      disabled={state === "saving"}
+      aria-label="Download project"
+      title={
+        error ??
+        "Download the public project as a .zip: what contributors get, without the hidden tests."
+      }
+      className="flex h-[22px] min-w-0 items-center gap-1.5 rounded-[4px] border border-(--wb-input-border) bg-(--wb-input) px-2 text-xs whitespace-nowrap text-(--wb-foreground) transition-colors hover:bg-(--wb-hover) hover:text-(--wb-strong) focus-visible:outline-1 focus-visible:outline-offset-1 focus-visible:outline-(--wb-accent) disabled:opacity-60"
+    >
+      <Icon
+        aria-hidden="true"
+        className={cn("size-3 shrink-0", state === "saving" && "animate-spin")}
+      />
+      <span
+        className="max-sm:hidden"
+        role={state === "failed" ? "alert" : undefined}
+      >
+        {state === "saving"
+          ? "Downloading…"
+          : state === "failed"
+            ? "Download failed"
+            : "Download project"}
+      </span>
+    </button>
   );
 }
 

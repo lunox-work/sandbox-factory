@@ -3,12 +3,20 @@
  * scenarios' keys, never a hidden test. A passing one on a version sliced
  * from a repository is merged back from here, as a pull request on the
  * commit the version was cut at: a person's act, which no token can take.
+ * One whose carry back to the repository's names failed its grading run's
+ * check stays passed, says so, and offers no merge.
+ * One whose grading could not run says why and is graded again from here
+ * with the same files, which spends no retry.
+ * Whether a merge would be refused is read first (`mergeBackStatus`): the
+ * button is disabled with the reason, and a GitHub App that has not
+ * accepted the permissions merge-back needs links to where an admin
+ * accepts them. Read again when the person comes back to the tab.
  */
 
 import { ApiError } from "@sandbox-factory/client";
 import type { SubmissionDto } from "@sandbox-factory/shared";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { GitPullRequest } from "lucide-react";
+import { GitPullRequest, RotateCcw } from "lucide-react";
 import { useState } from "react";
 
 import { Badge } from "@/components/ui/badge";
@@ -25,6 +33,13 @@ const VERDICT_LABELS: Record<NonNullable<SubmissionDto["verdict"]>, string> = {
   overfit: "Overfit",
   incomplete: "Incomplete",
   refused: "Refused",
+};
+
+/** Why grading could not run, as an errored submission's row says it. */
+const ERROR_REASONS: Record<NonNullable<SubmissionDto["errorCode"]>, string> = {
+  grading_failed: "Grading failed on the platform's side.",
+  grading_timed_out: "Grading ran out of time.",
+  grading_interrupted: "Grading was interrupted.",
 };
 
 /** What a submission's row says of where it stands. */
@@ -68,14 +83,39 @@ export function SandboxSubmissions({
         ? GRADING_POLL_MS
         : false,
   });
+  const statusKey = queryKeys.resource(
+    userId,
+    organizationId,
+    "sandbox-merge-back",
+    versionId,
+  );
+  const mergeStatus = useQuery({
+    queryKey: statusKey,
+    queryFn: ({ signal }) =>
+      clients.sandbox.mergeBackStatus(organizationId, versionId, signal),
+    enabled: canMerge,
+    staleTime: 0,
+    refetchOnWindowFocus: true,
+  });
+  // Unread or unreadable, the merge itself is the check.
+  const blocked =
+    mergeStatus.data === undefined || mergeStatus.data.code === null
+      ? null
+      : mergeStatus.data;
   const [merging, setMerging] = useState<string | null>(null);
+  const [regrading, setRegrading] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  async function merge(submissionId: string) {
-    setMerging(submissionId);
+  /** One act on a submission, then the list read again; a refusal says why. */
+  async function act(
+    submissionId: string,
+    setBusy: (id: string | null) => void,
+    call: () => Promise<unknown>,
+  ) {
+    setBusy(submissionId);
     setError(null);
     try {
-      await clients.sandbox.mergeSubmission(organizationId, submissionId);
+      await call();
       await queryClient.invalidateQueries({ queryKey: key });
     } catch (failure) {
       setError(
@@ -84,11 +124,29 @@ export function SandboxSubmissions({
           : "Could not reach the server.",
       );
     } finally {
-      setMerging(null);
+      setBusy(null);
     }
   }
+  const merge = (submissionId: string) =>
+    act(submissionId, setMerging, async () => {
+      try {
+        await clients.sandbox.mergeSubmission(organizationId, submissionId);
+      } finally {
+        await queryClient.invalidateQueries({ queryKey: statusKey });
+      }
+    });
+  const regrade = (submissionId: string) =>
+    act(submissionId, setRegrading, () =>
+      clients.sandbox.regradeSubmission(organizationId, submissionId),
+    );
 
   const list = submissions.data ?? [];
+  const mergeable = (item: SubmissionDto) =>
+    canMerge &&
+    item.merge === null &&
+    item.status !== "errored" &&
+    item.verdict === "passed" &&
+    item.carryBack !== "failed";
   if (submissions.isPending)
     return (
       <p className="text-muted-foreground text-sm">Reading submissions…</p>
@@ -136,6 +194,20 @@ export function SandboxSubmissions({
                 {item.failedScenarios.length > 0 &&
                   ` · Failing scenarios ${item.failedScenarios.join(", ")}`}
               </span>
+              {item.carryBack === "failed" && (
+                <span className="text-muted-foreground text-xs">
+                  Passed, but the patch did not build and pass in the
+                  repository&apos;s names, so merge-back is disabled.
+                </span>
+              )}
+              {item.status === "errored" && (
+                <span className="text-muted-foreground text-xs">
+                  {item.errorCode === null
+                    ? "Grading could not run."
+                    : ERROR_REASONS[item.errorCode]}{" "}
+                  Grading it again uses the same files and keeps its retry.
+                </span>
+              )}
               {item.refused.map((refusal) => (
                 <span
                   key={`${refusal.path}:${refusal.reason}`}
@@ -145,7 +217,17 @@ export function SandboxSubmissions({
                 </span>
               ))}
             </div>
-            {item.merge !== null ? (
+            {item.status === "errored" ? (
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={regrading !== null}
+                onClick={() => void regrade(item.id)}
+              >
+                <RotateCcw />
+                {regrading === item.id ? "Queueing…" : "Grade again"}
+              </Button>
+            ) : item.merge !== null ? (
               <Button asChild variant="outline" size="sm">
                 <a
                   href={item.merge.pullRequestUrl}
@@ -157,11 +239,14 @@ export function SandboxSubmissions({
                 </a>
               </Button>
             ) : (
-              canMerge &&
-              item.verdict === "passed" && (
+              mergeable(item) && (
                 <Button
                   size="sm"
-                  disabled={merging !== null}
+                  disabled={merging !== null || blocked !== null}
+                  title={blocked?.error ?? undefined}
+                  aria-describedby={
+                    blocked === null ? undefined : "merge-back-blocked"
+                  }
                   onClick={() => void merge(item.id)}
                 >
                   <GitPullRequest />
@@ -172,6 +257,30 @@ export function SandboxSubmissions({
           </li>
         ))}
       </ul>
+      {blocked !== null && list.some(mergeable) && (
+        <p
+          id="merge-back-blocked"
+          className="text-muted-foreground text-xs"
+          data-testid="merge-back-blocked"
+        >
+          {blocked.error}
+          {blocked.missing.length > 0 &&
+            ` Missing: ${blocked.missing.join(", ")}.`}
+          {blocked.acceptUrl !== null && (
+            <>
+              {" "}
+              <a
+                href={blocked.acceptUrl}
+                target="_blank"
+                rel="noopener"
+                className="text-foreground underline underline-offset-2"
+              >
+                Accept new permissions on GitHub
+              </a>
+            </>
+          )}
+        </p>
+      )}
       {error !== null && (
         <p role="alert" className="text-destructive text-xs">
           {error}

@@ -747,6 +747,8 @@ export interface GithubWorld {
   suspendedIds?: number[];
   /** Status the probe (`GET /app/installations/:id`) answers with instead. */
   probeStatus?: number;
+  /** Permissions the probe reports by installation id; absent, none said. */
+  installationPermissions?: Record<number, Record<string, string>>;
   /** Status the person's per-installation repository count answers with. */
   reachStatus?: number;
   /** Repository ids `GET /repositories/:id` answers 404 for. */
@@ -868,9 +870,11 @@ export function fakeGithub(state: GithubWorld): typeof globalThis.fetch & {
       if (state.uninstalled?.includes(id)) {
         return json({ message: "Not Found" }, 404);
       }
+      const permissions = state.installationPermissions?.[id];
       return json({
         id,
         suspended_at: suspended ? "2026-09-30T00:00:00Z" : null,
+        ...(permissions === undefined ? {} : { permissions }),
       });
     }
     const mint = app;

@@ -14,6 +14,7 @@ import {
   FIXTURE_LIMITS,
   PRICED_BOUNTY_COMPLEXITIES,
   SANDBOX_COMMANDS,
+  SUBMISSION_ERRORS,
   SANDBOX_STATUSES,
   SLICE_APPROVAL_REASONS,
   TASK_DESCRIPTOR_SCHEMA_VERSION,
@@ -459,6 +460,60 @@ export const sandboxHandoutSchema = z.object({
 });
 export type SandboxHandout = z.infer<typeof sandboxHandoutSchema>;
 
+/**
+ * The most bytes, summed over the handout's files, that
+ * `GET /versions/:vid/archive` packs; a larger project is refused
+ * (`project_too_large`) rather than held in memory.
+ */
+export const PROJECT_ARCHIVE_MAX_BYTES = 64 * 1024 * 1024;
+/** What one page of `GET /versions/:vid/handout/files` holds by default. */
+export const HANDOUT_PAGE_DEFAULT_BYTES = 60_000;
+/** The bounds of a page's `maxBytes`, counted as encoded content. */
+export const HANDOUT_PAGE_LIMITS = { min: 1_000, max: 1_000_000 } as const;
+/** The most files one page lists, whatever their size. */
+export const HANDOUT_PAGE_MAX_FILES = 200;
+
+/** `GET /versions/:vid/handout/files`: which page, and how big. */
+export const handoutFilesQuerySchema = z.object({
+  /** The previous page's `nextCursor`; absent, the first page. */
+  cursor: z.string().min(1).max(100).optional(),
+  maxBytes: z.coerce
+    .number()
+    .int()
+    .min(HANDOUT_PAGE_LIMITS.min)
+    .max(HANDOUT_PAGE_LIMITS.max)
+    .default(HANDOUT_PAGE_DEFAULT_BYTES),
+});
+export type HandoutFilesQuery = z.input<typeof handoutFilesQuerySchema>;
+
+/**
+ * One page of the handout's files with their contents, so an agent can
+ * write the project out without the archive: UTF-8 text as is, any other
+ * file as base64. A page holds at least one file; one whose encoded
+ * content is over `SANDBOX_FILE_TEXT_MAX_BYTES` is listed with
+ * `omitted: "too_large"` and is in the archive. `root` is the folder the
+ * archive unpacks to; `sha256` names the project (the archive's ETag).
+ */
+export const handoutFilesSchema = z.object({
+  versionId: z.string(),
+  root: z.string().min(1),
+  sha256: z.string().regex(/^[a-f0-9]{64}$/),
+  total: z.number().int().nonnegative(),
+  files: z.array(
+    z.object({
+      path: z.string().min(1),
+      sizeBytes: z.number().int().nonnegative(),
+      sha256: z.string().regex(/^[a-f0-9]{64}$/),
+      encoding: z.enum(["utf8", "base64"]).nullable(),
+      content: z.string().nullable(),
+      omitted: z.literal("too_large").nullable(),
+    }),
+  ),
+  /** Null on the last page. */
+  nextCursor: z.string().nullable(),
+});
+export type HandoutFilesDto = z.infer<typeof handoutFilesSchema>;
+
 export const sandboxFileListSchema = z.object({
   run: z
     .object({ id: z.string(), status: z.enum(ANALYSIS_STATUSES) })
@@ -600,11 +655,24 @@ export const submissionDtoSchema = z.object({
   id: z.string(),
   sandboxVersionId: z.string(),
   status: z.enum(["queued", "running", "passed", "failed", "errored"]),
+  /**
+   * Why an `errored` submission could not be graded: a fixed reason. It is
+   * graded again with the same files without spending its retry. Absent
+   * from an API older than the reason.
+   */
+  errorCode: z.enum(SUBMISSION_ERRORS).nullable().default(null),
   verdict: z.enum(["passed", "overfit", "incomplete", "refused"]).nullable(),
   public: suiteCountSchema.nullable(),
   hidden: suiteCountSchema.nullable(),
   failedScenarios: z.array(z.string()),
   refused: z.array(z.object({ path: z.string(), reason: z.string() })),
+  /**
+   * `failed`: it passed, but carried back to the repository's names it did
+   * not build and pass there, so it is not merged back (`carry_failed`).
+   * Null when it carried or nothing is carried back; absent from an API
+   * older than the check.
+   */
+  carryBack: z.enum(["failed"]).nullable().default(null),
   runId: z.string().nullable(),
   /** The submission this one retries; null for a first attempt. */
   retryOf: z.string().nullable(),
@@ -627,6 +695,30 @@ export const submissionListSchema = z.object({
   submissions: z.array(submissionDtoSchema),
 });
 export type SubmissionDto = z.infer<typeof submissionDtoSchema>;
+
+/**
+ * Whether a version's passing submissions can be merged back now, read
+ * before the button is pressed. `code` is the refusal a merge would answer
+ * (`app_permissions_missing` names `missing`, e.g. `pull_requests:write`,
+ * and `acceptUrl`, where an installation admin accepts them); null when
+ * it would go ahead.
+ */
+export const MERGE_BACK_BLOCKS = [
+  "merge_unavailable",
+  "not_sliced",
+  "repository_unavailable",
+  "app_permissions_missing",
+] as const;
+export const mergeBackStatusSchema = z.object({
+  code: z.enum(MERGE_BACK_BLOCKS).nullable(),
+  error: z.string().nullable(),
+  missing: z.array(z.string()),
+  acceptUrl: z.string().nullable(),
+});
+export const mergeBackStatusResponseSchema = z.object({
+  mergeBack: mergeBackStatusSchema,
+});
+export type MergeBackStatusDto = z.infer<typeof mergeBackStatusSchema>;
 
 /**
  * How many files, and how large, one uploaded hand-off folder may carry:

@@ -116,6 +116,13 @@ function successResponse(
         "A browser step: follow `Location` while signed in as the acting person.",
       headers: { Location: { schema: { type: "string", format: "uri" } } },
     };
+  if ("file" in response)
+    return {
+      description: "A file to save, with `ETag` and `Content-Disposition`.",
+      content: {
+        [response.file]: { schema: { type: "string", format: "binary" } },
+      },
+    };
   return {
     description: "Success.",
     content: {

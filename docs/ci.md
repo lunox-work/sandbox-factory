@@ -88,7 +88,8 @@ into the test tasks and their cache keys.
 
 The `Worker image smoke` job builds the pinned ARM64 worker image and runs the
 real Graphify fixture pipeline without credentials, so a Python regression
-cannot merge while only the Node tests pass. Worker image tags are immutable;
+cannot merge while only the Node tests pass, then the bounty round trip
+([roundtrip.mjs](../apps/worker/scripts/roundtrip.mjs)). Worker image tags are immutable;
 a rollback dispatch reuses the existing worker image. Deployment
 prerequisites are in the [worker README](../apps/worker/README.md#deployment-order).
 

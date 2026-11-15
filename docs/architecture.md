@@ -207,13 +207,21 @@ them (`POST …/decisions/confirm`, a web session only; one
 version from a slice run) and `prepare` (its build, which writes and
 calibrates hidden tests) post work; `get_handout`
 (`GET …/versions/:vid/handout`) reads the public files and duediligence's
-`hiddenSha256` over the hidden suite, never a hidden test's name or body.
+`hiddenSha256` over the hidden suite, never a hidden test's name or body;
+`get_project_files` (`…/handout/files`) pages those files' contents so an
+agent can write the project out.
 `submit_patch`/`judge` (`POST …/versions/:vid/submissions`, a published
 version only) store the files canonically (`submittedFilesText`) and queue a
 `submission_grade` run; `get_verdict` reads duediligence's verdict
 (passed, overfit, incomplete, refused), the counts and the failing
 scenarios' keys; `retry` (`POST …/submissions/:sid/retry`) is a failed
-submission's one retry (`submission.retry_of`, unique). A workspace
+submission's one retry (`submission.retry_of`, unique). The same files
+again answer the submission already made and queue its run when it has
+none (a `run_limit` 409 is `retryable`, with `Retry-After`). A grading run
+that ends without a verdict leaves the submission `errored` with a fixed
+`errorCode` (`SUBMISSION_ERRORS`); retried with its own files, or
+`POST …/submissions/:sid/regrade` (session only), its run is queued again
+in place, within the run's attempts, without spending the retry. A workspace
 that will not connect its repository uploads a public, pseudonymised
 carveout hand-off folder instead (`carveout handoff --platform`,
 `POST …/sandboxes/uploads`, `sandboxes:write`, owners and admins, no MCP
@@ -571,11 +579,15 @@ counts are kept. `gradingTree` in `grading.ts` builds what a submission is run
 on: the version's files with only editable paths and new TypeScript files
 beside them taken, everything else refused with reasons, and `GRADING_COMMANDS`
 run without `npm run`. Its `taskCodeProblems` is an advisory lint, not a
-boundary: a text match refuses the plain ways task code could reach the mocks
-or the test run, and misses others. Grading must isolate task code by process:
-each hidden test runs in its own process from a fresh copy of the version's
-files, its outcome read from outside, with no other hidden test, credential or
-grading state loaded beside task code.
+boundary: a text match refuses the plain ways task code could reach the mocks,
+the test run or `tests/private`, and misses others. Grading isolates task code
+by job (`EvaluationJob.seal`, `apps/worker/src/evaluation/hidden-runner.ts`):
+after the build and before any task code runs, every hidden test leaves the
+tree; each then runs in its own process from a fresh copy of that sealed tree
+holding it alone, read into memory and deleted by the platform's runner before
+task code loads, its outcome read from outside. Residual: what a test hands
+task code (a function's source, a stack's line numbers), `node:inspector` or
+`/proc/self/mem` past the lint, and Vitest hidden tests, which stay on disk.
 
 **Merge-back (gate 3).** Grading a version sliced from a repository runs on
 its snapshot (`snapshotFits`), and a pass is carried back to the
@@ -585,12 +597,31 @@ build manifest's `engines.carveout` names, `ALIASES_V1` without it): kept lines 
 for byte, added lines are renamed and refused unless they map back, and an
 added import of the harness is refused. The result is the grading run's
 `private/merge-patch.json`; one that cannot be carried is the verdict
-`refused`. `POST …/submissions/:sid/merge`, from a signed-in session only,
+`refused`. Before the patch is kept, the run builds and tests the version in
+the repository's names in a second job, both suites (`repositoryTree` in
+`apps/worker/src/tools/submission-grade.ts`, `submission_grade@4`; passes
+only); a pass that fails there stays `passed` with `carryBack: "failed"`
+and no merge patch, and merge answers 409 `carry_failed`. Starter and
+upload versions skip it: the platform holds no repository names for them.
+The verdict is written in the run's fenced commit with its artifacts
+(`RunSettlement` in `packages/db/src/analysis-runs.ts`), so a pass never
+stands without its merge patch unless it is `carryBack: "failed"`.
+`POST …/submissions/:sid/merge`, from a signed-in session only (a merge
+patch that does not parse is 502 `merge_patch_invalid`, logged),
 opens one pull request per submission (`submission_merge`) with
 `PullRequestWriter` (`packages/github/src/pull-requests.ts`), whose token
 `mergeBackWriter` narrows to the one repository and
-`MERGE_BACK_PERMISSIONS`. The version page lists submissions
-(`SandboxSubmissions.tsx`). The repository's CI result is not read back
+`MERGE_BACK_PERMISSIONS`. It is idempotent: the row is claimed `pending`
+on its unique key before GitHub is asked (a concurrent press gets 409
+`merge_in_progress`, a failure releases the claim), the writer reuses a
+`lunox/<sid>` branch whose head has the same tree and an open pull request
+from it, a branch with other changes is 409 `branch_conflict`, and an
+opened one answers 200 with the same body. Before it, the installation's
+permissions are read from GitHub (`apps/api/src/github/merge-back.ts`);
+missing ones are 409 `app_permissions_missing` with `missing` and
+`acceptUrl`, which `GET …/versions/:vid/merge-back` (session only) also
+answers so the version page (`SandboxSubmissions.tsx`) disables the button
+with the reason. The repository's CI result is not read back
 yet: the App holds no `checks` or `statuses` read.
 
 **CI judge.** `POST /api/judge` and `GET /api/judge/:id?workspace=`
@@ -603,8 +634,9 @@ is the repository the published version was sliced from, through a healthy
 installation, and any other refusal reads as not found. Grading takes
 `names: "repository"`: the files are carried forward with `forwardChange`
 on the snapshot, only editable files and files new to the repository are
-judged, and nothing is carried back. The job's own exit is the check; no
-`checks` permission is needed.
+judged, and nothing is carried back. The same files again queue a
+submission that has no run (`run_limit` is `retryable`). The job's own exit
+is the check; no `checks` permission is needed.
 
 **Nobody picks the repository.** `POST .../sandboxes` takes `bountyId` and cuts
 from the one repository the live proposal says the work touches
@@ -717,6 +749,18 @@ wrote (`project/`, hidden tests under `private/`, the build's records) and
 `.../files/content?path=` answers one as text, matched against the run's
 artifact rows, never joined into a key; over `SANDBOX_FILE_TEXT_MAX_BYTES` or
 not UTF-8 is `text: null`. Owners and admins only.
+
+**Project download.** `GET …/versions/:vid/archive` (and HEAD) answers the
+handout's public files as one `.zip` under `<sandboxId>-v<n>/`, with
+`Content-Disposition`, a strong `ETag` (`projectSha256`) and
+`private, no-cache`; `GET …/versions/:vid/handout/files?cursor=&maxBytes=`
+pages the same files with contents (UTF-8 or base64) for agents
+(`get_project_files`). Both build from the handout's list only and check
+each file's size and sha256 before serving: a mismatch is 502
+`project_mismatch`, never a partial body; over `PROJECT_ARCHIVE_MAX_BYTES`
+is 409 `project_too_large`. The handout's access (owners and admins; drafts
+too); the builder (`apps/api/src/sandbox/project.ts`, writer `zip.ts`)
+takes no access decision.
 
 **Provenance.** A version's private source row records the slice's manifest
 and contract hashes, the transform (alias rules, dependency choices, hidden

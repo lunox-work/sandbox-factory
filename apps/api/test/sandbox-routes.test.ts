@@ -1,4 +1,8 @@
-import { GithubAuthError } from "@sandbox-factory/github";
+import {
+  GithubAuthError,
+  type PullRequestInput,
+  PullRequestWriter,
+} from "@sandbox-factory/github";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { test } from "node:test";
@@ -25,6 +29,7 @@ import {
   type SandboxRouteOptions,
 } from "../src/sandbox/routes.js";
 import type { AuthVariables } from "../src/routes.js";
+import { unzip } from "./zip-reader.js";
 
 const stamp = "2026-10-02T00:00:00.000Z";
 const sha = (text: string) => createHash("sha256").update(text).digest("hex");
@@ -201,6 +206,24 @@ const buildRun: StoredAnalysisRun = {
     transformConfigSha256: "1".repeat(64),
     approvedTaskSha256: "2".repeat(64),
   },
+};
+/** A grading run of `params`, on the version's snapshot. */
+const gradeRunOf = (params: unknown): StoredAnalysisRun => ({
+  ...sliceRun,
+  id: "arn_grade",
+  tool: "submission_grade",
+  toolVersion: "submission_grade@2",
+  status: "queued",
+  params: params as StoredAnalysisRun["params"],
+});
+/** What the CI judge queued `sbm_1` with: a pull request's files. */
+const judgedParams = {
+  deadlineMinutes: 60,
+  grader: "submission",
+  submissionId: "sbm_1",
+  sandboxVersionId: "sbv_1",
+  patchSha256: "a".repeat(64),
+  names: "repository",
 };
 const artifactOf = (
   kind: StoredArtifact["kind"],
@@ -437,6 +460,11 @@ function fixture(
     mergeBack: unknown;
     /** What a grading run `arn_grade` wrote, by path. */
     gradeRun: Record<string, string>;
+    /**
+     * Every grading enqueue finds a run already made, in this status;
+     * unsaid, the first of each submission's makes one.
+     */
+    gradeCached: string;
     /** The stored version's source carries a hidden test. */
     hiddenTests: boolean;
     /** The credential the caller signed in with; a session unless said. */
@@ -479,6 +507,8 @@ function fixture(
     approvedBy: string | null;
     /** The store finds the slice run moved on after the route's check. */
     approvalMoved: boolean;
+    /** A built file's bytes in storage are not the ones the run recorded. */
+    tampered: string;
   }> = {},
 ) {
   const published: { versionId: string; actor: string; expiresAt: string }[] =
@@ -489,6 +519,7 @@ function fixture(
   const patches: unknown[] = [];
   const builds: unknown[] = [];
   const enqueued: unknown[] = [];
+  const gradeRuns = new Set<string>();
   const removed: string[] = [];
   const linked: { id: string; sourceRepoId: string }[] = [];
   const requested: unknown[] = [];
@@ -753,39 +784,57 @@ function fixture(
     },
     runs: {
       get: async (owner: string, id: string) =>
-        owner === "org_1" && id === "arn_slice"
-          ? { ...sliceRun, status: overrides.sliceStatus ?? "succeeded" }
-          : owner === "org_1" && id === "arn_build"
-            ? {
-                ...buildRun,
-                status: overrides.previewing === true ? "running" : "succeeded",
-              }
-            : owner === "org_1" && id === "arn_other"
-              ? { ...sliceRun, id: "arn_other" }
-              : owner === "org_1" && id === "arn_graph"
-                ? { ...sliceRun, id: "arn_graph", tool: "graphify" }
-                : owner === "org_1" && id === "arn_fixtures"
-                  ? fixturesRunOf(id, "arn_slice")
-                  : owner === "org_1" && id === "arn_fixtures_bad"
+        owner === "org_1" && id === "arn_grade"
+          ? { ...gradeRunOf(judgedParams), status: "failed" }
+          : owner === "org_1" && id === "arn_slice"
+            ? { ...sliceRun, status: overrides.sliceStatus ?? "succeeded" }
+            : owner === "org_1" && id === "arn_build"
+              ? {
+                  ...buildRun,
+                  status:
+                    overrides.previewing === true ? "running" : "succeeded",
+                }
+              : owner === "org_1" && id === "arn_other"
+                ? { ...sliceRun, id: "arn_other" }
+                : owner === "org_1" && id === "arn_graph"
+                  ? { ...sliceRun, id: "arn_graph", tool: "graphify" }
+                  : owner === "org_1" && id === "arn_fixtures"
                     ? fixturesRunOf(id, "arn_slice")
-                    : owner === "org_1" && id === "arn_fixtures_gone"
+                    : owner === "org_1" && id === "arn_fixtures_bad"
                       ? fixturesRunOf(id, "arn_slice")
-                      : owner === "org_1" && id === "arn_fixtures_running"
-                        ? fixturesRunOf(id, "arn_slice", "running")
-                        : owner === "org_1" && id === "arn_fixtures_elsewhere"
-                          ? fixturesRunOf(id, "arn_other")
-                          : null,
+                      : owner === "org_1" && id === "arn_fixtures_gone"
+                        ? fixturesRunOf(id, "arn_slice")
+                        : owner === "org_1" && id === "arn_fixtures_running"
+                          ? fixturesRunOf(id, "arn_slice", "running")
+                          : owner === "org_1" && id === "arn_fixtures_elsewhere"
+                            ? fixturesRunOf(id, "arn_other")
+                            : null,
       enqueue: async (_owner: string, snapshotId: string, input: unknown) => {
         enqueued.push({ snapshotId, ...(input as object) });
         if (overrides.quota === true) return quotaRefusal;
-        return overrides.limit === true
-          ? { ok: false, reason: "run_limit" }
-          : {
-              ok: true,
-              created: true,
-              run: buildRun,
-              obsoleteLogKey: "logs/old.log",
-            };
+        if (overrides.limit === true) return { ok: false, reason: "run_limit" };
+        const { tool, params } = input as { tool?: string; params: unknown };
+        if (tool === "submission_grade") {
+          // Cached by its parameters, as the store does.
+          const key = JSON.stringify(params);
+          const cached =
+            overrides.gradeCached !== undefined || gradeRuns.has(key);
+          gradeRuns.add(key);
+          return {
+            ok: true,
+            created: !cached,
+            run: {
+              ...gradeRunOf(params),
+              status: cached ? (overrides.gradeCached ?? "queued") : "queued",
+            },
+          };
+        }
+        return {
+          ok: true,
+          created: true,
+          run: buildRun,
+          obsoleteLogKey: "logs/old.log",
+        };
       },
     },
     artifacts: {
@@ -1015,19 +1064,25 @@ function fixture(
   });
   for (const [path, body] of Object.entries(overrides.gradeRun ?? {}))
     objects.set(`runs/arn_grade/${path}`, Buffer.from(body));
+  if (overrides.tampered !== undefined)
+    objects.set(
+      `runs/arn_build/lease/${overrides.tampered}`,
+      Buffer.from("export const sum = 2;\n"),
+    );
   mountSandboxRoutes(app, options);
   const request = (
     method: string,
     path: string,
     body?: unknown,
     org = "org_1",
+    headers: Record<string, string> = {},
   ) =>
     app.request(`/api/v1/orgs/${org}/sandboxes${path}`, {
       method,
       ...(body === undefined
-        ? {}
+        ? { headers }
         : {
-            headers: { "Content-Type": "application/json" },
+            headers: { ...headers, "Content-Type": "application/json" },
             body: JSON.stringify(body),
           }),
     });
@@ -1037,6 +1092,12 @@ function fixture(
     patches,
     builds,
     enqueued,
+    /** How many grading runs the store made, not found cached. */
+    gradeRuns: () => gradeRuns.size,
+    /** Whether the store refuses at the active-run limit from now on. */
+    limit: (on: boolean) => {
+      overrides.limit = on;
+    },
     removed,
     published,
     announced,
@@ -3493,6 +3554,202 @@ test("a built version's handout lists its public files and commits to its hidden
   );
 });
 
+test("a built version's project downloads as one zip of the handout's files, never a hidden test", async () => {
+  const f = fixture("admin", { built: true });
+  const handout = (await (
+    await f.request("GET", "/versions/sbv_1/handout")
+  ).json()) as { files: { path: string; sizeBytes: number; sha256: string }[] };
+  const response = await f.request("GET", "/versions/sbv_1/archive");
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("Content-Type"), "application/zip");
+  assert.equal(
+    response.headers.get("Content-Disposition"),
+    'attachment; filename="sbx_1-v1.zip"',
+  );
+  assert.equal(response.headers.get("Cache-Control"), "private, no-cache");
+  const etag = response.headers.get("ETag") ?? "";
+  assert.match(etag, /^"[a-f0-9]{64}"$/);
+  const bytes = new Uint8Array(await response.arrayBuffer());
+  assert.equal(Number(response.headers.get("Content-Length")), bytes.length);
+  const entries = unzip(bytes);
+  // One folder, holding exactly the handout's files, byte for byte.
+  assert.deepEqual(
+    entries.map(({ name }) => name),
+    ["sbx_1-v1/huge.json", "sbx_1-v1/logo.png", "sbx_1-v1/src/index.ts"],
+  );
+  assert.deepEqual(
+    entries
+      .map(({ name, bytes: body }) => ({
+        path: name.slice("sbx_1-v1/".length),
+        sizeBytes: body.length,
+        sha256: createHash("sha256").update(body).digest("hex"),
+      }))
+      .sort((a, b) => a.path.localeCompare(b.path)),
+    [...handout.files].sort((a, b) => a.path.localeCompare(b.path)),
+  );
+  const all = Buffer.from(bytes).toString("latin1");
+  assert.equal(all.includes("hidden"), false);
+
+  // The same project again: unchanged, so not sent again.
+  const again = await f.request(
+    "GET",
+    "/versions/sbv_1/archive",
+    undefined,
+    "org_1",
+    {
+      "If-None-Match": `W/${etag}`,
+    },
+  );
+  assert.equal(again.status, 304);
+  assert.equal(again.headers.get("ETag"), etag);
+  assert.equal((await again.arrayBuffer()).byteLength, 0);
+  // HEAD names it without packing it.
+  const head = await f.request("HEAD", "/versions/sbv_1/archive");
+  assert.equal(head.status, 200);
+  assert.equal(head.headers.get("ETag"), etag);
+  assert.equal(head.headers.get("Content-Type"), "application/zip");
+  assert.equal((await head.arrayBuffer()).byteLength, 0);
+});
+
+test("the archive is the handout's: owners and admins, a committed build, and the bytes it recorded", async () => {
+  const status = async (
+    f: ReturnType<typeof fixture>,
+    path = "/versions/sbv_1/archive",
+  ) => {
+    const response = await f.request("GET", path);
+    const body = (await response.json()) as { code?: string };
+    return [response.status, body.code ?? null];
+  };
+  assert.deepEqual(await status(fixture("member", { built: true })), [
+    403,
+    null,
+  ]);
+  assert.deepEqual(await status(fixture("admin")), [409, "not_built"]);
+  assert.deepEqual(
+    await status(fixture("admin", { built: true }), "/versions/sbv_x/archive"),
+    [404, null],
+  );
+  // Another workspace's version is not found.
+  assert.equal(
+    (
+      await fixture("admin", { built: true }).request(
+        "GET",
+        "/versions/sbv_1/archive",
+        undefined,
+        "org_2",
+      )
+    ).status,
+    404,
+  );
+  // A file in storage that is not the one recorded: refused whole, logged.
+  const logged: unknown[][] = [];
+  const original = console.error;
+  console.error = (...args: unknown[]) => logged.push(args);
+  try {
+    assert.deepEqual(
+      await status(
+        fixture("admin", { built: true, tampered: "project/src/index.ts" }),
+      ),
+      [502, "project_mismatch"],
+    );
+    assert.deepEqual(
+      await status(
+        fixture("admin", { built: true, tampered: "project/src/index.ts" }),
+        "/versions/sbv_1/handout/files",
+      ),
+      [502, "project_mismatch"],
+    );
+  } finally {
+    console.error = original;
+  }
+  assert.deepEqual(logged[0], [
+    "project_project_mismatch",
+    "sbv_1",
+    "src/index.ts",
+  ]);
+});
+
+test("the handout's files read as pages of contents, text as text and the rest as base64", async () => {
+  const f = fixture("admin", { built: true });
+  const response = await f.request("GET", "/versions/sbv_1/handout/files");
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("Cache-Control"), "no-store");
+  const page = (await response.json()) as {
+    versionId: string;
+    root: string;
+    sha256: string;
+    total: number;
+    files: {
+      path: string;
+      encoding: string | null;
+      content: string | null;
+      omitted: string | null;
+    }[];
+    nextCursor: string | null;
+  };
+  assert.equal(page.versionId, "sbv_1");
+  assert.equal(page.root, "sbx_1-v1");
+  assert.equal(page.total, 3);
+  assert.equal(page.nextCursor, null);
+  const archive = await f.request("GET", "/versions/sbv_1/archive");
+  assert.equal(archive.headers.get("ETag"), `"${page.sha256}"`);
+  assert.deepEqual(
+    page.files.map(({ path, encoding, content, omitted }) => ({
+      path,
+      encoding,
+      content,
+      omitted,
+    })),
+    [
+      {
+        path: "huge.json",
+        encoding: null,
+        content: null,
+        omitted: "too_large",
+      },
+      {
+        path: "logo.png",
+        encoding: "base64",
+        content: Buffer.from("\u0000PNG").toString("base64"),
+        omitted: null,
+      },
+      {
+        path: "src/index.ts",
+        encoding: "utf8",
+        content: "export const sum = 1;\n",
+        omitted: null,
+      },
+    ],
+  );
+  assert.equal(JSON.stringify(page).includes("hidden"), false);
+  const code = async (query: string) => {
+    const refused = await f.request(
+      "GET",
+      `/versions/sbv_1/handout/files?${query}`,
+    );
+    return [
+      refused.status,
+      ((await refused.json()) as { code?: string }).code ?? null,
+    ];
+  };
+  assert.deepEqual(await code("cursor=nonsense"), [400, "invalid_cursor"]);
+  assert.deepEqual(await code("cursor=000000000000.1"), [409, "cursor_stale"]);
+  assert.deepEqual(await code(`cursor=${page.sha256.slice(0, 12)}.9`), [
+    400,
+    "invalid_cursor",
+  ]);
+  assert.deepEqual(await code("maxBytes=10"), [400, null]);
+  assert.equal(
+    (
+      await fixture("member", { built: true }).request(
+        "GET",
+        "/versions/sbv_1/handout/files",
+      )
+    ).status,
+    403,
+  );
+});
+
 /** A submissions store that records what the routes ask of it. */
 function submissionsFake(
   reason?: "not_frozen" | "not-found",
@@ -3503,6 +3760,8 @@ function submissionsFake(
     | "is_retry"
     | "retry_used"
     | "same_patch",
+  /** `sbm_1` as `get` reads it: errored, or queued; passed unless said. */
+  read?: "errored" | "queued",
 ) {
   const made: unknown[] = [];
   const stored = (overrides: object = {}) => ({
@@ -3524,6 +3783,14 @@ function submissionsFake(
     updatedAt: stamp,
     ...overrides,
   });
+  const readOf = () =>
+    read === undefined
+      ? stored()
+      : stored({
+          status: read,
+          result: null,
+          errorCode: read === "errored" ? "grading_interrupted" : null,
+        });
   let seen = false;
   let retried = false;
   return {
@@ -3549,7 +3816,7 @@ function submissionsFake(
         };
       },
       get: async (owner: string, id: string) =>
-        owner === "org_1" && id === "sbm_1" ? stored() : null,
+        owner === "org_1" && id === "sbm_1" ? readOf() : null,
       list: async (owner: string) => (owner === "org_1" ? [stored()] : []),
       retry: async (
         owner: string,
@@ -3559,6 +3826,14 @@ function submissionsFake(
         made.push({ owner, retryOf: id, ...input });
         if (retryReason !== undefined)
           return { ok: false, reason: retryReason };
+        // An errored submission with its own files: graded again in place.
+        if (read === "errored" && input.patchSha256 === "a".repeat(64))
+          return {
+            ok: true,
+            created: false,
+            regrade: true,
+            submission: readOf(),
+          };
         const created = !retried;
         retried = true;
         return {
@@ -3613,12 +3888,7 @@ test("a failed submission is retried once with new files, graded against the sam
   });
   const again = await f.request("POST", "/submissions/sbm_1/retry", { files });
   assert.equal(again.status, 200);
-  assert.equal(
-    f.enqueued.filter(
-      (run) => (run as { tool: string }).tool === "submission_grade",
-    ).length,
-    1,
-  );
+  assert.equal(f.gradeRuns(), 1);
   // Another workspace's submission, or none, is not found before anything is stored.
   assert.equal(
     (await f.request("POST", "/submissions/sbm_x/retry", { files })).status,
@@ -3707,12 +3977,7 @@ test("files submitted against a version are stored, hashed and graded once; the 
     files: [...files].reverse(),
   });
   assert.equal(again.status, 200);
-  assert.equal(
-    f.enqueued.filter(
-      (run) => (run as { tool: string }).tool === "submission_grade",
-    ).length,
-    1,
-  );
+  assert.equal(f.gradeRuns(), 1);
 
   const read = (await (
     await f.request("GET", "/submissions/sbm_1")
@@ -3741,6 +4006,129 @@ test("files submitted against a version are stored, hashed and graded once; the 
   };
   assert.equal(listed.submissions.length, 1);
   assert.equal((await f.request("GET", "/submissions/sbm_x")).status, 404);
+});
+
+test("a submission refused at the active-run limit is queued by the same files sent again", async () => {
+  const submissions = submissionsFake();
+  const f = fixture("admin", { submissions: submissions.store, limit: true });
+  const files = [{ path: "src/a.ts", text: "a" }];
+  const first = await f.request("POST", "/versions/sbv_1/submissions", {
+    files,
+  });
+  // Kept, and told it may send the same files again.
+  assert.equal(first.status, 409);
+  assert.equal(first.headers.get("retry-after"), "60");
+  const refused = (await first.json()) as { code: string; retryable: boolean };
+  assert.deepEqual([refused.code, refused.retryable], ["run_limit", true]);
+  assert.equal(f.gradeRuns(), 0);
+  f.limit(false);
+  // The row exists with no run: the same files queue its run.
+  const again = await f.request("POST", "/versions/sbv_1/submissions", {
+    files,
+  });
+  assert.equal(again.status, 202);
+  assert.equal(f.gradeRuns(), 1);
+  assert.equal(
+    (f.enqueued.at(-1) as { params: { submissionId: string } }).params
+      .submissionId,
+    "sbm_1",
+  );
+  // Once it has a run, the same files find it: no second run.
+  const third = await f.request("POST", "/versions/sbv_1/submissions", {
+    files,
+  });
+  assert.equal(third.status, 200);
+  assert.equal(f.gradeRuns(), 1);
+  // One submission throughout: each request found the row it made.
+  assert.equal(submissions.made.length, 3);
+});
+
+test("an errored submission is graded again in place, with the run it had, its retry kept", async () => {
+  const errored = () => submissionsFake(undefined, undefined, "errored").store;
+  const viaRetry = fixture("admin", { submissions: errored() });
+  const read = (await (
+    await viaRetry.request("GET", "/submissions/sbm_1")
+  ).json()) as { submission: { status: string; errorCode: string | null } };
+  assert.deepEqual(
+    [read.submission.status, read.submission.errorCode],
+    ["errored", "grading_interrupted"],
+  );
+  // Retried with its own files (the fake's `sbm_1` holds "a" * 64 as its
+  // hash, so the store answers `regrade`), or asked to grade it again.
+  const ownFiles = {
+    async retry(...args: Parameters<ReturnType<typeof errored>["retry"]>) {
+      const [owner, id, input] = args;
+      return errored().retry(owner, id, {
+        ...input,
+        patchSha256: "a".repeat(64),
+      });
+    },
+  };
+  for (const [f, path, body] of [
+    [
+      fixture("admin", { submissions: { ...errored(), ...ownFiles } }),
+      "/submissions/sbm_1/retry",
+      { files: [{ path: "src/a.ts", text: "a" }] },
+    ],
+    [
+      fixture("admin", { submissions: errored() }),
+      "/submissions/sbm_1/regrade",
+      undefined,
+    ],
+  ] as const) {
+    const response = await f.request("POST", path, body);
+    assert.equal(response.status, 202, path);
+    // The run it had, again: the CI judge's files keep their names, and
+    // no new submission is made.
+    assert.deepEqual(f.enqueued.at(-1), {
+      snapshotId: "rsn_1",
+      tool: "submission_grade",
+      params: judgedParams,
+      requestedBy: "user_1",
+      maxActive: 3,
+    });
+    assert.equal(f.gradeRuns(), 1);
+  }
+  // A run out of attempts is not queued again; the retry is still there.
+  const spent = await fixture("admin", {
+    submissions: errored(),
+    gradeCached: "failed",
+  }).request("POST", "/submissions/sbm_1/regrade");
+  assert.equal(spent.status, 409);
+  assert.equal(
+    ((await spent.json()) as { code: string }).code,
+    "regrade_spent",
+  );
+  // Already queued again (a second click): answered as it stands.
+  assert.equal(
+    (
+      await fixture("admin", {
+        submissions: errored(),
+        gradeCached: "queued",
+      }).request("POST", "/submissions/sbm_1/regrade")
+    ).status,
+    200,
+  );
+  // Only an errored submission; owners and admins; the workspace's own.
+  const passed = await fixture("admin", {
+    submissions: submissionsFake().store,
+  }).request("POST", "/submissions/sbm_1/regrade");
+  assert.equal(passed.status, 409);
+  assert.equal(((await passed.json()) as { code: string }).code, "not_errored");
+  for (const [role, path, status] of [
+    ["member", "/submissions/sbm_1/regrade", 403],
+    ["admin", "/submissions/sbm_x/regrade", 404],
+  ] as const)
+    assert.equal(
+      (await fixture(role, { submissions: errored() }).request("POST", path))
+        .status,
+      status,
+    );
+  assert.equal(
+    (await fixture("admin").request("POST", "/submissions/sbm_1/regrade"))
+      .status,
+    404,
+  );
 });
 
 test("submissions are refused when invalid, against a draft, for members, or where none are taken", async () => {
@@ -3796,46 +4184,177 @@ test("submissions are refused when invalid, against a draft, for members, or whe
   );
 });
 
-/** A merge-back store and a GitHub writer that record what they are asked. */
-function mergeBackFake(target: "ok" | "gone" | "forbidden" | "down" = "ok") {
+/**
+ * GitHub's side of `acme/shop` for a real `PullRequestWriter`: the base
+ * commit, the merge-back's branch, commits by tree, open pull requests.
+ * Each answer waits a tick, so two requests interleave as they would.
+ * `fail` answers one request (method and path) with a status, once.
+ */
+function githubRepository() {
+  const state = {
+    branch: undefined as string | undefined,
+    commits: { c0ffee: "tree0" } as Record<string, string>,
+    pulls: [] as { number: number; html_url: string }[],
+    writes: [] as string[],
+    fail: undefined as { route: string; status: number } | undefined,
+  };
+  const reply = (body: unknown, status = 200) =>
+    new Response(JSON.stringify(body), {
+      status,
+      headers: { "content-type": "application/json" },
+    });
+  const fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    await new Promise((resolve) => setImmediate(resolve));
+    const method = init?.method ?? "GET";
+    const path = new URL(String(input)).pathname.replace(
+      "/repos/acme/shop",
+      "",
+    );
+    const body = (
+      typeof init?.body === "string" ? JSON.parse(init.body) : {}
+    ) as Record<string, string>;
+    if (state.fail?.route === `${method} ${path}`) {
+      const status = state.fail.status;
+      state.fail = undefined;
+      return reply({ message: "failed" }, status);
+    }
+    if (method === "POST") state.writes.push(path);
+    const commit = /^\/git\/commits\/(\w+)$/.exec(path);
+    if (commit !== null) {
+      const tree = state.commits[commit[1] ?? ""];
+      return tree === undefined
+        ? reply({}, 404)
+        : reply({ sha: commit[1], tree: { sha: tree } });
+    }
+    if (path === "/git/trees") return reply({ sha: "tree1" }, 201);
+    if (path === "/git/commits") {
+      state.commits["beef"] = body["tree"] ?? "";
+      return reply({ sha: "beef" }, 201);
+    }
+    if (path === "/git/ref/heads/lunox/sbm_1")
+      return state.branch === undefined
+        ? reply({}, 404)
+        : reply({ object: { sha: state.branch } });
+    if (path === "/git/refs") {
+      if (state.branch !== undefined) return reply({}, 422);
+      state.branch = body["sha"];
+      return reply({}, 201);
+    }
+    if (path === "/pulls" && method === "GET") return reply(state.pulls);
+    if (path === "/pulls") {
+      if (state.pulls.length > 0) return reply({}, 422);
+      const pull = {
+        number: 7,
+        html_url: "https://github.com/acme/shop/pull/7",
+      };
+      state.pulls.push(pull);
+      return reply(pull, 201);
+    }
+    return reply({}, 404);
+  }) as typeof globalThis.fetch;
+  return {
+    state,
+    writer: new PullRequestWriter({
+      token: () => Promise.resolve("ghs_write"),
+      fetch,
+    }),
+  };
+}
+
+/**
+ * A merge-back store keeping the real one's rules (one row per submission,
+ * claimed pending, finished opened, released for a retry; only opened rows
+ * read back) and a target over `githubRepository`, or a writer that fails.
+ */
+function mergeBackFake(
+  target: "ok" | "gone" | "forbidden" | "down" | "missing" = "ok",
+  options: { finishFails?: number } = {},
+) {
+  const github = githubRepository();
   const opened: unknown[] = [];
   const recorded: unknown[] = [];
-  const merges = new Map<string, unknown>();
+  const asked: unknown[] = [];
+  const rows = new Map<
+    string,
+    { status: "pending" | "opened"; claimed: boolean; merge: object }
+  >();
+  let finishFails = options.finishFails ?? 0;
+  const read = (id: string) => {
+    const row = rows.get(id);
+    return row?.status === "opened" ? row.merge : null;
+  };
   return {
+    github,
     opened,
     recorded,
+    asked,
+    rows,
     merges: {
-      get: async (_owner: string, id: string) => merges.get(id) ?? null,
+      get: async (_owner: string, id: string) => read(id),
       list: async (_owner: string, ids: readonly string[]) =>
-        ids.flatMap((id) => (merges.has(id) ? [merges.get(id)] : [])),
-      record: async (owner: string, input: { submissionId: string }) => {
-        recorded.push({ owner, ...input });
-        const merge = { id: "smg_1", ...input, createdAt: stamp };
-        merges.set(input.submissionId, merge);
-        return merge;
+        ids.flatMap((id) => read(id) ?? []),
+      claim: async (
+        _owner: string,
+        input: { submissionId: string; branch: string },
+      ) => {
+        const row = rows.get(input.submissionId);
+        if (row?.status === "opened")
+          return { status: "opened", merge: row.merge };
+        if (row?.claimed === true) return { status: "busy" };
+        rows.set(input.submissionId, {
+          status: "pending",
+          claimed: true,
+          merge: { id: "smg_1", ...input, createdAt: stamp },
+        });
+        return { status: "claimed" };
+      },
+      finish: async (owner: string, id: string, done: object) => {
+        if (finishFails > 0) {
+          finishFails -= 1;
+          throw new Error("the database went away");
+        }
+        const row = rows.get(id);
+        if (row === undefined) throw new Error("no claim");
+        recorded.push({ owner, submissionId: id, ...done });
+        row.status = "opened";
+        row.claimed = false;
+        row.merge = { ...row.merge, ...done };
+        return row.merge;
+      },
+      release: async (_owner: string, id: string) => {
+        const row = rows.get(id);
+        if (row !== undefined) row.claimed = false;
       },
     },
     mergeBack: {
-      target: async (owner: string, repoId: string) =>
-        target === "gone" || owner !== "org_1" || repoId !== "ghr_1"
+      target: async (
+        owner: string,
+        repoId: string,
+        how: { fresh?: boolean } = {},
+      ) => {
+        asked.push(how.fresh === true ? "fresh" : "stored");
+        return target === "gone" || owner !== "org_1" || repoId !== "ghr_1"
           ? null
           : {
               fullName: "acme/shop",
               defaultBranch: "main",
+              missingPermissions:
+                target === "missing"
+                  ? ["contents:write", "pull_requests:write"]
+                  : [],
+              acceptUrl:
+                "https://github.com/organizations/acme/settings/installations/9",
               writer: {
-                open: async (input: unknown) => {
+                open: async (input: PullRequestInput) => {
                   opened.push(input);
                   if (target === "forbidden")
                     throw new GithubAuthError(403, "refused");
                   if (target === "down") throw new Error("down");
-                  return {
-                    number: 7,
-                    url: "https://github.com/acme/shop/pull/7",
-                    commitSha: "beef",
-                  };
+                  return github.writer.open(input);
                 },
               },
-            },
+            };
+      },
     },
   };
 }
@@ -3908,18 +4427,30 @@ test("a passing submission is merged back as one pull request on the version's c
   assert.deepEqual(back.recorded[0], {
     owner: "org_1",
     submissionId: "sbm_1",
-    repositoryFullName: "acme/shop",
-    branch: "lunox/sbm_1",
     commitSha: "beef",
     pullRequestNumber: 7,
     pullRequestUrl: "https://github.com/acme/shop/pull/7",
-    openedBy: "user_1",
   });
+  assert.deepEqual(back.rows.get("sbm_1")?.merge, {
+    id: "smg_1",
+    submissionId: "sbm_1",
+    repositoryFullName: "acme/shop",
+    branch: "lunox/sbm_1",
+    openedBy: "user_1",
+    createdAt: stamp,
+    commitSha: "beef",
+    pullRequestNumber: 7,
+    pullRequestUrl: "https://github.com/acme/shop/pull/7",
+  });
+  // The merge read the installation's permissions from GitHub.
+  assert.deepEqual(back.asked, ["fresh"]);
 
-  // Again: the pull request already opened, and no second one.
+  // Again: the pull request already opened, the same body, and no second one.
   const again = await f.request("POST", "/submissions/sbm_1/merge");
   assert.equal(again.status, 200);
+  assert.deepEqual(await again.json(), body);
   assert.equal(back.opened.length, 1);
+  assert.equal(back.github.state.pulls.length, 1);
   // Read back on the submission and in the version's list.
   const read = (await (
     await f.request("GET", "/submissions/sbm_1")
@@ -3976,6 +4507,24 @@ test("merge-back is refused for a token, a member, a submission that did not pas
     }),
     [409, "not_passed"],
   );
+  // Passed, but its carry failed in the repository's names: nothing opens,
+  // even were a patch somehow kept.
+  const unopened = back();
+  assert.deepEqual(
+    await code({
+      ...ready(unopened),
+      submissions: passedSubmission({
+        result: {
+          public: { passed: 1, total: 1 },
+          hidden: { passed: 2, total: 2 },
+          verdict: "passed",
+          carryBack: "failed",
+        },
+      }),
+    }),
+    [409, "carry_failed"],
+  );
+  assert.deepEqual(unopened.opened, []);
   // A generated version's grading run carries nothing back.
   assert.deepEqual(await code({ ...ready(), gradeRun: {} }), [
     409,
@@ -3997,11 +4546,207 @@ test("merge-back is refused for a token, a member, a submission that did not pas
     502,
     "github_failed",
   ]);
+  assert.deepEqual(await code(ready(mergeBackFake("missing"))), [
+    409,
+    "app_permissions_missing",
+  ]);
   const missing = await fixture("admin", ready()).request(
     "POST",
     "/submissions/sbm_x/merge",
   );
   assert.equal(missing.status, 404);
+});
+
+const mergeReady = (back: ReturnType<typeof mergeBackFake>) =>
+  fixture("admin", {
+    submissions: passedSubmission(),
+    merges: back.merges,
+    mergeBack: back.mergeBack,
+    gradeRun: { "private/merge-patch.json": carried },
+  });
+
+test("merge pressed twice at once opens one pull request; the second is told it is in progress", async () => {
+  const back = mergeBackFake();
+  const f = mergeReady(back);
+  const [first, second] = await Promise.all([
+    f.request("POST", "/submissions/sbm_1/merge"),
+    f.request("POST", "/submissions/sbm_1/merge"),
+  ]);
+  assert.deepEqual([first?.status, second?.status].sort(), [201, 409]);
+  const refused = (await (first?.status === 409 ? first : second)?.json()) as {
+    code: string;
+  };
+  assert.equal(refused.code, "merge_in_progress");
+  assert.equal(back.opened.length, 1);
+  assert.equal(back.github.state.pulls.length, 1);
+  assert.deepEqual(
+    back.github.state.writes.filter((path) => path === "/pulls"),
+    ["/pulls"],
+  );
+  // Pressed again once it finished: the same pull request, 200.
+  const after = await f.request("POST", "/submissions/sbm_1/merge");
+  assert.equal(after.status, 200);
+  const body = (await after.json()) as {
+    submission: { merge: { pullRequestNumber: number } };
+  };
+  assert.equal(body.submission.merge.pullRequestNumber, 7);
+});
+
+test("a merge whose record failed, or whose GitHub call failed half-way, resumes on the next press from what GitHub has", async () => {
+  // GitHub opened the pull request; recording it failed.
+  const back = mergeBackFake("ok", { finishFails: 1 });
+  const f = mergeReady(back);
+  const failed = await f.request("POST", "/submissions/sbm_1/merge");
+  assert.equal(failed.status, 500);
+  assert.equal(back.github.state.pulls.length, 1);
+  assert.equal(back.rows.get("sbm_1")?.status, "pending");
+  assert.equal(back.rows.get("sbm_1")?.claimed, false);
+  const writes = back.github.state.writes.length;
+  const retried = await f.request("POST", "/submissions/sbm_1/merge");
+  assert.equal(retried.status, 201);
+  // The branch and pull request were reused: only the content-addressed
+  // tree was asked for again.
+  assert.deepEqual(back.github.state.writes.slice(writes), ["/git/trees"]);
+  assert.equal(back.github.state.pulls.length, 1);
+  assert.equal(back.recorded.length, 1);
+
+  // The branch was made; opening the pull request failed.
+  const half = mergeBackFake();
+  half.github.state.fail = { route: "POST /pulls", status: 500 };
+  const g = mergeReady(half);
+  const down = await g.request("POST", "/submissions/sbm_1/merge");
+  assert.equal(down.status, 502);
+  assert.equal(((await down.json()) as { code: string }).code, "github_failed");
+  assert.equal(half.github.state.branch, "beef");
+  const resumed = await g.request("POST", "/submissions/sbm_1/merge");
+  assert.equal(resumed.status, 201);
+  assert.equal(
+    half.github.state.writes.filter((path) => path === "/git/refs").length,
+    1,
+  );
+  assert.equal(half.github.state.pulls.length, 1);
+});
+
+test("a merge onto a branch someone pushed other work to is refused, and nothing is overwritten", async () => {
+  const back = mergeBackFake();
+  back.github.state.branch = "f00d";
+  back.github.state.commits["f00d"] = "tree9";
+  const response = await mergeReady(back).request(
+    "POST",
+    "/submissions/sbm_1/merge",
+  );
+  assert.equal(response.status, 409);
+  const body = (await response.json()) as { code: string; error: string };
+  assert.equal(body.code, "branch_conflict");
+  assert.match(body.error, /already exists/);
+  assert.equal(back.github.state.branch, "f00d");
+  assert.deepEqual(back.github.state.writes, ["/git/trees"]);
+  // Released: once the branch is dealt with, pressing again proceeds.
+  assert.equal(back.rows.get("sbm_1")?.claimed, false);
+});
+
+test("a damaged merge patch is refused with a fixed code and a log line, and nothing is claimed or opened", async () => {
+  for (const damaged of [
+    "{not json",
+    JSON.stringify({ schemaVersion: 1, commitSha: "c0ffee" }),
+    JSON.stringify({ commitSha: "c0ffee", files: [{ path: "a.ts" }] }),
+    JSON.stringify(null),
+  ]) {
+    const back = mergeBackFake();
+    const f = fixture("admin", {
+      submissions: passedSubmission(),
+      merges: back.merges,
+      mergeBack: back.mergeBack,
+      gradeRun: { "private/merge-patch.json": damaged },
+    });
+    const logged: unknown[][] = [];
+    const original = console.error;
+    console.error = (...args: unknown[]) => logged.push(args);
+    let response: Response;
+    try {
+      response = await f.request("POST", "/submissions/sbm_1/merge");
+    } finally {
+      console.error = original;
+    }
+    assert.equal(response.status, 502, damaged);
+    assert.equal(
+      ((await response.json()) as { code: string }).code,
+      "merge_patch_invalid",
+    );
+    assert.deepEqual(logged, [["merge_patch_invalid", "sbm_1"]]);
+    assert.equal(back.rows.get("sbm_1"), undefined);
+    assert.equal(back.opened.length, 0);
+  }
+});
+
+test("a merge the GitHub App lacks permissions for is refused before anything is claimed, naming them and where to accept them", async () => {
+  const back = mergeBackFake("missing");
+  const response = await mergeReady(back).request(
+    "POST",
+    "/submissions/sbm_1/merge",
+  );
+  assert.equal(response.status, 409);
+  assert.deepEqual(await response.json(), {
+    error:
+      "The GitHub App has not been granted what merge-back needs on this installation. An installation admin accepts its new permissions on GitHub.",
+    code: "app_permissions_missing",
+    missing: ["contents:write", "pull_requests:write"],
+    acceptUrl: "https://github.com/organizations/acme/settings/installations/9",
+  });
+  assert.equal(back.rows.size, 0);
+  assert.deepEqual(back.opened, []);
+});
+
+test("a version's merge-back readiness says why a merge would be refused before the button is pressed", async () => {
+  const read = async (
+    overrides: Parameters<typeof fixture>[1],
+    path = "/versions/sbv_1/merge-back",
+    role = "admin",
+  ) => {
+    const response = await fixture(role, overrides).request("GET", path);
+    return [response.status, await response.json()] as const;
+  };
+  const with_ = (back: ReturnType<typeof mergeBackFake>) => ({
+    merges: back.merges,
+    mergeBack: back.mergeBack,
+  });
+  const ready = mergeBackFake();
+  assert.deepEqual(await read(with_(ready)), [
+    200,
+    { mergeBack: { code: null, error: null, missing: [], acceptUrl: null } },
+  ]);
+  // A page read trusts the stored permissions; only a merge asks GitHub.
+  assert.deepEqual(ready.asked, ["stored"]);
+  assert.deepEqual(await read(with_(mergeBackFake("missing"))), [
+    200,
+    {
+      mergeBack: {
+        code: "app_permissions_missing",
+        error:
+          "The GitHub App has not been granted what merge-back needs on this installation. An installation admin accepts its new permissions on GitHub.",
+        missing: ["contents:write", "pull_requests:write"],
+        acceptUrl:
+          "https://github.com/organizations/acme/settings/installations/9",
+      },
+    },
+  ]);
+  const code = async (...args: Parameters<typeof read>) => {
+    const [status, body] = await read(...args);
+    return [status, (body as { mergeBack?: { code: string } }).mergeBack?.code];
+  };
+  assert.deepEqual(await code(with_(mergeBackFake("gone"))), [
+    200,
+    "repository_unavailable",
+  ]);
+  assert.deepEqual(
+    await code(with_(mergeBackFake()), "/versions/sbv_x/merge-back"),
+    [200, "not_sliced"],
+  );
+  assert.deepEqual(await code({}), [200, "merge_unavailable"]);
+  assert.deepEqual(await code(with_(mergeBackFake()), undefined, "member"), [
+    403,
+    undefined,
+  ]);
 });
 
 test("a build and a generated version are refused with 429 once the month's model tokens are spent", async () => {

@@ -13,7 +13,12 @@
  * back to the repository's names on the commit the version was cut at
  * (`reverseSubmission`), and kept as `private/merge-patch.json` for
  * merge-back; one that cannot be carried back is refused, so nothing that
- * passed here fails to map at the pull request.
+ * passed here fails to map at the pull request. Before the patch is kept,
+ * the version is built and tested again in the repository's names with the
+ * carried files in place (`repositoryTree`, the reversed check): a carry
+ * that maps line by line can still name what the repository does not
+ * have. A pass that fails there keeps its verdict, is marked
+ * `carryBack: "failed"`, and has no merge patch.
  *
  * Only counts, the verdict and the scenario keys of failing hidden tests
  * (`s1`, from the file names the hidden-tests scaffold writes) leave the
@@ -27,6 +32,7 @@ import { isAbsolute, join, relative, resolve } from "node:path";
 import { gainedIntegrity } from "carveout/api";
 import { verdict as judge } from "duediligence/api";
 import type { SuiteResult } from "duediligence/api";
+import type { AliasImplementation } from "carveout/pseudonyms";
 import {
   PLATFORM_LAYOUT,
   PRIVATE_TESTS_DIR,
@@ -213,6 +219,168 @@ export async function carriedBack(
 }
 
 /**
+ * The version in the repository's names, with a passing submission's
+ * carried-back files in place: what the reversed check builds and tests
+ * before merge-back is offered.
+ *
+ * The build's transforms are the name table plus the generator's import
+ * rewrites, token for token, so the table's inverse over the built project
+ * is the project the generator would make with no pseudonyms: the same
+ * harness, stubs, mocks and both suites, the hidden tests (written in the
+ * public names) among them. Rerunning the generator itself would need the
+ * slice, contract, fixtures and spec the build read; the inverse needs only
+ * the table the build proved maps back. A repository file is renamed under
+ * the table scoped by its repository path, as the build renamed it; every
+ * other file has no repository path, so it is renamed unscoped. That can
+ * only rename too much (a scoped rule's public name used naturally outside
+ * its scope), which fails the check rather than passing a bad patch.
+ *
+ * The carried files are the repository's own text. The build's per-file
+ * rewrites (an import moved to the slice's layout) are put back with
+ * `forwardChange` and no table: kept lines take the reversed project's
+ * line, added lines only what the two originals show the file was
+ * rewritten by. A new file lands as carried.
+ */
+export function repositoryTree(input: {
+  readonly versionFiles: readonly GeneratedFile[];
+  /** The version's repository files, at project paths (the manifest's `source` class). */
+  readonly sources: ReadonlySet<string>;
+  /** The merge patch's files: repository paths and names. */
+  readonly carried: readonly { readonly path: string; readonly text: string }[];
+  readonly repositoryText: (path: string) => string | null;
+  readonly rules: readonly AliasRule[];
+  readonly renames: readonly { readonly from: string; readonly to: string }[];
+  readonly aliases: AliasImplementation;
+}): {
+  readonly files: GeneratedFile[];
+  readonly refused: readonly { path: string; reason: string }[];
+} {
+  const inverse = input.aliases.invertAliasRules(input.rules);
+  const unscoped = inverse.map((rule) => ({ ...rule, paths: [] }));
+  const movedFrom = new Map(input.renames.map(({ from, to }) => [to, from]));
+  const files = new Map<string, GeneratedFile>();
+  const refused: { path: string; reason: string }[] = [];
+  for (const file of input.versionFiles) {
+    const source = input.sources.has(file.path);
+    const path =
+      movedFrom.get(file.path) ??
+      (source
+        ? file.path
+        : input.aliases.renameFile({ path: file.path, text: "" }, unscoped)
+            .path);
+    const text = input.aliases.renameFile(
+      { path, text: file.text },
+      source ? inverse : unscoped,
+    ).text;
+    if (files.has(path)) {
+      refused.push({
+        path,
+        reason:
+          "Two files of the version have this path in the repository's names.",
+      });
+      continue;
+    }
+    files.set(path, { ...file, path, text });
+  }
+  const placed = forwardChange({
+    changed: input.carried,
+    publicText: (path) => files.get(path)?.text ?? null,
+    repositoryText: input.repositoryText,
+    rules: [],
+    renames: [],
+    aliases: input.aliases,
+  });
+  refused.push(...placed.refused);
+  for (const { path, text } of placed.files)
+    files.set(path, {
+      path,
+      text,
+      class: "source",
+      public: files.get(path)?.public ?? true,
+    });
+  return {
+    files: [...files.values()].sort((a, b) =>
+      a.path < b.path ? -1 : a.path > b.path ? 1 : 0,
+    ),
+    refused,
+  };
+}
+
+/**
+ * The reversed check: `repositoryTree` built and tested in a fresh
+ * evaluation job, by the same baseline grading uses, every hidden test
+ * (reversed with the rest) expected to pass. True when both suites pass
+ * there as they did in the public names.
+ *
+ * Cost: a second job, so a pass on a sliced version takes about twice the
+ * evaluator time of its grade. Only a pass reaches it; a failing
+ * submission has nothing to merge back and is never checked again.
+ */
+async function passesInRepositoryNames(
+  provider: EvaluationProvider,
+  input: Pick<ToolRunInput, "inputs" | "sourceDir" | "signal" | "log">,
+  context: {
+    readonly submissionId: string;
+    readonly buildRunId: string;
+    readonly versionFiles: readonly GeneratedFile[];
+    readonly carried: readonly {
+      readonly path: string;
+      readonly text: string;
+    }[];
+    readonly layout: GradingLayout;
+    readonly now: () => Date;
+  },
+): Promise<boolean> {
+  const { manifest, rules, aliases } = await buildTables(
+    input,
+    context.buildRunId,
+  );
+  const tree = repositoryTree({
+    versionFiles: context.versionFiles,
+    sources: new Set(
+      manifest.files
+        .filter((record) => record.class === "source")
+        .map((record) => record.path),
+    ),
+    carried: context.carried,
+    repositoryText: (path) => sourceText(input.sourceDir, path),
+    rules,
+    renames: manifest.renames,
+    aliases,
+  });
+  if (tree.refused.length > 0) {
+    input.log(
+      `Reversed check: ${tree.refused.length} file(s) could not be placed in the repository's names.`,
+    );
+    return false;
+  }
+  const hidden = tree.files.filter((file) => file.class === "test-private");
+  const { baseline } = await baselineOf(provider, {
+    label: `${context.submissionId}-repository`,
+    files: [...tree.files],
+    acceptanceTests: hidden.map((file) => ({
+      path: file.path,
+      text: file.text,
+      expectedBaseline: "pass",
+    })),
+    blockers: [],
+    signal: input.signal,
+    log: input.log,
+    now: context.now,
+    ...(context.layout === PLATFORM_LAYOUT ? {} : { layout: context.layout }),
+  });
+  const checked = resultOf({
+    hiddenPaths: hidden.map((file) => file.path).sort(),
+    baseline,
+    refused: [],
+  });
+  input.log(
+    `Reversed check in the repository's names: ${checked.verdict ?? ""}, public ${checked.public.passed}/${checked.public.total}, hidden ${checked.hidden.passed}/${checked.hidden.total}.`,
+  );
+  return checked.verdict === "passed";
+}
+
+/**
  * A pull request's files, at the repository's paths and in its names,
  * carried forward to the version's (`forwardChange`): the CI judge. Only
  * what the slice lets a contribution change is judged, an editable file or
@@ -388,7 +556,6 @@ export function createSubmissionGradeAdapter(options: {
         input.log("No evaluation provider is configured on this worker.");
         throw new AnalysisError("evaluation_failed");
       }
-      const runId = input.runId ?? "";
       const read = await input.inputs.readSubmission?.(params.submissionId);
       if (read === null || read === undefined)
         throw new AnalysisError("tool_failed");
@@ -490,7 +657,12 @@ export function createSubmissionGradeAdapter(options: {
       let result = resultOf({ hiddenPaths, baseline, refused });
       const written: ArtifactFile[] = [];
       // A version sliced from a repository: carry a pass back to it.
-      // A pull request is already in the repository's names: nothing to carry back.
+      // A pull request is already in the repository's names: nothing to
+      // carry back. A version with no snapshot has no repository names to
+      // carry to: a generated (starter) one has none, and an uploaded
+      // carveout folder's take-back is `carveout patch --from` in the
+      // owner's own checkout, under carveout's table, which the platform
+      // never holds (`GET …/submissions/:sid/files`); neither is checked here.
       if (
         result.verdict === "passed" &&
         input.run !== null &&
@@ -504,6 +676,19 @@ export function createSubmissionGradeAdapter(options: {
         );
         if (carried.refused.length > 0)
           result = { ...result, verdict: "refused", refused: carried.refused };
+        else if (
+          !(await passesInRepositoryNames(options.provider, input, {
+            submissionId: params.submissionId,
+            buildRunId,
+            versionFiles,
+            carried: carried.files,
+            layout,
+            now,
+          }))
+        )
+          // The contributor's work passed; the carry is the platform's. So
+          // the verdict stands, and only merge-back is withheld.
+          result = { ...result, carryBack: "failed" };
         else {
           const patch: MergePatch = {
             schemaVersion: MERGE_PATCH_SCHEMA_VERSION,
@@ -525,7 +710,7 @@ export function createSubmissionGradeAdapter(options: {
       input.log(
         `Submission ${params.submissionId}: ${result.verdict ?? ""}, public ${result.public.passed}/${result.public.total}, hidden ${result.hidden.passed}/${result.hidden.total}.`,
       );
-      await input.inputs.finishSubmission?.(params.submissionId, runId, result);
+      input.inputs.settleSubmission?.(params.submissionId, result);
       const absolutePath = join(input.outDir, SUBMISSION_RESULT_PATH);
       await writeFile(absolutePath, JSON.stringify(result), "utf8");
       return [

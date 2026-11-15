@@ -35,7 +35,10 @@ build's artifacts, hidden tests among them, are owners' and admins' only.
 the checked-in fixture without GitHub, database or AWS credentials: archive
 validation, import resolution of every kind, graph direction, artifact
 upload, identical graph, `abstractions.json` and `data-model.json` bytes
-from two checkout paths, and a slice of the resulting graph. Unit tests
+from two checkout paths, and a slice of the resulting graph. It then runs
+the round trip (`scripts/roundtrip.mjs`; on the host, `npm run worker:roundtrip`,
+no Python needed): slice and build with pseudonyms, the contributor's npm
+commands on `project/` alone, grading, the reversed check and carry-back. Unit tests
 inject subprocesses and storage; real PostgreSQL tests exercise concurrent
 claims, spend limits and stale leases.
 
@@ -45,7 +48,10 @@ Runs are `analysis_run` rows cached by `(snapshot, tool, version, canonical
 params hash)`; the same inputs are one run. Each attempt owns a unique lease
 and storage prefix, so a late worker cannot overwrite its successor, and
 completion inserts artifacts and changes status in one fenced transaction
-(`packages/db/src/analysis-runs.ts`, modelled in `docs/specs/RunLease.tla`).
+(`packages/db/src/analysis-runs.ts`, modelled in `docs/specs/RunLease.tla`);
+a grading run's verdict is written in that transaction too, and a grading
+run that fails, or that the watchdog fails out of attempts, errors its
+submission in the transaction that ends it.
 A heartbeat runs every 15 seconds, the lease lasts 60 seconds, and the
 default deadline is 30 minutes. A watchdog retries lost workers twice;
 manual retries share that limit. SIGTERM stops new claims and allows the
@@ -203,13 +209,20 @@ the result in a fresh job, every hidden test expected to pass. duediligence's
 `verdict` decides passed, overfit, incomplete or refused; the submission
 records counts, that verdict and the scenario keys (`s1`, from the hidden
 test's file name) of failing hidden tests, never a hidden test's name, body
-or output. Its files are read from the key the submission row names.
+or output. The verdict is handed to the run's commit (`settleSubmission`,
+`RunSettlement`), never written before it: a lost lease or failed upload
+leaves neither the verdict nor `private/merge-patch.json`, and the
+submission `errored` once the run has ended. Its files are read from the key the submission row names.
 Before anything runs, carveout's `gainedIntegrity` refuses a file that
 gains a way to pass without the code. On a version sliced from a
 repository the run is on its snapshot, and a pass is carried back
 (`reverseSubmission`) to `private/merge-patch.json`, or refused when it
 cannot be, under the renaming the build was made with (`src/tools/engines.ts`:
 carveout's when its manifest has `engines.carveout`, else `ALIASES_V1`).
+The patch is kept only once `repositoryTree` (the version in the
+repository's names with the carried files in place) passes the same
+baseline in a second job; otherwise the result is `carryBack: "failed"`
+with no patch. A submission is `running` from the claim of its run.
 
 A version's build manifest may record a `layout` (`GradingLayout`,
 `packages/core/src/sandbox/layout.ts`); none is the platform's own
@@ -218,8 +231,7 @@ layouts grades byte for byte as before. On another layout `gradingTree`
 keeps its harness roots and configuration files, and the baseline runs in
 two jobs (`runLayoutBaseline` in `src/tools/sandbox-build.ts`): the public
 files with the layout's commands, then the public files with the hidden
-tests, each hidden test twice by `layoutTestArgv`, every run marked `fresh`
-(E2B runs it in a fresh copy, as it does the platform's hidden-test argv).
+tests, sealed after the build, each hidden test twice by `hiddenTestRun`.
 
 ### Import
 
@@ -319,8 +331,11 @@ package per mocked package under `mocks/` by its renamed name (imports and
 (`sandbox/mock.js`, `sandbox/run.ts`), public tests under `tests/public`,
 hidden tests under `tests/private`, `package.json` pinning the approved
 packages, `tsconfig.json`, `.nvmrc`, `.npmrc`, `sandbox.env` with fixture
-values for every environment variable the slice reads, `README.md` and
-`sandbox-task.json`. The local contract is `npm ci`, `npm run dev`,
+values for every environment variable the slice reads, `README.md`,
+`sandbox-task.json` and the contributor guide
+(`packages/core/src/sandbox/guide.ts`: `TASK.md` with the renamed spec as
+Gherkin, `AGENTS.md`, `CLAUDE.md`, `.vscode/`); it compiles with source maps
+beside the emitted `.js`. The local contract is `npm ci`, `npm run dev`,
 `npm run build`, `npm test` on Node 22+, fixed in `packages/core`. Only
 registry versions are installed: a dependency pinned to a URL, a path or an
 alias is `dependency_unresolved`. A package installs by its real name only
@@ -333,7 +348,8 @@ on what carveout's scan or the platform's before it finds
 (`src/tools/vocabulary-check.ts`), and for
 credentials (`packages/core/src/sandbox/secrets.ts`) and blocks `secret_found`
 by file, line and rule, never the value. Starters are scanned the same way.
-`.gitignore` names only public files' output.
+`.gitignore` names only public files' output, and `*.map`. A starter's
+project carries the same guide.
 
 A sliced draft with no fixtures, hidden tests or pseudonyms has each written
 by an agent during the build (`fixtures.ts` via `writeFixtures`,
@@ -383,14 +399,22 @@ fails every build `evaluation_failed` before anything is generated.
   failed cut fails the job. The execution record's `egressCut` says
   whether it happened. Each command has its own timeout and output cap,
   then whatever the job's user left running is killed; a command cut
-  short by the budget fails the job. Each hidden test runs in a fresh copy
-  of the job's files as they stood before the first. The worker needs
+  short by the budget fails the job. The provider's own copies of the
+  sealed tree run as root (below). The worker needs
   `E2B_API_KEY` with this provider and refuses to start without it.
 - `local-process` (`src/evaluation/local-process.ts`): a temporary
   directory and child processes with a scrubbed environment. It is the
   development provider, **not an isolation boundary**, used only with
   `EVALUATION_PROVIDER=local-process` (the compose file sets it) and
   refused at startup with `NODE_ENV=production`.
+
+Both providers seal a job after its build (`seal`,
+`src/evaluation/hidden-runner.ts`): every hidden test's files leave the tree,
+their text stays in the worker, and the tree is copied out of the job's reach
+(root's in E2B, the worker's when local jobs run as their own uid). Each
+hidden run (`EvaluationCommand.hidden`) starts from a fresh copy with its own
+test alone, loaded from memory by the platform's runner
+(`.sandbox-hidden/<name>.test.mjs`) before task code runs.
 
 Outputs: `build-manifest.json` (every generated file hashed and classified
 public or private; harness, test and project hashes; the toolchain and its

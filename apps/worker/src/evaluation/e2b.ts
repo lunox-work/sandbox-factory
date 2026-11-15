@@ -5,25 +5,29 @@
  *
  * The worker talks to E2B's API with its key; nothing of the worker reaches
  * the sandbox. Files go in through the filesystem API, and every command
- * runs as the template's unprivileged `user` with a fixed environment (the
- * sandbox's own PATH, a HOME, the public registry, and the command's fixture
- * values), never the worker's variables or the key. The sandbox can reach
- * only the public registry (`registry.npmjs.org`, and the DNS server E2B
- * opens beside a domain rule) while the trusted lockfile preparation and the
- * clean install run; before any other command its egress is cut to nothing
- * (`updateNetwork`), and a failed cut fails the job rather than run the
- * project with a network. Whether the cut happened is the job's
- * `egressCut`, kept on the execution record.
+ * the caller sends runs as the template's unprivileged `user` (only the
+ * provider's own copies of the sealed tree run as root) with a fixed
+ * environment (the sandbox's own PATH, a HOME, the public registry, and the
+ * command's fixture values), never the worker's variables or the key. The
+ * sandbox can reach only the public registry (`registry.npmjs.org`, and the
+ * DNS server E2B opens beside a domain rule) while the trusted lockfile
+ * preparation and the clean install run; before any other command its
+ * egress is cut to nothing (`updateNetwork`), and a failed cut fails the job
+ * rather than run the project with a network. Whether the cut happened is
+ * the job's `egressCut`, kept on the execution record.
  *
  * Commands are the caller's argv, quoted for the sandbox's shell. Each is
  * bounded by its own timeout, the job's budget (`budgetMs`, also the
  * sandbox's own lifetime at E2B, so a worker that dies leaves nothing
  * running for long) and an output cap; after each, every process the job's
  * user still runs is killed, so a server a command started does not outlive
- * it. A hidden test (`privateTestArgv`'s shape, or any command marked
- * `fresh`, as a layout's hidden test is) runs in a fresh copy of the job's
- * files as they stood before the first one ran, removed and copied again
- * for the next, so no run leaves state for another.
+ * it. Hidden runs follow `hidden-runner.ts`, as local-process's do: the
+ * seal (`EvaluationJob.seal`, after the build, before any task code) keeps
+ * the hidden tests' text in the worker, removes them from the sandbox and
+ * copies the tree, as root, to a pristine directory under root's home that
+ * the job's user can neither read nor change; each hidden run (a command
+ * with `hidden`) gets a fresh copy of it, made as root while nothing of
+ * the user's runs and given to the user, with its own test alone.
  *
  * The SDK sits behind `E2BClient` (`e2bClient` adapts it), so tests drive a
  * fake and never call E2B.
@@ -37,13 +41,14 @@ import {
   TimeoutError,
 } from "e2b";
 import type { SandboxOpts } from "e2b";
-import { EVALUATION_LIMITS, privateTestArgv } from "sandbox-factory";
+import { EVALUATION_LIMITS } from "sandbox-factory";
 import type {
   EvaluationCommand,
   EvaluationExecResult,
   EvaluationJob,
   EvaluationProvider,
 } from "sandbox-factory";
+import { HIDDEN_RUN_DIR, hiddenRunFiles } from "./hidden-runner.js";
 import { isLockfilePreparation } from "./lockfiles.js";
 
 /** The only host a job reaches, and only until the install has run. */
@@ -55,8 +60,13 @@ const JOB_USER = "user";
 const HOME = "/home/user";
 const JOB_ROOT = `${HOME}/job`;
 const WORK = `${JOB_ROOT}/work`;
-/** The job's files before the first hidden test, and a test's copy of them. */
-const PRISTINE = `${JOB_ROOT}/pristine`;
+/**
+ * The sealed tree every hidden run starts from: root's, outside the user's
+ * home, so nothing the job runs can read or replace it.
+ */
+const SEALED_ROOT = "/root/sandbox-job";
+const PRISTINE = `${SEALED_ROOT}/pristine`;
+/** A hidden run's copy of it, the user's while the run lasts. */
 const FRESH = `${JOB_ROOT}/fresh`;
 /** The SDK's own template when none is configured. */
 export const E2B_DEFAULT_TEMPLATE = "base";
@@ -78,6 +88,8 @@ export interface E2BRunOptions {
   readonly signal: AbortSignal;
   readonly onStdout: (data: string) => void;
   readonly onStderr: (data: string) => void;
+  /** Root, for the provider's own housekeeping; the job's user otherwise. */
+  readonly user?: "root";
 }
 
 export interface E2BRunResult {
@@ -162,7 +174,7 @@ export function e2bClient(apiKey: string, sdk: E2BSdk = SDK): E2BClient {
             const result = await sandbox.commands.run(command, {
               cwd: run.cwd,
               envs: { ...run.envs },
-              user: JOB_USER,
+              user: run.user ?? JOB_USER,
               timeoutMs: run.timeoutMs,
               signal: run.signal,
               retainOutput: false,
@@ -229,15 +241,6 @@ function inside(root: string, path: string): string {
 const isInstall = (argv: readonly string[]) =>
   argv[0] === "npm" && argv[1] === "ci" && argv.includes("--ignore-scripts");
 
-const HIDDEN_TEST_PREFIX = privateTestArgv("x").slice(0, -1);
-/** One hidden test's run, as `privateTestArgv` writes it. */
-export function isHiddenTestRun(argv: readonly string[]): boolean {
-  return (
-    argv.length === HIDDEN_TEST_PREFIX.length + 1 &&
-    HIDDEN_TEST_PREFIX.every((word, index) => argv[index] === word)
-  );
-}
-
 /** Whether `node --version`'s answer meets the toolchain's range. */
 export function meetsNodeRange(version: string): boolean {
   const match = /^v?(\d+)\.(\d+)\.\d+/.exec(version.trim());
@@ -292,7 +295,8 @@ export function createE2BProvider(
       });
       let started = false;
       let cut = false;
-      let pristine = false;
+      /** The hidden tests' text the seal took out, by path; null before it. */
+      let withheld: Map<string, string> | null = null;
       let destroyed = false;
       const remaining = () => deadline - now();
       /**
@@ -305,6 +309,7 @@ export function createE2BProvider(
         env: Readonly<Record<string, string>>,
         limits: { timeoutMs: number; maxOutputBytes: number },
         sweep: boolean,
+        user?: "root",
       ): Promise<EvaluationExecResult> => {
         signal.throwIfAborted();
         const left = remaining();
@@ -337,6 +342,7 @@ export function createE2BProvider(
           signal,
           onStdout: (data) => collect(data, true),
           onStderr: (data) => collect(data, false),
+          ...(user === undefined ? {} : { user }),
         });
         const durationMs = now() - begun;
         // What the command left running goes with it, timed out or not.
@@ -362,14 +368,15 @@ export function createE2BProvider(
           durationMs,
         };
       };
-      /** A housekeeping command that must succeed. */
-      const housekeep = async (line: string) => {
+      /** A housekeeping command that must succeed; as root when `root`. */
+      const housekeep = async (line: string, root = false) => {
         const result = await execute(
           line,
-          HOME,
+          root ? "/" : HOME,
           JOB_ENV,
           { timeoutMs: HOUSEKEEPING_MS, maxOutputBytes: 4 * 1024 },
           false,
+          root ? "root" : undefined,
         );
         if (result.exitCode !== 0)
           throw new Error(
@@ -418,16 +425,36 @@ export function createE2BProvider(
             cut = true;
           }
           let root = WORK;
-          if (command.fresh === true || isHiddenTestRun(command.argv)) {
-            if (!pristine) {
-              await housekeep(
-                `cp -a ${shellQuote(WORK)} ${shellQuote(PRISTINE)}`,
-              );
-              pristine = true;
-            }
+          let argv = command.argv;
+          if (command.hidden !== undefined) {
+            if (withheld === null)
+              throw new Error("A hidden test runs once the job is sealed.");
+            // As root, while nothing of the user's runs (every command's
+            // sweep killed it): links are copied and chowned as links, never
+            // followed, and the run's directory is made new.
+            const hiddenDir = posix.join(FRESH, HIDDEN_RUN_DIR);
             await housekeep(
-              `rm -rf ${shellQuote(FRESH)} && cp -a ${shellQuote(PRISTINE)} ${shellQuote(FRESH)}`,
+              [
+                `rm -rf ${shellQuote(FRESH)}`,
+                `cp -a ${shellQuote(PRISTINE)} ${shellQuote(FRESH)}`,
+                `rm -rf ${shellQuote(hiddenDir)}`,
+                `mkdir ${shellQuote(hiddenDir)}`,
+                `chown -R -h ${JOB_USER}: ${shellQuote(FRESH)}`,
+              ].join(" && "),
+              true,
             );
+            const run = hiddenRunFiles(
+              command.hidden,
+              command.argv,
+              withheld.get(command.hidden.entry) ?? null,
+            );
+            await sandbox.write(
+              run.files.map((file) => ({
+                path: inside(FRESH, file.path),
+                text: file.text,
+              })),
+            );
+            argv = run.argv;
             root = FRESH;
           }
           const cwd =
@@ -435,7 +462,7 @@ export function createE2BProvider(
               ? root
               : inside(root, command.cwd);
           return execute(
-            commandLine(command.argv),
+            commandLine(argv),
             cwd,
             { ...JOB_ENV, ...(command.env ?? {}) },
             limits,
@@ -444,6 +471,34 @@ export function createE2BProvider(
         },
         async read(path) {
           return sandbox.readText(inside(WORK, path), READ_MAX_BYTES);
+        },
+        async seal(paths) {
+          if (destroyed) throw new Error("The job was destroyed.");
+          if (withheld !== null) throw new Error("A job is sealed once.");
+          const kept = new Map<string, string>();
+          const targets = paths.map((path) => inside(WORK, path));
+          for (const [index, path] of paths.entries()) {
+            const text = await sandbox.readText(
+              targets[index] ?? inside(WORK, path),
+              READ_MAX_BYTES,
+            );
+            if (text !== null) kept.set(path, text);
+          }
+          if (targets.length > 0)
+            await housekeep(`rm -f -- ${targets.map(shellQuote).join(" ")}`);
+          // Only npm and the compiler have run, so the tree holds nothing of
+          // the job's making; root's copy keeps links as links and is out of
+          // the user's reach.
+          await housekeep(
+            [
+              `mkdir -p -m 700 ${shellQuote(SEALED_ROOT)}`,
+              `rm -rf ${shellQuote(PRISTINE)}`,
+              `cp -a ${shellQuote(WORK)} ${shellQuote(PRISTINE)}`,
+              `chown -R -h root:root ${shellQuote(PRISTINE)}`,
+            ].join(" && "),
+            true,
+          );
+          withheld = kept;
         },
         async destroy() {
           // Once: the sandbox is gone after the first.

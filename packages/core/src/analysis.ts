@@ -250,16 +250,31 @@ export function snapshotBuilt(
  * bump cannot reuse a slice the old release made.
  */
 export const SLICE_TOOL_VERSION = "slice@6+carveout@0.3.1";
-/** Bumped when the generated project, harness or baseline rules change meaning. */
-export const SANDBOX_BUILD_RUN_VERSION = "sandbox_build@12";
+/**
+ * Bumped when the generated project, harness or baseline rules change meaning.
+ * @13: the project carries `TASK.md`, `AGENTS.md`, `CLAUDE.md` and
+ * `.vscode/`, and compiles with source maps (`guide.ts`). A version built
+ * before keeps its stored files and grades as it did: the grading layout,
+ * tree and commands did not change; a draft an older builder built is built
+ * again.
+ */
+export const SANDBOX_BUILD_RUN_VERSION = "sandbox_build@13";
 /** Bumped when the scope agent's tools, prompt or proposal shape change meaning. */
 export const SCOPE_TOOL_VERSION = "scope@6";
 /** Bumped when the fixtures agent's tools, prompt or set shape change meaning. */
 export const FIXTURES_TOOL_VERSION = "fixtures@4";
-/** Bumped when the starter agent's tools, prompt, set or project change meaning. */
-export const STARTER_TOOL_VERSION = "sandbox_starter@5";
-/** Bumped when the grading tree, its commands or the verdict change meaning. */
-export const SUBMISSION_GRADE_TOOL_VERSION = "submission_grade@2";
+/**
+ * Bumped when the starter agent's tools, prompt, set or project change meaning.
+ * @6: the project carries the contributor guide and source maps, as
+ * `sandbox_build@13`.
+ */
+export const STARTER_TOOL_VERSION = "sandbox_starter@6";
+/**
+ * Bumped when the grading tree, its commands or the verdict change meaning.
+ * @4: a pass on a sliced version is built and tested again in the
+ * repository's names before its merge patch is written (`carryBack`).
+ */
+export const SUBMISSION_GRADE_TOOL_VERSION = "submission_grade@4";
 /** Bumped when an uploaded folder's files, layout or baseline change meaning. */
 export const SANDBOX_IMPORT_TOOL_VERSION = "sandbox_import@1";
 /**

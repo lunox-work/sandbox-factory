@@ -7,21 +7,34 @@
  * patch against the same version is the same submission, so a retried
  * upload finds the one it already made.
  *
- * Status moves one way: `queued`, `running`, then `passed`, `failed` or
- * `errored`. A failed or errored submission takes one retry (`retry`), a
- * new submission that names it in `retryOf`; the contributor is told only
- * the first one's scenario keys. A verdict is never computed here; `submissionVerdict` in core
- * decides it from the counts, so the rule is the same wherever it is read.
+ * Status moves `queued`, `running` once a worker takes its grading run
+ * (`runningSubmission`, in the claim's transaction), then `passed`,
+ * `failed` or `errored`, each written by the run store in the transaction
+ * that ends the grading run (`settleSubmission`, `erroredSubmissions`
+ * below): a verdict commits with
+ * the run's artifacts, its merge patch among them, or not at all. A failed
+ * or errored submission takes one retry (`retry`), a new submission that
+ * names it in `retryOf`; the contributor is told only the first one's
+ * scenario keys. An errored one never ran to a verdict, so it is also
+ * graded again with its own files (`reopenSubmission`, when its run is
+ * queued again), which spends no retry. A verdict is never computed here;
+ * `submissionVerdict` in core decides it from the counts, so the rule is
+ * the same wherever it is read.
  */
 
 import { and, desc, eq, inArray } from "drizzle-orm";
 import {
   submissionVerdict,
+  type SubmissionError,
   type SubmissionResult,
   type SubmissionStatus,
 } from "sandbox-factory";
 
-import { isUniqueViolation, type Database } from "./errors.js";
+import {
+  isUniqueViolation,
+  type Database,
+  type QueryExecutor,
+} from "./errors.js";
 import { generateId } from "./mapping.js";
 import { sandbox, sandboxVersion, submission } from "./schema.js";
 import type { SubmissionRow } from "./schema.js";
@@ -33,6 +46,8 @@ export interface StoredSubmission {
   readonly patchSha256: string;
   readonly status: SubmissionStatus;
   readonly result: SubmissionResult | null;
+  /** Why an errored submission could not be graded; null otherwise. */
+  readonly errorCode: SubmissionError | null;
   readonly runId: string | null;
   /** The submission this one retries; null for a first attempt. */
   readonly retryOf: string | null;
@@ -63,6 +78,12 @@ export type RetrySubmissionResult =
       readonly submission: StoredSubmission;
       /** False when this retry, with these files, was already made. */
       readonly created: boolean;
+      /**
+       * An errored submission retried with its own files: nothing is made,
+       * and it is graded again in place (its run queued again), without
+       * spending its retry.
+       */
+      readonly regrade?: true;
     }
   | {
       readonly ok: false;
@@ -78,9 +99,6 @@ export type RetrySubmissionResult =
         /** These files were already submitted against the version. */
         | "same_patch";
     };
-
-/** How a run ended: with counts, or without being able to run at all. */
-export type SubmissionOutcome = SubmissionResult | "errored";
 
 export interface SubmissionStore {
   create(
@@ -98,6 +116,7 @@ export interface SubmissionStore {
   /**
    * A new submission against the same version that retries a failed or
    * errored one: its one retry. The same files again find the retry made.
+   * An errored submission with its own files is answered `regrade`.
    */
   retry(
     organizationId: string,
@@ -109,19 +128,115 @@ export interface SubmissionStore {
     organizationId: string,
     sandboxVersionId: string,
   ): Promise<StoredSubmission[]>;
-  /** `queued` to `running`, naming the run. False from any other status. */
-  start(
-    organizationId: string,
-    submissionId: string,
-    runId: string,
-  ): Promise<boolean>;
-  /** `running` to its verdict, or to `errored`. Null when not running. */
-  finish(
-    organizationId: string,
-    submissionId: string,
-    outcome: SubmissionOutcome,
-    now?: Date,
-  ): Promise<StoredSubmission | null>;
+}
+
+/** A submission still waiting for its grading run: no verdict, no error. */
+const WAITING: readonly SubmissionStatus[] = ["queued", "running"];
+
+/**
+ * The verdict a committed grading run found, written inside the run's
+ * fenced commit (`AnalysisRunStore.finish`), so it lands with the run's
+ * artifacts or not at all. Only a submission still waiting takes it.
+ */
+export async function settleSubmission(
+  tx: QueryExecutor,
+  owner: string,
+  graded: { readonly id: string; readonly runId: string },
+  result: SubmissionResult,
+  now: Date,
+): Promise<boolean> {
+  const rows = await tx
+    .update(submission)
+    .set({
+      status: submissionVerdict(result),
+      result,
+      errorCode: null,
+      runId: graded.runId,
+      updatedAt: now,
+    })
+    .where(
+      and(
+        eq(submission.organizationId, owner),
+        eq(submission.id, graded.id),
+        inArray(submission.status, [...WAITING]),
+      ),
+    )
+    .returning({ id: submission.id });
+  return rows.length > 0;
+}
+
+/**
+ * Submissions whose grading run has ended without a verdict, `errored`
+ * with the fixed reason given, inside the transaction that ended the run.
+ * Only those still waiting move.
+ */
+export async function erroredSubmissions(
+  tx: QueryExecutor,
+  owner: string,
+  ended: readonly {
+    readonly submissionId: string;
+    readonly runId: string;
+    readonly errorCode: SubmissionError;
+  }[],
+  now: Date,
+): Promise<void> {
+  for (const { submissionId, runId, errorCode } of ended)
+    await tx
+      .update(submission)
+      .set({ status: "errored", errorCode, runId, updatedAt: now })
+      .where(
+        and(
+          eq(submission.organizationId, owner),
+          eq(submission.id, submissionId),
+          inArray(submission.status, [...WAITING]),
+        ),
+      );
+}
+
+/**
+ * A queued submission `running`, inside the transaction in which a worker
+ * claims its grading run: the web shows it as being graded from then on.
+ * A run claimed again after a lost lease finds it running already.
+ */
+export async function runningSubmission(
+  tx: QueryExecutor,
+  owner: string,
+  submissionId: string,
+  now: Date,
+): Promise<void> {
+  await tx
+    .update(submission)
+    .set({ status: "running", updatedAt: now })
+    .where(
+      and(
+        eq(submission.organizationId, owner),
+        eq(submission.id, submissionId),
+        eq(submission.status, "queued"),
+      ),
+    );
+}
+
+/**
+ * An errored submission waiting again, inside the transaction that queues
+ * its grading run again: the two move together, so a submission never
+ * waits on a run that is not queued.
+ */
+export async function reopenSubmission(
+  tx: QueryExecutor,
+  owner: string,
+  submissionId: string,
+  now: Date,
+): Promise<void> {
+  await tx
+    .update(submission)
+    .set({ status: "queued", errorCode: null, updatedAt: now })
+    .where(
+      and(
+        eq(submission.organizationId, owner),
+        eq(submission.id, submissionId),
+        eq(submission.status, "errored"),
+      ),
+    );
 }
 
 const toSubmission = (row: SubmissionRow): StoredSubmission => ({
@@ -131,11 +246,19 @@ const toSubmission = (row: SubmissionRow): StoredSubmission => ({
   patchSha256: row.patchSha256,
   status: row.status,
   result: row.result,
+  errorCode: row.errorCode ?? null,
   runId: row.runId,
   retryOf: row.retryOf ?? null,
   createdAt: row.createdAt.toISOString(),
   updatedAt: row.updatedAt.toISOString(),
 });
+
+/** A stored submission without the key its files are under. */
+const withoutKey = ({
+  patchKey: _patchKey,
+  ...stored
+}: StoredSubmission & { readonly patchKey: string }): StoredSubmission =>
+  stored;
 
 export function createSubmissionStore(db: Database): SubmissionStore {
   const get: SubmissionStore["get"] = async (owner, id) => {
@@ -177,27 +300,6 @@ export function createSubmissionStore(db: Database): SubmissionStore {
         )
         .limit(1)) as SubmissionRow[]
     )[0];
-  /** Moves a submission on only from the statuses it may leave. */
-  const advance = async (
-    owner: string,
-    id: string,
-    from: readonly SubmissionStatus[],
-    values: Partial<SubmissionRow>,
-  ) =>
-    (
-      (await db
-        .update(submission)
-        .set(values)
-        .where(
-          and(
-            eq(submission.organizationId, owner),
-            eq(submission.id, id),
-            inArray(submission.status, [...from]),
-          ),
-        )
-        .returning()) as SubmissionRow[]
-    )[0];
-
   return {
     get,
     async create(owner, input) {
@@ -235,6 +337,18 @@ export function createSubmissionStore(db: Database): SubmissionStore {
     async retry(owner, id, input) {
       const original = await get(owner, id);
       if (original === null) return { ok: false, reason: "not-found" };
+      // An error is the platform's, not the contributor's: the same files
+      // are graded again, and the retry (or a retry's own error) is kept.
+      if (
+        original.status === "errored" &&
+        input.patchSha256 === original.patchSha256
+      )
+        return {
+          ok: true,
+          submission: withoutKey(original),
+          created: false,
+          regrade: true,
+        };
       if (original.retryOf !== null) return { ok: false, reason: "is_retry" };
       if (original.status === "passed") return { ok: false, reason: "passed" };
       if (original.status === "queued" || original.status === "running")
@@ -302,31 +416,6 @@ export function createSubmissionStore(db: Database): SubmissionStore {
           desc(submission.id),
         )) as SubmissionRow[];
       return rows.map(toSubmission);
-    },
-
-    async start(owner, id, runId) {
-      const row = await advance(owner, id, ["queued"], {
-        status: "running",
-        runId,
-        updatedAt: new Date(),
-      });
-      return row !== undefined;
-    },
-
-    async finish(owner, id, outcome, now = new Date()) {
-      const row = await advance(
-        owner,
-        id,
-        ["running"],
-        outcome === "errored"
-          ? { status: "errored", updatedAt: now }
-          : {
-              status: submissionVerdict(outcome),
-              result: outcome,
-              updatedAt: now,
-            },
-      );
-      return row === undefined ? null : toSubmission(row);
     },
   };
 }

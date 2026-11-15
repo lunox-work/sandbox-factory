@@ -35,9 +35,16 @@ export {
 } from "./errors.js";
 export { REQUEST_TIMEOUT_MS } from "./http.js";
 export { InstallationTokens } from "./installation-tokens.js";
-export { MERGE_BACK_PERMISSIONS, PullRequestWriter } from "./pull-requests.js";
+export {
+  BranchConflictError,
+  MERGE_BACK_PERMISSIONS,
+  missingPermissions,
+  PullRequestWriter,
+} from "./pull-requests.js";
 export type {
+  CommitSummary,
   OpenedPullRequest,
+  PullRequestSummary,
   PullRequestInput,
   PullRequestWriterOptions,
 } from "./pull-requests.js";

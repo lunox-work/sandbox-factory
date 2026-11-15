@@ -20,6 +20,7 @@ import {
 import type {
   AliasRule,
   EvaluationCommand,
+  HiddenTestRun,
   GeneratedFile,
   EvaluationExecResult,
   EvaluationProvider,
@@ -91,6 +92,10 @@ function fakeProvider(
 ) {
   const calls: string[][] = [];
   const staged: string[] = [];
+  /** Each seal: the paths withheld and how many commands had run. */
+  const seals: { paths: readonly string[]; after: number }[] = [];
+  /** Each hidden run's `hidden`, in order. */
+  const hidden: HiddenTestRun[] = [];
   let destroyed = 0;
   const provider: EvaluationProvider = {
     name: "fake",
@@ -108,6 +113,7 @@ function fakeProvider(
         },
         async exec(command: EvaluationCommand) {
           calls.push([...command.argv]);
+          if (command.hidden !== undefined) hidden.push(command.hidden);
           const scripted = script(command.argv);
           if (scripted instanceof Error) throw scripted;
           return {
@@ -127,13 +133,23 @@ function fakeProvider(
               : options.lockfile
             : null;
         },
+        async seal(paths) {
+          seals.push({ paths, after: calls.length });
+        },
         async destroy() {
           destroyed += 1;
         },
       };
     },
   };
-  return { provider, calls, staged, destroyed: () => destroyed };
+  return {
+    provider,
+    calls,
+    staged,
+    seals,
+    hidden,
+    destroyed: () => destroyed,
+  };
 }
 
 async function versionFor(
@@ -583,6 +599,10 @@ test("a build produces a standalone project, hidden tests apart, a verified base
     await read("project/tests/public/spec.test.ts"),
     /makeService describes a thing/,
   );
+  // TASK.md writes the spec out as the table renamed it.
+  const task = await read("project/TASK.md");
+  assert.match(task, /makeService describes a thing/);
+  assert.doesNotMatch(task, /createService/);
   assert.match(
     await read("project/tests/public/interface.test.ts"),
     /module\["run"\]/,
@@ -608,6 +628,25 @@ test("a build produces a standalone project, hidden tests apart, a verified base
     ],
   );
   assert.ok(fake.staged.includes("tests/private/fix.test.ts"));
+  // The hidden test's files leave the tree once it is built, before the
+  // walkthrough runs task code, and each run loads it from memory.
+  assert.deepEqual(fake.seals, [
+    {
+      paths: [
+        "tests/private/fix.test.d.ts",
+        "tests/private/fix.test.d.ts.map",
+        "tests/private/fix.test.js",
+        "tests/private/fix.test.js.map",
+        "tests/private/fix.test.ts",
+        "tests/private/fix.test.ts.map",
+      ],
+      after: 3,
+    },
+  ]);
+  assert.deepEqual(fake.hidden, [
+    { entry: "tests/private/fix.test.js", load: "memory" },
+    { entry: "tests/private/fix.test.js", load: "memory" },
+  ]);
   assert.equal(fake.destroyed(), 1);
   assert.deepEqual(manifest.baseline?.privateTests, [
     {
@@ -1909,6 +1948,7 @@ test("a draft with no pseudonyms has a table drafted by rule, checked as the bui
   );
   // The project is renamed by the table, which the private side keeps.
   assert.doesNotMatch(await built.read("project/README.md"), /widget/i);
+  assert.doesNotMatch(await built.read("project/TASK.md"), /widget/i);
   const transform = JSON.parse(await built.read(BUILD_TRANSFORM_PATH)) as {
     aliasRules: AliasRule[];
     pseudonyms: { usage: { turns: number } };
@@ -2397,6 +2437,10 @@ test("the hidden-tests prompt quotes the project most needed first, within its r
     file("sandbox/mock.js", "harness"),
     file("package-lock.json", "config"),
     file("package.json", "config"),
+    file("TASK.md", "config"),
+    file("AGENTS.md", "config"),
+    file("CLAUDE.md", "config"),
+    file(".vscode/launch.json", "config"),
     { ...file("tests/private/a.test.ts", "test-private"), public: false },
   ]);
   assert.deepEqual(

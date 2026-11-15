@@ -83,14 +83,12 @@ export interface ToolInputs {
    */
   readUpload?(versionId: string, uploadSha256: string): Promise<string | null>;
   /**
-   * Moves a submission to running under this run, then to its outcome:
-   * counts and a verdict, or `errored`. False when it was not waiting.
+   * The verdict a grading run found, written in the run's own commit with
+   * its artifacts (`RunSettlement`), so a verdict never stands without
+   * the merge patch it rests on. Nothing is written if the run does not
+   * commit; its submission is then errored with the run's failure.
    */
-  finishSubmission?(
-    submissionId: string,
-    runId: string,
-    outcome: SubmissionResult | "errored",
-  ): Promise<boolean>;
+  settleSubmission?(submissionId: string, result: SubmissionResult): void;
 }
 /** The snapshot and commit a source-reading run is on. */
 export interface RunSnapshot {

@@ -9,9 +9,17 @@
  * commit on the commit the version was sliced at, on a branch of their own,
  * and a pull request from it onto the default branch. GitHub shows whether
  * it still merges; nothing here rebases.
+ *
+ * `open` is safe to call again after any partial failure, or from a second
+ * request racing the first: a branch already there is reused when its head
+ * carries exactly the tree this would commit (Git trees are content
+ * addressed, so the same files on the same base give the same sha), and an
+ * open pull request from it is returned rather than a second one opened. A
+ * branch someone pushed other work to is refused (`BranchConflictError`),
+ * never force-pushed.
  */
 
-import { failure } from "./errors.js";
+import { failure, GithubApiError, GithubNotFound } from "./errors.js";
 import { API_URL, readJson, request, restHeaders } from "./http.js";
 import type { TokenProvider } from "./installation-tokens.js";
 
@@ -22,6 +30,36 @@ export const MERGE_BACK_PERMISSIONS: Readonly<Record<string, string>> = {
   metadata: "read",
 };
 
+/** GitHub's permission levels, each including the ones before it. */
+const LEVELS = ["read", "write", "admin"];
+
+/**
+ * The permissions in `required` that `granted` (an installation's, as
+ * GitHub reports them) does not cover, as `name:level`, e.g.
+ * `["pull_requests:write"]`. Empty when every one is held.
+ */
+export function missingPermissions(
+  granted: Readonly<Record<string, string>>,
+  required: Readonly<Record<string, string>>,
+): string[] {
+  return Object.entries(required).flatMap(([name, level]) =>
+    LEVELS.indexOf(granted[name] ?? "") >= LEVELS.indexOf(level)
+      ? []
+      : [`${name}:${level}`],
+  );
+}
+
+/**
+ * The merge-back's branch exists and its head is not the commit a
+ * merge-back would make: someone pushed to it. Nothing is overwritten.
+ */
+export class BranchConflictError extends Error {
+  constructor(readonly branch: string) {
+    super(`Branch ${branch} already exists with other changes.`);
+    this.name = "BranchConflictError";
+  }
+}
+
 export interface PullRequestInput {
   /** `owner/name`. */
   readonly fullName: string;
@@ -29,7 +67,7 @@ export interface PullRequestInput {
   readonly baseCommit: string;
   /** The branch the pull request asks to merge into. */
   readonly base: string;
-  /** The branch made for it; refused by GitHub when it exists. */
+  /** The branch made for it, or reused when it carries the same tree. */
   readonly branch: string;
   readonly title: string;
   readonly body: string;
@@ -52,6 +90,21 @@ export interface PullRequestWriterOptions {
 
 const segments = (fullName: string) =>
   fullName.split("/").map(encodeURIComponent).join("/");
+
+/** A commit, as far as a merge-back compares it. */
+export interface CommitSummary {
+  readonly sha: string;
+  readonly treeSha: string;
+}
+
+/** An open pull request. */
+export interface PullRequestSummary {
+  readonly number: number;
+  readonly url: string;
+}
+
+const isConflict = (error: unknown) =>
+  error instanceof GithubApiError && error.status === 422;
 
 export class PullRequestWriter {
   readonly #token: TokenProvider;
@@ -88,19 +141,113 @@ export class PullRequestWriter {
     return parsed as Record<string, unknown>;
   }
 
-  /** One commit with the files on `baseCommit`, its branch, and the pull request. */
+  /** A commit and its tree. */
+  async getCommit(fullName: string, sha: string): Promise<CommitSummary> {
+    const commit = await this.#call(
+      "GET",
+      `/repos/${segments(fullName)}/git/commits/${encodeURIComponent(sha)}`,
+      "a commit",
+    );
+    const treeSha = (commit["tree"] as { sha?: unknown } | undefined)?.sha;
+    if (typeof treeSha !== "string")
+      throw new Error("GitHub answered the commit with no tree.");
+    return { sha, treeSha };
+  }
+
+  /** The commit a branch points at; null when there is no such branch. */
+  async getBranch(fullName: string, branch: string): Promise<string | null> {
+    let ref;
+    try {
+      ref = await this.#call(
+        "GET",
+        `/repos/${segments(fullName)}/git/ref/heads/${branch
+          .split("/")
+          .map(encodeURIComponent)
+          .join("/")}`,
+        "a branch",
+      );
+    } catch (error) {
+      if (error instanceof GithubNotFound) return null;
+      throw error;
+    }
+    const sha = (ref["object"] as { sha?: unknown } | undefined)?.sha;
+    if (typeof sha !== "string")
+      throw new Error("GitHub answered the branch with no commit.");
+    return sha;
+  }
+
+  /** The open pull request from a branch of the repository itself, if any. */
+  async findOpenPullRequest(
+    fullName: string,
+    branch: string,
+  ): Promise<PullRequestSummary | null> {
+    const owner = fullName.split("/")[0] ?? "";
+    const query = new URLSearchParams({
+      head: `${owner}:${branch}`,
+      state: "open",
+      per_page: "1",
+    });
+    const listed = await this.#call(
+      "GET",
+      `/repos/${segments(fullName)}/pulls?${query.toString()}`,
+      "pull requests",
+    );
+    if (!Array.isArray(listed))
+      throw new Error("GitHub answered pull requests with no list.");
+    const first = listed[0] as Record<string, unknown> | undefined;
+    return first === undefined ? null : pullOf(first);
+  }
+
+  /**
+   * The head of the merge-back's branch: made now with one commit of
+   * `treeSha` on `baseCommit`, or found there already, and then ours only
+   * when its head carries the same tree.
+   */
+  async #branch(input: PullRequestInput, treeSha: string): Promise<string> {
+    const repo = `/repos/${segments(input.fullName)}`;
+    let found = await this.getBranch(input.fullName, input.branch);
+    if (found === null) {
+      const commit = await this.#call(
+        "POST",
+        `${repo}/git/commits`,
+        "a commit",
+        {
+          message: input.commitMessage,
+          tree: treeSha,
+          parents: [input.baseCommit],
+        },
+      );
+      const commitSha = commit["sha"];
+      if (typeof commitSha !== "string")
+        throw new Error("GitHub answered the commit with no sha.");
+      try {
+        await this.#call("POST", `${repo}/git/refs`, "a branch", {
+          ref: `refs/heads/${input.branch}`,
+          sha: commitSha,
+        });
+        return commitSha;
+      } catch (error) {
+        // Made meanwhile by a request racing this one: compared below.
+        if (!isConflict(error)) throw error;
+        found = await this.getBranch(input.fullName, input.branch);
+        if (found === null) throw error;
+      }
+    }
+    const head = await this.getCommit(input.fullName, found);
+    if (head.treeSha !== treeSha) throw new BranchConflictError(input.branch);
+    return found;
+  }
+
+  /**
+   * One commit with the files on `baseCommit`, its branch, and the pull
+   * request; or what an earlier attempt already made of them. See the file
+   * comment.
+   */
   async open(input: PullRequestInput): Promise<OpenedPullRequest> {
     const repo = `/repos/${segments(input.fullName)}`;
-    const base = await this.#call(
-      "GET",
-      `${repo}/git/commits/${encodeURIComponent(input.baseCommit)}`,
-      "the version's commit",
-    );
-    const baseTree = (base["tree"] as { sha?: unknown } | undefined)?.sha;
-    if (typeof baseTree !== "string")
-      throw new Error("GitHub answered the version's commit with no tree.");
+    const base = await this.getCommit(input.fullName, input.baseCommit);
     const tree = await this.#call("POST", `${repo}/git/trees`, "a tree", {
-      base_tree: baseTree,
+      base_tree: base.treeSha,
       tree: input.files.map((file) => ({
         path: file.path,
         mode: "100644",
@@ -108,29 +255,42 @@ export class PullRequestWriter {
         content: file.text,
       })),
     });
-    const commit = await this.#call("POST", `${repo}/git/commits`, "a commit", {
-      message: input.commitMessage,
-      tree: tree["sha"],
-      parents: [input.baseCommit],
-    });
-    const commitSha = commit["sha"];
-    if (typeof commitSha !== "string")
-      throw new Error("GitHub answered the commit with no sha.");
-    await this.#call("POST", `${repo}/git/refs`, "a branch", {
-      ref: `refs/heads/${input.branch}`,
-      sha: commitSha,
-    });
-    const pull = await this.#call("POST", `${repo}/pulls`, "a pull request", {
-      title: input.title,
-      head: input.branch,
-      base: input.base,
-      body: input.body,
-      maintainer_can_modify: false,
-    });
-    const number = pull["number"];
-    const url = pull["html_url"];
-    if (typeof number !== "number" || typeof url !== "string")
-      throw new Error("GitHub answered the pull request with no number.");
-    return { number, url, commitSha };
+    const treeSha = tree["sha"];
+    if (typeof treeSha !== "string")
+      throw new Error("GitHub answered the tree with no sha.");
+
+    const commitSha = await this.#branch(input, treeSha);
+    const existing = await this.findOpenPullRequest(
+      input.fullName,
+      input.branch,
+    );
+    if (existing !== null) return { ...existing, commitSha };
+    try {
+      const pull = await this.#call("POST", `${repo}/pulls`, "a pull request", {
+        title: input.title,
+        head: input.branch,
+        base: input.base,
+        body: input.body,
+        maintainer_can_modify: false,
+      });
+      return { ...pullOf(pull), commitSha };
+    } catch (error) {
+      // GitHub refuses a second open pull request from one branch.
+      if (!isConflict(error)) throw error;
+      const raced = await this.findOpenPullRequest(
+        input.fullName,
+        input.branch,
+      );
+      if (raced === null) throw error;
+      return { ...raced, commitSha };
+    }
   }
+}
+
+function pullOf(pull: Record<string, unknown>): PullRequestSummary {
+  const number = pull["number"];
+  const url = pull["html_url"];
+  if (typeof number !== "number" || typeof url !== "string")
+    throw new Error("GitHub answered the pull request with no number.");
+  return { number, url };
 }

@@ -118,10 +118,15 @@ export type {
 } from "./workspace-settings.js";
 export { createBountySpecStore } from "./bounty-specs.js";
 export { createDecisionConfirmationStore } from "./decision-confirmations.js";
-export { createSubmissionMergeStore } from "./submission-merges.js";
+export {
+  createSubmissionMergeStore,
+  MERGE_CLAIM_LEASE_MS,
+} from "./submission-merges.js";
 export type {
-  NewSubmissionMerge,
+  NewSubmissionMergeClaim,
+  OpenedSubmissionMerge,
   StoredSubmissionMerge,
+  SubmissionMergeClaim,
   SubmissionMergeStore,
 } from "./submission-merges.js";
 export type {
@@ -305,6 +310,7 @@ export type {
   EnqueueAnalysisResult,
   NewArtifact,
   QueueState,
+  RunSettlement,
 } from "./analysis-runs.js";
 export { createArtifactStore } from "./artifacts.js";
 export { createWorkspaceSetupStore } from "./workspace-setup.js";
@@ -341,7 +347,7 @@ export { createSubmissionStore } from "./submissions.js";
 export type {
   CreateSubmissionResult,
   NewSubmission,
+  RetrySubmissionResult,
   StoredSubmission,
-  SubmissionOutcome,
   SubmissionStore,
 } from "./submissions.js";

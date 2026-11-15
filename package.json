@@ -34,7 +34,8 @@
     "verify": "npm run lint && npm run format:check && npm run build && npm test",
     "prepare": "husky",
     "test:e2e": "turbo run build --filter=@sandbox-factory/api --filter=@sandbox-factory/web && playwright test",
-    "worker:smoke": "docker build --target runtime -f apps/worker/Dockerfile -t sandbox-factory-worker:smoke . && docker run --rm --entrypoint node sandbox-factory-worker:smoke apps/worker/scripts/smoke.mjs"
+    "worker:smoke": "docker build --target runtime -f apps/worker/Dockerfile -t sandbox-factory-worker:smoke . && docker run --rm --entrypoint node sandbox-factory-worker:smoke apps/worker/scripts/smoke.mjs && docker run --rm --entrypoint node sandbox-factory-worker:smoke apps/worker/scripts/roundtrip.mjs",
+    "worker:roundtrip": "turbo run build --filter=@sandbox-factory/worker && npm run roundtrip --workspace @sandbox-factory/worker"
   },
   "devDependencies": {
     "@hono/node-server": "^2.1.1",

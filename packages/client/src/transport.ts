@@ -125,20 +125,59 @@ export class ApiClient {
       }
     }
 
-    if (!response.ok) {
-      const parsed = errorSchema.safeParse(payload);
-      throw new ApiError(
-        response.status,
-        parsed.success
-          ? parsed.data.error
-          : `HTTP ${response.status} from ${path}`,
-        parsed.success ? (parsed.data.code ?? null) : null,
-        payload,
-      );
-    }
+    if (!response.ok) throw failure(response.status, path, payload);
 
     return payload;
   }
+
+  /**
+   * One request for a file to save rather than JSON: its bytes, the name
+   * the API gave it (`Content-Disposition`) and its `ETag`. A refusal is
+   * JSON and throws as `request`'s do.
+   */
+  protected async requestFile(
+    path: string,
+    accept: string,
+    init?: RequestInit,
+  ): Promise<{ blob: Blob; filename: string | null; etag: string | null }> {
+    const headers = new Headers(init?.headers);
+    headers.set("Accept", `${accept}, application/json`);
+    const response = await this.#send(path, { ...init, headers });
+    if (!response.ok) {
+      const text = await abortable(response.text(), init?.signal);
+      let payload: unknown = undefined;
+      try {
+        payload = text === "" ? undefined : JSON.parse(text);
+      } catch {
+        // Not the JSON a refusal is: the status alone says what happened.
+      }
+      throw failure(response.status, path, payload);
+    }
+    const blob = await abortable(response.blob(), init?.signal);
+    init?.signal?.throwIfAborted();
+    return {
+      blob,
+      filename: filenameOf(response.headers.get("Content-Disposition")),
+      etag: response.headers.get("ETag"),
+    };
+  }
+}
+
+/** The error a non-2xx answer throws, from its JSON envelope if it has one. */
+function failure(status: number, path: string, payload: unknown): ApiError {
+  const parsed = errorSchema.safeParse(payload);
+  return new ApiError(
+    status,
+    parsed.success ? parsed.data.error : `HTTP ${status} from ${path}`,
+    parsed.success ? (parsed.data.code ?? null) : null,
+    payload,
+  );
+}
+
+/** `attachment; filename="x.zip"`'s name: a plain one, never a path. */
+function filenameOf(disposition: string | null): string | null {
+  const match = /filename="([^"/\\]+)"/.exec(disposition ?? "");
+  return match?.[1] ?? null;
 }
 
 /** Bound cancellation even for injected transports that ignore fetch's signal. */

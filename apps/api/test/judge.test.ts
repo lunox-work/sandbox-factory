@@ -145,9 +145,16 @@ const fakeVerifier: GithubOidcVerifier = {
 };
 
 function judgeFixture(
-  overrides: { frozen?: boolean; unhealthy?: boolean; limit?: boolean } = {},
+  overrides: {
+    frozen?: boolean;
+    unhealthy?: boolean;
+    limit?: boolean;
+    /** The store finds the version's snapshot gone. */
+    snapshotGone?: boolean;
+  } = {},
 ) {
   const enqueued: unknown[] = [];
+  const runs = new Set<string>();
   const stored: Record<string, Buffer> = {};
   let made = false;
   const submission = (status = "queued") => ({
@@ -208,7 +215,14 @@ function judgeFixture(
         created.push({ owner, ...(input as object) });
         const first = !made;
         made = true;
-        return { ok: true, created: first, submission: submission() } as never;
+        return {
+          ok: true,
+          created: first,
+          submission: {
+            ...submission(),
+            patchSha256: (input as { patchSha256: string }).patchSha256,
+          },
+        } as never;
       },
       get: async (owner: string, id: string) =>
         owner === "org_1" && id === "sbm_1"
@@ -227,9 +241,19 @@ function judgeFixture(
         input: unknown,
       ) => {
         enqueued.push({ owner, snapshotId, ...(input as object) });
-        return overrides.limit === true
-          ? ({ ok: false, reason: "limit" } as never)
-          : ({ ok: true } as never);
+        if (overrides.limit === true)
+          return { ok: false, reason: "run_limit" } as never;
+        if (overrides.snapshotGone === true)
+          return { ok: false, reason: "not-found" } as never;
+        // Cached by its parameters, as the store does.
+        const key = JSON.stringify((input as { params: unknown }).params);
+        const created = !runs.has(key);
+        runs.add(key);
+        return {
+          ok: true,
+          created,
+          run: { id: "arn_grade", status: "queued" },
+        } as never;
       },
     },
     ensureWorker: async () => {},
@@ -248,7 +272,17 @@ function judgeFixture(
       },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     });
-  return { call, enqueued, created, stored };
+  return {
+    call,
+    enqueued,
+    created,
+    stored,
+    /** How many grading runs the store made, not found cached. */
+    runs: () => runs.size,
+    limit: (on: boolean) => {
+      overrides.limit = on;
+    },
+  };
 }
 
 const files = [{ path: "src/a.ts", text: "export const a = 1;\n" }];
@@ -281,7 +315,7 @@ test("the CI judge takes a pull request's files from the repository the version 
   // The same files again: the submission already made, and no second run.
   const again = await f.call("POST", "/api/judge", "token:42", ask);
   assert.equal(again.status, 200);
-  assert.equal(f.enqueued.length, 1);
+  assert.equal(f.runs(), 1);
 
   const read = await f.call(
     "GET",
@@ -340,6 +374,25 @@ test("the CI judge refuses without a token, a bad one, another repository's, a d
     409,
     "run_limit",
   ]);
+  assert.deepEqual(await status("token:42", ask, { snapshotGone: true }), [
+    409,
+    "not_gradable",
+  ]);
+
+  // Kept at the limit: the CI job run again queues the same submission.
+  const full = judgeFixture({ limit: true });
+  const refused = await full.call("POST", "/api/judge", "token:42", ask);
+  assert.equal(refused.status, 409);
+  assert.equal(refused.headers.get("retry-after"), "60");
+  assert.equal(
+    ((await refused.json()) as { retryable?: boolean }).retryable,
+    true,
+  );
+  full.limit(false);
+  const queued = await full.call("POST", "/api/judge", "token:42", ask);
+  assert.equal(queued.status, 202);
+  assert.equal(full.runs(), 1);
+  assert.equal(full.created.length, 2);
 
   const f = judgeFixture();
   assert.equal(

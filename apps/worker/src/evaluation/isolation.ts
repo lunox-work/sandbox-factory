@@ -73,6 +73,11 @@ export interface JobIsolation {
    * behind; `sweepIdentity` by default.
    */
   readonly sweep?: (identity: JobIdentity) => Promise<void>;
+  /**
+   * Kills every process an identity still runs and leaves its files, as
+   * between a job's hidden runs; `killIdentity` by default.
+   */
+  readonly kill?: (identity: JobIdentity) => Promise<void>;
 }
 
 export const ISOLATION_WARNING =

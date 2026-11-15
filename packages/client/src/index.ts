@@ -25,6 +25,7 @@ import {
   artifactUrlSchema,
   enqueueSliceResponseSchema,
   generateStarterResponseSchema,
+  handoutFilesSchema,
   publishVersionResponseSchema,
   repositoryProposalListSchema,
   repoTreePageDtoSchema,
@@ -43,6 +44,7 @@ import {
   sliceVersionResponseSchema,
   startSandboxResponseSchema,
   submissionListSchema,
+  mergeBackStatusResponseSchema,
   submissionResponseSchema,
 } from "@sandbox-factory/shared";
 import type {
@@ -54,6 +56,7 @@ import type {
   EnqueueFixturesInput,
   EnqueueScopeInput,
   EnqueueSliceInput,
+  HandoutFilesQuery,
   UpdateSandboxVersionInput,
 } from "@sandbox-factory/shared";
 
@@ -481,6 +484,38 @@ export class SandboxClient extends GithubAnalysisClient {
       ),
     );
   }
+  /**
+   * The version's public project as one `.zip` (everything under one
+   * folder), what a contributor opens in an editor; never a hidden test.
+   * `filename` is the name to save it as.
+   */
+  async projectArchive(owner: string, versionId: string, signal?: AbortSignal) {
+    const file = await this.requestFile(
+      `${this.#sandboxes(owner)}/versions/${encodeURIComponent(versionId)}/archive`,
+      "application/zip",
+      { signal },
+    );
+    return { ...file, filename: file.filename ?? `${versionId}.zip` };
+  }
+  /** One page of the public project's files with their contents. */
+  async handoutFiles(
+    owner: string,
+    versionId: string,
+    query: HandoutFilesQuery = {},
+    signal?: AbortSignal,
+  ) {
+    const search = new URLSearchParams();
+    if (query.cursor !== undefined) search.set("cursor", query.cursor);
+    if (query.maxBytes !== undefined)
+      search.set("maxBytes", String(query.maxBytes));
+    const suffix = search.toString() === "" ? "" : `?${search.toString()}`;
+    return handoutFilesSchema.parse(
+      await this.request(
+        `${this.#sandboxes(owner)}/versions/${encodeURIComponent(versionId)}/handout/files${suffix}`,
+        { signal },
+      ),
+    );
+  }
   /** A version's submissions and their verdicts, newest first. */
   async sandboxSubmissions(
     owner: string,
@@ -534,6 +569,18 @@ export class SandboxClient extends GithubAnalysisClient {
     ).submission;
   }
   /**
+   * Grades an errored submission again with its own files, without
+   * spending its one retry. A signed-in session's act.
+   */
+  async regradeSubmission(owner: string, submissionId: string) {
+    return submissionResponseSchema.parse(
+      await this.request(
+        `${this.#sandboxes(owner)}/submissions/${encodeURIComponent(submissionId)}/regrade`,
+        { method: "POST" },
+      ),
+    ).submission;
+  }
+  /**
    * Merges a passing submission back: a pull request on the repository it
    * was sliced from. A signed-in session's act; a token is refused.
    */
@@ -544,6 +591,23 @@ export class SandboxClient extends GithubAnalysisClient {
         { method: "POST" },
       ),
     ).submission;
+  }
+  /**
+   * Whether the version's passing submissions can be merged back now, and
+   * if not why: the GitHub App's missing permissions and where to accept
+   * them. Read before the merge button is offered.
+   */
+  async mergeBackStatus(
+    owner: string,
+    versionId: string,
+    signal?: AbortSignal,
+  ) {
+    return mergeBackStatusResponseSchema.parse(
+      await this.request(
+        `${this.#sandboxes(owner)}/versions/${encodeURIComponent(versionId)}/merge-back`,
+        { signal },
+      ),
+    ).mergeBack;
   }
   /** What replaying the version would use, or why it cannot be replayed. */
   async sandboxReplay(owner: string, versionId: string, signal?: AbortSignal) {

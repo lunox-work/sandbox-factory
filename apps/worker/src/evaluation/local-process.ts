@@ -12,7 +12,10 @@
  * of reach, though not what the machine leaves world-readable or its
  * network, and lets everything a job left running be killed and what it
  * left in shared temporary directories be removed; any other worker runs
- * jobs as itself.
+ * jobs as itself. Hidden runs follow `hidden-runner.ts`, as E2B's do: the
+ * seal keeps the hidden tests in the worker and copies the tree to a
+ * pristine directory the worker owns, and each run copies it afresh with
+ * its own test alone, after the identity's leftover processes are killed.
  * Hosted evaluation of contributor code needs a provider that meets
  * Decision 5 of the sandbox plan; this one records itself as
  * `local-process` so no record can mistake it for one, and the worker
@@ -24,6 +27,7 @@ import { constants } from "node:fs";
 import {
   chmod,
   chown,
+  cp,
   mkdir,
   mkdtemp,
   open,
@@ -47,10 +51,12 @@ import type {
   EvaluationJob,
   EvaluationProvider,
 } from "sandbox-factory";
+import { HIDDEN_RUN_DIR, hiddenRunFiles } from "./hidden-runner.js";
 import {
   chownTree,
   ISOLATION_WARNING,
   jobCache,
+  killIdentity,
   sweepIdentity,
 } from "./isolation.js";
 import type { JobIdentity, JobIsolation } from "./isolation.js";
@@ -308,6 +314,9 @@ export function createLocalProcessProvider(
   const sweep =
     isolation?.sweep ??
     ((identity: JobIdentity) => sweepIdentity(identity, keep));
+  // Not the sweep: mid-job it would remove the job's own directories,
+  // which sit under the shared temporary directory it clears.
+  const killAll = isolation?.kill ?? killIdentity;
   /** Identities no job holds; `limitJobs` keeps demand within them. */
   const free = [...(isolation?.identities ?? [])];
   /**
@@ -455,6 +464,15 @@ export function createLocalProcessProvider(
       let started = false;
       let ranProject = false;
       let destroyed = false;
+      /**
+       * The hidden tests' files the seal took out of the tree, by path; null
+       * until it runs. Every hidden run copies `pristine`, the tree as the
+       * seal left it, to `fresh` and puts back its own test alone
+       * (`hidden-runner.ts`).
+       */
+      let withheld: Map<string, string> | null = null;
+      const pristine = join(directory, "pristine");
+      const fresh = join(directory, "fresh");
       const job: EvaluationJob = {
         id: basename(directory),
         environment: {
@@ -506,7 +524,71 @@ export function createLocalProcessProvider(
           }
           if (identity !== null) await chownTree(work, identity);
         },
+        async seal(paths) {
+          if (withheld !== null) throw new Error("A job is sealed once.");
+          const kept = new Map<string, string>();
+          for (const path of paths) {
+            const target = inside(work, path);
+            const text = await readInside(
+              work,
+              path,
+              identity?.uid ?? process.getuid?.(),
+            );
+            if (text !== null) kept.set(path, text);
+            await rm(target, { force: true });
+          }
+          // Only npm and the compiler have run, so the tree holds nothing
+          // of the job's making; links are copied as links.
+          await cp(work, pristine, { recursive: true, verbatimSymlinks: true });
+          // The worker's: a job running as its own uid can neither read nor
+          // change what every hidden run starts from.
+          if (identity !== null) await chmod(pristine, 0o700);
+          withheld = kept;
+        },
         async exec(command) {
+          if (command.hidden !== undefined) {
+            if (withheld === null)
+              throw new Error("A hidden test runs once the job is sealed.");
+            started = true;
+            ranProject = true;
+            // Nothing an earlier command left running watches this copy.
+            if (identity !== null) await killAll(identity);
+            await rm(fresh, { recursive: true, force: true });
+            await cp(pristine, fresh, {
+              recursive: true,
+              verbatimSymlinks: true,
+            });
+            await rm(join(fresh, HIDDEN_RUN_DIR), {
+              recursive: true,
+              force: true,
+            });
+            const run = hiddenRunFiles(
+              command.hidden,
+              command.argv,
+              withheld.get(command.hidden.entry) ?? null,
+            );
+            for (const file of run.files) {
+              const target = inside(fresh, file.path);
+              await mkdir(dirname(target), { recursive: true });
+              await writeFile(target, file.text, "utf8");
+            }
+            if (identity !== null) {
+              await chownTree(fresh, identity);
+              await chmod(fresh, 0o700);
+            }
+            return runProcess(
+              { ...command, argv: run.argv },
+              {
+                cwd:
+                  command.cwd === undefined || command.cwd === ""
+                    ? fresh
+                    : inside(fresh, command.cwd),
+                env,
+                signal,
+                identity,
+              },
+            );
+          }
           const cwd =
             command.cwd === undefined || command.cwd === ""
               ? work

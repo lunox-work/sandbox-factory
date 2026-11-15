@@ -12,8 +12,10 @@
  * layout, so every version built before layouts grades as it did.
  */
 
+import type { HiddenTestRun } from "./build.js";
 import { TASK_DESCRIPTOR_PATH } from "./descriptor.js";
 import {
+  declarationPath,
   ENV_FILE,
   HARNESS_DIR,
   MOCKS_DIR,
@@ -142,6 +144,51 @@ export function layoutTestArgv(
   return run === null
     ? null
     : [...run.argv, run.emitted ? runtimePath(path) : path];
+}
+
+/**
+ * Every file a hidden test can leave in a built tree: its source, its
+ * emitted JavaScript and declaration, and their source maps. A job
+ * withholds them all (`EvaluationJob.seal`) before task code runs.
+ */
+export function hiddenTestFiles(path: string): string[] {
+  const emitted = runtimePath(path);
+  const declaration = declarationPath(path);
+  return [
+    ...new Set([
+      path,
+      `${path}.map`,
+      emitted,
+      `${emitted}.map`,
+      declaration,
+      `${declaration}.map`,
+    ]),
+  ];
+}
+
+/**
+ * One hidden test run on its own (`layoutTestArgv`), with what the job
+ * puts back for it: node:test's emitted ES module is loaded from memory by
+ * the platform's runner; a file another runner reads itself (Vitest's
+ * source, a CommonJS file) goes back on disk. Both layouts that exist
+ * declare `"type": "module"`, so emitted `.js` is an ES module. Null when
+ * the layout has no way to run that runner's tests.
+ */
+export function hiddenTestRun(
+  layout: GradingLayout,
+  path: string,
+  runner: "node:test" | "vitest" = "node:test",
+): { argv: readonly string[]; hidden: HiddenTestRun } | null {
+  const run = layout.tests.run[runner];
+  if (run === null) return null;
+  const entry = run.emitted ? runtimePath(path) : path;
+  return {
+    argv: [...run.argv, entry],
+    hidden: {
+      entry,
+      load: runner === "node:test" && /\.m?js$/.test(entry) ? "memory" : "disk",
+    },
+  };
 }
 
 /** The runner a test file imports: Vitest when it names it, else node:test. */

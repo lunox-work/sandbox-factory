@@ -26,8 +26,12 @@ import type {
   SpecDraft,
 } from "sandbox-factory";
 import {
+  AGENTS_GUIDE_PATH,
+  CLAUDE_GUIDE_PATH,
   MOCK_RUNTIME_PATH,
   PRIVATE_TESTS_DIR,
+  TASK_GUIDE_PATH,
+  VSCODE_DIR,
   relativeSpecifier,
 } from "sandbox-factory";
 import { acceptanceTestsSchema } from "@sandbox-factory/shared";
@@ -64,9 +68,18 @@ export const PROMPT_PROJECT_CHARS = 120_000;
  * The order the project is quoted in, most needed first: how it builds and
  * runs, the mocks' interface, the tests and walkthrough beside which the
  * hidden tests run, the code they test, then the stubs that code imports.
- * The mock runtimes and the lockfile are not quoted.
+ * The mock runtimes and the lockfile are not quoted, nor the contributor
+ * guide (`TASK.md`, `AGENTS.md`, `CLAUDE.md`, `.vscode/`): the prompt states
+ * the spec itself, and the rest is for the contributor's editor.
  */
 function quoteRank(file: GeneratedFile): number | null {
+  if (
+    file.path === TASK_GUIDE_PATH ||
+    file.path === AGENTS_GUIDE_PATH ||
+    file.path === CLAUDE_GUIDE_PATH ||
+    file.path.startsWith(`${VSCODE_DIR}/`)
+  )
+    return null;
   if (
     file.class === "config" ||
     file.class === "descriptor" ||

@@ -98,7 +98,8 @@ import {
   heldCommits,
   heldContext,
 } from "./bounties/held-context.js";
-import { installationClient, mergeBackWriter } from "./github/credential.js";
+import { installationClient } from "./github/credential.js";
+import { mergeBackTargets } from "./github/merge-back.js";
 import {
   AnthropicCaller,
   DeepSeekCaller,
@@ -546,27 +547,12 @@ const sandbox =
               merges: createSubmissionMergeStore(connection.db),
               // A merge-back writes with a token for the one repository,
               // minted with MERGE_BACK_PERMISSIONS and nothing else.
-              mergeBack: {
-                target: async (organizationId: string, repoId: string) => {
-                  const repo = await githubRepos.get(organizationId, repoId);
-                  if (repo === null || repo.syncStatus === "gone") return null;
-                  const found = await github.connections.get(
-                    organizationId,
-                    repo.connectionId,
-                  );
-                  return found === null || !found.healthy
-                    ? null
-                    : {
-                        fullName: repo.fullName,
-                        defaultBranch: repo.defaultBranch,
-                        writer: mergeBackWriter(
-                          github.installations,
-                          found.installationId,
-                          repo.externalId,
-                        ),
-                      };
-                },
-              },
+              // It reads the installation's permissions before a merge.
+              mergeBack: mergeBackTargets({
+                repos: githubRepos,
+                connections: github.connections,
+                installations: github.installations,
+              }),
             }),
         runs: analysisRuns,
         artifacts: analysis.artifacts,

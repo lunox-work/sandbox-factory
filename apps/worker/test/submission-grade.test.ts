@@ -3,7 +3,12 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { renameFile, renameFileV1 } from "carveout/pseudonyms";
+import {
+  ALIASES_V1,
+  CURRENT_ALIASES,
+  renameFile,
+  renameFileV1,
+} from "carveout/pseudonyms";
 import type {
   AliasRule,
   EvaluationCommand,
@@ -16,6 +21,7 @@ import {
   MERGE_PATCH_PATH,
   SUBMISSION_RESULT_PATH,
   createSubmissionGradeAdapter,
+  repositoryTree,
   resultOf,
   sourceText,
 } from "../src/tools/submission-grade.js";
@@ -73,13 +79,18 @@ const ENGINES: readonly {
 const built = builtFor(undefined);
 
 function provider(
-  outcome: (argv: readonly string[]) => { exitCode?: number; stdout?: string },
+  outcome: (
+    argv: readonly string[],
+    label: string,
+  ) => { exitCode?: number; stdout?: string },
 ) {
   const commands: string[][] = [];
+  /** Each job's staged files, by its label. */
+  const staged = new Map<string, Map<string, string>>();
   let jobs = 0;
   const value: EvaluationProvider = {
     name: "fake",
-    async create() {
+    async create({ label }) {
       jobs += 1;
       return {
         id: `job_${jobs}`,
@@ -88,7 +99,9 @@ function provider(
           environmentId: "env",
           templateDigest: "sha256:t",
         },
-        async stage() {},
+        async stage(files: readonly { path: string; text: string }[]) {
+          staged.set(label, new Map(files.map((f) => [f.path, f.text])));
+        },
         async exec(command: EvaluationCommand) {
           commands.push([...command.argv]);
           return {
@@ -98,22 +111,26 @@ function provider(
             stdout: "",
             stderr: "",
             durationMs: 1,
-            ...outcome(command.argv),
+            ...outcome(command.argv, label),
           };
         },
         async read(path: string) {
           return path === "package-lock.json" ? '{"lockfileVersion":3}' : null;
         },
+        async seal() {},
         async destroy() {},
       };
     },
   };
-  return { value, commands, jobs: () => jobs };
+  return { value, commands, staged, jobs: () => jobs };
 }
 
 async function grade(
   files: { path: string; text: string }[],
-  outcome: (argv: readonly string[]) => { exitCode?: number; stdout?: string },
+  outcome: (
+    argv: readonly string[],
+    label: string,
+  ) => { exitCode?: number; stdout?: string },
   /** The version's repository at its commit, for a sliced version. */
   source?: Record<string, string>,
   /** `repository`: the files are a pull request's (the CI judge). */
@@ -126,7 +143,7 @@ async function grade(
     await mkdir(join(outDir, "source", path, ".."), { recursive: true });
     await writeFile(join(outDir, "source", path), text);
   }
-  const finished: { id: string; runId: string; outcome: unknown }[] = [];
+  const finished: { id: string; outcome: unknown }[] = [];
   const fake = provider(outcome);
   const inputs = {
     getRun: async () => null,
@@ -165,9 +182,8 @@ async function grade(
             files,
           }
         : null,
-    finishSubmission: async (id: string, runId: string, result: unknown) => {
-      finished.push({ id, runId, outcome: result });
-      return true;
+    settleSubmission: (id: string, result: unknown) => {
+      finished.push({ id, outcome: result });
     },
   } as unknown as ToolInputs;
   const logged: string[] = [];
@@ -225,9 +241,7 @@ test("a submission that passes both suites passes, and only counts and the verdi
     verdict: "passed",
     failedScenarios: [],
   });
-  assert.deepEqual(finished, [
-    { id: "sbm_1", runId: "arn_grade", outcome: result },
-  ]);
+  assert.deepEqual(finished, [{ id: "sbm_1", outcome: result }]);
   assert.deepEqual(
     written.map((file) => file.path),
     [SUBMISSION_RESULT_PATH],
@@ -364,7 +378,7 @@ test("source is read inside the extracted tree only", async () => {
 for (const { label, engines } of ENGINES) {
   const build = builtFor(engines);
   test(`a pass on a sliced version is carried back to the repository at its commit, for merge-back (${label})`, async () => {
-    const { result, patch, written } = await grade(
+    const { result, patch, written, fake, logged } = await grade(
       change,
       passing,
       repository,
@@ -372,6 +386,21 @@ for (const { label, engines } of ENGINES) {
       build,
     );
     assert.equal(result.verdict, "passed");
+    assert.equal(result.carryBack, undefined);
+    // Checked again in the repository's names, in a second job, with the
+    // carried file in place and the hidden tests beside it.
+    assert.equal(fake.jobs(), 2);
+    const reversed = fake.staged.get("sbm_1-repository");
+    assert.equal(
+      reversed?.get("src/feature.ts"),
+      "export const feature = () => 1;\n",
+    );
+    assert.ok(reversed?.has("tests/private/s1-returns-a-value.test.ts"));
+    assert.ok(
+      logged.some((line) =>
+        line.startsWith("Reversed check in the repository's names: passed"),
+      ),
+    );
     assert.deepEqual(patch, {
       schemaVersion: 1,
       commitSha: "c0ffee",
@@ -383,6 +412,46 @@ for (const { label, engines } of ENGINES) {
       written.map((file) => file.path),
       [MERGE_PATCH_PATH, SUBMISSION_RESULT_PATH],
     );
+  });
+  test(`a pass that fails in the repository's names keeps its verdict, is marked carryBack failed, and has no merge patch (${label})`, async () => {
+    const { result, finished, patch, written, fake } = await grade(
+      change,
+      (argv, jobLabel) =>
+        jobLabel.endsWith("-repository") && argv.includes("build")
+          ? { exitCode: 2 }
+          : passing(argv),
+      repository,
+      undefined,
+      build,
+    );
+    assert.deepEqual(result, {
+      public: { passed: 1, total: 1 },
+      hidden: { passed: 2, total: 2 },
+      verdict: "passed",
+      failedScenarios: [],
+      carryBack: "failed",
+    });
+    assert.equal(patch, null);
+    assert.deepEqual(
+      written.map((file) => file.path),
+      [SUBMISSION_RESULT_PATH],
+    );
+    assert.deepEqual(finished[0]?.outcome, result);
+    assert.equal(fake.jobs(), 2);
+    // A hidden test that fails only in the repository's names withholds it too.
+    const hiddenFails = await grade(
+      change,
+      (argv, jobLabel) =>
+        jobLabel.endsWith("-repository") && runsHidden(argv)
+          ? { stdout: TAP_FAILED, exitCode: 1 }
+          : passing(argv),
+      repository,
+      undefined,
+      build,
+    );
+    assert.equal(hiddenFails.result.verdict, "passed");
+    assert.equal(hiddenFails.result.carryBack, "failed");
+    assert.equal(hiddenFails.patch, null);
   });
   test(`a pass that cannot be carried back is refused, and its run is a failure (${label})`, async () => {
     const { result, finished, patch } = await grade(
@@ -401,7 +470,8 @@ for (const { label, engines } of ENGINES) {
     assert.match(result.refused?.[0]?.reason ?? "", /harness/);
     assert.equal(patch, null);
     assert.deepEqual(finished[0]?.outcome, result);
-    // A failing run on a sliced version carries nothing back.
+    // A failing run on a sliced version carries nothing back, and is not
+    // checked in the repository's names: one job.
     const failing = await grade(
       change,
       () => ({ exitCode: 1 }),
@@ -410,6 +480,7 @@ for (const { label, engines } of ENGINES) {
       build,
     );
     assert.equal(failing.patch, null);
+    assert.equal(failing.fake.jobs(), 1);
   });
   test(`the CI judge: a pull request's files are carried forward to the version, and only what the slice lets change is judged (${label})`, async () => {
     const { result, patch, logged, fake } = await grade(
@@ -532,4 +603,151 @@ test("a version carries back under the renaming it was built with, which its bui
   });
   assert.equal(crossed.result.verdict, "refused");
   assert.match(crossed.result.refused?.[0]?.reason ?? "", /does not map back/);
+});
+
+test("the repository-named tree: the version renamed back, sources under their scoped rules, the rest unscoped, the carried files in place", () => {
+  const rules: AliasRule[] = [
+    { before: "orvanta", after: "northwind", kind: "path", paths: [] },
+    {
+      before: "orvantaCharge",
+      after: "flatCharge",
+      kind: "identifier",
+      paths: ["src/orvanta/fees.ts"],
+    },
+    { before: "Orvanta", after: "Northwind", kind: "text", paths: [] },
+  ];
+  const file = (path: string, text: string, cls = "source") => ({
+    path,
+    text,
+    class: cls as "source",
+    public: cls !== "test-private",
+  });
+  const versionFiles = [
+    file(
+      "src/northwind/fees.ts",
+      "export const flatCharge = 25; // Northwind\n",
+    ),
+    // Not a repository file: no path scopes its rules.
+    file(
+      "tests/private/s1-charge.test.ts",
+      'import { flatCharge } from "../../src/northwind/fees.js";\n',
+      "test-private",
+    ),
+    file("src/northwind/ledger.d.ts", "export type Northwind = 1;\n", "stub"),
+  ];
+  const repositoryFees = "export const orvantaCharge = 25; // Orvanta\n";
+  {
+    const tree = repositoryTree({
+      versionFiles,
+      sources: new Set(["src/northwind/fees.ts"]),
+      carried: [
+        {
+          path: "src/orvanta/fees.ts",
+          text: "export const orvantaCharge = 30; // Orvanta\n",
+        },
+        { path: "src/orvanta/extra.ts", text: "export const x = 1;\n" },
+      ],
+      repositoryText: (path) =>
+        path === "src/orvanta/fees.ts" ? repositoryFees : null,
+      rules,
+      renames: [{ from: "src/orvanta/fees.ts", to: "src/northwind/fees.ts" }],
+      aliases: CURRENT_ALIASES,
+    });
+    assert.deepEqual(tree.refused, []);
+    assert.deepEqual(
+      tree.files.map((f) => [f.path, f.text, f.class]),
+      [
+        ["src/orvanta/extra.ts", "export const x = 1;\n", "source"],
+        [
+          "src/orvanta/fees.ts",
+          "export const orvantaCharge = 30; // Orvanta\n",
+          "source",
+        ],
+        ["src/orvanta/ledger.d.ts", "export type Orvanta = 1;\n", "stub"],
+        [
+          "tests/private/s1-charge.test.ts",
+          'import { orvantaCharge } from "../../src/orvanta/fees.js";\n',
+          "test-private",
+        ],
+      ],
+    );
+  }
+  // A version built before carveout 0.3.0 is renamed back under the
+  // renaming it was built with, whose path rules pass over `./orvanta/`.
+  const legacy = repositoryTree({
+    versionFiles: [
+      file(
+        "src/fees.ts",
+        'import { a } from "./orvanta/a.js";\nexport const flatCharge = 1;\n',
+      ),
+    ],
+    sources: new Set(["src/fees.ts"]),
+    carried: [],
+    repositoryText: () => null,
+    rules: rules.map((rule) => ({ ...rule, paths: [] })),
+    renames: [],
+    aliases: ALIASES_V1,
+  });
+  assert.equal(
+    legacy.files[0]?.text,
+    'import { a } from "./orvanta/a.js";\nexport const orvantaCharge = 1;\n',
+  );
+  // Out of its scope a scoped rule does not apply to a repository file:
+  // a source elsewhere keeps the public name, as the build left it.
+  const scoped = repositoryTree({
+    versionFiles: [file("src/other.ts", "export const flatCharge = 1;\n")],
+    sources: new Set(["src/other.ts"]),
+    carried: [],
+    repositoryText: () => null,
+    rules,
+    renames: [],
+    aliases: CURRENT_ALIASES,
+  });
+  assert.equal(scoped.files[0]?.text, "export const flatCharge = 1;\n");
+  // Two version files on one repository path cannot both be placed.
+  const clash = repositoryTree({
+    versionFiles: [
+      file("src/northwind/a.ts", "a\n", "mock"),
+      file("src/orvanta/a.ts", "b\n", "mock"),
+    ],
+    sources: new Set(),
+    carried: [],
+    repositoryText: () => null,
+    rules,
+    renames: [],
+    aliases: CURRENT_ALIASES,
+  });
+  assert.deepEqual(
+    clash.refused.map((r) => r.path),
+    ["src/orvanta/a.ts"],
+  );
+});
+
+test("a reversed tree that cannot be placed withholds merge-back without a second job", async () => {
+  // The version has two files that land on one path in the repository's names.
+  const rules: AliasRule[] = [
+    { before: "lunox", after: "zorvex", kind: "path", paths: [] },
+  ];
+  const build = builtFor(
+    { carveout: CARVEOUT_VERSION },
+    {
+      rules,
+      project: {
+        "project/src/zorvex.ts": "export const a = 1;\n",
+        "project/src/lunox.ts": "export const b = 1;\n",
+      },
+    },
+  );
+  const { result, patch, fake, logged } = await grade(
+    change,
+    passing,
+    repository,
+    undefined,
+    build,
+  );
+  assert.equal(result.verdict, "passed");
+  assert.equal(result.carryBack, "failed");
+  assert.equal(patch, null);
+  assert.equal(fake.jobs(), 1);
+  assert.ok(logged.some((line) => /could not be placed/.test(line)));
 });

@@ -71,14 +71,26 @@ export const EVALUATION_LIMITS: EvaluationLimits = {
   maxOutputBytes: 256 * 1024,
 };
 
+/**
+ * One hidden test's run (`EvaluationCommand.hidden`). The provider runs it
+ * in a fresh copy of the tree the job sealed (`EvaluationJob.seal`), into
+ * which it puts back this test's `entry` alone, never another hidden
+ * test: with `load: "memory"` as a file the platform's runner reads,
+ * deletes and imports from memory under the entry's own URL before any
+ * task code loads, and the argv word equal to `entry` names that runner
+ * instead; with `load: "disk"` at its own path, for a runner that reads
+ * the file itself (Vitest), which task code can then read too.
+ */
+export interface HiddenTestRun {
+  /** The file the command runs, as the job held it before the seal. */
+  readonly entry: string;
+  readonly load: "memory" | "disk";
+}
+
 export interface EvaluationCommand {
   readonly argv: readonly string[];
-  /**
-   * Run in a fresh copy of the job's files as they stood before the first
-   * such run, as a hidden test runs. A provider that copies recognises the
-   * platform's own hidden-test command without it; a layout's needs it.
-   */
-  readonly fresh?: boolean;
+  /** A hidden test's run: in a fresh copy of the sealed tree, with it alone. */
+  readonly hidden?: HiddenTestRun;
   /** Relative to the job's working directory. */
   readonly cwd?: string;
   /** Fixture values only; the adapter never passes its own environment. */
@@ -108,6 +120,15 @@ export interface EvaluationJob {
   exec(command: EvaluationCommand): Promise<EvaluationExecResult>;
   /** A text file the job produced, such as the lockfile; null when absent. */
   read(path: string): Promise<string | null>;
+  /**
+   * Withholds `paths` (every hidden test's files, `hiddenTestFiles`) once
+   * the build has run and before any task code does: each is kept by the
+   * provider outside the job's reach and removed from the tree, and the
+   * tree as it then stands is the copy every hidden run starts from, out
+   * of reach of what the job runs later. Once per job; a hidden run before
+   * it is refused.
+   */
+  seal(paths: readonly string[]): Promise<void>;
   destroy(): Promise<void>;
   /**
    * Whether the job's network egress was cut before any command but the

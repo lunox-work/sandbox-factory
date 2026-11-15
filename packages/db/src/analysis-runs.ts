@@ -26,7 +26,9 @@ import {
   isFixturesParams,
   isScopeParams,
   isSliceParams,
+  isSubmissionGradeParams,
   snapshotFits,
+  submissionErrorOf,
   slotOf,
   toolOfParams,
   toolsOfSlot,
@@ -42,6 +44,8 @@ import type {
   AnalysisTool,
   ArtifactKind,
   RunSlot,
+  SubmissionError,
+  SubmissionResult,
 } from "sandbox-factory";
 import type { Database, QueryExecutor } from "./errors.js";
 import { generateId } from "./mapping.js";
@@ -61,6 +65,12 @@ import {
   repoSnapshot,
 } from "./schema.js";
 import type { AnalysisRunRow } from "./schema.js";
+import {
+  erroredSubmissions,
+  runningSubmission,
+  reopenSubmission,
+  settleSubmission,
+} from "./submissions.js";
 
 /**
  * What the queue announces, with Postgres `NOTIFY`. A notification is sent
@@ -140,6 +150,52 @@ async function markBuilt(
         ),
       ),
     );
+}
+
+/** The submission a grading run grades; null for any other run. */
+function gradedSubmissionOf(row: {
+  readonly tool: string;
+  readonly params: AnalysisParams;
+}): string | null {
+  return row.tool === "submission_grade" && isSubmissionGradeParams(row.params)
+    ? row.params.submissionId
+    : null;
+}
+/**
+ * The submissions of grading runs that have just ended without a verdict,
+ * `errored` in the transaction that ended them: nothing else would move a
+ * submission whose run is over, and it would wait for ever.
+ */
+async function erroredGrades(
+  tx: QueryExecutor,
+  owner: string,
+  rows: readonly {
+    readonly id: string;
+    readonly tool: string;
+    readonly params: AnalysisParams;
+  }[],
+  errorCode: SubmissionError,
+  now: Date,
+) {
+  const ended = rows.flatMap((row) => {
+    const submissionId = gradedSubmissionOf(row);
+    return submissionId === null
+      ? []
+      : [{ submissionId, runId: row.id, errorCode }];
+  });
+  if (ended.length > 0) await erroredSubmissions(tx, owner, ended, now);
+}
+
+/**
+ * What a run settles inside its own fenced commit: a grading run's
+ * verdict, so the verdict and the artifacts it rests on (the merge patch
+ * a pass is carried back to) land together or not at all.
+ */
+export interface RunSettlement {
+  readonly submission: {
+    readonly id: string;
+    readonly result: SubmissionResult;
+  };
 }
 
 export interface StoredAnalysisRun {
@@ -319,6 +375,11 @@ export interface AnalysisRunStore {
     organizationId: string,
     runId: string,
   ): Promise<AnalysisPreview | null>;
+  /**
+   * Succeeds a run whose lease is still held, with its artifacts, in one
+   * transaction. A grading run's verdict (`settle`) is written in it too;
+   * a grading run that commits with none leaves its submission `errored`.
+   */
   finish(
     organizationId: string,
     runId: string,
@@ -326,7 +387,13 @@ export interface AnalysisRunStore {
     artifacts: readonly NewArtifact[],
     logKey: string,
     now: Date,
+    settle?: RunSettlement,
   ): Promise<boolean>;
+  /**
+   * Fails a run whose lease is still held. A grading run's submission is
+   * `errored` with it, as it is when the watchdog fails a run out of
+   * attempts (`failExpired`); a release queues the run again instead.
+   */
   fail(
     organizationId: string,
     runId: string,
@@ -476,29 +543,38 @@ export function createAnalysisRunStore(
     now: Date,
     filter: SQL,
   ): Promise<ClaimedAnalysisRun | null> {
-    const rows = await db
-      .update(analysisRun)
-      .set({
-        status: "running",
-        leaseToken: token,
-        leaseExpiresAt: new Date(now.getTime() + 60_000),
-        heartbeatAt: now,
-        startedAt: now,
-        deadlineAt: sql`${now.toISOString()}::timestamptz + ((${analysisRun.params}->>'deadlineMinutes')::int * interval '1 minute')`,
-        finishedAt: null,
-        // A retry starts its steps and its clock again.
-        progress: null,
-        timing: null,
-        preview: null,
-      })
-      .where(
-        sql`${analysisRun.id} = (select a.id from analysis_run a where ${CLAIMABLE} and ${filter} order by ${RUNNING_BESIDE}, a.created_at, a.id for update of a skip locked limit 1)`,
-      )
-      .returning();
-    const run = rows[0];
+    const run = await db.transaction(async (tx) => {
+      const rows = await tx
+        .update(analysisRun)
+        .set({
+          status: "running",
+          leaseToken: token,
+          leaseExpiresAt: new Date(now.getTime() + 60_000),
+          heartbeatAt: now,
+          startedAt: now,
+          deadlineAt: sql`${now.toISOString()}::timestamptz + ((${analysisRun.params}->>'deadlineMinutes')::int * interval '1 minute')`,
+          finishedAt: null,
+          // A retry starts its steps and its clock again.
+          progress: null,
+          timing: null,
+          preview: null,
+        })
+        .where(
+          sql`${analysisRun.id} = (select a.id from analysis_run a where ${CLAIMABLE} and ${filter} order by ${RUNNING_BESIDE}, a.created_at, a.id for update of a skip locked limit 1)`,
+        )
+        .returning();
+      const claimed = rows[0];
+      if (claimed === undefined) return undefined;
+      // A grading run taken: its submission is being graded, from the
+      // same commit that leases the run.
+      const graded = gradedSubmissionOf(claimed);
+      if (graded !== null)
+        await runningSubmission(tx, claimed.organizationId, graded, now);
+      // Queued to running: a page following it shows it started.
+      await changed(tx, claimed.organizationId, claimed.id);
+      return claimed;
+    });
     if (run === undefined) return null;
-    // Queued to running: a page following it shows it started.
-    await changed(db, run.organizationId, run.id);
     if (run.snapshotId === null)
       return {
         ...toRun(run, null),
@@ -629,12 +705,24 @@ export function createAnalysisRunStore(
           existing !== undefined &&
           (existing.status !== "failed" ||
             existing.attempt >= existing.maxAttempts)
-        )
+        ) {
+          // A grading run out of attempts has ended for good: a submission
+          // still waiting on it (one from before submissions were errored
+          // with their run) is errored now, so it can be graded again.
+          if (existing.status === "failed")
+            await erroredGrades(
+              tx,
+              owner,
+              [existing],
+              submissionErrorOf(existing.errorCode),
+              new Date(),
+            );
           return {
             ok: true,
             run: toRun(existing, repoId),
             created: false,
           } as const;
+        }
         // Admission only: a run already under way is never stopped for
         // tokens. It records what it spends, and the next one is refused.
         if (options.tokenQuota !== undefined && MODEL_TOOLS.has(tool)) {
@@ -688,6 +776,10 @@ export function createAnalysisRunStore(
         const row = rows[0] as AnalysisRunRow | undefined;
         if (row === undefined)
           throw new Error("Analysis enqueue did not return a row.");
+        // A grading run queued again: its errored submission waits with it.
+        const graded = gradedSubmissionOf(row);
+        if (graded !== null)
+          await reopenSubmission(tx, owner, graded, new Date());
         await announce(tx, RUN_QUEUED_CHANNEL, owner, row.id);
         return {
           ok: true,
@@ -804,7 +896,7 @@ export function createAnalysisRunStore(
       await changed(db, owner, id);
       return true;
     },
-    async finish(owner, id, token, artifacts, logKey, now) {
+    async finish(owner, id, token, artifacts, logKey, now, settle) {
       return db.transaction(async (transaction) => {
         const tx = transaction;
         const rows = await tx
@@ -826,6 +918,7 @@ export function createAnalysisRunStore(
             id: analysisRun.id,
             snapshotId: analysisRun.snapshotId,
             tool: analysisRun.tool,
+            params: analysisRun.params,
           });
         if (rows.length === 0) return false;
         // One statement for them all: a graph writes dozens.
@@ -837,6 +930,21 @@ export function createAnalysisRunStore(
               ...item,
             })),
           );
+        const graded =
+          rows[0] === undefined ? null : gradedSubmissionOf(rows[0]);
+        if (graded === null) {
+          if (settle !== undefined)
+            throw new Error("Only a grading run settles a submission.");
+        } else if (settle?.submission.id === graded)
+          await settleSubmission(
+            tx,
+            owner,
+            { id: graded, runId: id },
+            settle.submission.result,
+            now,
+          );
+        // A grading run that found no verdict for its own submission.
+        else await erroredGrades(tx, owner, rows, "grading_failed", now);
         await markBuilt(
           tx,
           rows.flatMap((row) => (isBuilder(row.tool) ? [row.snapshotId] : [])),
@@ -866,8 +974,10 @@ export function createAnalysisRunStore(
             id: analysisRun.id,
             snapshotId: analysisRun.snapshotId,
             tool: analysisRun.tool,
+            params: analysisRun.params,
           });
         if (rows.length === 0) return false;
+        await erroredGrades(tx, owner, rows, submissionErrorOf(code), now);
         await markBuilt(
           tx,
           rows.flatMap((row) => (isBuilder(row.tool) ? [row.snapshotId] : [])),
@@ -915,7 +1025,9 @@ export function createAnalysisRunStore(
           .set({
             status: sql`case when ${analysisRun.attempt} < ${analysisRun.maxAttempts} then 'queued' else 'failed' end`,
             attempt: sql`least(${analysisRun.attempt} + 1, ${analysisRun.maxAttempts})`,
-            errorCode: "worker_lost",
+            // Past its deadline the run timed out, whatever became of its
+            // worker; a lease that lapsed first is a lost worker.
+            errorCode: sql`case when ${analysisRun.deadlineAt} <= ${now.toISOString()}::timestamptz then 'tool_timeout' else 'worker_lost' end`,
             errorDetail: null,
             finishedAt: sql`case when ${analysisRun.attempt} < ${analysisRun.maxAttempts} then null else ${now.toISOString()}::timestamptz end`,
             leaseToken: null,
@@ -929,7 +1041,18 @@ export function createAnalysisRunStore(
             status: analysisRun.status,
             snapshotId: analysisRun.snapshotId,
             tool: analysisRun.tool,
+            params: analysisRun.params,
+            errorCode: analysisRun.errorCode,
           });
+        const ended = rows.filter((row) => row.status === "failed");
+        for (const code of ["tool_timeout", "worker_lost"] as const)
+          await erroredGrades(
+            tx,
+            owner,
+            ended.filter((row) => (row.errorCode ?? "worker_lost") === code),
+            submissionErrorOf(code),
+            now,
+          );
         await markBuilt(
           tx,
           rows.flatMap((row) =>

@@ -26,14 +26,20 @@
  * (`require`, `getBuiltinModule`, `import()` of anything but a string).
  * An unchanged file is the version's own and is not read again.
  *
+ * It also refuses code that names the hidden tests' directory.
+ *
  * That check is an advisory lint, not a boundary: it matches text, and
  * JavaScript has more ways to name a module or evaluate a string than any
  * text match follows (an alias of `Function`, a property name built at run
  * time). It refuses the plain spellings so a contributor learns early what
- * grading will not trust. What grading does trust is process isolation:
- * task code runs only in processes the grader reads from outside, each
- * hidden test in its own from a fresh copy of the version's files, and no
- * other hidden test, credential or grading state is loaded beside it.
+ * grading will not trust. What grading does trust is the job: task code
+ * runs only in processes the grader reads from outside, and never beside a
+ * hidden test on disk. The job withholds every hidden test once the build
+ * has compiled them (`EvaluationJob.seal`), before the walkthrough or the
+ * public suite runs task code; each hidden test then runs in a fresh copy
+ * of that sealed tree holding it alone, read into memory and deleted by
+ * the platform's runner before task code loads (`hidden-runner.ts` in the
+ * worker, which lists what that still leaves open).
  *
  * Which directories are the harness, which root files configure the run
  * and which commands run are the version's layout (`layout.ts`): the
@@ -79,9 +85,9 @@ export interface GradingTree {
  * runs on its own with `privateTestArgv`, read by the worker's
  * `privateTestOutcome`.
  *
- * The hidden tests must run from a fresh copy of the version's files, never
- * the tree the build and public suite already ran on: task code runs there
- * with `node:fs` and can rewrite `tests/private` before they are read.
+ * The hidden tests must run from a copy of the tree sealed after the build,
+ * never the tree the public suite already ran on: task code runs there
+ * with `node:fs` and could rewrite or read what is left on disk.
  */
 export const GRADING_COMMANDS: readonly {
   readonly name: "install" | "build" | "public-tests";
@@ -164,6 +170,10 @@ export function taskCodeProblems(
     problems.push(
       "Task code must not read process or globalThis by a computed name.",
     );
+  if (namesHiddenDir(text, layout))
+    problems.push(
+      `Task code must not name ${layout.tests.privateDir ?? ""}; the hidden tests are not task code's to read.`,
+    );
   const dir = dirnameOf(path);
   for (const match of text.matchAll(SPECIFIERS)) {
     const specifier = match[2] ?? match[4] ?? "";
@@ -199,6 +209,37 @@ export function taskCodeProblems(
       );
   }
   return [...new Set(problems)];
+}
+
+const escapeRegExp = (text: string) =>
+  text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/**
+ * Whether a text names the layout's hidden-test directory (`tests/private`)
+ * as a path: written whole with either separator, glued from string pieces
+ * (`"tests/" + "private"`), or as separate segments
+ * (`join("tests", "private")`). Task code has no reason to name it, so a
+ * match is never an honest file's. A layout whose hidden tests sit beside
+ * the code (`privateDir` null) has no such directory to name.
+ *
+ * Deliberately not refused: listing directories (`readdir`, `opendir`,
+ * `glob`) or climbing from `import.meta.dirname` or `process.cwd()`. Honest
+ * task code does both (templates, migrations, locale files, a CLI that
+ * lists its working directory), so a rule would refuse correct work, and
+ * the hidden run already keeps the test off disk: a walk finds nothing.
+ */
+function namesHiddenDir(text: string, layout: GradingLayout): boolean {
+  const dir = layout.tests.privateDir;
+  if (dir === null) return false;
+  const segments = dir.split("/").filter(Boolean).map(escapeRegExp);
+  if (segments.length === 0) return false;
+  const glued = text.replace(/(["'`])\s*\+\s*(["'`])/g, "");
+  const whole = new RegExp(`\\b${segments.join("[/\\\\]+")}\\b`);
+  const quote = `["'\`]`;
+  const split = new RegExp(
+    segments.map((part) => `${quote}${part}${quote}`).join("\\s*,\\s*"),
+  );
+  return whole.test(glued) || (segments.length > 1 && split.test(text));
 }
 
 /** `../a/b.js` from `src/x` is `src/a/b.js`; null when it leaves the root. */

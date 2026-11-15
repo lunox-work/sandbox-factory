@@ -56,7 +56,11 @@ test("every registry entry declares its scope, request and response schemas", ()
     if (route.request !== null)
       assert.ok(route.request instanceof z.ZodType, `${key} request`);
     const { response } = route;
-    if (response.status !== 204 && response.status !== 302) {
+    if ("file" in response) {
+      // A file to save is only ever read.
+      assert.equal(route.method, "GET", key);
+      assert.match(response.file, /^[a-z]+\/[a-z0-9.+-]+$/, key);
+    } else if (response.status !== 204 && response.status !== 302) {
       assert.ok(
         response.schema instanceof z.ZodType,
         `${key} has no response schema`,
@@ -187,6 +191,16 @@ test("the document describes bodies, queries, redirects and removals", () => {
   const remove =
     document.paths["/api/v1/orgs/{orgId}/bounties/{id}"]?.["delete"];
   assert.ok((remove?.["responses"] as Record<string, unknown>)["204"]);
+  // A file to save is described as bytes of its type, not JSON.
+  const archive =
+    document.paths["/api/v1/orgs/{orgId}/sandboxes/versions/{vid}/archive"]?.[
+      "get"
+    ];
+  assert.deepEqual(
+    (archive?.["responses"] as Record<string, { content: unknown }>)["200"]
+      ?.content,
+    { "application/zip": { schema: { type: "string", format: "binary" } } },
+  );
   assert.equal(
     operationId({
       method: "GET",

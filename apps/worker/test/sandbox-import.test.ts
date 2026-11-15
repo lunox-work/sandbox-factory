@@ -6,8 +6,9 @@
  * it, the folder's own runner runs its public tests, node:test runs the
  * acceptance test), and two submissions graded through the folder's
  * layout. The provider is a local stand-in: the install links the
- * worker's TypeScript instead of reaching a registry, and a `fresh`
- * command runs in a copy of the job's files, as E2B's does.
+ * worker's TypeScript instead of reaching a registry, and seals and runs
+ * hidden tests as both providers do (`hidden-runner.ts`): each in a fresh
+ * copy of the sealed tree, read from memory by the platform's runner.
  */
 
 import assert from "node:assert/strict";
@@ -41,6 +42,7 @@ import type {
   ToolInputs,
   ToolRunInput,
 } from "../src/tools/adapter.js";
+import { hiddenRunFiles } from "../src/evaluation/hidden-runner.js";
 import {
   classOf,
   createSandboxImportAdapter,
@@ -77,7 +79,7 @@ function filesOf(root: string, dir = ""): { path: string; text: string }[] {
 
 /** A provider that really runs the folder's commands, without a registry. */
 function localProvider() {
-  const ran: { argv: readonly string[]; fresh: boolean }[] = [];
+  const ran: { argv: readonly string[]; hidden: boolean }[] = [];
   const provider: EvaluationProvider = {
     name: "local-test",
     async create({ label }) {
@@ -85,7 +87,7 @@ function localProvider() {
       const work = join(root, "work");
       const pristine = join(root, "pristine");
       mkdirSync(work);
-      let snapshot = false;
+      let withheld: Map<string, string> | null = null;
       return {
         id: `job_${label}`,
         environment: {
@@ -99,20 +101,37 @@ function localProvider() {
             writeFileSync(join(work, file.path), file.text);
           }
         },
-        async exec(command: EvaluationCommand) {
-          ran.push({ argv: command.argv, fresh: command.fresh === true });
-          let cwd = work;
-          if (command.fresh === true) {
-            if (!snapshot) {
-              cpSync(work, pristine, {
-                recursive: true,
-                verbatimSymlinks: true,
-              });
-              snapshot = true;
+        async seal(paths) {
+          withheld = new Map();
+          for (const path of paths)
+            if (existsSync(join(work, path))) {
+              withheld.set(path, readFileSync(join(work, path), "utf8"));
+              rmSync(join(work, path));
             }
+          cpSync(work, pristine, { recursive: true, verbatimSymlinks: true });
+        },
+        async exec(command: EvaluationCommand) {
+          ran.push({
+            argv: command.argv,
+            hidden: command.hidden !== undefined,
+          });
+          let cwd = work;
+          let argv = command.argv;
+          if (command.hidden !== undefined) {
+            assert.ok(withheld !== null, "a hidden run follows the seal");
             cwd = join(root, "fresh");
             rmSync(cwd, { recursive: true, force: true });
             cpSync(pristine, cwd, { recursive: true, verbatimSymlinks: true });
+            const run = hiddenRunFiles(
+              command.hidden,
+              command.argv,
+              withheld.get(command.hidden.entry) ?? null,
+            );
+            for (const file of run.files) {
+              mkdirSync(dirname(join(cwd, file.path)), { recursive: true });
+              writeFileSync(join(cwd, file.path), file.text);
+            }
+            argv = run.argv;
           }
           if (command.argv[0] === "npm") {
             mkdirSync(join(work, "node_modules", ".bin"), { recursive: true });
@@ -130,7 +149,7 @@ function localProvider() {
               durationMs: 1,
             };
           }
-          const [bin, ...args] = command.argv;
+          const [bin, ...args] = argv;
           const result = spawnSync(
             bin === "node" ? process.execPath : (bin ?? "false"),
             args,
@@ -166,7 +185,7 @@ let upload = { text: "", sha256: "", recordSha256: "" };
 let written: ArtifactFile[] = [];
 let importDir = "";
 let importLog: string[] = [];
-let ran: { argv: readonly string[]; fresh: boolean }[] = [];
+let ran: { argv: readonly string[]; hidden: boolean }[] = [];
 
 const version = {
   version: {
@@ -348,7 +367,7 @@ test("the folder is the version's public project verbatim, its acceptance test t
     (step) => step.argv.at(-1) === "src/price.accept.test.js",
   );
   assert.equal(hidden.length, 2);
-  assert.ok(hidden.every((step) => step.fresh));
+  assert.ok(hidden.every((step) => step.hidden));
   assert.ok(
     written.some(
       (file) =>
@@ -413,7 +432,7 @@ async function grade(
       },
       files,
     }),
-    finishSubmission: async () => true,
+    settleSubmission: () => {},
   } as unknown as ToolInputs;
   const input: ToolRunInput = {
     runId: "arn_grade",

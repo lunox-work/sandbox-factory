@@ -59,6 +59,7 @@ export function limitJobs(
         stage: (files) => created.stage(files),
         exec: (command) => created.exec(command),
         read: (path) => created.read(path),
+        seal: (paths) => created.seal(paths),
         ...(egressCut === undefined ? {} : { egressCut }),
         async destroy() {
           try {

@@ -18,7 +18,11 @@ import { randomUUID } from "node:crypto";
 
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
-import { respecRequestSchema } from "@sandbox-factory/shared";
+import {
+  HANDOUT_PAGE_DEFAULT_BYTES,
+  HANDOUT_PAGE_LIMITS,
+  respecRequestSchema,
+} from "@sandbox-factory/shared";
 import {
   API_SCOPES,
   BOUNTY_LIMITS,
@@ -589,6 +593,38 @@ export const TOOLS = [
       `${org(workspace)}/sandboxes/versions/${enc(versionId)}/handout`,
   }),
   tool({
+    name: "get_project_files",
+    scope: "workspace:read",
+    description:
+      "Read a built version's public project, the files get_handout lists, with their contents, one page at a time, so you can write the project to disk and run it (npm ci, npm test). Write each file at `root`/`path`: `encoding` utf8 is text as is, base64 is any other file. Pass the page's `nextCursor` as `cursor` until it is null. A file listed with omitted too_large has no content here; the workspace's web app downloads the whole project as a .zip. No hidden test is ever among the files.",
+    input: {
+      versionId: id("version"),
+      cursor: z
+        .string()
+        .min(1)
+        .max(100)
+        .optional()
+        .describe("The previous page's nextCursor; left out, the first page."),
+      maxBytes: z
+        .number()
+        .int()
+        .min(HANDOUT_PAGE_LIMITS.min)
+        .max(HANDOUT_PAGE_LIMITS.max)
+        .optional()
+        .describe(
+          `About how much content one page holds; ${HANDOUT_PAGE_DEFAULT_BYTES} when left out. A page always holds at least one file.`,
+        ),
+    },
+    scoped: true,
+    path: ({ versionId, cursor, maxBytes }, workspace) => {
+      const query = new URLSearchParams();
+      if (cursor !== undefined) query.set("cursor", cursor);
+      if (maxBytes !== undefined) query.set("maxBytes", String(maxBytes));
+      const search = query.toString();
+      return `${org(workspace)}/sandboxes/versions/${enc(versionId)}/handout/files${search === "" ? "" : `?${search}`}`;
+    },
+  }),
+  tool({
     name: "submit_patch",
     scope: "submissions:write",
     description:
@@ -644,7 +680,7 @@ export const TOOLS = [
     name: "retry",
     scope: "submissions:write",
     description:
-      "Retry a failed submission once: submit the files again, changed, after reading its failing scenario keys with get_verdict. A submission has one retry, a passed one none. Read the new verdict with get_verdict.",
+      "Retry a failed submission once: submit the files again, changed, after reading its failing scenario keys with get_verdict. A submission has one retry, a passed one none. An errored submission (grading could not run) sent with the same files is graded again without spending its retry. Read the new verdict with get_verdict.",
     input: {
       submissionId: id("submission"),
       files: z

@@ -17,7 +17,6 @@ import type {
   SubmissionMergeStore,
   SubmissionStore,
 } from "@sandbox-factory/db";
-import type { PullRequestWriter } from "@sandbox-factory/github";
 import type {
   AnalysisRunStore,
   ArtifactStore,
@@ -33,6 +32,8 @@ import type {
   StoredBounty,
 } from "@sandbox-factory/db";
 
+import type { MergeBackTargets } from "../github/merge-back.js";
+
 export interface SandboxRouteOptions {
   readonly sandboxes: SandboxStore;
   readonly runs: Pick<AnalysisRunStore, "get" | "enqueue">;
@@ -45,22 +46,17 @@ export interface SandboxRouteOptions {
     "create" | "get" | "list" | "retry"
   >;
   /** Merge-backs; absent with `mergeBack`, no pull request is opened. */
-  readonly merges?: Pick<SubmissionMergeStore, "get" | "list" | "record">;
+  readonly merges?: Pick<
+    SubmissionMergeStore,
+    "get" | "list" | "claim" | "finish" | "release"
+  >;
   /**
    * The repository a merge-back writes to, with a writer whose token is
-   * narrowed to it and `MERGE_BACK_PERMISSIONS`; null when it is gone or
-   * its installation is unhealthy.
+   * narrowed to it and `MERGE_BACK_PERMISSIONS`, and the permissions the
+   * installation still lacks; null when it is gone or its installation is
+   * unhealthy. See `github/merge-back.ts`.
    */
-  readonly mergeBack?: {
-    target(
-      organizationId: string,
-      repoId: string,
-    ): Promise<{
-      readonly fullName: string;
-      readonly defaultBranch: string;
-      readonly writer: Pick<PullRequestWriter, "open">;
-    } | null>;
-  };
+  readonly mergeBack?: MergeBackTargets;
   /**
    * What a build still running has written before its baseline, served as
    * the version's files until it commits. Absent, they arrive at commit.

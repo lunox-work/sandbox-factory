@@ -39,6 +39,13 @@ import {
   type TaskDescriptor,
 } from "./descriptor.js";
 import {
+  AGENTS_GUIDE_PATH,
+  contributorGuideFiles,
+  TASK_GUIDE_PATH,
+  VSCODE_DIR,
+  type GuidePaths,
+} from "./guide.js";
+import {
   fixtureMockPath,
   fixtureProblems,
   scenarioProblems,
@@ -61,6 +68,16 @@ export const MOCK_RUNTIME_PATH = `${HARNESS_DIR}/mock.js`;
 export const AMBIENT_PATH = `${HARNESS_DIR}/ambient.d.ts`;
 export const RUN_PATH = `${HARNESS_DIR}/run.ts`;
 export const ENV_FILE = "sandbox.env";
+/** Where the contributor guide (`guide.ts`) finds what it names. */
+export const GUIDE_PATHS: GuidePaths = {
+  harnessDir: HARNESS_DIR,
+  mocksDir: MOCKS_DIR,
+  publicTestsDir: PUBLIC_TESTS_DIR,
+  envFile: ENV_FILE,
+  runPath: RUN_PATH,
+  mockRuntimePath: MOCK_RUNTIME_PATH,
+  ambientPath: AMBIENT_PATH,
+};
 
 export interface ProjectVersion {
   readonly sandboxId: string;
@@ -708,7 +725,11 @@ const SAFE_COMPILER_KEYS: readonly string[] = [
 
 /**
  * The compiler options a generated project builds with: the source's safe
- * options carried over, Node's ESM resolution, no emitted declarations.
+ * options carried over, Node's ESM resolution, no emitted declarations, and
+ * a source map beside each emitted `.js` so a debugger binds breakpoints in
+ * the `.ts`. Output stays beside its source: the hidden runner, the grading
+ * commands and the public test glob all name the emitted `.js` there, and
+ * a hidden test's map is withheld with it (`hiddenTestFiles`).
  */
 export function projectCompilerOptions(
   options: Readonly<Record<string, unknown>> | undefined,
@@ -725,7 +746,7 @@ export function projectCompilerOptions(
     moduleResolution: "NodeNext",
     rootDir: ".",
     declaration: false,
-    sourceMap: false,
+    sourceMap: true,
     noEmitOnError: true,
     skipLibCheck: true,
     types: [],
@@ -862,6 +883,11 @@ function runScript(entries: readonly string[]): string {
   return `${lines.join("\n")}\n`;
 }
 
+/** The README's pointer to the contributor guide (`guide.ts`), a slice's and a starter's alike. */
+export const README_GUIDE = `Start with [\`${TASK_GUIDE_PATH}\`](${TASK_GUIDE_PATH}): the task, its scenarios, how it is accepted and how to submit it. [\`${AGENTS_GUIDE_PATH}\`](${AGENTS_GUIDE_PATH}) holds the commands and rules, for you or a coding agent. In VS Code, \`${VSCODE_DIR}/\` hides the build's output beside its source and debugs the walkthrough and the tests with source maps.`;
+/** How the README runs one public test file. */
+export const README_ONE_TEST = `Run one file with \`${SANDBOX_COMMANDS.build} && node --env-file=${ENV_FILE} --test ${PUBLIC_TESTS_DIR}/<name>.test.js\`.`;
+
 function readme(input: {
   version: ProjectVersion;
   toolchain: Toolchain;
@@ -883,6 +909,8 @@ function readme(input: {
     input.version.specSummary,
     "",
     `Task \`${input.version.versionId}\` (version ${input.version.version}, size ${input.version.complexity}).`,
+    "",
+    README_GUIDE,
     "",
     "## Run it",
     "",
@@ -948,7 +976,9 @@ function readme(input: {
     "",
     ...list(input.publicTests, "None."),
     "",
-    "Local results help you iterate. Acceptance is decided by the platform's own run of your pushed commit, including tests that are not in this repository.",
+    README_ONE_TEST,
+    "",
+    "Local results help you iterate. Acceptance is decided by the platform's own run of the files you submit, including tests that are not in this project.",
   ].join("\n")}\n`;
 }
 
@@ -1388,11 +1418,21 @@ export function generateProject(input: ProjectInput): GeneratedProject {
     .sort(compare);
   add({
     path: ".gitignore",
-    text: `${["node_modules/", ...emitted].join("\n")}\n`,
+    text: `${["node_modules/", ...emitted, "*.map"].join("\n")}\n`,
     class: "config",
     public: true,
   });
   const editable = input.sources.map((source) => source.path).sort(compare);
+  for (const file of contributorGuideFiles({
+    version: input.version,
+    spec: input.spec,
+    editable,
+    publicTests,
+    mocks: true,
+    jsx: input.sources.some((source) => source.path.endsWith(".tsx")),
+    paths: GUIDE_PATHS,
+  }))
+    add(file);
   const descriptor: TaskDescriptor = {
     schemaVersion: TASK_DESCRIPTOR_SCHEMA_VERSION,
     sandboxId: input.version.sandboxId,

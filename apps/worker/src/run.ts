@@ -7,6 +7,7 @@ import type {
   ArtifactStore,
   ClaimedAnalysisRun,
   ObjectStore,
+  RunSettlement,
   SandboxStore,
 } from "@sandbox-factory/db";
 import { sourceArchiveKey } from "@sandbox-factory/db";
@@ -38,7 +39,7 @@ export interface RunOptions {
    * Submissions, owner-scoped, for the grading adapter; their files are read
    * from the key the submission names, never from one a run passes in.
    */
-  readonly submissions?: Pick<SubmissionStore, "get" | "start" | "finish">;
+  readonly submissions?: Pick<SubmissionStore, "get">;
   /** Sandbox versions, owner-scoped, for the build and starter adapters. */
   readonly sandboxes?: Pick<
     SandboxStore,
@@ -92,6 +93,11 @@ export async function executeRun(
   let previewing: Promise<void> = Promise.resolve();
   /** Every key a preview uploaded, removed once the run has committed. */
   const previewKeys = new Set<string>();
+  /**
+   * A grading run's verdict, held until the run's fenced commit writes it
+   * with the artifacts; a run that does not commit writes none.
+   */
+  let settlement: RunSettlement | undefined;
   const shutdown = () => abort.abort(new AnalysisError("cancelled"));
   // Object keys are not owner-scoped; only those an owner-scoped listing
   // returned may be read.
@@ -156,17 +162,8 @@ export async function executeRun(
       );
       return bytes === undefined ? null : Buffer.from(bytes).toString("utf8");
     },
-    finishSubmission: async (submissionId, runId, outcome) => {
-      if (options.submissions === undefined) return false;
-      await options.submissions.start(run.organizationId, submissionId, runId);
-      return (
-        (await options.submissions.finish(
-          run.organizationId,
-          submissionId,
-          outcome,
-          now(),
-        )) !== null
-      );
+    settleSubmission: (submissionId, result) => {
+      settlement = { submission: { id: submissionId, result } };
     },
   };
   options.shutdown?.addEventListener("abort", shutdown, { once: true });
@@ -359,6 +356,7 @@ export async function executeRun(
         artifacts,
         logKey,
         now(),
+        settlement,
       ),
     );
     commitUncertain = false;

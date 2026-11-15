@@ -45,6 +45,8 @@ import {
   buildAllSchema,
   postBountySchema,
   sandboxHandoutSchema,
+  handoutFilesQuerySchema,
+  handoutFilesSchema,
   createSubmissionSchema,
   createUploadSchema,
   submissionFilesResponseSchema,
@@ -133,6 +135,8 @@ export type PublicMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
 /** What a route answers on success. */
 export type PublicResponse =
   | { readonly status: 200 | 201 | 202; readonly schema: z.ZodType }
+  /** A file to save, not JSON: its media type. */
+  | { readonly status: 200; readonly file: string }
   /** No body: a removal. */
   | { readonly status: 204 }
   /**
@@ -809,7 +813,7 @@ export const PUBLIC_ROUTES: readonly PublicRoute[] = [
     idempotent: true,
     scope: "submissions:write",
     summary:
-      "Retry a failed submission once with new files, told only its failing scenario keys (owners and admins)",
+      "Retry a failed submission once with new files, told only its failing scenario keys; an errored one with its own files is graded again without spending it (owners and admins)",
     tag: "Sandboxes",
     request: createSubmissionSchema,
     response: accepted(submissionResponseSchema),
@@ -841,6 +845,23 @@ export const PUBLIC_ROUTES: readonly PublicRoute[] = [
     "A built version's public files and its hidden suite's commitment hash",
     "Sandboxes",
     sandboxHandoutSchema,
+  ),
+  {
+    method: "GET",
+    path: `${SBX}/versions/:vid/archive`,
+    scope: "workspace:read",
+    summary:
+      "The handout's public project as one .zip under one folder, each file checked against the handout's sha256; never a hidden test (owners and admins)",
+    tag: "Sandboxes",
+    request: null,
+    response: { status: 200, file: "application/zip" },
+  },
+  read(
+    `${SBX}/versions/:vid/handout/files`,
+    "One page of the handout's public files with their contents (`cursor`, `maxBytes`), text as UTF-8 and other files as base64 (owners and admins)",
+    "Sandboxes",
+    handoutFilesSchema,
+    handoutFilesQuerySchema,
   ),
   read(
     `${SBX}/versions/:vid/files/content`,

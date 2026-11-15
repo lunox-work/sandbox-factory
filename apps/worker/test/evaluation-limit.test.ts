@@ -29,6 +29,7 @@ function provider(fail: () => boolean = () => false) {
           durationMs: 1,
         }),
         read: async () => "kept",
+        seal: async () => {},
         destroy: async () => {
           alive -= 1;
         },

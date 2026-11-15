@@ -44,6 +44,7 @@ import type {
   DependencyChoice,
   SandboxStatus,
   ScopeRecord,
+  SubmissionError,
   SubmissionResult,
   SubmissionStatus,
   VersionFixtures,
@@ -267,6 +268,11 @@ export const submission = pgTable(
       .default("queued"),
     /** Present once the run passed or failed, and only then. */
     result: jsonb("result").$type<SubmissionResult>(),
+    /**
+     * Why an `errored` submission could not be graded (`SUBMISSION_ERRORS`
+     * in core), and only then: a fixed reason, never the run's log.
+     */
+    errorCode: text("error_code").$type<SubmissionError>(),
     /** The run that applied and tested the patch, while it is kept. */
     runId: text("run_id").references(() => analysisRun.id, {
       onDelete: "set null",
@@ -298,6 +304,10 @@ export const submission = pgTable(
       sql`(${t.status} in ('passed', 'failed')) = (${t.result} IS NOT NULL)`,
     ),
     check("submission_patch_hash_check", sql`length(${t.patchSha256}) = 64`),
+    check(
+      "submission_error_code_check",
+      sql`${t.errorCode} IS NULL OR (${t.status} = 'errored' AND ${t.errorCode} in ('grading_failed', 'grading_timed_out', 'grading_interrupted'))`,
+    ),
   ],
 );
 
@@ -322,9 +332,20 @@ export const submissionMerge = pgTable(
     /** `owner/name` when it was opened; a renamed repository keeps its pull requests. */
     repositoryFullName: text("repository_full_name").notNull(),
     branch: text("branch").notNull(),
-    commitSha: text("commit_sha").notNull(),
-    pullRequestNumber: integer("pull_request_number").notNull(),
-    pullRequestUrl: text("pull_request_url").notNull(),
+    /**
+     * `pending` from the click until the pull request is recorded, so one
+     * submission never opens two; `opened` once its commit and pull request
+     * are known, and only then.
+     */
+    status: text("status")
+      .$type<"pending" | "opened">()
+      .notNull()
+      .default("opened"),
+    /** While a request is opening it; null once it finished or gave up. */
+    claimedAt: ts("claimed_at"),
+    commitSha: text("commit_sha"),
+    pullRequestNumber: integer("pull_request_number"),
+    pullRequestUrl: text("pull_request_url"),
     openedBy: text("opened_by").references(() => user.id, {
       onDelete: "set null",
     }),
@@ -333,6 +354,10 @@ export const submissionMerge = pgTable(
   (t) => [
     unique("submission_merge_submission_unique").on(t.submissionId),
     index("submission_merge_organization_id_idx").on(t.organizationId),
+    check(
+      "submission_merge_status_check",
+      sql`${t.status} = 'pending' OR (${t.status} = 'opened' AND ${t.commitSha} IS NOT NULL AND ${t.pullRequestNumber} IS NOT NULL AND ${t.pullRequestUrl} IS NOT NULL)`,
+    ),
   ],
 );
 export type SubmissionMergeRow = typeof submissionMerge.$inferSelect;

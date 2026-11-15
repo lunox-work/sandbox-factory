@@ -62,8 +62,10 @@ import {
   packageNameOf,
   privatePackageNames,
   privateTestArgv,
-  layoutTestArgv,
+  hiddenTestFiles,
+  hiddenTestRun,
   PLATFORM_LAYOUT,
+  runtimePath,
   testRunnerOf,
   transformConfigOf,
   vocabularyBlockers,
@@ -80,6 +82,7 @@ import type {
   EvaluationProvider,
   GeneratedFile,
   GradingLayout,
+  HiddenTestRun,
   PrivateTestOutcome,
   ProjectBlocker,
   ProjectSource,
@@ -394,6 +397,27 @@ export type StepObserver = (
   output: { readonly stdout: string; readonly stderr: string },
 ) => void;
 
+/**
+ * Every file a baseline's job withholds at its seal: each hidden test's
+ * source, emitted JavaScript, declaration and maps (`hiddenTestFiles`), for
+ * the acceptance tests and any other file staged as a private test.
+ */
+function sealedPaths(
+  files: readonly GeneratedFile[],
+  acceptanceTests: readonly AcceptanceTest[],
+): string[] {
+  return [
+    ...new Set(
+      [
+        ...acceptanceTests.map((test) => test.path),
+        ...files
+          .filter((file) => file.class === "test-private")
+          .map((file) => file.path),
+      ].flatMap(hiddenTestFiles),
+    ),
+  ].sort();
+}
+
 /** How much of a failed harness step's output the run log keeps. */
 const STEP_LOG_CHARS = 4_000;
 
@@ -447,12 +471,14 @@ async function runBaseline(
       name: BaselineStep["name"],
       argv: readonly string[],
       path: string | null = null,
+      hidden: HiddenTestRun | null = null,
     ) => {
       input.signal.throwIfAborted();
       const result = await job.exec({
         argv,
         env: {},
         limits: EVALUATION_LIMITS,
+        ...(hidden === null ? {} : { hidden }),
       });
       const step: BaselineStep = {
         name,
@@ -497,6 +523,9 @@ async function runBaseline(
       if (installed.ok) {
         const { step: built } = await run("build", ["npm", "run", "build"]);
         if (built.ok) {
+          // Every hidden test's files leave the tree before task code first
+          // runs (the walkthrough), and each runs alone from what is left.
+          await job.seal(sealedPaths(input.files, input.acceptanceTests));
           // The walkthrough a developer runs first must run on the baseline.
           // Both scripts build again first, for a developer's own runs; the
           // baseline has just built, so it runs what they run after.
@@ -511,6 +540,7 @@ async function runBaseline(
               "private-test",
               privateTestArgv(test.path),
               test.path,
+              { entry: runtimePath(test.path), load: "memory" },
             );
             return {
               index: steps.length - 1,
@@ -591,8 +621,10 @@ async function runBaseline(
  * So the first job holds the public files alone and runs the layout's
  * commands (install from the folder's lockfile with no scripts, build,
  * public tests); the second holds them with the hidden tests, installs and
- * builds again, and runs each hidden test on its own twice, each run in a
- * fresh copy (`fresh`), read by `privateTestOutcome` as the platform's are.
+ * builds again, seals the tree (`EvaluationJob.seal`) and runs each hidden
+ * test on its own twice (`hiddenTestRun`), each run in a fresh copy of the
+ * sealed tree with that test alone, read by `privateTestOutcome` as the
+ * platform's are.
  * A hidden test whose runner the folder does not install could not run.
  * The folder brings its lockfile, so nothing is prepared and none is read.
  */
@@ -633,8 +665,9 @@ async function runLayoutBaseline(
         name: BaselineStep["name"],
         argv: readonly string[],
         path?: string | null,
-        fresh?: boolean,
+        hidden?: HiddenTestRun | null,
       ) => Promise<{ step: BaselineStep; stdout: string }>,
+      seal: (paths: readonly string[]) => Promise<void>,
     ) => Promise<void>,
   ) => {
     let job;
@@ -662,33 +695,39 @@ async function runLayoutBaseline(
     try {
       await current.stage(staged);
       execution.state = "running";
-      await body(async (name, argv, path = null, fresh = false) => {
-        input.signal.throwIfAborted();
-        const result = await current.exec({
-          argv,
-          env: {},
-          limits: EVALUATION_LIMITS,
-          ...(fresh ? { fresh: true } : {}),
-        });
-        const step: BaselineStep = {
-          name,
-          argv,
-          exitCode: result.exitCode,
-          timedOut: result.timedOut,
-          ok: !result.timedOut && result.exitCode === 0,
-          path,
-          durationMs: result.durationMs,
-        };
-        steps.push(step);
-        if (!step.ok && name !== "private-test") {
-          const output = `${result.stdout}\n${result.stderr}`.trim();
-          input.log(
-            `${name} failed:\n${output.length <= STEP_LOG_CHARS ? output : `…${output.slice(-STEP_LOG_CHARS)}`}`,
-          );
-        }
-        input.onStep?.(step, { stdout: result.stdout, stderr: result.stderr });
-        return { step, stdout: result.stdout };
-      });
+      await body(
+        async (name, argv, path = null, hidden = null) => {
+          input.signal.throwIfAborted();
+          const result = await current.exec({
+            argv,
+            env: {},
+            limits: EVALUATION_LIMITS,
+            ...(hidden === null ? {} : { hidden }),
+          });
+          const step: BaselineStep = {
+            name,
+            argv,
+            exitCode: result.exitCode,
+            timedOut: result.timedOut,
+            ok: !result.timedOut && result.exitCode === 0,
+            path,
+            durationMs: result.durationMs,
+          };
+          steps.push(step);
+          if (!step.ok && name !== "private-test") {
+            const output = `${result.stdout}\n${result.stderr}`.trim();
+            input.log(
+              `${name} failed:\n${output.length <= STEP_LOG_CHARS ? output : `…${output.slice(-STEP_LOG_CHARS)}`}`,
+            );
+          }
+          input.onStep?.(step, {
+            stdout: result.stdout,
+            stderr: result.stderr,
+          });
+          return { step, stdout: result.stdout };
+        },
+        (paths) => current.seal(paths),
+      );
       execution.state = "succeeded";
     } catch (error) {
       execution.state = input.signal.aborted ? "cancelled" : "failed";
@@ -731,23 +770,20 @@ async function runLayoutBaseline(
         ...publicFiles,
         ...input.acceptanceTests.map(({ path, text }) => ({ path, text })),
       ],
-      async (run) => {
+      async (run, seal) => {
         for (const command of setup) {
           const { step } = await run(command.name, command.argv);
           if (!step.ok) return;
         }
+        await seal(sealedPaths(input.files, input.acceptanceTests));
         const runTest = async (test: AcceptanceTest) => {
-          const argv = layoutTestArgv(
-            layout,
-            test.path,
-            testRunnerOf(test.text),
-          );
-          if (argv === null) return null;
+          const one = hiddenTestRun(layout, test.path, testRunnerOf(test.text));
+          if (one === null) return null;
           const { step, stdout } = await run(
             "private-test",
-            argv,
+            one.argv,
             test.path,
-            true,
+            one.hidden,
           );
           return {
             index: steps.length - 1,

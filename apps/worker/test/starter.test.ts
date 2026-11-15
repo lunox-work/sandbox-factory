@@ -369,6 +369,7 @@ function fakeProvider(
         async read(path) {
           return path === "package-lock.json" ? '{"lockfileVersion":3}' : null;
         },
+        async seal() {},
         async destroy() {},
       };
     },
@@ -509,11 +510,12 @@ test("a starter naming the workspace anywhere a developer reads is refused until
         spec: null,
         vocabulary,
       });
-    // The title and tags reach the README and the descriptor as written.
+    // The title and tags reach the README, TASK.md and the descriptor as
+    // written: the scan reads the contributor guide too.
     const leaked = check(["acme", "payflow"]);
     assert.equal(leaked.ok, false);
     assert.deepEqual(leaked.problems, [
-      'README.md: "acme" names the workspace and appears 2 times in 2 public files: README.md, sandbox-task.json. Give it a pseudonym.',
+      'README.md: "acme" names the workspace and appears 3 times in 3 public files: README.md, TASK.md, sandbox-task.json. Give it a pseudonym.',
       'sandbox-task.json: "payflow" names the workspace and appears 1 time in 1 public file: sandbox-task.json. Give it a pseudonym.',
     ]);
     // Renamed by the table, the listing is clean, and the project says so.
@@ -542,7 +544,7 @@ test("a starter naming the workspace anywhere a developer reads is refused until
     assert.equal(leaked.ok ? "ok" : leaked.stage, "names");
     assert.match(
       inSource.problems.join("\n"),
-      /"acme" names the workspace .*: README\.md, sandbox-task\.json, src\/cart\.ts\./,
+      /"acme" names the workspace .*: README\.md, TASK\.md, sandbox-task\.json, src\/cart\.ts\./,
     );
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -616,7 +618,7 @@ test("the starter agent checks, runs and submits a starter that is built as the 
     assert.equal(manifest.sliceRunId, null);
     assert.equal(manifest.sourceSnapshotId, null);
     assert.equal(manifest.starterSha256, sha(setText));
-    assert.equal(manifest.toolVersion, "sandbox_starter@5");
+    assert.equal(manifest.toolVersion, "sandbox_starter@6");
     assert.equal(
       manifest.transformConfigSha256,
       sha(
