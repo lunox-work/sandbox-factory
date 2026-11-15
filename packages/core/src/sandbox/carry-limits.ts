@@ -7,7 +7,7 @@
  * Keyed on reason text, since carveout's `CarryRefusal` carries no code.
  */
 
-import type { CarryRefusal } from "carveout/pseudonyms";
+import { STRANDED_NAME_REASON, type CarryRefusal } from "carveout/pseudonyms";
 
 /**
  * carveout's refusal of a file whose two sides have different line counts.
@@ -25,13 +25,10 @@ export const NEW_FILE_ON_REPOSITORY_PATH_REASON =
   "The contribution adds a file at a path the repository already holds outside the slice, so it cannot be carried back.";
 
 /**
- * carveout's `STRANDED_NAME_REASON`, from carveout ≥ next release (after
- * 0.3.1): an added line holds a public name the table renames back only in
- * other files. Matched as text until the pin moves, when it can be
- * imported instead.
+ * carveout's `STRANDED_NAME_REASON` (carveout ≥ 0.5.0): an added line holds
+ * a public name the table renames back only in other files.
  */
-export const CARVEOUT_STRANDED_NAME_REASON =
-  "An added line uses a public name the table renames back only in other files, so it cannot be named back in this one.";
+export const CARVEOUT_STRANDED_NAME_REASON = STRANDED_NAME_REASON;
 
 const LIMITS: ReadonlySet<string> = new Set([
   NEW_FILE_ON_REPOSITORY_PATH_REASON,

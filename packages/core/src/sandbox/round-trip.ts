@@ -20,12 +20,7 @@
  * result in the build manifest (`PublicationGates.roundTrip`).
  */
 
-import {
-  invertAliasRules,
-  PSEUDONYMS_FILE,
-  renameFile,
-  type AliasRule,
-} from "./aliases.js";
+import { invertAliasRules, renameFile, type AliasRule } from "./aliases.js";
 import { linesOf, tokensOf } from "./carry.js";
 
 export interface RoundTripSource {
@@ -70,47 +65,6 @@ function generatorEdit(reversed: string, repository: string): boolean {
     if (isLiteral(token) && isLiteral(other)) return true;
     return readsEnvironment && isIdentifier(token) && isIdentifier(other);
   });
-}
-
-/**
- * The text rules a contributor's added line would carry back wrongly by.
- * Merge-back learns, from each line the build renamed whose words line up
- * one for one with the repository's, which word became which, and reads a
- * contributor's added line through those words before the inverse table
- * (carveout's `learnedRenames`). A text rule for a host or an address
- * (`wiki.orvanta.internal -> wiki.example.com`) lines up word for word, so
- * it teaches `example -> orvanta` and `com -> internal`, and an added
- * `const example = 1` would merge back as `const orvanta = 1`. A rule is a
- * hazard when its two sides have as many words and a word it changes is
- * not one the table renames the same way on its own. Only rules whose text
- * holds a `.`, `@`, `/` or `:` (hosts, addresses, URLs) are judged: a
- * rule of plain words is the workspace's name, which merge-back should
- * read back.
- */
-export function carryHazards(
-  rules: readonly AliasRule[],
-  path = "carry",
-): { rule: number; detail: string }[] {
-  const hazards: { rule: number; detail: string }[] = [];
-  rules.forEach((rule, index) => {
-    if (rule.kind !== "text" || !/[.@/:]/.test(rule.before + rule.after))
-      return;
-    const before = tokensOf(rule.before);
-    const after = tokensOf(rule.after);
-    if (before.length !== after.length) return;
-    const taught = after.flatMap((word, at) => {
-      const original = before[at] ?? "";
-      if (word === original || !isIdentifier(word)) return [];
-      const forward = renameFile({ path, text: original }, rules).text;
-      return forward === word ? [] : [`${word} -> ${original}`];
-    });
-    if (taught.length > 0)
-      hazards.push({
-        rule: index + 1,
-        detail: `Rule ${index + 1} (${rule.before} -> ${rule.after}) changes words one for one, so merge-back would read ${taught.join(", ")} in any line a contributor adds. Give it a public name with a different number of words (\`wiki.example\`, \`ops@example.com\` for \`ada.lovelace@acme.io\`), or rename the distinctive word with its own rule.`,
-      });
-  });
-  return hazards;
 }
 
 export function noChangeRoundTrip(input: {
@@ -158,10 +112,6 @@ export function noChangeRoundTrip(input: {
         `Line ${at + 1}, read back through the name table, is not the repository's line.`,
       );
   }
-  // A table that carries the unchanged project back can still carry a
-  // contributor's added line back wrongly.
-  for (const hazard of carryHazards(input.rules))
-    problems.push({ path: PSEUDONYMS_FILE, reason: hazard.detail });
   return {
     ok: problems.length === 0,
     files: sources.length,

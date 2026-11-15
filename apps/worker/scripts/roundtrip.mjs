@@ -68,6 +68,7 @@ import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
+import { STRANDED_NAME_REASON } from "carveout/pseudonyms";
 import {
   canonicalJson,
   decisionsText,
@@ -115,7 +116,7 @@ assert.ok(
 );
 /** The platform engine's build of the fixture, as `buildDigest` hashes it. */
 const GOLDEN_DIGEST =
-  "6142faefcad52f606cb492e405006c94fb51319d46328bd0fdb794534052dd9a";
+  "5ec3a8bd52d46ad433b4960bf201108a49442dec7b555d7632e4360c5ad94d01";
 /** Every spelling of the workspace's name that must not reach a contributor. */
 const VOCABULARY = /orvanta/i;
 /** The public names the table gives, which must not reach the repository. */
@@ -314,12 +315,10 @@ try {
   // (as an owner or the hidden-tests agent writes them), one scenario each.
   // The flat charge's rename is scoped to the fee module, the one file
   // that names it, as an owner scopes a term to where it is.
-  // The comment's internal link and address are renamed by text rules
-  // whose public names have another number of words than the private ones,
-  // so merge-back learns no word of them (`carryHazards`). A plain
-  // multi-word rule (`every debit`) has as many words on each side, which
-  // `carryHazards` does not judge: grading withholds what its words would
-  // misread (`carriedWordHazards`).
+  // The comment's internal link and address are renamed by text rules.
+  // A plain multi-word rule (`every debit`) has as many words on each
+  // side; carveout 0.5.0 learns no word from it, and grading would still
+  // withhold a misread (`carriedWordHazards`).
   const aliasRules = [
     { before: "orvanta", after: "northwind", kind: "path", paths: [] },
     {
@@ -926,10 +925,10 @@ try {
   );
 
   // The solution, with the flat charge exported and a helper beside the
-  // fee module that reads it. The helper carries back line for line: the
-  // charge's rename is scoped to the fee module, so in the new file
-  // `flatCharge` maps back to itself, and only building it in the
-  // repository's names shows the import names nothing there.
+  // fee module that reads it. The charge's rename is scoped to the fee
+  // module, so in the new file `flatCharge` cannot be named back: carveout
+  // refuses the line (`STRANDED_NAME_REASON`, carveout 0.5.0), a limit of
+  // the carry, before any build in the repository's names.
   const MINIMUM = [
     'import { flatCharge } from "./fees.js";',
     "",
@@ -962,16 +961,13 @@ try {
   );
   assert.equal(uncarried.patch, null, "no merge patch when the carry fails");
   assert.ok(
-    uncarried.log.some((line) =>
-      /^Reversed check in the repository's names: incomplete/.test(line),
+    uncarried.log.includes(
+      `Carry-back withheld: src/northwind/minimum.ts: ${STRANDED_NAME_REASON}`,
     ),
     uncarried.log.join("\n"),
   );
-  // It is the build in the repository's names that fails, on that import.
   assert.ok(
-    uncarried.log.some((line) =>
-      /^build failed:[\s\S]*has no exported member 'flatCharge'/.test(line),
-    ),
+    !uncarried.log.some((line) => /^Reversed check/.test(line)),
     uncarried.log.join("\n"),
   );
   say(
@@ -979,39 +975,37 @@ try {
   );
 
   // The solution with its divisor named `each`, a word of the public name
-  // `each withdrawal`. The pinned carry learns `each -> every` from the
-  // fee's comment and would carry the constant back as `every`; that
-  // builds and passes in the repository's names, so only the word check
-  // withholds it, before the second job.
+  // `each withdrawal`. carveout before 0.5.0 learned `each -> every` from
+  // the fee's comment and carried the constant back as `every`, which only
+  // the word check (`carriedWordHazards`) withheld. The table now renames
+  // first and learns only what it leaves, so the contributor's word comes
+  // back as written and the pass is carried.
   const EACH =
     '  if (entry.kind === "credit") return 0;\n  const each = 100;\n  return Math.max(25, Math.round(entry.amountCents / each));\n';
-  const misread = await grade("misread", fee(EACH));
+  const wordKept = await grade("word-kept", fee(EACH));
   assert.deepEqual(
-    misread.result,
+    wordKept.result,
     {
       public: { passed: 1, total: 1 },
       hidden: { passed: 3, total: 3 },
       verdict: "passed",
       failedScenarios: [],
-      carryBack: "failed",
     },
-    misread.log.join("\n"),
+    wordKept.log.join("\n"),
   );
-  assert.equal(misread.patch, null, "no merge patch when a word is misread");
+  assert.ok(wordKept.patch, "a pass that keeps its words is carried back");
   assert.ok(
-    misread.log.some((line) =>
-      /merge-back is withheld\. src\/northwind\/fees\.ts:\d+, src\/northwind\/fees\.ts:\d+$/.test(
-        line,
-      ),
+    wordKept.log.some((line) =>
+      /^Reversed check in the repository's names: passed/.test(line),
     ),
-    misread.log.join("\n"),
+    wordKept.log.join("\n"),
   );
   assert.ok(
-    !misread.log.some((line) => /^Reversed check/.test(line)),
-    misread.log.join("\n"),
+    !wordKept.log.some((line) => /merge-back is withheld/.test(line)),
+    wordKept.log.join("\n"),
   );
   say(
-    "grade: a pass that names a constant by a word of a multi-word public name keeps its verdict, is marked carryBack failed before the reversed check, and has no merge patch",
+    "grade: a pass that names a constant by a word of a multi-word public name is carried with that word, and passes again in the repository's names",
   );
 
   // One percent, but no minimum: s3 fails, and only its key is told.
@@ -1214,8 +1208,7 @@ try {
     "carry-back: merge-patch.json is in the repository's names, the wiki link and author's address restored; its own test fails before and passes after",
   );
 
-  // The gate was right to withhold the other pass: what its carry would
-  // have opened as a pull request breaks the repository's own test.
+  // The carry itself refuses the other pass's helper, naming the file.
   const buildInput = {
     inputs: {
       listArtifacts: async (id) => (id === buildRunId ? build.artifacts : []),
@@ -1229,56 +1222,33 @@ try {
     await versionFilesOf(buildInput, buildRunId),
     withQuote,
   );
-  assert.deepEqual(wouldOpen.refused, []);
   assert.deepEqual(
-    wouldOpen.files.map((f) => f.path),
-    ["src/orvanta/fees.ts", "src/orvanta/minimum.ts"],
+    wouldOpen.refused.map((refusal) => refusal.reason),
+    [STRANDED_NAME_REASON],
+    JSON.stringify(wouldOpen.refused),
   );
-  assert.match(wouldOpen.files[0].text, /export const orvantaCharge = 25;/);
-  assert.match(
-    wouldOpen.files[1].text,
-    /import \{ flatCharge \}/,
-    "the carry leaves the public name in the new file",
-  );
-  const broken = join(directory, "repository-uncarried");
-  await cp(fixture, broken, { recursive: true });
-  for (const { path, text } of wouldOpen.files) {
-    await mkdir(dirname(join(broken, path)), { recursive: true });
-    await writeFile(join(broken, path), text);
-  }
-  const brokenTest = await sh(["npm", "test"], broken, repoEnv);
-  assert.equal(brokenTest.ok, false, brokenTest.output);
-  assert.match(brokenTest.output, /flatCharge/, brokenTest.output);
   say(
-    "carry-back: the withheld carry would have broken the repository's own build (flatCharge is not its name)",
+    "carry-back: the withheld carry is refused by carveout itself, the helper's public name having no way back",
   );
 
-  // And the word check was right to withhold the misread pass: the carry
-  // it would have opened renames the contributor's constant into the
-  // repository's words, and the repository's own test still passes on it.
-  const misreadFiles = fee(EACH);
-  const wouldMisread = await carriedBack(
-    buildInput,
-    buildRunId,
-    await versionFilesOf(buildInput, buildRunId),
-    misreadFiles,
-  );
-  assert.deepEqual(wouldMisread.refused, []);
-  assert.match(wouldMisread.files[0].text, /const every = 100;/);
-  assert.match(wouldMisread.files[0].text, /entry\.amountCents \/ every\)/);
-  assert.doesNotMatch(wouldMisread.files[0].text, /\beach\b/);
-  const misreadRepo = join(directory, "repository-misread");
-  await cp(fixture, misreadRepo, { recursive: true });
-  for (const { path, text } of wouldMisread.files)
-    await writeFile(join(misreadRepo, path), text);
-  const misreadTest = await sh(["npm", "test"], misreadRepo, repoEnv);
-  assert.ok(misreadTest.ok, misreadTest.output);
+  // The word-kept pass's patch keeps the contributor's `each`, and the
+  // repository's own test passes on it.
+  assert.equal(wordKept.patch.files.length, 1);
+  assert.match(wordKept.patch.files[0].text, /const each = 100;/);
+  assert.match(wordKept.patch.files[0].text, /entry\.amountCents \/ each\)/);
+  assert.doesNotMatch(wordKept.patch.files[0].text, /\bevery = /);
+  const keptRepo = join(directory, "repository-word-kept");
+  await cp(fixture, keptRepo, { recursive: true });
+  for (const { path, text } of wordKept.patch.files)
+    await writeFile(join(keptRepo, path), text);
+  const keptTest = await sh(["npm", "test"], keptRepo, repoEnv);
+  assert.ok(keptTest.ok, keptTest.output);
   say(
-    "carry-back: the withheld misread carry renames the contributor's `each` to `every` and still passes the repository's own test",
+    "carry-back: the word-kept patch keeps the contributor's `each` and passes the repository's own test",
   );
 
   console.log(
-    "Worker round trip passed: slice with pseudonyms, build with scripted hidden tests, contributor commands on project/ alone, the repository's own test carried (and one dropped), grading (passed, overfit, five refusals, hidden tests unreadable at run time), the reversed check in the repository's names (held, and withheld a carry that breaks the repository), a carry that misreads a contributor's word withheld, carry-back onto the repository and its own test.",
+    "Worker round trip passed: slice with pseudonyms, build with scripted hidden tests, contributor commands on project/ alone, the repository's own test carried (and one dropped), grading (passed, overfit, five refusals, hidden tests unreadable at run time), the reversed check in the repository's names, a carry with a stranded public name refused, a contributor's word carried as written, carry-back onto the repository and its own test.",
   );
 } finally {
   await provider?.dispose();

@@ -1369,8 +1369,8 @@ test("a text rule that renames them, or an owner's acknowledgement, lets the bui
   const app = await renamed.read("project/src/app.ts");
   assert.match(app, /https:\/\/wiki\.example\/runbooks\/app/);
   assert.match(app, /@author dev@example\.com/);
-  // A host renamed word for word would carry a contributor's added line
-  // back wrongly: the round trip says so, and holds publication.
+  // A host renamed word for word passes too: carveout 0.5.0 learns no word
+  // from a text rule, so a contributor's added line carries back as written.
   const wordForWord = await runBuild(fakeProvider(script).provider, {
     sourceDir,
     slice: sliced,
@@ -1394,11 +1394,7 @@ test("a text rule that renames them, or an owner's acknowledgement, lets the bui
     }),
   });
   assert.equal(wordForWord.manifest.gates?.disclosure.status, "passed");
-  assert.equal(wordForWord.manifest.gates?.roundTrip.status, "failed");
-  assert.match(
-    wordForWord.manifest.gates?.roundTrip.problems[0]?.reason ?? "",
-    /docs -> wiki, example -> halcyon, com -> internal/,
-  );
+  assert.equal(wordForWord.manifest.gates?.roundTrip.status, "passed");
   // Left as they are, and acknowledged by an owner.
   const acknowledged = await runBuild(fakeProvider(script).provider, {
     sourceDir,

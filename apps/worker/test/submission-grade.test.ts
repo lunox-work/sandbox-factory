@@ -778,9 +778,12 @@ test("a reversed tree that cannot be placed withholds merge-back without a secon
   assert.ok(logged.some((line) => /could not be placed/.test(line)));
 });
 
-test("a pass whose carry renames a word the contributor wrote by part of a text rule is withheld from merge-back without a second job", async () => {
-  // A multi-word text rule: carveout 0.3.1's carry learns `Shop -> Payments`
-  // from the comment, and would carry an added `Shop` as `Payments`.
+test("a pass that adds a word of a multi-word text rule's public name is carried with that word", async () => {
+  // A multi-word text rule: carveout 0.3.1's carry learned `Shop -> Payments`
+  // from the comment and carried an added `Shop` as `Payments`, which the
+  // word check withheld. carveout 0.5.0 renames by the table first, so the
+  // contributor's `Shop` comes back as written (core's carried-words tests
+  // keep the check covered against such a carry).
   const rules: AliasRule[] = [
     {
       before: "Orvanta Payments",
@@ -811,15 +814,20 @@ test("a pass whose carry renames a word the contributor wrote by part of a text 
     build,
   );
   assert.equal(result.verdict, "passed");
-  assert.equal(result.carryBack, "failed");
-  assert.equal(patch, null);
-  assert.equal(fake.jobs(), 1);
+  assert.equal(result.carryBack, undefined, logged.join("\n"));
+  assert.deepEqual(patch, {
+    schemaVersion: 1,
+    commitSha: "c0ffee",
+    files: [
+      {
+        path: "src/feature.ts",
+        text: "// Orvanta Payments settles it.\nexport const feature = () => Shop;\nconst Shop = 1;\n",
+      },
+    ],
+  });
+  assert.equal(fake.jobs(), 2);
   assert.ok(
-    logged.some((line) =>
-      /merge-back is withheld\. src\/feature\.ts:2, src\/feature\.ts:3$/.test(
-        line,
-      ),
-    ),
+    !logged.some((line) => /merge-back is withheld/.test(line)),
     logged.join("\n"),
   );
   // The brand written whole is the table's: it carries, and is merged back.

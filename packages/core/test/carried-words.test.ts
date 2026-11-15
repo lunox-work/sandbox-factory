@@ -13,7 +13,8 @@ import {
 /**
  * A repository file, its version under `rules` (and `rewrite`, the build's
  * own edits beyond the table), a submission carried back by the pinned
- * carry, and the words checked.
+ * carry, and the words checked; `check` runs the guard on another carry's
+ * output, such as an older carveout's.
  */
 function carry(input: {
   rules: AliasRule[];
@@ -52,10 +53,10 @@ function carry(input: {
   };
 }
 
-test("a host rule's words, learned one by one, rename a contributor's own `example`: the carry is withheld", () => {
+test("a host rule's words, learned one by one, would rename a contributor's own `example`: such a carry is withheld", () => {
   const repository =
     "// Docs: https://wiki.orvanta.internal/payments for the team.\nexport const answer = 42;\n";
-  const { carried, hazards } = carry({
+  const { carried, hazards, check } = carry({
     rules: [
       {
         before: "wiki.orvanta.internal",
@@ -68,16 +69,27 @@ test("a host rule's words, learned one by one, rename a contributor's own `examp
     repository,
     submit: (version) => `${version}export const example = 'wiki';\n`,
   });
-  // carveout 0.3.1's carry: the contributor's word in the client's.
+  // The pinned carry (carveout 0.5.0) keeps the contributor's word.
   assert.equal(
     carried.files[0]?.text,
-    `${repository}export const orvanta = 'wiki';\n`,
+    `${repository}export const example = 'wiki';\n`,
   );
-  assert.deepEqual(hazards, [{ path: "src/docs.ts", line: 3 }]);
+  assert.deepEqual(hazards, []);
+  // carveout 0.3.1's carry put the contributor's word in the client's;
+  // the guard still withholds a carry like that.
+  assert.deepEqual(
+    check([
+      {
+        path: "src/docs.ts",
+        text: `${repository}export const orvanta = 'wiki';\n`,
+      },
+    ]),
+    [{ path: "src/docs.ts", line: 3 }],
+  );
   assert.match(CARRIED_WORDS_REASON, /merge-back is withheld/);
 });
 
-test("a multi-word brand's word, added alone, is withheld; the brand added whole is the table's, and carries", () => {
+test("a multi-word brand's word, added alone, carries as written and a carry renaming it is withheld; the brand added whole is the table's, and carries", () => {
   const rules: AliasRule[] = [
     {
       before: "Orvanta Payments",
@@ -96,9 +108,19 @@ test("a multi-word brand's word, added alone, is withheld; the brand added whole
   });
   assert.equal(
     alone.carried.files[0]?.text,
-    `${repository}export const Payments = "cart";\n`,
+    `${repository}export const Shop = "cart";\n`,
   );
-  assert.deepEqual(alone.hazards, [{ path: "src/northwind/pay.ts", line: 3 }]);
+  assert.deepEqual(alone.hazards, []);
+  // carveout 0.3.1's carry read the word as the brand's; withheld.
+  assert.deepEqual(
+    alone.check([
+      {
+        path: "src/orvanta/pay.ts",
+        text: `${repository}export const Payments = "cart";\n`,
+      },
+    ]),
+    [{ path: "src/northwind/pay.ts", line: 3 }],
+  );
   const whole = carry({
     rules,
     path: "src/orvanta/pay.ts",
@@ -110,17 +132,6 @@ test("a multi-word brand's word, added alone, is withheld; the brand added whole
     `${repository}// Orvanta Payments refunds too.\n`,
   );
   assert.deepEqual(whole.hazards, []);
-  // A carry that renames by whole rules only (carveout's after 0.4.1)
-  // leaves the word as written: nothing to withhold.
-  assert.deepEqual(
-    alone.check([
-      {
-        path: "src/orvanta/pay.ts",
-        text: `${repository}export const Shop = "cart";\n`,
-      },
-    ]),
-    [],
-  );
   // A carry whose lines do not line up with the submission's is not trusted.
   assert.deepEqual(
     alone.check([{ path: "src/orvanta/pay.ts", text: repository }]),

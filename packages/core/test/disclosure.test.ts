@@ -4,7 +4,6 @@ import { test } from "node:test";
 import {
   acknowledges,
   applyAliases,
-  carryHazards,
   commentAndStringRanges,
   disclosureBlockers,
   disclosureGate,
@@ -389,23 +388,36 @@ test("text rules for a host and an address hold the round trip and carry back", 
       ],
       rules,
     });
-  // A host renamed word for word teaches merge-back `example -> orvanta`:
-  // the unchanged project carries back, but an added line would not.
+  // A host renamed word for word holds the round trip, and an added line
+  // using one of its public words carries back as written: carveout renames
+  // by the table first and learns only what it leaves (0.5.0), so the rule
+  // teaches no `example -> orvanta`.
   const wordForWord = table("wiki.example.com");
-  assert.deepEqual(
-    carryHazards(wordForWord).map((hazard) => hazard.rule),
-    [2],
-  );
   const held = roundTripOf(wordForWord);
-  assert.equal(held.ok, false);
-  assert.equal(held.problems[0]?.path, "pseudonym.lunox");
+  assert.equal(held.ok, true, JSON.stringify(held.problems));
+  const wordForWordFile = sourceOf(wordForWord);
+  const added = reverseSubmission({
+    submitted: [
+      {
+        path: "src/northwind/fees.ts",
+        text: `${wordForWordFile?.text ?? ""}export const example = 1;\n`,
+      },
+    ],
+    publicText: (path) =>
+      path === "src/northwind/fees.ts" ? (wordForWordFile?.text ?? null) : null,
+    repositoryText: (path) =>
+      path === "src/orvanta/fees.ts" ? original : null,
+    rules: wordForWord,
+    renames: [{ from: "src/orvanta/fees.ts", to: "src/northwind/fees.ts" }],
+    harness: [],
+  });
+  assert.deepEqual(added.refused, []);
   assert.match(
-    held.problems[0]?.reason ?? "",
-    /example -> orvanta, com -> internal/,
+    added.files.find((file) => file.path === "src/orvanta/fees.ts")?.text ?? "",
+    /export const example = 1;\n$/,
   );
-  // With a public name of another length, nothing is learned from it.
+  // A public name of another length holds and carries back the same way.
   const rules = table("wiki.example");
-  assert.deepEqual(carryHazards(rules), []);
   const publicFile = sourceOf(rules);
   assert.equal(publicFile?.path, "src/northwind/fees.ts");
   assert.doesNotMatch(publicFile?.text ?? "", /orvanta/);
@@ -449,19 +461,6 @@ test("text rules for a host and an address hold the round trip and carry back", 
   assert.match(
     back?.text ?? "",
     /export const example = "wiki\.orvanta\.internal";/,
-  );
-  // Rules of plain words, or of another kind, are not judged.
-  assert.deepEqual(
-    carryHazards([
-      {
-        before: "Orvanta Pay",
-        after: "Northwind Shop",
-        kind: "text",
-        paths: [],
-      },
-      { before: "a.b", after: "c.d", kind: "identifier", paths: [] },
-    ]),
-    [],
   );
 });
 

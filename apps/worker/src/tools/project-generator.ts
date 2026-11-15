@@ -15,15 +15,18 @@
  *   placeholder environment in `carveout.env`, and carveout's
  *   configuration (`package.json` scripts run `node carveout/test.js`,
  *   which finds every test in the folder and runs each on its runner).
+ * - What carveout writes from the platform's input through its hooks
+ *   (`carveoutInputOf`, carveout ≥ 0.5.0): fixture defaults in the stubs'
+ *   runtimes, the walkthrough a version supplies, source maps (and their
+ *   output ignored), the package's version and npm pin.
  * - The platform's layers, which carveout's generator has no input for
  *   (`platformLayers`): public names for mocked packages and environment
  *   variables, applied to the input before carveout reads it
- *   (`withPublicNames`); fixture defaults patched into the stubs' runtimes;
- *   the walkthrough a version supplies; `tests/public/spec.test.ts`, the
- *   carried tests under `tests/public/carried/` and the hidden tests under
- *   `tests/private/`; source maps; the package's version and npm pin; the
- *   contributor guide (`TASK.md`, `AGENTS.md`, `CLAUDE.md`, `.vscode/`),
- *   the descriptor and the platform's README in carveout's paths.
+ *   (`withPublicNames`); `tests/public/spec.test.ts`, the carried tests
+ *   under `tests/public/carried/` and the hidden tests under
+ *   `tests/private/`; the contributor guide (`TASK.md`, `AGENTS.md`,
+ *   `CLAUDE.md`, `.vscode/`), the descriptor and the platform's README in
+ *   carveout's paths.
  * - The grading layout (`carveoutLayout`): carveout's `folderLayout` for
  *   the harness, its configuration and its commands, with the platform's
  *   test folders (`tests/public`, `tests/private`) so hidden tests stage
@@ -317,9 +320,12 @@ export function projectPackageName(versionId: string): string {
  * What carveout's generator reads of the platform's input. The slice's
  * manifest, contract and dependencies are carveout's own shapes (the
  * platform's slice is carveout's analysis), declared twice: once in core,
- * once in carveout.
+ * once in carveout. The hooks carry what the platform's generator writes
+ * that carveout's would not on its own.
  */
 export function carveoutInputOf(input: ProjectInput): CarveoutProjectInput {
+  const toolchain = input.toolchain ?? SANDBOX_TOOLCHAIN;
+  const scenario = input.scenario ?? null;
   return {
     origin: {
       repository: null,
@@ -344,6 +350,17 @@ export function carveoutInputOf(input: ProjectInput): CarveoutProjectInput {
             CarveoutProjectInput["toolchain"]
           >,
         }),
+    hooks: {
+      sourceMaps: true,
+      mockDefaults: (input.fixtures ?? []).map((item) => ({
+        module: item.module,
+        path: fixtureMockPath(item),
+        implementation: item.implementation,
+      })),
+      ...(scenario === null ? {} : { walkthrough: scenario }),
+      packageVersion: `${input.version.version}.0.0`,
+      packageManager: `npm@${toolchain.npm}`,
+    },
   };
 }
 
@@ -358,70 +375,6 @@ function platformBlocker(
         detail: `${blocker.code}: ${blocker.detail}`,
       }
     : { code: blocker.code, file: blocker.file, detail: blocker.detail };
-}
-
-/** A `package.json` with the platform's version and npm pin, carveout's scripts kept. */
-export function platformPackageJson(
-  text: string,
-  version: number,
-  npm: string,
-): string {
-  const parsed = JSON.parse(text) as Record<string, unknown>;
-  const out: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(parsed)) {
-    out[key] = key === "version" ? `${version}.0.0` : value;
-    if (key === "engines") out.packageManager = `npm@${npm}`;
-  }
-  if (!("packageManager" in out)) out.packageManager = `npm@${npm}`;
-  return `${JSON.stringify(out, null, 2)}\n`;
-}
-
-/** A `tsconfig.json` that emits source maps beside the build's output. */
-export function withSourceMaps(text: string): string {
-  const parsed = JSON.parse(text) as {
-    compilerOptions?: Record<string, unknown>;
-  };
-  return `${JSON.stringify(
-    {
-      ...parsed,
-      compilerOptions: { ...parsed.compilerOptions, sourceMap: true },
-    },
-    null,
-    2,
-  )}\n`;
-}
-
-/**
- * A stub's runtime with the version's fixture defaults, as the platform's
- * generator writes them: `fixture` imported beside `createMock`, one
- * `fixture(path, fn)` line per default after the mock is made.
- */
-export function withFixtureDefaults(
-  runtime: string,
-  defaults: readonly { path: string; implementation: string }[],
-): string {
-  if (defaults.length === 0) return runtime;
-  const lines = runtime.split("\n");
-  const created = lines.findIndex((line) =>
-    line.startsWith("const mock = createMock("),
-  );
-  if (created === -1) return runtime;
-  const patched = lines.map((line) =>
-    /^import \{ createMock \} from /.test(line)
-      ? line.replace("{ createMock }", "{ createMock, fixture }")
-      : line,
-  );
-  patched.splice(
-    created + 1,
-    0,
-    ...[...defaults]
-      .sort((a, b) => compare(a.path, b.path))
-      .map(
-        (item) =>
-          `fixture(${JSON.stringify(item.path)}, ${item.implementation.trim()});`,
-      ),
-  );
-  return patched.join("\n");
 }
 
 /**
@@ -463,7 +416,8 @@ export function platformLayers(
     ...input.stubs.map((stub) => [stub.module, stub.path] as const),
   ]);
 
-  // Fixture defaults, in the runtimes of the stubs they name.
+  // Fixture defaults: carveout writes them into the stubs' runtimes
+  // (`mockDefaults`); the platform checks them.
   const fixtures = input.fixtures ?? [];
   for (const problem of fixtureProblems(fixtures, input.contract.outbound)) {
     const item =
@@ -474,26 +428,12 @@ export function platformLayers(
       detail: problem.detail,
     });
   }
-  for (const module of input.contract.outbound) {
-    const stub = pathOf.get(module.module);
-    const own = fixtures.filter((item) => item.module === module.module);
-    if (stub !== undefined && own.length > 0)
-      rewrite(runtimePath(stub), (text) =>
-        withFixtureDefaults(
-          text,
-          own.map((item) => ({
-            path: fixtureMockPath(item),
-            implementation: item.implementation,
-          })),
-        ),
-      );
-  }
 
-  // The version's walkthrough in place of carveout's, its imports
-  // resolved from carveout's harness folder as from the platform's.
+  // The version's walkthrough, written by carveout in place of its own
+  // (`walkthrough`), its imports resolved from carveout's harness folder as
+  // from the platform's.
   const scenario = input.scenario ?? null;
   if (scenario !== null) {
-    rewrite(CARVEOUT_RUN_PATH, () => scenario);
     for (const problem of scenarioProblems(scenario))
       blockers.push({
         code: "fixture_invalid",
@@ -568,14 +508,6 @@ export function platformLayers(
       public: false,
     });
   }
-
-  // Configuration: source maps (and their output ignored), the version's
-  // package version and npm pin.
-  rewrite("tsconfig.json", withSourceMaps);
-  rewrite(".gitignore", (text) => `${text}*.map\n`);
-  rewrite("package.json", (text) =>
-    platformPackageJson(text, input.version.version, toolchain.npm),
-  );
 
   // The contributor's guide, descriptor and README, in carveout's paths.
   const editable = input.sources.map((source) => source.path).sort(compare);
