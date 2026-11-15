@@ -39,7 +39,7 @@
     "worker:roundtrip": "turbo run build --filter=@sandbox-factory/worker && npm run roundtrip --workspace @sandbox-factory/worker"
   },
   "devDependencies": {
-    "@hono/node-server": "^2.1.1",
+    "@hono/node-server": "^2.1.8",
     "@playwright/test": "1.65.0",
     "@swc/core": "1.16.22",
     "dependency-cruiser": "18.7.2",
