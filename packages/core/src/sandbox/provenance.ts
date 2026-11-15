@@ -459,6 +459,12 @@ export function freezeReadiness(
     readonly baselineOk: boolean;
     readonly roundTripOk: boolean;
     readonly disclosureBlocking: number | null;
+    /**
+     * Of those, findings that only wait for an owner's acknowledgement at
+     * publication (`pending_acknowledgement`, nothing else blocking): the
+     * refusal names them rather than blocking findings. Absent: none.
+     */
+    readonly disclosureAwaiting?: number;
   },
 ): { ready: boolean; reasons: string[]; failed: FreezeGate[] } {
   const found: { gate: FreezeGate; reason: string }[] = [];
@@ -490,8 +496,15 @@ export function freezeReadiness(
     fail("round_trip", "The no-change round trip has not passed.");
   if (source.disclosureRunId === null)
     fail("disclosure", "No disclosure scan is recorded.");
-  else if ((evidence.disclosureBlocking ?? 1) > 0)
-    fail("disclosure", "The disclosure scan has blocking findings.");
+  else if ((evidence.disclosureBlocking ?? 1) > 0) {
+    const awaiting = evidence.disclosureAwaiting ?? 0;
+    fail(
+      "disclosure",
+      awaiting > 0
+        ? `${awaiting} ${awaiting === 1 ? "finding waits" : "findings wait"} for an owner's acknowledgement.`
+        : "The disclosure scan has blocking findings.",
+    );
+  }
   if (source.approvedBy === null || source.approvedAt === null)
     fail("approval", "The exact candidate has not been approved.");
   return {
@@ -576,6 +589,9 @@ export function gatesOf(
           : disclosureOk
             ? 0
             : Math.max(1, disclosure.blocking + open),
+      ...(pending !== null && !disclosureOk && disclosure?.blocking === 0
+        ? { disclosureAwaiting: open }
+        : {}),
     },
   };
 }

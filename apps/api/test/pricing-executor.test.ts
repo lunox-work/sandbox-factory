@@ -10,6 +10,7 @@ import type {
   NewModelUsage,
   StoredBountyRun,
   StoredBounty,
+  StoredPostedSpec,
   BountyStore,
 } from "@sandbox-factory/db";
 import { JiraApiError, type JiraIssueSpec } from "@sandbox-factory/jira";
@@ -40,6 +41,7 @@ import {
   type StructuredCaller,
   type StructuredResult,
 } from "../src/sizing/caller.js";
+import { decisionsSha256 } from "../src/pricing/decisions.js";
 import type { DraftedSpec } from "../src/sizing/tools/draft-spec.js";
 
 /** What the harness's bounties are drafted as, unless a test says otherwise. */
@@ -290,6 +292,8 @@ function harness(options: {
   modelCallsError?: Error;
   /** The token ledger; absent, the executor records none. */
   modelUsage?: BountyExecutorOptions["modelUsage"];
+  /** The specs posted with bounties; absent, every spec is drafted. */
+  postedSpecs?: BountyExecutorOptions["postedSpecs"];
 }) {
   const current = run(options.runOverrides);
   const plans: unknown[] = [];
@@ -620,6 +624,9 @@ function harness(options: {
     ...(options.modelUsage === undefined
       ? {}
       : { modelUsage: options.modelUsage }),
+    ...(options.postedSpecs === undefined
+      ? {}
+      : { postedSpecs: options.postedSpecs }),
     now: () => new Date("2026-09-22T00:00:00.000Z"),
     leaseToken: () => "lease_1",
     onWritebackCreated: (_organizationId, operationId) => {
@@ -2454,6 +2461,133 @@ test("a bounty written here is drafted beside the workspace's repositories", asy
   // spec and the code.
   assert.equal(drafted.length, 1);
   assert.equal("bounty" in (drafted[0] as object), false);
+});
+
+/** A spec posted with bounty `bty_7`, as its text read when posted. */
+async function postedFor(
+  overrides: Partial<StoredPostedSpec> = {},
+): Promise<StoredPostedSpec> {
+  const bounty = handWritten();
+  return {
+    bountyId: bounty.id,
+    organizationId: "org_1",
+    document: "Feature: Invitations",
+    draft: {
+      feature: "Invitations",
+      background: [],
+      scenarios: [
+        {
+          id: "s1",
+          kind: "happy",
+          title: "One invitation is sent",
+          steps: [{ keyword: "Then", text: "the candidate gets one email" }],
+          origin: "draft",
+          weight: "moderate",
+        },
+      ],
+      openQuestions: [],
+      assumptions: ["A rescheduled interview sends a new invitation."],
+    },
+    source: "duediligence@0.5.1",
+    specHash: await bountySpecHash(bounty.title, bounty.description),
+    specHashVersion: BOUNTY_SPEC_HASH_VERSION,
+    confirmedBy: "user_9",
+    confirmedCredential: "oauth",
+    createdBy: "user_9",
+    createdAt: "2026-09-21T00:00:00.000Z",
+    ...overrides,
+  };
+}
+
+test("a bounty posted with a spec is sized from it: no draft, its source kept, its decisions confirmed by the poster", async () => {
+  const posted = await postedFor();
+  const drafted: unknown[] = [];
+  const state = harness({
+    bounties: [handWritten()],
+    runOverrides: oneBountyRun("bty_7"),
+    outlinesFor: () => Promise.resolve(outlines.slice(0, 1)),
+    onProposalDrafted: (_org, input) => void drafted.push(input),
+    postedSpecs: { get: () => Promise.resolve(posted) },
+  });
+  await state.executor.execute("org_1", "brn_1");
+
+  assert.equal(state.finishes[0]?.status, "succeeded");
+  assert.deepEqual(
+    state.caller.calls.map(({ tool }) => tool),
+    ["size_bounty"],
+    "the spec is not drafted again",
+  );
+  const written = state.proposalInputs[0] as {
+    spec: Record<string, unknown>;
+    repositories: unknown;
+    rubric: unknown;
+  };
+  assert.deepEqual(written.spec, {
+    specHash: posted.specHash,
+    specHashVersion: BOUNTY_SPEC_HASH_VERSION,
+    draft: posted.draft,
+    origin: "draft",
+    actualModel: null,
+    promptVersion: null,
+    source: "duediligence@0.5.1",
+    createdBy: "user_9",
+    confirmation: {
+      confirmedBy: "user_9",
+      decisionsSha256: decisionsSha256(posted.draft),
+      via: "duediligence",
+      // Posted through an OAuth grant: the confirmation keeps the kind.
+      credential: "oauth",
+    },
+  });
+  // The one repository outlined is touched, and profiled, as a draft
+  // naming none would leave it.
+  assert.deepEqual(written.repositories, [
+    { repoId: "ghr_1", snapshotId: "rsn_1" },
+  ]);
+  assert.equal(drafted.length, 1);
+  assert.ok(written.rubric, "the rubric scores the posted spec");
+  assert.deepEqual(
+    state.progresses.find(
+      (each) => typeof each === "object" && each !== null && "spec" in each,
+    ),
+    { spec: posted.draft },
+  );
+});
+
+test("a posted spec unconfirmed, or with no decisions, carries no confirmation", async () => {
+  for (const posted of [
+    await postedFor({ confirmedBy: null }),
+    await postedFor({
+      draft: { ...(await postedFor()).draft, assumptions: [] },
+    }),
+  ]) {
+    const state = harness({
+      bounties: [handWritten()],
+      runOverrides: oneBountyRun("bty_7"),
+      postedSpecs: { get: () => Promise.resolve(posted) },
+    });
+    await state.executor.execute("org_1", "brn_1");
+    const written = state.proposalInputs[0] as { spec: object };
+    assert.equal("confirmation" in written.spec, false);
+    assert.equal(
+      (written.spec as { source: string }).source,
+      "duediligence@0.5.1",
+    );
+  }
+});
+
+test("a bounty edited since its spec was posted is drafted from its text", async () => {
+  const state = harness({
+    bounties: [handWritten()],
+    runOverrides: oneBountyRun("bty_7"),
+    postedSpecs: {
+      get: async () => postedFor({ specHash: "0".repeat(64) }),
+    },
+  });
+  await state.executor.execute("org_1", "brn_1");
+  assert.ok(state.caller.calls.some(({ tool }) => tool === "draft_spec"));
+  const written = state.proposalInputs[0] as { spec: object };
+  assert.equal("source" in written.spec, false);
 });
 
 test("a bounty following its Jira issue is read from Jira, and takes what it says", async () => {

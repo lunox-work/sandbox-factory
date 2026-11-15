@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import {
   followsJira,
   textFollowsJira,
+  type BountyPostedSpecStore,
   type BountyProposalStore,
   type BountyRunStore,
   type BountySpecStore,
@@ -78,6 +79,7 @@ import {
   REVISE_SPEC_PROMPT_VERSION,
 } from "../sizing/tools/revise-spec.js";
 import { sizeBountyTool } from "../sizing/tools/size-bounty.js";
+import { decisionsSha256 } from "./decisions.js";
 import { rubricCode, rubricPrice, rubricTakesOver } from "./rubric.js";
 import { selectBacklog, type BacklogPageReader } from "./selection.js";
 
@@ -176,6 +178,12 @@ export interface BountyExecutorOptions {
   readonly bounties: BountyStore;
   /** The spec revisions a `respec` run changes. */
   readonly specs: BountySpecStore;
+  /**
+   * The specs posted with bounties. A bounty that has one, still saying
+   * what it was posted with, is sized from it without a draft. Absent,
+   * every bounty's spec is drafted.
+   */
+  readonly postedSpecs?: Pick<BountyPostedSpecStore, "get">;
   /** The model behind every call a run makes: the spec draft and the size. */
   readonly caller: StructuredCaller;
   /**
@@ -866,6 +874,46 @@ export class BountyExecutor {
    * from it; one whose issue has gone, or that was written here, is sized
    * from what is stored.
    */
+  /**
+   * The bounty's posted spec as the proposal's first revision, its
+   * decisions confirmed by the poster when they posted it so; null when it
+   * has none, or its text changed since (`specHash` is what it says now).
+   */
+  async #postedSpec(
+    organizationId: string,
+    bountyId: string,
+    specHash: string,
+  ): Promise<NewBountySpec | null> {
+    const posted =
+      (await this.#options.postedSpecs?.get(organizationId, bountyId)) ?? null;
+    if (
+      posted === null ||
+      posted.specHash !== specHash ||
+      posted.specHashVersion !== BOUNTY_SPEC_HASH_VERSION
+    )
+      return null;
+    return {
+      specHash,
+      specHashVersion: BOUNTY_SPEC_HASH_VERSION,
+      draft: posted.draft,
+      origin: "draft",
+      actualModel: null,
+      promptVersion: null,
+      source: posted.source,
+      createdBy: posted.createdBy,
+      ...(posted.confirmedBy === null || posted.draft.assumptions.length === 0
+        ? {}
+        : {
+            confirmation: {
+              confirmedBy: posted.confirmedBy,
+              decisionsSha256: decisionsSha256(posted.draft),
+              via: "duediligence" as const,
+              credential: posted.confirmedCredential,
+            },
+          }),
+    };
+  }
+
   async #readCandidate(
     organizationId: string,
     candidate: Candidate,
@@ -1337,6 +1385,15 @@ export class BountyExecutor {
       labels,
     );
 
+    /*
+      A spec posted with the bounty and confirmed where it was written is
+      the spec: sizing prices it as posted and drafts none, so the
+      decisions the person confirmed are the ones hidden tests are written
+      to. Only while the bounty still says what it was posted with; an
+      edited bounty is drafted from its text.
+    */
+    const posted = await this.#postedSpec(organizationId, bounty.id, specHash);
+
     let sizing: BountySizingResult;
     let actualModel = run.requestedModel;
     let drafted: NewBountySpec | undefined;
@@ -1392,6 +1449,14 @@ export class BountyExecutor {
       };
 
       const draftCall = (async () => {
+        if (posted !== null) {
+          // No call: what the draft would name, the posted spec cannot,
+          // so the one repository outlined is touched, or none.
+          touched = touchedRepositories(outlines, []);
+          drafted = posted;
+          await preview({ spec: posted.draft });
+          return;
+        }
         try {
           const draft = await this.#call(
             run,

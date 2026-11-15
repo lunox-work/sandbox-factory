@@ -14,6 +14,13 @@ export const API_SCOPES = [
   "bounties:write",
   "pricing:write",
   "specs:write",
+  /**
+   * Record a spec's decisions as confirmed by the credential's person: a
+   * spec posted `confirmed: true` with its bounty. Without it the spec is
+   * posted with its decisions unconfirmed (`confirmation: "skipped_scope"`),
+   * so a grant made before the scope keeps posting.
+   */
+  "decisions:confirm",
   "sandboxes:write",
   "submissions:write",
   "judge",
@@ -98,6 +105,7 @@ export const CLI_CLIENTS = {
     "workspace:read",
     "bounties:write",
     "specs:write",
+    "decisions:confirm",
     "sandboxes:write",
     "submissions:write",
     "judge",

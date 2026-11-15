@@ -6123,6 +6123,136 @@ test("a version without a passing build cannot be published", async () => {
   expect(publish.hasAttribute("disabled")).toBe(true);
 });
 
+test("findings no owner acknowledged hold Publish, which says how many and links to them", async () => {
+  let acknowledged = false;
+  const ready = {
+    ...generatedSource,
+    origin: "upload",
+    harnessSha256: "h".repeat(64),
+    toolchainDigest: "d".repeat(64),
+  };
+  const state = generatingServer({
+    versions: () => [generatedVersion],
+    run: () => ({ status: "succeeded", finishedAt: stamp }),
+    source: () => ({
+      ...ready,
+      disclosureAcknowledgements: acknowledged
+        ? [{ kind: "host", value: "acme.io", note: null }]
+        : [],
+    }),
+    artifacts: [
+      artifactOf("build_manifest", {
+        ready: true,
+        baseline: { ok: true, reasons: [], steps: [] },
+        blockers: [],
+        disclosure: {
+          status: "pending_acknowledgement",
+          scannedBy: "upload",
+          names: 0,
+          blocking: 0,
+          acknowledgedAt: "publish",
+          total: 2,
+          acknowledged: 0,
+          findings: [
+            {
+              kind: "url",
+              file: "src/billing.ts",
+              line: 1,
+              value: "https://pay.acme.io/charges",
+              term: "pay.acme.io",
+              acknowledged: false,
+            },
+            {
+              kind: "email",
+              file: "src/billing.ts",
+              line: 4,
+              value: "ops@acme.io",
+              term: "acme.io",
+              acknowledged: false,
+            },
+          ],
+        },
+      }),
+    ],
+  });
+  vi.stubGlobal("fetch", state.fetchMock);
+  const part = await sandboxPart();
+  expect(await within(part).findByText("Baseline passes")).toBeDefined();
+  const publish = await within(part).findByRole("button", { name: "Publish" });
+  await waitFor(() => expect(publish.hasAttribute("disabled")).toBe(true));
+  expect(await reasonOn(publish)).toBe(
+    "Acknowledge 2 findings first: the disclosure scan found text that may say whose code this is.",
+  );
+  // The way to them, on the page: the findings panel.
+  const link = within(part).getByRole("link", { name: "Acknowledge them" });
+  const panel = within(part).getByTestId("disclosure-findings");
+  expect(link.getAttribute("href")).toBe(`#${panel.id}`);
+  await userEvent.click(link);
+  expect(document.activeElement).toBe(panel);
+  // A host the draft's list names covers both: Publish is free.
+  acknowledged = true;
+  cleanup();
+  const again = await sandboxPart();
+  const free = await within(again).findByRole("button", { name: "Publish" });
+  await waitFor(() => expect(free.hasAttribute("disabled")).toBe(false));
+  expect(
+    within(again).queryByRole("link", { name: /^Acknowledge/ }),
+  ).toBeNull();
+});
+
+test("a build still running, or decisions no person confirmed, hold Publish and say why", async () => {
+  const ready = {
+    ...generatedSource,
+    harnessSha256: "h".repeat(64),
+    toolchainDigest: "d".repeat(64),
+  };
+  vi.stubGlobal(
+    "fetch",
+    generatingServer({
+      versions: () => [generatedVersion],
+      run: () => ({ status: "running", startedAt: stamp }),
+      source: () => ready,
+    }).fetchMock,
+  );
+  let part = await sandboxPart();
+  let publish = await within(part).findByRole("button", { name: "Publish" });
+  await waitFor(() => expect(publish.hasAttribute("disabled")).toBe(true));
+  expect(await reasonOn(publish)).toBe(
+    "Its build is still running: publish once it passes.",
+  );
+  cleanup();
+
+  vi.stubGlobal(
+    "fetch",
+    generatingServer({
+      versions: () => [generatedVersion],
+      run: () => ({ status: "succeeded", finishedAt: stamp }),
+      artifacts: [artifactOf("build_manifest", { ready: true })],
+      source: () => ready,
+      routes: [
+        [
+          "GET",
+          "/proposals/bpr_7/decisions",
+          () =>
+            json({
+              specRevision: 2,
+              decisions: [{ key: "d1", text: "Half a cent rounds up." }],
+              decisionsSha256: "d".repeat(64),
+              confirmation: null,
+              confirmUrl: "/bounties/acme/bty_7?tab=price#decisions",
+            }),
+        ],
+      ],
+    }).fetchMock,
+  );
+  part = await sandboxPart();
+  publish = await within(part).findByRole("button", { name: "Publish" });
+  await waitFor(() => expect(publish.hasAttribute("disabled")).toBe(true));
+  expect(await reasonOn(publish)).toBe(
+    "Confirm the spec's decisions on the Price step first: hidden tests are written to them.",
+  );
+});
+
 test("a version taken from a bounty not approved cannot be published, and says why", async () => {
   vi.stubGlobal(
     "fetch",
@@ -6336,6 +6466,50 @@ test("a bounty whose price is a draft, or that has none, or whose scope is not a
       .getByRole("button", { name: "Generate" })
       .hasAttribute("disabled"),
   ).toBe(true);
+});
+
+test("a bounty posted with a duediligence spec says pricing takes it as written", async () => {
+  const postedSpec = {
+    source: "duediligence@0.5.1",
+    confirmed: true,
+    current: true,
+    createdAt: "2026-11-15T00:00:00.000Z",
+  };
+  vi.stubGlobal(
+    "fetch",
+    server([
+      [
+        "GET",
+        "/bounties/bty_7",
+        () => json({ bounty: detail({ postedSpec }) }),
+      ],
+    ]).fetchMock,
+  );
+  window.history.replaceState(null, "", "/bounties/acme/bty_7?tab=price");
+  render(<Shell {...inAcme("admin")} />);
+  const page = await screen.findByTestId("bounty-detail");
+  expect((await within(page).findByTestId("posted-spec")).textContent).toBe(
+    "Its spec came from duediligence 0.5.1, decisions confirmed there; pricing sizes it as written and drafts none.",
+  );
+  cleanup();
+
+  // Edited since: drafted from its text, so nothing is said.
+  vi.stubGlobal(
+    "fetch",
+    server([
+      [
+        "GET",
+        "/bounties/bty_7",
+        () =>
+          json({
+            bounty: detail({ postedSpec: { ...postedSpec, current: false } }),
+          }),
+      ],
+    ]).fetchMock,
+  );
+  render(<Shell {...inAcme("admin")} />);
+  await screen.findByTestId("bounty-detail");
+  expect(screen.queryByTestId("posted-spec")).toBeNull();
 });
 
 /** What a held control's tooltip says, once the span around it is hovered. */

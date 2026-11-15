@@ -808,7 +808,9 @@ export function mountPricingRoutes<Env extends PricingAppEnv>(
     current revision's assumptions (`specDecisions`), hashed as
     `decisionsText` writes them; a confirmation names that hash, so one
     made for other decisions reads as none. `confirmUrl` is the bounty's
-    Price step in the web app, where a person confirms: never a token.
+    Price step in the web app, where a person confirms: never a token. A
+    spec posted as confirmed with its bounty carries its poster's
+    confirmation (`via: "duediligence"`) from sizing on.
   */
   const decisionsOf = async (
     organizationId: string,
@@ -854,6 +856,9 @@ export function mountPricingRoutes<Env extends PricingAppEnv>(
           ? null
           : {
               confirmedBy: confirmed.confirmedBy,
+              confirmedByName: confirmed.confirmedByName,
+              via: confirmed.via,
+              credential: confirmed.credential,
               confirmedAt: confirmed.confirmedAt,
             },
       confirmUrl,
@@ -923,6 +928,8 @@ export function mountPricingRoutes<Env extends PricingAppEnv>(
       specRevision: parsed.data.specRevision,
       decisionsSha256: parsed.data.decisionsSha256,
       confirmedBy: c.get("user").id,
+      // The Price step's confirm is a person's session alone.
+      credential: "session",
     });
     if (confirmed === null)
       return c.json(

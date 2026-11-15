@@ -108,6 +108,8 @@ type Step =
 const WAIT: Step = { kind: "wait" };
 const MOVED: Step = { kind: "moved" };
 const full = (slot: RunSlot): Step => ({ kind: "full", slot });
+/** A row moved, then stepped on: what the onward step decided, or moved. */
+const onward = (step: Step): Step => (step === WAIT ? MOVED : step);
 
 export class BountyProfiler {
   readonly #options: BountyProfilerOptions;
@@ -231,7 +233,7 @@ export class BountyProfiler {
         // keeps it from asking.
         return filled.has("build") && filled.has("agent")
           ? Promise.resolve(WAIT)
-          : this.#scope(owner, profile);
+          : this.#scope(owner, profile, filled.has("build"));
       case "scoping":
         return this.#slice(owner, profile, filled.has("build"));
       case "slicing":
@@ -248,7 +250,11 @@ export class BountyProfiler {
    * scope waits for them to finish and names those that succeeded; one that
    * failed is left out, and the scope runs without it.
    */
-  async #scope(owner: string, profile: StoredBountyProfile): Promise<Step> {
+  async #scope(
+    owner: string,
+    profile: StoredBountyProfile,
+    buildFull: boolean,
+  ): Promise<Step> {
     if (profile.snapshotId === null)
       return this.#fail(owner, profile, "source_unavailable");
     const graph = await this.#enqueue(owner, profile.snapshotId, {
@@ -302,10 +308,21 @@ export class BountyProfiler {
     if (scope === null) return this.#fail(owner, profile, "source_unavailable");
     if (scope.status === "failed")
       return this.#fail(owner, profile, "scope_failed", scope.errorCode);
-    return this.#advance(owner, profile, {
+    const step = await this.#advance(owner, profile, {
       status: "scoping",
       scopeRunId: scope.id,
     });
+    // A scope found done in the cache (another bounty's profile asked for
+    // the same one) is taken on in this pass, not the next sweep's.
+    return step === MOVED && scope.status === "succeeded"
+      ? onward(
+          await this.#slice(
+            owner,
+            { ...profile, status: "scoping", scopeRunId: scope.id },
+            buildFull,
+          ),
+        )
+      : step;
   }
 
   /** scoping → slicing: once the scope has succeeded, the slice it chose. */
@@ -339,10 +356,22 @@ export class BountyProfiler {
     if (slice === null) return this.#fail(owner, profile, "source_unavailable");
     if (slice.status === "failed")
       return this.#fail(owner, profile, "slice_failed", slice.errorCode);
-    return this.#advance(owner, profile, {
+    const step = await this.#advance(owner, profile, {
       status: "slicing",
       sliceRunId: slice.id,
     });
+    // A slice already built for another bounty settles the profile now:
+    // price approval waits on a settled profile, and the next sweep is up
+    // to PROFILE_SWEEP_MS away.
+    return step === MOVED && slice.status === "succeeded"
+      ? onward(
+          await this.#build(owner, {
+            ...profile,
+            status: "slicing",
+            sliceRunId: slice.id,
+          }),
+        )
+      : step;
   }
 
   /**

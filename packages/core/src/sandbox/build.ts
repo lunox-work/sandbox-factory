@@ -289,8 +289,14 @@ export interface SandboxBuildManifest {
    * checked its vocabulary and extracted its stubs. Absent from a build made
    * before carveout 0.3.0, whose names carry back under the platform's
    * renaming of then (`ALIASES_V1`); present, under the release's.
+   * `projectGenerator` names the engine that wrote the project when it is
+   * not the platform's own `generateProject` (absent): `carveout`, the
+   * worker's adapter over carveout's `generateProject`, off by default.
    */
-  readonly engines?: { readonly carveout: string };
+  readonly engines?: {
+    readonly carveout: string;
+    readonly projectGenerator?: "carveout";
+  };
   /**
    * Where the version keeps its harness and tests, and the commands that
    * grade it (`layout.ts`). Absent: the platform's own layout, as every

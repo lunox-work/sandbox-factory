@@ -345,6 +345,45 @@ test("an upload's or starter's findings wait for publication: the build stays re
     ],
   );
   assert.equal(held.evidence.disclosureBlocking, 3);
+  // The refusal names findings that wait for an acknowledgement, not
+  // blocking findings: two open on the record, then three past it.
+  const reasonsOf = (gated: ReturnType<typeof gatesOf>) =>
+    freezeReadiness(
+      {
+        ...source,
+        roundTripRunId: gated.roundTripRunId,
+        disclosureRunId: gated.disclosureRunId,
+      },
+      gated.evidence,
+    ).reasons;
+  const unacknowledged = gatesOf("arn_build", {
+    ...manifest,
+    gates: {
+      roundTrip: { status: "not_applicable", files: 0, problems: [] },
+      disclosure: pending,
+    },
+  });
+  assert.equal(unacknowledged.evidence.disclosureAwaiting, 2);
+  assert.deepEqual(reasonsOf(unacknowledged), [
+    "2 findings wait for an owner's acknowledgement.",
+  ]);
+  assert.deepEqual(reasonsOf(held), [
+    "3 findings wait for an owner's acknowledgement.",
+  ]);
+  const one = gatesOf(
+    "arn_build",
+    {
+      ...manifest,
+      gates: {
+        roundTrip: { status: "not_applicable", files: 0, problems: [] },
+        disclosure: pending,
+      },
+    },
+    [{ kind: "host", value: "stripe.com" }],
+  );
+  assert.deepEqual(reasonsOf(one), [
+    "1 finding waits for an owner's acknowledgement.",
+  ]);
   // Names or credentials fail the gate whatever is acknowledged.
   const leaked = disclosureGate(
     [{ code: "secret_found", file: "a.ts", detail: "" }],
@@ -359,6 +398,17 @@ test("an upload's or starter's findings wait for publication: the build stays re
   );
   assert.equal(leaked.status, "failed");
   assert.equal(leaked.blocking, 1);
+  const leakedGates = gatesOf("arn_build", {
+    ...manifest,
+    gates: {
+      roundTrip: { status: "not_applicable", files: 0, problems: [] },
+      disclosure: leaked,
+    },
+  });
+  assert.equal(leakedGates.evidence.disclosureAwaiting, undefined);
+  assert.deepEqual(reasonsOf(leakedGates), [
+    "The disclosure scan has blocking findings.",
+  ]);
   // Nothing found passes outright; a sliced build's gate reads its marks.
   assert.equal(
     disclosureGate([], 0, "upload", {

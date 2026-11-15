@@ -341,14 +341,18 @@ test("each endpoint lists exactly its toolset", async () => {
   }
 });
 
-/** What signing in at each endpoint asks for: every scope its tools need. */
+/**
+ * What signing in at each endpoint asks for: every scope its tools need,
+ * and `decisions:confirm`, which post_bounty reads for a spec posted
+ * confirmed.
+ */
 const SIGN_IN_SCOPES: Record<string, string> = {
   "/mcp":
-    "workspace:read integrations:write bounties:write pricing:write specs:write sandboxes:write submissions:write offline_access",
+    "workspace:read integrations:write bounties:write pricing:write specs:write decisions:confirm sandboxes:write submissions:write offline_access",
   "/mcp/duediligence":
-    "workspace:read bounties:write pricing:write specs:write sandboxes:write submissions:write offline_access",
+    "workspace:read bounties:write pricing:write specs:write decisions:confirm sandboxes:write submissions:write offline_access",
   "/mcp/carveout":
-    "workspace:read bounties:write pricing:write sandboxes:write submissions:write offline_access",
+    "workspace:read bounties:write pricing:write decisions:confirm sandboxes:write submissions:write offline_access",
   "/mcp/contribute": "contributions:write offline_access",
 };
 

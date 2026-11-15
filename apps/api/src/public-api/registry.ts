@@ -588,7 +588,7 @@ export const PUBLIC_ROUTES: readonly PublicRoute[] = [
     idempotent: true,
     scope: "bounties:write",
     summary:
-      "Write a bounty from text, or import one from a connected repository's GitHub issue (`source.githubIssue`; an issue imported before answers 200 with its bounty)",
+      "Write a bounty from text, optionally with a spec confirmed in duediligence (`spec`: sized as posted, its decisions confirmed by the poster when the credential holds `decisions:confirm`, else `confirmation: skipped_scope`; 422 `invalid_spec` with `problems` when it cannot be stored as written), or import one from a connected repository's GitHub issue (`source.githubIssue`; an issue imported before answers 200 with its bounty)",
     tag: "Bounties",
     request: postBountySchema,
     response: created(bountyResponseSchema),

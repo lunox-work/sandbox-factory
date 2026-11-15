@@ -32,7 +32,8 @@
 
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
-import { folderLayout, type FolderLayout } from "carveout/api";
+import { folderLayout } from "carveout/api";
+import { gradingLayoutOf } from "./folder-layout.js";
 import {
   SANDBOX_COMMANDS,
   SANDBOX_IMPORT_TOOL_VERSION,
@@ -118,45 +119,7 @@ export function parseUpload(text: string): StoredUpload | null {
   };
 }
 
-/**
- * carveout's layout of a folder as grading reads it: the same, with the
- * descriptor the platform adds among the files a submission never changes.
- */
-export function gradingLayoutOf(folder: FolderLayout): GradingLayout {
-  return {
-    harnessDir: folder.harnessDir,
-    mocksDir: folder.mocksDir,
-    mockRuntimePath: folder.mockRuntimePath,
-    envFile: folder.envFile,
-    harnessRoots: [...folder.harnessRoots],
-    configFiles: {
-      ...folder.configFiles,
-      [TASK_DESCRIPTOR_PATH]: `${TASK_DESCRIPTOR_PATH} is the version's.`,
-    },
-    commands: folder.commands.map(({ name, argv }) => ({
-      name,
-      argv: [...argv],
-    })),
-    tests: {
-      publicDir: folder.tests.publicDir,
-      privateDir: folder.tests.privateDir,
-      files: [...folder.tests.files],
-      run: {
-        "node:test": {
-          argv: [...folder.tests.run["node:test"].argv],
-          emitted: folder.tests.run["node:test"].emitted,
-        },
-        vitest:
-          folder.tests.run.vitest === null
-            ? null
-            : {
-                argv: [...folder.tests.run.vitest.argv],
-                emitted: folder.tests.run.vitest.emitted,
-              },
-      },
-    },
-  };
-}
+export { gradingLayoutOf };
 
 const under = (path: string, dir: string) =>
   path === dir || path.startsWith(`${dir}/`);

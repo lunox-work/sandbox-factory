@@ -1692,6 +1692,17 @@ function BountyDetail({
           {canManage
             ? "Price it to have its scope sized and priced."
             : "An owner or admin can price it."}
+          {/*
+            Posted with a spec from duediligence: pricing takes it as
+            written, while the scope still says what it was posted with.
+          */}
+          {bounty.postedSpec?.current === true && (
+            <span className="block" data-testid="posted-spec">
+              {`Its spec came from ${bounty.postedSpec.source.replace("@", " ")}${
+                bounty.postedSpec.confirmed ? ", decisions confirmed there" : ""
+              }; pricing sizes it as written and drafts none.`}
+            </span>
+          )}
         </NoVersion>
       </StepVersionCard>
     );
@@ -1872,6 +1883,7 @@ function BountyDetail({
           // A slice is generated, and published, from an approved scope
           // and price only.
           generationBlocked={sandboxHeld}
+          decisionsHeld={decisionsHeld}
           readOnly={readOnly}
           context={sandboxContext}
           onChanged={() => {

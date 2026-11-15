@@ -622,6 +622,68 @@ test("a slice exactly at the automatic limits is ready without an approval", asy
   );
 });
 
+test("a slice another bounty's profile already built settles the profile in the same sweep", async () => {
+  const h = harness();
+  h.specs.set("bpr_2:2", h.specs.get("bpr_1:2") as StoredBountySpec);
+  await h.profiles.request(OWNER, request);
+  await h.profiler.sweep();
+  scoped(h);
+  await h.profiler.sweep();
+  sliced(h);
+  await h.profiler.sweep();
+  assert.equal(h.profiles.only().status, "ready");
+
+  // Another proposal on the same code: its own scope, which chooses the
+  // same slice, found built in the cache.
+  await h.profiles.request(OWNER, { ...request, proposalId: "bpr_2" });
+  await h.profiler.sweep();
+  const second = () =>
+    [...h.profiles.rows.values()].find((row) => row.proposalId === "bpr_2");
+  assert.equal(second()?.status, "scoping");
+  const scope = h.runs.runs.get(second()?.scopeRunId ?? "");
+  assert.ok(scope !== undefined);
+  h.runs.runs.set(scope.id, { ...scope, status: "succeeded" });
+  h.artifacts.set(scope.id, [
+    artifact(scope.id, "scope_proposal", { ...scopeMeta, proposalId: "bpr_2" }),
+  ]);
+  const enqueues = h.runs.enqueued.length;
+  await h.profiler.sweep();
+  // Ready now, not one PROFILE_SWEEP_MS later, on the first slice run.
+  assert.equal(second()?.status, "ready");
+  assert.equal(second()?.sliceRunId, h.profiles.rows.get("bpf_1")?.sliceRunId);
+  assert.equal(h.runs.enqueued.length, enqueues + 1);
+  assert.deepEqual(
+    h.settled.map((row) => [row.proposalId, row.status]),
+    [
+      ["bpr_1", "ready"],
+      ["bpr_2", "ready"],
+    ],
+  );
+  assert.deepEqual(h.errors, []);
+});
+
+test("a scope and slice both found done take a queued profile to ready in one sweep", async () => {
+  const h = harness();
+  // Run ids follow the queue's order: graph, its two readers, documents,
+  // brief, then the scope (6) and its slice (7).
+  h.runs.startAs.set("scope", "succeeded");
+  h.runs.startAs.set("slice", "succeeded");
+  h.artifacts.set("arn_scope_6", [
+    artifact("arn_scope_6", "scope_proposal", scopeMeta),
+  ]);
+  h.artifacts.set("arn_slice_7", [
+    artifact("arn_slice_7", "boundary_contract", boundaryMeta),
+  ]);
+  await h.profiles.request(OWNER, request);
+  await h.profiler.sweep();
+  const row = h.profiles.only();
+  assert.equal(row.status, "ready");
+  assert.equal(row.scopeRunId, "arn_scope_6");
+  assert.equal(row.sliceRunId, "arn_slice_7");
+  assert.equal(h.settled.length, 1);
+  assert.deepEqual(h.errors, []);
+});
+
 test("at the organization's analysis cap a profile waits, and the rest of the sweep enqueues nothing of that slot", async () => {
   const h = harness();
   h.runs.refuse.set("graphify", { ok: false, reason: "run_limit" });

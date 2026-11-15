@@ -27,6 +27,7 @@ test("the scope list is the public API's, and only it is recognized", () => {
     "bounties:write",
     "pricing:write",
     "specs:write",
+    "decisions:confirm",
     "sandboxes:write",
     "submissions:write",
     "judge",
@@ -46,6 +47,9 @@ test("each command-line client holds only known scopes, reading included", () =>
     // A client never manages webhooks: that is a person's setup.
     assert.equal(cliScopes(client).includes("webhooks:write"), false);
   }
+  // duediligence posts specs its person confirmed; carveout confirms none.
+  assert.equal(cliScopes("duediligence").includes("decisions:confirm"), true);
+  assert.equal(cliScopes("carveout").includes("decisions:confirm"), false);
   assert.equal(isCliClient("carveout"), true);
   // Inherited names are not clients.
   for (const value of ["", "toString", "constructor", "vscode"])

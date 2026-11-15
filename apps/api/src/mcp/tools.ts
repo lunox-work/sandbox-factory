@@ -38,6 +38,7 @@ import {
   respecRequestSchema,
   SUBMISSION_LIMITS,
   UPLOAD_CARVEOUT_MIN_VERSION,
+  postedSpecSchema,
 } from "@sandbox-factory/shared";
 import {
   API_SCOPES,
@@ -79,6 +80,12 @@ interface Tool {
   readonly name: string;
   /** The scope its one route needs (the public registry's), null for none. */
   readonly scope: CredentialScope | null;
+  /**
+   * Scopes its route reads beyond that one, which widen what it does
+   * without being needed to call it (`decisions:confirm` on post_bounty):
+   * asked for at sign-in too.
+   */
+  readonly alsoScopes: readonly CredentialScope[];
   /** The registry audience of its route. */
   readonly audience: ToolAudience;
   /** The route it calls, from its arguments and the workspace id. */
@@ -154,6 +161,7 @@ async function workspaceOf(
 function tool<Shape extends z.ZodRawShape>(definition: {
   name: string;
   scope: CredentialScope | null;
+  alsoScopes?: readonly CredentialScope[];
   /** A contributor tool; a workspace tool when left out. */
   audience?: "contributor";
   description: string;
@@ -176,6 +184,7 @@ function tool<Shape extends z.ZodRawShape>(definition: {
   return {
     name: definition.name,
     scope: definition.scope,
+    alsoScopes: definition.alsoScopes ?? [],
     audience: definition.audience ?? "workspace",
     method: definition.method ?? "GET",
     route: (args, organizationId) =>
@@ -538,8 +547,10 @@ export const TOOLS = [
   tool({
     name: "post_bounty",
     scope: "bounties:write",
+    // A spec posted confirmed records its decisions confirmed only with it.
+    alsoScopes: ["decisions:confirm"],
     description:
-      "Write a new bounty in the workspace from a title and a description of the work. It is not sized; call size_bounty with its id to price it.",
+      "Write a new bounty in the workspace from a title and a description of the work. It is not sized; call size_bounty with its id to price it. With spec, post a spec confirmed in duediligence (spec.md as written, format duediligence, confirmed true once its Decided: items were confirmed): sizing prices that spec and drafts none, and its decisions need no second confirmation. A spec that cannot be stored as written is refused (invalid_spec) with each problem's path. Without a description, the bounty's description is the spec.",
     input: {
       title: z
         .string()
@@ -559,14 +570,20 @@ export const TOOLS = [
         .describe(
           "Technologies the work needs beyond what the repositories use.",
         ),
+      spec: postedSpecSchema
+        .optional()
+        .describe(
+          "A spec confirmed in duediligence: { document: spec.md's text, format: 'duediligence', confirmed: true once a person confirmed its Decided: items, engine?: { name: 'duediligence', version } }.",
+        ),
     },
     scoped: true,
     method: "POST",
     path: (_args, workspace) => `${org(workspace)}/bounties`,
-    body: ({ title, description, stack }) => ({
+    body: ({ title, description, stack, spec }) => ({
       title,
       ...(description === undefined ? {} : { description }),
       ...(stack === undefined ? {} : { stack }),
+      ...(spec === undefined ? {} : { spec }),
     }),
   }),
   tool({
@@ -1153,7 +1170,10 @@ export function toolsetScopes(path: string): CredentialScope[] {
     return CONTRIBUTOR_SCOPES.filter((scope) => needed.has(scope));
   }
   const needed = new Set<CredentialScope>(MCP_DEFAULT_SCOPES);
-  for (const entry of tools) if (entry.scope !== null) needed.add(entry.scope);
+  for (const entry of tools) {
+    if (entry.scope !== null) needed.add(entry.scope);
+    for (const scope of entry.alsoScopes) needed.add(scope);
+  }
   return API_SCOPES.filter((scope) => needed.has(scope));
 }
 

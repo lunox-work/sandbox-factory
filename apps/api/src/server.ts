@@ -18,6 +18,7 @@ import {
   createConnection,
   createBountyProfileStore,
   createBountyProposalStore,
+  createBountyPostedSpecStore,
   createBountySpecStore,
   createDecisionConfirmationStore,
   createContributorStore,
@@ -163,6 +164,7 @@ const bountyRuns = createBountyRunStore(connection.db, { tokenQuota });
 const bountyProposals = createBountyProposalStore(connection.db);
 const bountySpecs = createBountySpecStore(connection.db);
 const decisionConfirmations = createDecisionConfirmationStore(connection.db);
+const postedSpecs = createBountyPostedSpecStore(connection.db);
 const bountyProfiles = createBountyProfileStore(connection.db);
 const jiraIssues = createJiraIssueStore(connection.db);
 /** The organization's bounties: what every proposal prices, from any source. */
@@ -331,6 +333,7 @@ const bountyExecutor =
         issues: jiraIssues,
         bounties,
         specs: bountySpecs,
+        postedSpecs,
         caller,
         modelUsage,
         clientFor: runClientFor,
@@ -874,6 +877,7 @@ const app = createApp({
     proposals: bountyProposals,
     specs: bountySpecs,
     decisions: decisionConfirmations,
+    postedSpecs,
     issues: jiraIssues,
     bounties,
     contexts: bountyContexts,

@@ -25,6 +25,7 @@ import {
   createApiTokenStore,
   createArtifactStore,
   createBountyContextStore,
+  createBountyPostedSpecStore,
   createBountyProfileStore,
   createBountyProposalStore,
   createBountyRunStore,
@@ -166,6 +167,7 @@ export async function composePlatform({
   });
   const bountyProposals = createBountyProposalStore(db);
   const bountySpecs = createBountySpecStore(db);
+  const postedSpecs = createBountyPostedSpecStore(db);
   const bountyProfiles = createBountyProfileStore(db);
   const jiraIssues = createJiraIssueStore(db);
   const jiraBoards = createJiraBoardStore(db);
@@ -260,6 +262,7 @@ export async function composePlatform({
     issues: jiraIssues,
     bounties,
     specs: bountySpecs,
+    postedSpecs,
     caller,
     modelUsage,
     clientFor: runClientFor,
@@ -505,6 +508,7 @@ export async function composePlatform({
       proposals: bountyProposals,
       specs: bountySpecs,
       decisions,
+      postedSpecs,
       issues: jiraIssues,
       bounties,
       contexts: bountyContexts,
@@ -652,16 +656,22 @@ export async function composePlatform({
   /**
    * The platform's background work, until nothing moves: the profiler,
    * cutter and preparer each swept, then every queued run run, again and
-   * again until a pass runs nothing.
+   * again until `quietPasses` passes in a row run nothing. Two by default,
+   * as a margin for a sweep that moves a row onto a run that already ran
+   * and queues nothing; the profiler takes a cached scope or slice on in
+   * the same sweep, so one quiet pass settles a profile (the duediligence
+   * steps hold it to that).
    */
-  async function settle(maxPasses = 25) {
+  async function settle({ quietPasses = 2, maxPasses = 25 } = {}) {
+    let quiet = 0;
     for (let pass = 0; pass < maxPasses; pass += 1) {
       await Promise.all(deliveries.splice(0));
       await mergeCi.sweep();
       await bountyProfiler.sweep();
       await sandboxCutter.sweep();
       await sandboxPreparer.sweep(true);
-      if ((await drainRuns()) === 0) return;
+      quiet = (await drainRuns()) === 0 ? quiet + 1 : 0;
+      if (quiet === quietPasses) return;
     }
     throw new Error(`The platform did not settle in ${maxPasses} passes.`);
   }

@@ -20,6 +20,7 @@ import {
 } from "sandbox-factory";
 import { and, desc, eq, inArray, isNull, or, sql, type SQL } from "drizzle-orm";
 
+import { insertPostedSpec, type NewPostedSpec } from "./bounty-posted-specs.js";
 import type { Database, QueryExecutor } from "./errors.js";
 import type { ProposalRepository } from "./schema.js";
 import { generateId } from "./mapping.js";
@@ -161,6 +162,8 @@ export interface NewBounty {
   readonly source?: { readonly origin: "github"; readonly url: string };
   /** The source's text was longer than a bounty keeps. */
   readonly inputTruncated?: boolean;
+  /** A spec posted with it, written in the same transaction. */
+  readonly postedSpec?: NewPostedSpec;
 }
 
 /** A change to a bounty; an absent field is left as it is. */
@@ -847,8 +850,8 @@ async function decide(
 export function createBountyStore(db: Database): BountyStore {
   return {
     async create(organizationId, createdBy, input) {
-      const row = await db.transaction((tx) =>
-        insertBounty(tx, organizationId, {
+      const row = await db.transaction(async (tx) => {
+        const created = await insertBounty(tx, organizationId, {
           title: input.title,
           description: input.description,
           origin: input.source?.origin ?? "manual",
@@ -856,8 +859,17 @@ export function createBountyStore(db: Database): BountyStore {
           inputTruncated: input.inputTruncated ?? false,
           stack: [...input.stack],
           createdBy,
-        }),
-      );
+        });
+        if (input.postedSpec !== undefined)
+          await insertPostedSpec(
+            tx,
+            organizationId,
+            created.id,
+            createdBy,
+            input.postedSpec,
+          );
+        return created;
+      });
       return toBounty(row, NO_LINK);
     },
 

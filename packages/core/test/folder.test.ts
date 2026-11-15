@@ -299,6 +299,21 @@ test("files[] drop exactly the build output a folder skips, and the version's ow
     true,
   );
   assert.equal(isBuildOutput("src/x.ts", present, version), false);
+  // carveout's runner records what each `npm test` ran, under its harness:
+  // never the contributor's work, unless the version holds the file.
+  assert.equal(isBuildOutput("carveout/.last-run.tap", present, version), true);
+  assert.equal(
+    isBuildOutput("carveout/.last-run.json", present, version),
+    true,
+  );
+  assert.equal(
+    isBuildOutput(
+      "carveout/.vitest.json",
+      present,
+      new Set(["carveout/.vitest.json"]),
+    ),
+    false,
+  );
   // What the folder rules skip is what the files[] rule drops: the same sets.
   const result = folderSubmission({
     files: [

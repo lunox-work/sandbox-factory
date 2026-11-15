@@ -57,7 +57,6 @@ import {
   PSEUDONYMS_SCHEMA_VERSION,
   RUN_PATH,
   SANDBOX_BUILD_RUN_VERSION,
-  SANDBOX_RUN_ARGV,
   SANDBOX_BUILD_SCHEMA_VERSION,
   SANDBOX_TOOLCHAIN,
   TASK_DESCRIPTOR_PATH,
@@ -77,7 +76,6 @@ import {
   disclosureHints,
   disclosureRecords,
   draftPseudonyms,
-  generateProject,
   noChangeRoundTrip,
   specDecisions,
   isSandboxBuildParams,
@@ -94,7 +92,6 @@ import {
   hiddenTestRun,
   PLATFORM_LAYOUT,
   stagedHiddenTest,
-  runtimePath,
   testRunnerOf,
   transformConfigOf,
   vocabularyBlockers,
@@ -158,6 +155,12 @@ import { loadSliceRun, readIncludedSource } from "./slice-run.js";
 import type { RunTiming } from "../timing.js";
 import { together } from "../together.js";
 import { BUILD_ENGINES } from "./engines.js";
+import {
+  PLATFORM_RUN,
+  generateOnEngine,
+  projectRunOf,
+} from "./project-generator.js";
+import type { ProjectGenerator, ProjectRun } from "./project-generator.js";
 import { publicLeaks } from "./vocabulary-check.js";
 
 export interface SandboxBuildOptions {
@@ -175,6 +178,12 @@ export interface SandboxBuildOptions {
    * baseline accepted.
    */
   readonly calibration?: "reference" | "off";
+  /**
+   * Which generator writes the project (`project-generator.ts`): the
+   * platform's own (the default) or carveout's with the platform's layers
+   * over it, recorded as `engines.projectGenerator`. Off by default.
+   */
+  readonly projectGenerator?: ProjectGenerator;
   readonly now?: () => Date;
 }
 
@@ -470,12 +479,15 @@ async function runBaseline(
     readonly log: (line: string) => void;
     readonly now: () => Date;
     readonly onStep?: StepObserver;
+    /** The project's commands; the platform's own unless an engine says. */
+    readonly run?: ProjectRun | undefined;
   },
 ): Promise<{
   baseline: BaselineReport;
   evaluator: EvaluationEnvironment;
   lockfile: string | null;
 }> {
+  const commands = input.run ?? PLATFORM_RUN;
   let job;
   try {
     job = await provider.create({ label: input.label, signal: input.signal });
@@ -568,18 +580,19 @@ async function runBaseline(
           // The walkthrough a developer runs first must run on the baseline.
           // Both scripts build again first, for a developer's own runs; the
           // baseline has just built, so it runs what they run after.
-          await run("dev", SANDBOX_RUN_ARGV.dev);
-          await run("public-tests", SANDBOX_RUN_ARGV.test);
+          await run("dev", commands.dev);
+          await run("public-tests", commands.publicTests);
           // Every hidden test runs twice, the second round after the first
           // has finished, and must say the same of each test both times: a
           // test that passes or fails by timing or leftover state cannot
           // judge a submission. Only the tests run again, not the build.
           const runTest = async (test: AcceptanceTest) => {
+            const one = commands.oneTest(test.path);
             const { step, stdout } = await run(
               "private-test",
-              privateTestArgv(test.path),
+              one.argv,
               test.path,
-              { entry: runtimePath(test.path), load: "memory" },
+              one.hidden,
             );
             return {
               index: steps.length - 1,
@@ -732,6 +745,8 @@ async function trialCarriedTests(
     readonly tests: readonly string[];
     readonly signal: AbortSignal;
     readonly log: (line: string) => void;
+    /** One test file on its own; the platform's command unless an engine says. */
+    readonly oneTest?: ((path: string) => readonly string[]) | undefined;
   },
 ): Promise<Map<string, CarriedOutcome>> {
   const outcomes = new Map<string, CarriedOutcome>();
@@ -811,7 +826,10 @@ async function trialCarriedTests(
     // Two rounds, the second after the first has finished, as hidden
     // tests run: a test that passes by timing or leftover state is flaky.
     const once = async (path: string) => {
-      const result = await exec(privateTestArgv(path), CARRIED_TEST_TIMEOUT_MS);
+      const result = await exec(
+        (input.oneTest ?? privateTestArgv)(path),
+        CARRIED_TEST_TIMEOUT_MS,
+      );
       return {
         outcome: carriedTestOutcome(result),
         points: tapPoints(result.stdout).join("\n"),
@@ -887,6 +905,7 @@ async function carryRepositoryTests(input: {
   readonly screen: (file: GeneratedFile) => string | null;
   readonly signal: AbortSignal;
   readonly log: (line: string) => void;
+  readonly oneTest?: ((path: string) => readonly string[]) | undefined;
 }): Promise<{ files: CarriedTestFile[]; record: CarriedTestsRecord }> {
   const limits = input.manifest.params.carriedTestLimits ?? CARRIED_TEST_LIMITS;
   const texts = new Map<string, string>();
@@ -958,6 +977,7 @@ async function carryRepositoryTests(input: {
       tests: screened.map((file) => file.path),
       signal: input.signal,
       log: input.log,
+      oneTest: input.oneTest,
     });
     for (const file of screened) {
       const outcome = outcomes.get(file.path) ?? {
@@ -1267,6 +1287,8 @@ export async function writeBuildOutputs(input: {
   readonly blockers: readonly ProjectBlocker[];
   /** A layout other than the platform's, recorded for grading (an upload's). */
   readonly layout?: GradingLayout;
+  /** The engine that wrote the project, when not the platform's own. */
+  readonly projectGenerator?: "carveout";
   /** An uploaded folder's record hash and carveout release. */
   readonly upload?: SandboxBuildManifest["upload"];
   /** The publication gates the build ran (`PublicationGates`). */
@@ -1293,7 +1315,10 @@ export async function writeBuildOutputs(input: {
     ...input.bindings,
     toolchain: SANDBOX_TOOLCHAIN,
     toolchainDigest: sha256(canonicalJson(SANDBOX_TOOLCHAIN)),
-    engines: BUILD_ENGINES,
+    engines:
+      input.projectGenerator === undefined
+        ? BUILD_ENGINES
+        : { ...BUILD_ENGINES, projectGenerator: input.projectGenerator },
     ...(input.layout === undefined ? {} : { layout: input.layout }),
     ...(input.upload === undefined ? {} : { upload: input.upload }),
     evaluator: input.evaluator,
@@ -1505,11 +1530,19 @@ export async function baselineOf(
      * folder's): its own commands run, and its hidden tests by its runner.
      */
     readonly layout?: GradingLayout | undefined;
+    /**
+     * The commands of a project the build generated on another engine
+     * (`project-generator.ts`): it runs as the platform's does, in one job
+     * that prepares its lockfile, with these commands, whatever its layout.
+     */
+    readonly run?: ProjectRun | undefined;
   },
 ): Promise<{ baseline: BaselineReport; evaluator: EvaluationEnvironment }> {
   const { layout } = input;
   const result =
-    layout === undefined || layout === PLATFORM_LAYOUT
+    layout === undefined ||
+    layout === PLATFORM_LAYOUT ||
+    input.run !== undefined
       ? await runBaseline(provider, input)
       : await runLayoutBaseline(provider, { ...input, layout });
   input.timing?.baseline(result.baseline.steps);
@@ -1603,6 +1636,13 @@ export function createSandboxBuildAdapter(
       if (!isSandboxBuildParams(params)) throw new AnalysisError("tool_failed");
       const snapshot = snapshotOf(input);
       const provider = options.provider;
+      const engine = options.projectGenerator ?? "platform";
+      // The engine's commands for every baseline of this build; nothing
+      // for the platform's, whose commands are the default.
+      const engineRun =
+        engine === "platform" ? {} : { run: projectRunOf(engine) };
+      // The layout the engine's last project records; none is the platform's.
+      let projectLayout: GradingLayout | undefined;
       if (provider === null) {
         input.log("No evaluation provider is configured on this worker.");
         throw new AnalysisError("evaluation_failed");
@@ -1955,7 +1995,7 @@ export function createSandboxBuildAdapter(
           tests: readonly AcceptanceTest[],
           carried: readonly { path: string; text: string }[] = carriedKept,
         ) => {
-          const project = generateProject({
+          const project = generateOnEngine(engine, {
             version: {
               sandboxId: version.sandboxId,
               versionId: version.id,
@@ -1984,9 +2024,10 @@ export function createSandboxBuildAdapter(
             ...(compilerOptions === undefined ? {} : { compilerOptions }),
             ...(carried.length === 0 ? {} : { carriedTests: carried }),
           });
+          if (project.layout !== undefined) projectLayout = project.layout;
           return {
-            files: [...project.files],
-            blockers: [...project.blockers],
+            files: project.files,
+            blockers: project.blockers,
             importRewrites: project.importRewrites,
           };
         };
@@ -2205,6 +2246,7 @@ export function createSandboxBuildAdapter(
                   ? project.files
                   : null;
               },
+              oneTest: (path) => projectRunOf(engine).oneTest(path).argv,
               screen: (file) => {
                 const leaks = leaksOf([file]);
                 if (leaks.length > 0)
@@ -2315,6 +2357,7 @@ export function createSandboxBuildAdapter(
             log: input.log,
             now,
             timing: input.timing,
+            ...engineRun,
           });
           if (!lacksTests(result.baseline)) unwanted.abort();
           return result;
@@ -2343,6 +2386,7 @@ export function createSandboxBuildAdapter(
                   log: input.log,
                   now,
                   timing: input.timing,
+                  ...engineRun,
                 }),
               signal: hiddenSignal,
               log: input.log,
@@ -2400,6 +2444,7 @@ export function createSandboxBuildAdapter(
                   log: input.log,
                   now,
                   timing: input.timing,
+                  ...engineRun,
                 }),
               signal: input.signal,
               log: input.log,
@@ -2502,6 +2547,8 @@ export function createSandboxBuildAdapter(
         evaluator,
         blockers,
         ...(carriedTests === null ? {} : { carriedTests: carriedTests.record }),
+        ...(projectLayout === undefined ? {} : { layout: projectLayout }),
+        ...(engine === "platform" ? {} : { projectGenerator: engine }),
       });
       if (wrote) {
         const absolutePath = join(input.outDir, BUILD_TRANSFORM_PATH);

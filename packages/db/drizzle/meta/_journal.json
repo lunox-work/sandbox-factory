@@ -631,6 +631,20 @@
       "when": 1794700570917,
       "tag": "0089_disclosure_acknowledgements",
       "breakpoints": true
+    },
+    {
+      "idx": 90,
+      "version": "7",
+      "when": 1794709744677,
+      "tag": "0090_posted_spec",
+      "breakpoints": true
+    },
+    {
+      "idx": 91,
+      "version": "7",
+      "when": 1794711493372,
+      "tag": "0091_decision_credential",
+      "breakpoints": true
     }
   ]
 }

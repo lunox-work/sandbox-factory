@@ -224,7 +224,10 @@ error says to sign in again.
 `get_decisions` reads a spec's decisions (its assumptions, keyed `d1…`,
 hashed) and `confirm_link` returns the web page where a person confirms
 them (`POST …/decisions/confirm`, a web session only; one
-`decision_confirmation` per spec revision and hash). Until then, approving
+`decision_confirmation` per spec revision and hash). `post_bounty` takes
+`spec` (a duediligence `spec.md`, `confirmed: true` once its `Decided:`
+items were confirmed there): sizing prices that spec without a draft and
+its decisions arrive confirmed (`via: "duediligence"`, see Bounties). Until then, approving
 the price, building or generating a version and publishing are 409
 `decisions_unconfirmed`, checked against the spec the version's task froze;
 a build's run names the confirmed decisions by hash (`decisionsSha256`) and
@@ -530,6 +533,28 @@ and its API (`/proposals/...`); the button reads "Price it".
 and any later source enrich it; none is required. A deployment with a model
 and no integrations sizes the bounties written in it and makes their
 sandboxes.
+
+**A spec confirmed in duediligence is posted with its bounty**
+(`bounties/posted-spec.ts`): `POST .../bounties` with `spec: { document,
+format: "duediligence", confirmed, engine? }` reads `document` with
+duediligence's own `scenarios` and `decisionItems` (`duediligence/api`,
+pinned) into a `SpecDraft` (`specFromDocument` in
+`packages/core/src/pricing/posted-spec.ts`: first tag is the kind, untagged
+`happy`, weight `moderate`, decisions are the assumptions word for word);
+one that does not fit `SPEC_LIMITS` is 422 `invalid_spec` with `problems`
+(`path`, `message`). It is kept in `bounty_posted_spec` with the bounty's
+hash (description defaults to the document), and `confirmed_by` is the
+poster when `confirmed` and the credential acts as a person (session, or a
+token or OAuth grant holding `decisions:confirm`; `confirmed_credential`
+keeps which). A token or grant without that scope still posts, its
+decisions unconfirmed, and the 201 says `confirmation: "skipped_scope"`.
+Sizing takes it as the first revision instead of drafting
+(`bounty_spec.source = duediligence@<version>`, its confirmation written
+with it, `via = 'duediligence'`, `credential` as posted; the Price step's
+confirm records `session`) while the bounty still hashes as
+posted; an edited bounty is drafted from its text. A respec is a new
+revision, so its decisions are confirmed again. The bounty's
+`postedSpec` says source, confirmed and `current`.
 
 **A GitHub issue is imported once** (`bounties/github-issue.ts`):
 `POST .../bounties` with `{ source: { githubIssue } }` reads the issue of a
@@ -961,7 +986,8 @@ reader `unzip.ts`) and compare it with the handout's hashes
 editable files and new files grading takes are the submission; guide and
 editor files (`isGuidePath`: guides, `.vscode/`, `.idea/`, the extension's
 `.lunox/`) are ignored; `node_modules/`, `.git/`, OS files and build output
-(`isBuildOutput`) are skipped unread. Anything grading would refuse,
+(`isBuildOutput`, carveout's runner records `RUNNER_RECORDS` included) are
+skipped unread. Anything grading would refuse,
 a changed read-only file, or a deleted editable file (the merge patch has
 no deletions) is 422 `folder_refused` with `refused` by path before a
 submission exists; `?dryRun=1` answers `{ preview }` and stores nothing.
@@ -1012,6 +1038,14 @@ the rubric is two whole sizes away (`rubricNeedsReview`).
 a reviewer's resize. Contention is retried once per profile, then
 `bounty_rubric_contended`.
 
+**Read a band or points change against the invented corpus**
+(`packages/core/test/pricing-corpus/`): 28 made-up tickets, each with a spec,
+profile facts and an expected band that is judgement, not truth. `npm run
+pricing-corpus --workspace sandbox-factory` prints expected against actual,
+spec-only and code-informed; `PRICING_CORPUS_BANDS="XS:0,XS+:4,S:7,..."` tries
+candidate edges on the same points. The core test asserts only each ticket's
+gross `bounds` and reports the disagreement summary.
+
 **An approval is of the price that saw the code**
 (`apps/api/src/pricing/approve-proposal.ts`). `POST .../proposals/:id/approve`
 names `expectedRevision` and, from the web, `expectedPrice`: a price moved
@@ -1020,7 +1054,8 @@ same price, or with no price named, is `proposal_changed`. While any of the
 proposal's newest profiles is in flight it is 409 `profile_pending` (each
 profile's repository and status); profiles settled under a still-pending
 rubric are re-scored first (`rescore`). A spec with decisions (its
-assumptions) is approved only once a person confirmed exactly those: else 409
+assumptions) is approved only once a person confirmed exactly those (on
+the Price step, or by posting the spec confirmed from duediligence): else 409
 `decisions_unconfirmed` with `confirmUrl` (`apps/api/src/pricing/decisions.ts`,
 no waiver). A failed or absent profile approves the
 spec's price, and the proposal and the response say `pricedFrom: "spec"`
@@ -1129,7 +1164,9 @@ then `abstractions` and `data_model`, then a `scope` run naming the ones that
 succeeded, then the slice the scope recorded, then `buildComplexityProfile`
 (`packages/core/src/pricing/profile.ts`): `ready`, or `awaiting_approval`
 with the profile when the slice is wider than `AUTO_SLICE_LIMITS`, which
-the rubric reads as measured. The profile is evidence, not a price. A step at the organization's analysis cap waits for the next sweep;
+the rubric reads as measured. A scope or slice found already done (another
+bounty's) is taken on in the same step, so a reused slice settles the
+profile without waiting for a sweep. The profile is evidence, not a price. A step at the organization's analysis cap waits for the next sweep;
 the cap counts agent runs and builds apart. A failed run fails the profile for
 that revision; a re-price asks again.
 

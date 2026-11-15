@@ -9,8 +9,9 @@
  * - **Skipped** without being read: installed packages (`node_modules/`),
  *   version control (`.git/`), the OS's own files (`__MACOSX/`,
  *   `.DS_Store`, `._*`, `Thumbs.db`, `desktop.ini`) and what the build
- *   writes beside its source (a `.js` beside a `.ts`, every `.map`) unless
- *   the version has that file. Matched by name alone (`skippedName`), so a
+ *   writes beside its source (a `.js` beside a `.ts`, every `.map`) and
+ *   carveout's test runner's records (`RUNNER_RECORDS`) unless the version
+ *   has that file. Matched by name alone (`skippedName`), so a
  *   reader need not inflate them.
  * - **Ignored**, read but never submitted: the guide and editor files
  *   (`isGuidePath`: `TASK.md`, `AGENTS.md`, `CLAUDE.md`, `README.md`,
@@ -126,10 +127,25 @@ interface PathSet {
 }
 
 /**
- * Whether `path` is what the build writes beside its source rather than
- * the contributor's work: any `.map`, or a `.js` (`.jsx`, `.mjs`, `.cjs`)
- * beside its `.ts` among the files sent (`present`) or the version's. A
- * file the version itself has is never build output.
+ * What carveout's test runner (`carveout/test.js`, in an uploaded folder
+ * and in a project the worker's carveout engine generated) writes on every
+ * `npm test`: the last run as TAP, its counts and Vitest's JSON report.
+ * carveout's `LAST_RUN_PATH`, `COUNTS_PATH` and `VITEST_REPORT_PATH`,
+ * spelled here since core imports only carveout's pure entry. Under the
+ * harness, so without this an untouched folder is refused once tested.
+ */
+export const RUNNER_RECORDS: readonly string[] = [
+  "carveout/.last-run.tap",
+  "carveout/.last-run.json",
+  "carveout/.vitest.json",
+];
+
+/**
+ * Whether `path` is what the build or the test run writes rather than the
+ * contributor's work: any `.map`, a test runner's record
+ * (`RUNNER_RECORDS`), or a `.js` (`.jsx`, `.mjs`, `.cjs`) beside its `.ts`
+ * among the files sent (`present`) or the version's. A file the version
+ * itself has is never build output.
  */
 export function isBuildOutput(
   path: string,
@@ -139,6 +155,7 @@ export function isBuildOutput(
   if (version.has(path)) return false;
   return (
     path.endsWith(".map") ||
+    RUNNER_RECORDS.includes(path) ||
     emittingSources(path).some(
       (source) => present.has(source) || version.has(source),
     )

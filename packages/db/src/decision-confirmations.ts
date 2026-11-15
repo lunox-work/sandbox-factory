@@ -10,7 +10,27 @@ import { and, eq } from "drizzle-orm";
 
 import type { Database } from "./errors.js";
 import { generateId } from "./mapping.js";
-import { decisionConfirmation } from "./schema.js";
+import { decisionConfirmation, user } from "./schema.js";
+
+/** Where a confirmation made outside the Price step came from. */
+export type DecisionConfirmationSource = "duediligence";
+
+/** The credential a confirmation was made with, acting as its person. */
+export type DecisionConfirmationCredential = "session" | "token" | "oauth";
+
+const CREDENTIALS: readonly string[] = [
+  "session",
+  "token",
+  "oauth",
+] satisfies readonly DecisionConfirmationCredential[];
+
+/** A stored credential kind, or null for one not recorded. */
+export const decisionCredentialOf = (
+  value: string | null,
+): DecisionConfirmationCredential | null =>
+  value !== null && CREDENTIALS.includes(value)
+    ? (value as DecisionConfirmationCredential)
+    : null;
 
 export interface StoredDecisionConfirmation {
   readonly id: string;
@@ -18,6 +38,12 @@ export interface StoredDecisionConfirmation {
   readonly specRevision: number;
   readonly decisionsSha256: string;
   readonly confirmedBy: string;
+  /** Their name, to say who; null when the person cannot be read. */
+  readonly confirmedByName: string | null;
+  /** Null for one made on the Price step. */
+  readonly via: DecisionConfirmationSource | null;
+  /** The credential it was made with; null for one made before it was kept. */
+  readonly credential: DecisionConfirmationCredential | null;
   readonly confirmedAt: string;
 }
 
@@ -39,16 +65,23 @@ export interface DecisionConfirmationStore {
     readonly specRevision: number;
     readonly decisionsSha256: string;
     readonly confirmedBy: string;
+    readonly credential: DecisionConfirmationCredential;
   }): Promise<StoredDecisionConfirmation | null>;
 }
 
 type Row = typeof decisionConfirmation.$inferSelect;
-const toStored = (row: Row): StoredDecisionConfirmation => ({
+const toStored = (
+  row: Row,
+  name: string | null,
+): StoredDecisionConfirmation => ({
   id: row.id,
   proposalId: row.proposalId,
   specRevision: row.specRevision,
   decisionsSha256: row.decisionsSha256,
   confirmedBy: row.confirmedBy,
+  confirmedByName: name,
+  via: row.via === "duediligence" ? "duediligence" : null,
+  credential: decisionCredentialOf(row.credential),
   confirmedAt: row.confirmedAt.toISOString(),
 });
 
@@ -61,8 +94,9 @@ export function createDecisionConfirmationStore(
     specRevision: number,
   ) => {
     const [row] = await db
-      .select()
+      .select({ confirmation: decisionConfirmation, name: user.name })
       .from(decisionConfirmation)
+      .leftJoin(user, eq(user.id, decisionConfirmation.confirmedBy))
       .where(
         and(
           eq(decisionConfirmation.organizationId, organizationId),
@@ -71,7 +105,7 @@ export function createDecisionConfirmationStore(
         ),
       )
       .limit(1);
-    return row === undefined ? null : toStored(row);
+    return row === undefined ? null : toStored(row.confirmation, row.name);
   };
   return {
     async get(organizationId, proposalId, specRevision, decisionsSha256) {
@@ -91,7 +125,7 @@ export function createDecisionConfirmationStore(
           ],
         })
         .returning();
-      if (row !== undefined) return toStored(row);
+      if (row !== undefined) return toStored(row, null);
       const found = await read(
         input.organizationId,
         input.proposalId,

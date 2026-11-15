@@ -1,5 +1,6 @@
 import {
   type BountyContextStore,
+  type BountyPostedSpecStore,
   type BountyProfileStore,
   type BountyProposalStore,
   type BountyRunStore,
@@ -28,6 +29,8 @@ export interface PricingRouteOptions {
   readonly specs: BountySpecStore;
   /** Confirmations of specs' decisions; absent, none can be made. */
   readonly decisions?: DecisionConfirmationStore;
+  /** Specs posted with bounties, which a bounty's page names. */
+  readonly postedSpecs?: Pick<BountyPostedSpecStore, "get">;
   readonly issues: JiraIssueStore;
   /** The organization's bounties, which every proposal prices. */
   readonly bounties: BountyStore;

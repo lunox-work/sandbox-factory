@@ -150,6 +150,16 @@ export async function seed(platform, { commitSha, archive }) {
     scopes: [...API_SCOPES],
     expiresAt: null,
   });
+  // One made before `decisions:confirm`: it posts, and confirms nothing.
+  const olderToken = generateSecret();
+  await stores.apiTokens.create(organizationId, {
+    createdBy: PERSON.id,
+    name: "flow harness, before decisions:confirm",
+    prefix: displayPrefix(olderToken),
+    hash: hashSecret(olderToken),
+    scopes: API_SCOPES.filter((scope) => scope !== "decisions:confirm"),
+    expiresAt: null,
+  });
 
   // GitHub: the installation linked, the repository registered and read at
   // its head, then snapshotted through the fake GitHub.
@@ -211,5 +221,6 @@ export async function seed(platform, { commitSha, archive }) {
     session,
     contributorSession,
     token: { authorization: `Bearer ${token}` },
+    olderToken: { authorization: `Bearer ${olderToken}` },
   };
 }

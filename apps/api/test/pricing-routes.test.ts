@@ -1844,12 +1844,17 @@ function decisionsHarness(
     role?: string;
     specRevision?: number | null;
     store?: boolean;
+    /** Confirmed already, by the poster of a duediligence spec. */
+    posted?: boolean;
   } = {},
 ) {
-  const confirmed: unknown[] = [];
+  const confirmed: { credential?: string }[] = [];
   /** Preparer prompts: a confirmation may let a held sandbox start. */
   let prompts = 0;
-  let stored: { decisionsSha256: string; confirmedBy: string } | null = null;
+  let stored: { decisionsSha256: string; confirmedBy: string } | null =
+    options.posted === true
+      ? { decisionsSha256: decidedHash, confirmedBy: "user_1" }
+      : null;
   const proposal = reviewProposal({
     specRevision: options.specRevision === undefined ? 2 : options.specRevision,
   });
@@ -1897,12 +1902,16 @@ function decisionsHarness(
                       specRevision: 2,
                       decisionsSha256: sha,
                       confirmedBy: stored.confirmedBy,
+                      confirmedByName: "Ada Lovelace",
+                      via: options.posted === true ? "duediligence" : null,
+                      credential: options.posted === true ? "token" : "session",
                       confirmedAt: "2026-11-12T00:00:00.000Z",
                     }
                   : null,
               confirm: async (input: {
                 decisionsSha256: string;
                 confirmedBy: string;
+                credential: string;
               }) => {
                 confirmed.push(input);
                 stored = input;
@@ -1912,6 +1921,9 @@ function decisionsHarness(
                   specRevision: 2,
                   decisionsSha256: input.decisionsSha256,
                   confirmedBy: input.confirmedBy,
+                  confirmedByName: null,
+                  via: null,
+                  credential: "session" as const,
                   confirmedAt: "2026-11-12T00:00:00.000Z",
                 };
               },
@@ -1971,8 +1983,31 @@ test("a spec's decisions are its assumptions, hashed, unconfirmed until a person
   };
   assert.ok(body.confirmation !== null);
   assert.equal(state.confirmed.length, 1);
+  // The Price step's confirmation is a session's.
+  // (Read afresh: the empty check above narrowed the list's type.)
+  const [made] = state.confirmed as { credential?: string }[];
+  assert.equal(made?.credential, "session");
   // The preparer is prompted: a sandbox held on these decisions can start.
   assert.equal(state.prompts(), 1);
+});
+
+test("decisions posted confirmed with a duediligence spec read as confirmed there, by name", async () => {
+  const read = await decisionsHarness({ posted: true }).app.request(
+    decisionsPath,
+    { headers },
+  );
+  assert.equal(read.status, 200);
+  const body = (await read.json()) as {
+    confirmation: Record<string, unknown> | null;
+  };
+  assert.deepEqual(body.confirmation, {
+    confirmedBy: "user_1",
+    confirmedByName: "Ada Lovelace",
+    via: "duediligence",
+    // Posted with an API token: the page says so.
+    credential: "token",
+    confirmedAt: "2026-11-12T00:00:00.000Z",
+  });
 });
 
 test("decisions are confirmed by owners and admins only, where the deployment stores them", async () => {
@@ -2215,6 +2250,9 @@ test("an approval waits for the spec's decisions to be confirmed, and links wher
                         specRevision: 2,
                         decisionsSha256: args[3],
                         confirmedBy: "user_1",
+                        confirmedByName: null,
+                        via: null,
+                        credential: null,
                         confirmedAt: "2026-11-12T00:00:00.000Z",
                       }
                     : null;

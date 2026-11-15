@@ -71,8 +71,10 @@ import { fileURLToPath } from "node:url";
 import {
   canonicalJson,
   decisionsText,
+  folderSubmission,
   resolveScope,
   scanDisclosure,
+  skippedName,
   specDecisions,
   transformConfigOf,
 } from "sandbox-factory";
@@ -100,6 +102,20 @@ const STAMP = "2026-11-15T00:00:00.000Z";
 const signal = new AbortController().signal;
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
 const say = (line) => console.log(`roundtrip: ${line}`);
+/**
+ * The engine that writes the project (`project-generator.ts`):
+ * `ROUNDTRIP_GENERATOR=carveout` builds on carveout's generator with the
+ * platform's layers; unset, the platform's own, whose build must stay byte
+ * for byte what it was (`GOLDEN_DIGEST`).
+ */
+const GENERATOR = process.env.ROUNDTRIP_GENERATOR ?? "platform";
+assert.ok(
+  GENERATOR === "platform" || GENERATOR === "carveout",
+  `ROUNDTRIP_GENERATOR is platform or carveout, not ${GENERATOR}`,
+);
+/** The platform engine's build of the fixture, as `buildDigest` hashes it. */
+const GOLDEN_DIGEST =
+  "6142faefcad52f606cb492e405006c94fb51319d46328bd0fdb794534052dd9a";
 /** Every spelling of the workspace's name that must not reach a contributor. */
 const VOCABULARY = /orvanta/i;
 /** The public names the table gives, which must not reach the repository. */
@@ -174,6 +190,32 @@ async function walk(root, dir = root) {
     else out.push(relative(root, path).split("\\").join("/"));
   }
   return out.sort();
+}
+
+/**
+ * What a build wrote, as one hash: every artifact but the lockfile (npm
+ * resolves it at build time) and the run records, and the manifest without
+ * its baseline (durations, job ids) or the hashes that cover the lockfile.
+ */
+function buildDigest(artifacts, manifest) {
+  const SKIP = new Set([
+    "project/package-lock.json",
+    "baseline.json",
+    "build-manifest.json",
+  ]);
+  const lines = artifacts
+    .filter((a) => !SKIP.has(a.path))
+    .map((a) => `${a.path} ${a.sha256}`)
+    .sort();
+  const stable = {
+    ...manifest,
+    baseline: null,
+    evaluator: null,
+    harnessSha256: null,
+    publicProjectSha256: null,
+    files: manifest.files.filter((f) => f.path !== "package-lock.json"),
+  };
+  return sha256(`${lines.join("\n")}\n${canonicalJson(stable)}`);
 }
 
 /** The build's provider, whose own npm cache goes on the way out. */
@@ -425,7 +467,10 @@ try {
   // 1c. Build, with its baseline run for real.
   provider = createLocalProcessProvider();
   const buildLog = [];
-  const builtFiles = await createSandboxBuildAdapter({ provider }).run({
+  const builtFiles = await createSandboxBuildAdapter({
+    provider,
+    projectGenerator: GENERATOR,
+  }).run({
     sourceDir: source,
     outDir: join(directory, "build-out"),
     params: {
@@ -463,6 +508,18 @@ try {
       : (await build.read(artifact.objectKey)).toString("utf8");
   };
   const buildManifest = JSON.parse(await builtText("build-manifest.json"));
+  const digest = buildDigest(build.artifacts, buildManifest);
+  if (GENERATOR === "platform")
+    assert.equal(
+      digest,
+      GOLDEN_DIGEST,
+      "the platform engine's build changed: a default build must keep its bytes",
+    );
+  else {
+    assert.equal(buildManifest.engines.projectGenerator, "carveout");
+    assert.equal(buildManifest.layout?.harnessDir, "carveout");
+  }
+  say(`${GENERATOR} engine, build digest ${digest}`);
   assert.deepEqual(buildManifest.blockers, [], buildLog.join("\n"));
   assert.equal(
     buildManifest.ready,
@@ -687,14 +744,49 @@ try {
     const result = await sh(argv, contributor, env);
     assert.ok(result.ok, result.output);
     // The contributor's local CI runs the repository's carried test.
+    // carveout's runner (`carveout/test.js`) prints its counts on stdout
+    // and node:test's report on stderr.
     if (argv[1] === "test")
       assert.match(
-        result.stdout,
+        GENERATOR === "carveout"
+          ? `${result.stdout}\n${result.stderr}`
+          : result.stdout,
         /a credit pays nothing, whatever its amount/,
         result.output,
       );
   }
   await assertClean("after npm ci, build, test and dev");
+  // The folder as the contributor would zip it, untouched but for what the
+  // commands wrote (build output, a test runner's record): nothing to
+  // submit and nothing refused.
+  const versionFiles = [];
+  for (const artifact of build.artifacts)
+    if (artifact.path.startsWith("project/"))
+      versionFiles.push({
+        path: artifact.path.slice("project/".length),
+        sha256: artifact.sha256,
+        text: (await build.read(artifact.objectKey)).toString("utf8"),
+      });
+  const folderFiles = [];
+  for (const path of await walk(contributor))
+    if (!skippedName(path)) {
+      const bytes = await readFile(join(contributor, path));
+      folderFiles.push({
+        path,
+        sha256: sha256(bytes),
+        text: bytes.toString("utf8"),
+      });
+    }
+  const untouched = folderSubmission({
+    files: folderFiles,
+    version: versionFiles,
+    editablePaths: descriptor.editablePaths,
+    ...(buildManifest.layout === undefined
+      ? {}
+      : { layout: buildManifest.layout }),
+  });
+  assert.deepEqual(untouched.refused, [], JSON.stringify(untouched.refused));
+  assert.deepEqual(untouched.files, []);
   // Source maps beside the build's output, which bind a failure to the .ts.
   const map = JSON.parse(
     await readFile(join(contributor, "src/northwind/fees.js.map"), "utf8"),
@@ -943,7 +1035,12 @@ try {
   );
   say("grade: the partial one is overfit, told only scenario s3");
 
-  const INTERFACE = "tests/public/interface.test.ts";
+  // carveout's interface test sits in its harness, the platform's beside
+  // the other public tests.
+  const INTERFACE =
+    GENERATOR === "carveout"
+      ? "carveout/tests/interface.test.ts"
+      : "tests/public/interface.test.ts";
   assert.ok(handed.includes(INTERFACE), "the project has public tests");
   const cheats = [
     [
@@ -1185,5 +1282,8 @@ try {
   );
 } finally {
   await provider?.dispose();
-  await rm(directory, { recursive: true, force: true });
+  // `ROUNDTRIP_KEEP=1` leaves the run's folder (build output, contributor
+  // copy, grades) to compare engines by hand.
+  if (process.env.ROUNDTRIP_KEEP === "1") say(`kept ${directory}`);
+  else await rm(directory, { recursive: true, force: true });
 }

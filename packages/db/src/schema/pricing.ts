@@ -433,6 +433,10 @@ export const bountySpec = pgTable(
     }),
     actualModel: text("actual_model"),
     promptVersion: text("prompt_version"),
+    // Where a revision written outside the platform came from, as
+    // `duediligence@0.5.1` for the spec posted with its bounty. Null for
+    // one a run drafted or a reviewer's request changed.
+    source: text("source"),
     createdAt: ts("created_at").notNull().defaultNow(),
   },
   (table) => [
@@ -454,10 +458,62 @@ export const bountySpec = pgTable(
 );
 
 /**
+ * A spec posted with its bounty (`POST …/bounties` with `spec`), kept until
+ * a sizing run takes it as the proposal's first revision instead of
+ * drafting one: the document as posted, the spec read from it, and who
+ * confirmed its decisions where it was written. Sizing takes it only while
+ * the bounty still hashes to `spec_hash`; an edited bounty is drafted from
+ * its text again. Private to the organization, like the bounty.
+ */
+export const bountyPostedSpec = pgTable(
+  "bounty_posted_spec",
+  {
+    bountyId: text("bounty_id")
+      .primaryKey()
+      .references(() => bounty.id, { onDelete: "cascade" }),
+    organizationId: text("organization_id")
+      .notNull()
+      .references(() => organization.id, { onDelete: "cascade" }),
+    document: text("document").notNull(),
+    draft: jsonb("draft").$type<SpecDraft>().notNull(),
+    // `duediligence@<version>`: the engine that wrote it.
+    source: text("source").notNull(),
+    // The bounty's title and text when it was posted, hashed as a proposal
+    // hashes them.
+    specHash: text("spec_hash").notNull(),
+    specHashVersion: integer("spec_hash_version").notNull(),
+    // The person who posted it as confirmed; null when its decisions were
+    // posted unconfirmed, or that person was removed.
+    confirmedBy: text("confirmed_by").references(() => user.id, {
+      onDelete: "set null",
+    }),
+    // The credential that posted it as confirmed: a session, or a token or
+    // OAuth grant acting as its person; null when posted unconfirmed.
+    confirmedCredential: text("confirmed_credential"),
+    createdBy: text("created_by").references(() => user.id, {
+      onDelete: "set null",
+    }),
+    createdAt: ts("created_at").notNull().defaultNow(),
+  },
+  (table) => [
+    index("bounty_posted_spec_organization_id_idx").on(table.organizationId),
+    check(
+      "bounty_posted_spec_confirmed_credential_check",
+      sql`${table.confirmedCredential} IS NULL OR ${table.confirmedCredential} in ('session', 'token', 'oauth')`,
+    ),
+    check(
+      "bounty_posted_spec_hash_check",
+      sql`length(${table.specHash}) = 64 AND ${table.specHashVersion} > 0`,
+    ),
+  ],
+);
+
+/**
  * A person's confirmation of one spec revision's decisions (its
  * assumptions, `specDecisions`): the hash of exactly the decisions they
  * read. One per revision; a new revision needs its own. Made in the web
- * app only, never by a token.
+ * app, or (`via` duediligence) by the person who posted the spec as
+ * confirmed with its bounty, recorded when sizing stores it.
  */
 export const decisionConfirmation = pgTable(
   "decision_confirmation",
@@ -474,6 +530,12 @@ export const decisionConfirmation = pgTable(
     confirmedBy: text("confirmed_by")
       .notNull()
       .references(() => user.id, { onDelete: "cascade" }),
+    // Null for a confirmation on the Price step; `duediligence` for one
+    // posted with the spec.
+    via: text("via"),
+    // The credential it was made with (`session`, `token`, `oauth`); null
+    // for one recorded before it was kept.
+    credential: text("credential"),
     confirmedAt: ts("confirmed_at").notNull().defaultNow(),
   },
   (table) => [
@@ -482,6 +544,14 @@ export const decisionConfirmation = pgTable(
       table.specRevision,
     ),
     index("decision_confirmation_organization_id_idx").on(table.organizationId),
+    check(
+      "decision_confirmation_via_check",
+      sql`${table.via} IS NULL OR ${table.via} in ('duediligence')`,
+    ),
+    check(
+      "decision_confirmation_credential_check",
+      sql`${table.credential} IS NULL OR ${table.credential} in ('session', 'token', 'oauth')`,
+    ),
     check(
       "decision_confirmation_sha256_check",
       sql`length(${table.decisionsSha256}) = 64 AND ${table.specRevision} > 0`,
@@ -662,6 +732,7 @@ export type NewBountyRunRow = typeof bountyRun.$inferInsert;
 export type BountyProposalRow = typeof bountyProposal.$inferSelect;
 export type NewBountyProposalRow = typeof bountyProposal.$inferInsert;
 export type BountySpecRow = typeof bountySpec.$inferSelect;
+export type BountyPostedSpecRow = typeof bountyPostedSpec.$inferSelect;
 export type NewBountySpecRow = typeof bountySpec.$inferInsert;
 export type BountyWritebackRow = typeof bountyWriteback.$inferSelect;
 export type NewBountyWritebackRow = typeof bountyWriteback.$inferInsert;

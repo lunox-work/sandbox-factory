@@ -56,6 +56,7 @@ import {
   DisclosureFindings,
   disclosureAcknowledgedAtOf,
   disclosureFindingsOf,
+  openDisclosureFindingCount,
   type DisclosureAcknowledgedAt,
   type DisclosureFindingView,
 } from "../sandbox/DisclosureFindings";
@@ -304,6 +305,7 @@ export function SandboxGeneration({
   canManage,
   canGenerate = true,
   generationBlocked = null,
+  decisionsHeld = false,
   readOnly = false,
   flat = false,
   context = null,
@@ -327,6 +329,11 @@ export function SandboxGeneration({
    * Unpublishing is the way back, and is never refused.
    */
   generationBlocked?: string | null;
+  /**
+   * The approved price's spec has decisions no person confirmed
+   * (`useDecisionsHeld`): publication is refused until one does.
+   */
+  decisionsHeld?: boolean;
   /**
    * A version was generated, finished its run, or was published or
    * unpublished: what the bounty says of its sandbox, such as which bounty
@@ -747,6 +754,8 @@ export function SandboxGeneration({
   let carried: { kept: number; dropped: number } | null = null;
   // Whether the selected draft's finished build carried tests; null before one.
   let builtCarrying: boolean | null = null;
+  // Whether the selected draft's finished build is ready; null until read.
+  let builtReady: boolean | null = null;
   if (selected !== null && canManage) {
     if (pending) standing = { label: "Starting…", tone: "busy", note: null };
     else if (source.isPending)
@@ -785,7 +794,10 @@ export function SandboxGeneration({
       disclosure = outcome.disclosure;
       acknowledgedAt = outcome.acknowledgedAt;
       carried = outcome.carriedTests;
-      if (!artifacts.isPending) builtCarrying = carried !== null;
+      if (!artifacts.isPending) {
+        builtCarrying = carried !== null;
+        builtReady = outcome.ready;
+      }
       if (artifacts.isPending)
         standing = { label: "Generated", tone: "muted", note: null };
       else if (outcome.ready)
@@ -811,6 +823,59 @@ export function SandboxGeneration({
         };
     }
   }
+
+  /*
+    Why Publish is held, as the API would refuse it, so a click never only
+    answers a refusal: the bounty held, its decisions unconfirmed, its
+    build still running or not passed, findings no owner acknowledged
+    (with the way to them), or a version not built from an approved price.
+  */
+  const openFindings = openDisclosureFindingCount(
+    disclosure,
+    source.data?.source?.disclosureAcknowledgements ?? [],
+    acknowledgedAt,
+  );
+  const building = run.data !== undefined && !runEnded;
+  const publishHeld: { by: string; reason: string } | null =
+    generationBlocked !== null
+      ? { by: "bounty", reason: generationBlocked }
+      : decisionsHeld
+        ? {
+            by: "decisions",
+            reason:
+              "Confirm the spec's decisions on the Price step first: hidden tests are written to them.",
+          }
+        : building || generating || pending
+          ? {
+              by: "build",
+              reason: "Its build is still running: publish once it passes.",
+            }
+          : openFindings > 0
+            ? {
+                by: "disclosure",
+                reason: `Acknowledge ${openFindings === 1 ? "1 finding" : `${openFindings} findings`} first: the disclosure scan found text that may say whose code this is.`,
+              }
+            : !publishable ||
+                run.data?.status === "failed" ||
+                builtReady === false
+              ? {
+                  by: "build",
+                  reason: "Only a version whose build passed can be published.",
+                }
+              : !fromApproved
+                ? {
+                    by: "price",
+                    reason:
+                      "This version was not built from an approved price.",
+                  }
+                : null;
+  const publishHeldBy = publishHeld?.by ?? null;
+  // Whether the selected version is the one contributors get now.
+  const live = isPublicationLive(sandbox);
+  const current =
+    sandbox.status === "published" && sandbox.currentVersionId === selectedId;
+  const published = current && live;
+  const findingsId = `disclosure-findings-${selectedId ?? "none"}`;
 
   let body: ReactNode;
   if (versions.isPending)
@@ -962,8 +1027,27 @@ export function SandboxGeneration({
             {standing.note}
           </p>
         )}
+        {publishes && !published && publishHeldBy === "disclosure" && (
+          <p className="text-muted-foreground text-sm" role="status">
+            Publishing waits on{" "}
+            {openFindings === 1 ? "1 finding" : `${openFindings} findings`}.{" "}
+            <a
+              className="text-foreground font-medium underline-offset-4 hover:underline"
+              href={`#${findingsId}`}
+              onClick={(event) => {
+                event.preventDefault();
+                const panel = document.getElementById(findingsId);
+                panel?.scrollIntoView({ block: "start", behavior: "smooth" });
+                panel?.focus({ preventScroll: true });
+              }}
+            >
+              Acknowledge {openFindings === 1 ? "it" : "them"}
+            </a>
+          </p>
+        )}
         {canManage && disclosure.length > 0 && (
           <DisclosureFindings
+            id={findingsId}
             // A new build's findings start the marks afresh.
             key={runId ?? ""}
             organizationId={organizationId}
@@ -1000,10 +1084,6 @@ export function SandboxGeneration({
     publication past its date has lapsed: it reads as expired, and the
     version can be published again.
   */
-  const live = isPublicationLive(sandbox);
-  const current =
-    sandbox.status === "published" && sandbox.currentVersionId === selectedId;
-  const published = current && live;
   const expiresAt = sandbox.expiresAt;
   const approvedAt = source.data?.source?.approvedAt ?? null;
   const frozenAt = selected?.frozenAt ?? null;
@@ -1107,15 +1187,7 @@ export function SandboxGeneration({
       </>
     ) : (
       <PublishMenu
-        disabledReason={
-          generationBlocked !== null
-            ? generationBlocked
-            : !publishable
-              ? "Only a version whose build passed can be published."
-              : !fromApproved
-                ? "This version was not built from an approved price."
-                : null
-        }
+        disabledReason={publishHeld?.reason ?? null}
         busy={publishing}
         onPublish={(until) => void publish(until)}
       />

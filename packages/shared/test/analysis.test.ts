@@ -194,6 +194,46 @@ test("run DTOs discriminate parameters by tool", () => {
     },
   };
   assert.equal(analysisRunDtoSchema.safeParse(build).success, true);
+  // The starter and the import carry the same keys, as the API queues
+  // them for a workspace with a Jira board; an empty key is refused.
+  const starter = {
+    ...common,
+    tool: "sandbox_starter",
+    params: {
+      deadlineMinutes: 60,
+      agent: "starter",
+      sandboxVersionId: "sbv_1",
+      approvedTaskSha256: sha,
+      stack: ["node"],
+      vocabulary: ["Northwind"],
+      ticketKeys: ["PAY", "OPS"],
+      decisionsSha256: sha,
+    },
+  };
+  const upload = {
+    ...common,
+    tool: "sandbox_import",
+    params: {
+      deadlineMinutes: 60,
+      importer: "upload",
+      sandboxVersionId: "sbv_1",
+      uploadSha256: sha,
+      recordSha256: sha,
+      carveoutVersion: "0.4.0",
+      ticketKeys: ["PAY"],
+    },
+  };
+  for (const run of [starter, upload]) {
+    assert.equal(analysisRunDtoSchema.safeParse(run).success, true, run.tool);
+    assert.equal(
+      analysisRunDtoSchema.safeParse({
+        ...run,
+        params: { ...run.params, ticketKeys: [""] },
+      }).success,
+      false,
+      run.tool,
+    );
+  }
   assert.equal(
     analysisRunDtoSchema.safeParse({
       ...build,

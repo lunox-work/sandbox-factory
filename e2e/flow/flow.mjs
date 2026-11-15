@@ -21,6 +21,7 @@ import {
   sizingCaller,
 } from "./fakes.mjs";
 import { PERSON, fixtureFiles, seed, sourceArchive } from "./seed.mjs";
+import { DUEDILIGENCE_STEPS } from "./duediligence-steps.mjs";
 import { JIRA_STEPS, ROUND_TRIP_STEPS } from "./roundtrip-steps.mjs";
 import { PUBLISH_STEPS, USAGE_STEPS, say } from "./steps.mjs";
 
@@ -30,6 +31,7 @@ const STEPS = [
   ...ROUND_TRIP_STEPS,
   ...JIRA_STEPS,
   ...USAGE_STEPS,
+  ...DUEDILIGENCE_STEPS,
 ];
 /**
  * npm's cache for the worker's jobs and the contributor's machine, kept
@@ -44,6 +46,10 @@ const sampler = setInterval(() => {
   peakRss = Math.max(peakRss, process.memoryUsage().rss);
 }, 250);
 let failed = false;
+/** Each step that ran, with its time, for the summary at the end. */
+const timings = [];
+/** The flow's budget: a step that pushes it over is the one to look at. */
+const BUDGET_MS = 25_000;
 let database;
 let platform;
 let scratch;
@@ -96,7 +102,9 @@ try {
   for (const [name, step] of STEPS) {
     const at = performance.now();
     await step(flow);
-    say(`ok ${name} (${Math.round(performance.now() - at)} ms)`);
+    const ms = Math.round(performance.now() - at);
+    timings.push([name, ms]);
+    say(`ok ${name} (${ms} ms)`);
   }
 } catch (error) {
   failed = true;
@@ -115,6 +123,20 @@ try {
   });
   clearInterval(sampler);
   peakRss = Math.max(peakRss, process.memoryUsage().rss);
+  if (timings.length > 0) {
+    const width = String(Math.max(...timings.map(([, ms]) => ms))).length;
+    say(
+      `step times, slowest first:\n${timings
+        .toSorted(([, a], [, b]) => b - a)
+        .map(([name, ms]) => `  ${String(ms).padStart(width)} ms  ${name}`)
+        .join("\n")}`,
+    );
+  }
+  const total = performance.now() - started;
+  if (!failed && total > BUDGET_MS)
+    say(
+      `over the ${BUDGET_MS / 1000} s budget: look at the slowest steps above`,
+    );
   say(
     `${failed ? "FAILED" : "passed"} in ${((performance.now() - started) / 1000).toFixed(1)} s, peak RSS ${Math.round(peakRss / 1024 / 1024)} MB (this process; npm and tsc jobs run apart)`,
   );

@@ -38,7 +38,9 @@ upload, identical graph, `abstractions.json` and `data-model.json` bytes
 from two checkout paths, and a slice of the resulting graph. It then runs
 the round trip (`scripts/roundtrip.mjs`; on the host, `npm run worker:roundtrip`,
 no Python needed): slice and build with pseudonyms, the contributor's npm
-commands on `project/` alone, grading, the reversed check and carry-back. Unit tests
+commands on `project/` alone, grading, the reversed check and carry-back; its
+default build must hash to `GOLDEN_DIGEST`, `ROUNDTRIP_GENERATOR=carveout`
+runs it on the carveout engine, `ROUNDTRIP_KEEP=1` keeps its folder. Unit tests
 inject subprocesses and storage; real PostgreSQL tests exercise concurrent
 claims, spend limits and stale leases.
 
@@ -242,6 +244,19 @@ tests, sealed after the build, each hidden test twice by `hiddenTestRun`.
 Grading stages every `private/` artifact `stagedHiddenTest` names (a
 TypeScript test file, never `pseudonym.lunox`), which is what the handout
 counts and commits to.
+
+Project generator (`src/tools/project-generator.ts`): `sandbox_build`
+writes the project with core's `generateProject` unless the adapter is
+created with `projectGenerator: "carveout"` (off by default, not wired to
+an env var): carveout's `generateProject` (`carveout/api`), then
+`platformLayers` (public names, fixture defaults, walkthrough,
+`tests/public/spec.test.ts`, carried and hidden tests, source maps,
+package version and npm pin, guide, descriptor, README). The manifest
+records `engines.projectGenerator: "carveout"` and the layout
+(`carveoutLayout`: carveout's harness, `carveout.env` and commands, the
+platform's `tests/{public,private}`, `tests` a harness root); the build's
+baseline runs in one job with carveout's commands (`ProjectRun`), grading
+and the reversed check on the layout.
 
 ### Import
 
@@ -459,7 +474,8 @@ test alone, loaded from memory by the platform's runner
 
 Outputs: `build-manifest.json` (every generated file hashed and classified
 public or private; harness, test and project hashes; the toolchain and its
-digest; `engines.carveout`, the release that renamed it; the evaluator
+digest; `engines.carveout`, the release that renamed it, and
+`engines.projectGenerator` when not the platform's generator; the evaluator
 environment; import rewrites, renames, dependencies, blockers and the
 baseline report; `gates`, the publication gates: `roundTrip`, the unchanged
 project read back through the table at each file's repository path equal to

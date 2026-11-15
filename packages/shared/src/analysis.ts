@@ -306,9 +306,10 @@ export const starterParamsSchema = z.strictObject({
   approvedTaskSha256: sha256Schema,
   stack: z.array(z.string().min(1)),
   /** The names the workspace goes by, which no public file may carry. */
-  vocabulary: z
-    .array(z.string().min(1))
-    .optional() /** The confirmed decisions' hash, when the spec has decisions. */,
+  vocabulary: z.array(z.string().min(1)).optional(),
+  /** As the build's: the workspace's Jira project keys. */
+  ticketKeys: z.array(z.string().min(1)).optional(),
+  /** The confirmed decisions' hash, when the spec has decisions. */
   decisionsSha256: sha256Schema.optional(),
 });
 export const submissionGradeParamsSchema = z.strictObject({
@@ -327,6 +328,8 @@ export const sandboxImportParamsSchema = z.strictObject({
   uploadSha256: sha256Schema,
   recordSha256: sha256Schema,
   carveoutVersion: z.string().min(1).max(64),
+  /** As the build's: the workspace's Jira project keys. */
+  ticketKeys: z.array(z.string().min(1)).optional(),
 });
 export const analysisRunDtoSchema = z.discriminatedUnion("tool", [
   z.strictObject({

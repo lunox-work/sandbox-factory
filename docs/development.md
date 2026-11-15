@@ -95,8 +95,9 @@ submission (`files[]`) then passing retry (the zipped folder, previewed
 first), the owner's merge-back pull request, its CI read back (the sweep,
 then a signed `check_suite` delivery) and merged once that passes, the
 repository's own test on it, the contributor revoked, a Jira-imported
-bounty sized, and `/usage` metering the model tokens, evaluator seconds and
-grading attempts it spent;
+bounty sized, `/usage` metering the model tokens, evaluator seconds and
+grading attempts it spent, and a bounty posted with a duediligence-confirmed
+spec sized without a draft and approved on that confirmation;
 through the API's HTTP routes and
 in-process worker runs (local-process provider, npm from the public registry,
 cache kept in `$TMPDIR/sandbox-factory-flow-npm-cache`). It needs a local
@@ -116,7 +117,8 @@ refuses a non-local host. It creates and drops its own
   agents call the real tools. Seeds (`seed.mjs`) are test-only rows Better Auth
   writes at sign-in; never add a product bypass for the harness.
 - Steps are `[name, fn]` lists (`steps.mjs`, `roundtrip-steps.mjs`); append a
-  list for later stages.
+  list for later stages. The run ends with each step's time, slowest first;
+  keep it under ~25 s (it says when it is over).
   Outside `npm run verify`; CI runs it after the bounty concurrency suite.
 
 ## Maintenance tools for agents

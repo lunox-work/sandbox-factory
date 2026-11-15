@@ -111,6 +111,7 @@ export type {
 
 export {
   BOUNTY_SPEC_ORIGINS,
+  bountyPostedSpec,
   bountyProfile,
   bountyProposal,
   bountyRun,
@@ -121,6 +122,7 @@ export {
   workspaceSetting,
 } from "./schema/pricing.js";
 export type {
+  BountyPostedSpecRow,
   BountyProfileRow,
   BountyProposalRow,
   BountyRunRow,

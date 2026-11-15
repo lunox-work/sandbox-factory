@@ -87,7 +87,39 @@ export function disclosureFindingsOf(meta: unknown): DisclosureFindingView[] {
   );
 }
 
+/**
+ * Whether a finding stands acknowledged: as its build marked it, or, at
+ * publication, as the draft's list covers it now.
+ */
+function standsAcknowledged(
+  item: DisclosureFindingView,
+  acknowledgements: readonly DisclosureAcknowledgementDto[],
+  atPublish: boolean,
+): boolean {
+  return atPublish
+    ? acknowledgements.some((entry) =>
+        acknowledges(entry, { ...item, term: item.term ?? item.value }),
+      )
+    : item.acknowledged;
+}
+
+/**
+ * How many findings still wait for an owner's acknowledgement, as the
+ * draft stands now: what holds publication (`disclosure_failed`).
+ */
+export function openDisclosureFindingCount(
+  findings: readonly DisclosureFindingView[],
+  acknowledgements: readonly DisclosureAcknowledgementDto[],
+  acknowledgedAt: DisclosureAcknowledgedAt = "build",
+): number {
+  const atPublish = acknowledgedAt === "publish";
+  return findings.filter(
+    (item) => !standsAcknowledged(item, acknowledgements, atPublish),
+  ).length;
+}
+
 export function DisclosureFindings({
+  id,
   organizationId,
   versionId,
   findings,
@@ -96,6 +128,8 @@ export function DisclosureFindings({
   canAcknowledge,
   onSaved,
 }: {
+  /** The panel's element id, which a held Publish links to. */
+  id?: string;
   organizationId: string;
   versionId: string;
   findings: readonly DisclosureFindingView[];
@@ -114,14 +148,8 @@ export function DisclosureFindings({
 }) {
   const headingId = useId();
   const atPublish = acknowledgedAt === "publish";
-  // Whether a finding stands acknowledged: as its build marked it, or, at
-  // publication, as the draft's list covers it now.
   const isAcknowledged = (item: DisclosureFindingView) =>
-    atPublish
-      ? acknowledgements.some((entry) =>
-          acknowledges(entry, { ...item, term: item.term ?? item.value }),
-        )
-      : item.acknowledged;
+    standsAcknowledged(item, acknowledgements, atPublish);
   const held = new Set(acknowledgements.map((item) => keyOf(item)));
   // Marked: the acknowledged ones to start with.
   const [marked, setMarked] = useState<ReadonlySet<string>>(
@@ -202,8 +230,10 @@ export function DisclosureFindings({
 
   return (
     <section
+      id={id}
       aria-labelledby={headingId}
-      className="flex flex-col gap-3"
+      tabIndex={-1}
+      className="flex scroll-mt-4 flex-col gap-3 focus-visible:outline-none"
       data-testid="disclosure-findings"
     >
       <div className="flex flex-col gap-1">

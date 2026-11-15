@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import type {
+  StoredPostedSpec,
   StoredBountyVersion,
   ListedBounty,
   StoredBountyProposal,
@@ -11,8 +12,13 @@ import type {
   BountyMutationResult,
 } from "@sandbox-factory/db";
 import { Hono } from "hono";
-import { bountySpecHash } from "sandbox-factory";
+import {
+  API_SCOPES,
+  BOUNTY_SPEC_HASH_VERSION,
+  bountySpecHash,
+} from "sandbox-factory";
 
+import type { Principal } from "../src/principal.js";
 import type { BountyExecutor } from "../src/pricing/executor.js";
 import {
   mountPricingRoutes,
@@ -195,6 +201,15 @@ function harness(
     spec?: Record<string, unknown>;
     /** The Jira site's client, in place of the one `siteReady` says. */
     clientFor?: PricingRouteOptions["clientFor"];
+    /** The credential asking, by kind; absent, none is set. */
+    via?: Principal["via"];
+    /**
+     * A bound credential's scopes; absent, every scope (a session holds
+     * them all, and a token made with them).
+     */
+    scopes?: Principal["scopes"];
+    /** The spec each bounty was posted with. */
+    postedSpec?: StoredPostedSpec;
   } = {},
 ) {
   const held = new Map((options.bounties ?? []).map((t) => [t.id, t]));
@@ -327,6 +342,18 @@ function harness(
     } as never,
     issues: { markRemoved: () => Promise.resolve(true) } as never,
     bounties: bounties as never,
+    ...(options.postedSpec === undefined
+      ? {}
+      : {
+          postedSpecs: {
+            get: (_org: string, bountyId: string) =>
+              Promise.resolve(
+                options.postedSpec?.bountyId === bountyId
+                  ? options.postedSpec
+                  : null,
+              ),
+          },
+        }),
     ...((options.sizing ?? true)
       ? {
           executor: {
@@ -356,6 +383,11 @@ function harness(
       organizationId: "org_1",
       role: options.role ?? "owner",
     });
+    if (options.via !== undefined)
+      c.set("principal", {
+        via: options.via,
+        scopes: options.scopes ?? API_SCOPES,
+      } as never);
     await next();
   });
   const reads = mountPricingRoutes(app, pricing);
@@ -752,6 +784,261 @@ test("any member writes a bounty; only its title is needed", async () => {
       stack: [],
     },
   ]);
+});
+
+/** A duediligence spec.md, as `duediligence push` sends it. */
+const DD_SPEC = [
+  "# Interview invitations",
+  "",
+  "Scheduling an interview sends the candidate one invitation.",
+  "",
+  "```gherkin",
+  "Feature: Interview invitations",
+  "",
+  "  Rule: R1. One invitation per interview",
+  "    @happy",
+  "    Scenario: Scheduling sends one invitation",
+  "      Given a scheduled interview",
+  "      Then the candidate gets one email",
+  "",
+  "    @unhappy",
+  "    Scenario: A candidate with no address is refused",
+  "      Given a candidate with no email address",
+  '      Then scheduling fails with "no address"',
+  "```",
+  "",
+  "Decided:",
+  "",
+  "- A rescheduled interview sends a new invitation.",
+  "  Ticket: silent.",
+  "  Instead: send an update to the first one.",
+  "",
+].join("\n");
+
+test("a bounty posted with a duediligence spec keeps it, confirmed by the person posting it", async () => {
+  const state = harness({ role: "member", via: "token" });
+  const response = await state.request("POST", "bounties", {
+    title: "Interview invitations",
+    spec: {
+      document: DD_SPEC,
+      format: "duediligence",
+      confirmed: true,
+      engine: { name: "duediligence", version: "0.5.1" },
+    },
+  });
+  assert.equal(response.status, 201);
+  const [, by, written] = state.calls[0]?.args ?? [];
+  assert.equal(by, "user_1");
+  const input = written as {
+    description: string;
+    postedSpec: {
+      document: string;
+      source: string;
+      confirmedBy: string | null;
+      specHash: string;
+      draft: {
+        scenarios: { id: string; kind: string; title: string }[];
+        assumptions: string[];
+      };
+    };
+  };
+  // No description given: the spec is it, and what sizing hashes.
+  assert.equal(input.description, DD_SPEC);
+  assert.equal(input.postedSpec.document, DD_SPEC);
+  assert.equal(input.postedSpec.source, "duediligence@0.5.1");
+  assert.equal(input.postedSpec.confirmedBy, "user_1");
+  assert.equal(
+    input.postedSpec.specHash,
+    await bountySpecHash("Interview invitations", DD_SPEC),
+  );
+  assert.deepEqual(
+    input.postedSpec.draft.scenarios.map(({ id, kind, title }) => [
+      id,
+      kind,
+      title,
+    ]),
+    [
+      ["s1", "happy", "Scheduling sends one invitation"],
+      ["s2", "unhappy", "A candidate with no address is refused"],
+    ],
+  );
+  // The decision as confirmed, without its Ticket/Instead fields.
+  assert.deepEqual(input.postedSpec.draft.assumptions, [
+    "A rescheduled interview sends a new invitation.",
+  ]);
+});
+
+test("a token or grant records a posted spec's decisions confirmed only with decisions:confirm, and says when it did not", async () => {
+  for (const via of ["token", "oauth"] as const) {
+    // Held: confirmed by its person, through this kind of credential.
+    const allowed = harness({
+      via,
+      scopes: ["workspace:read", "bounties:write", "decisions:confirm"],
+    });
+    const ok = await allowed.request("POST", "bounties", {
+      title: "Interview invitations",
+      spec: { document: DD_SPEC, format: "duediligence", confirmed: true },
+    });
+    assert.equal(ok.status, 201);
+    assert.equal(
+      "confirmation" in ((await ok.json()) as Record<string, unknown>),
+      false,
+    );
+    const held = (
+      allowed.calls[0]?.args[2] as {
+        postedSpec: { confirmedBy: string | null; confirmedCredential: string };
+      }
+    ).postedSpec;
+    assert.equal(held.confirmedBy, "user_1");
+    assert.equal(held.confirmedCredential, via);
+
+    // A grant from before the scope: still posted, its decisions left for
+    // a person to confirm, and the answer says why.
+    const older = harness({
+      via,
+      scopes: ["workspace:read", "bounties:write"],
+    });
+    const skipped = await older.request("POST", "bounties", {
+      title: "Interview invitations",
+      spec: { document: DD_SPEC, format: "duediligence", confirmed: true },
+    });
+    assert.equal(skipped.status, 201);
+    const body = (await skipped.json()) as {
+      confirmation?: string;
+      bounty: { id: string };
+    };
+    assert.equal(body.confirmation, "skipped_scope");
+    assert.ok(body.bounty.id);
+    const input = older.calls[0]?.args[2] as {
+      postedSpec: { confirmedBy: string | null; confirmedCredential: unknown };
+    };
+    assert.equal(input.postedSpec.confirmedBy, null);
+    assert.equal(input.postedSpec.confirmedCredential, null);
+
+    // Not asking for a confirmation is no skipped one.
+    const unasked = await older.request("POST", "bounties", {
+      title: "Interview invitations",
+      spec: { document: DD_SPEC, format: "duediligence", confirmed: false },
+    });
+    assert.equal(
+      "confirmation" in ((await unasked.json()) as Record<string, unknown>),
+      false,
+    );
+  }
+  // A session holds every scope: confirmed, as a session.
+  const session = harness({ via: "session", scopes: [] });
+  await session.request("POST", "bounties", {
+    title: "Interview invitations",
+    spec: { document: DD_SPEC, format: "duediligence", confirmed: true },
+  });
+  assert.equal(
+    (
+      session.calls[0]?.args[2] as {
+        postedSpec: { confirmedCredential: string };
+      }
+    ).postedSpec.confirmedCredential,
+    "session",
+  );
+});
+
+test("a spec posted unconfirmed, or by no person, starts with its decisions unconfirmed", async () => {
+  for (const [via, confirmed] of [
+    ["session", false],
+    [undefined, true],
+  ] as const) {
+    const state = harness(via === undefined ? {} : { via });
+    const response = await state.request("POST", "bounties", {
+      title: "Interview invitations",
+      description: "Invitations go out once.",
+      spec: { document: DD_SPEC, format: "duediligence", confirmed },
+    });
+    assert.equal(response.status, 201);
+    const input = state.calls[0]?.args[2] as {
+      description: string;
+      postedSpec: { confirmedBy: string | null; source: string };
+    };
+    assert.equal(input.description, "Invitations go out once.");
+    assert.equal(input.postedSpec.confirmedBy, null);
+    // No engine named: the parser's own version.
+    assert.match(input.postedSpec.source, /^duediligence@\d+\.\d+\.\d+$/);
+  }
+});
+
+test("a posted spec that cannot be stored as written is refused with each problem", async () => {
+  const state = harness({ via: "session" });
+  const response = await state.request("POST", "bounties", {
+    title: "Interview invitations",
+    spec: {
+      document:
+        "# Notes\n\n```gherkin\nFeature: x\n  @edge\n  Scenario: Odd\n    Given a thing\n```\n",
+      format: "duediligence",
+      confirmed: true,
+    },
+  });
+  assert.equal(response.status, 422);
+  const body = (await response.json()) as {
+    code: string;
+    error: string;
+    problems: { path: string; message: string }[];
+  };
+  assert.equal(body.code, "invalid_spec");
+  assert.deepEqual(
+    body.problems.map(({ path }) => path),
+    ["scenarios[0].kind"],
+  );
+  assert.match(
+    body.error,
+    /scenarios\[0\]\.kind: @edge is not a scenario kind/,
+  );
+  // A format other than duediligence's is not read at all.
+  const other = await state.request("POST", "bounties", {
+    title: "t",
+    spec: { document: "x", format: "markdown", confirmed: true },
+  });
+  assert.equal(other.status, 400);
+  assert.equal(state.calls.length, 0, "nothing was stored");
+});
+
+test("a bounty's page says the spec it was posted with, and whether sizing still takes it", async () => {
+  const posted = {
+    bountyId: "bty_7",
+    organizationId: "org_1",
+    document: DD_SPEC,
+    draft: {
+      feature: "Interview invitations",
+      background: [],
+      scenarios: [],
+      openQuestions: ["?"],
+      assumptions: [],
+    },
+    source: "duediligence@0.5.1",
+    specHash: await bountySpecHash(written().title, written().description),
+    specHashVersion: BOUNTY_SPEC_HASH_VERSION,
+    confirmedBy: "user_1",
+    confirmedCredential: "token",
+    createdBy: "user_1",
+    createdAt: stamp,
+  } satisfies StoredPostedSpec;
+  for (const [stored, current] of [
+    [posted, true],
+    [{ ...posted, specHash: "0".repeat(64), confirmedBy: null }, false],
+  ] as const) {
+    const state = harness({ bounties: [written()], postedSpec: stored });
+    const { bounty } = (await (
+      await state.request("GET", "bounties/bty_7")
+    ).json()) as { bounty: { postedSpec: unknown } };
+    assert.deepEqual(bounty.postedSpec, {
+      source: "duediligence@0.5.1",
+      confirmed: stored.confirmedBy !== null,
+      current,
+      createdAt: stamp,
+    });
+  }
+  const none = harness({ bounties: [written()] });
+  const { bounty } = (await (
+    await none.request("GET", "bounties/bty_7")
+  ).json()) as { bounty: { postedSpec: unknown } };
+  assert.equal(bounty.postedSpec, null);
 });
 
 test("a bounty's stack is stored under the catalog's names, each once", async () => {

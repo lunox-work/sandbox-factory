@@ -155,6 +155,7 @@ function storedSpec(
     runId: "brn_sized",
     actualModel: "model",
     promptVersion: "draft-v2",
+    source: null,
     createdAt: "2026-10-01T00:00:00.000Z",
   };
 }
@@ -471,6 +472,26 @@ test("a trim takes an added scenario out, asks no model, and the step comes back
     },
   ]);
   assert.deepEqual(state.finishes, [{ status: "succeeded", details: {} }]);
+});
+
+test("a change to a spec posted from duediligence is the platform's own revision, its decisions to confirm again", async () => {
+  // The posted spec was revision 1, its decisions confirmed by the poster;
+  // a trim writes revision 2 with no source and no confirmation, so the
+  // decisions gate (keyed by revision and hash) asks a person again.
+  const posted = {
+    ...storedSpec(3, currentDraft, "draft"),
+    source: "duediligence@0.5.1",
+    createdBy: "user_9",
+  };
+  const state = executorHarness({
+    request: { mode: "trim", removeScenarioIds: ["s3"] },
+    current: posted,
+  });
+  await state.run();
+  const input = state.written[0] as { spec: Record<string, unknown> };
+  assert.equal(input.spec["origin"], "trim");
+  assert.equal(input.spec["source"], undefined);
+  assert.equal(input.spec["confirmation"], undefined);
 });
 
 test("after a resize, a change counts only from the revision the reviewer sized", async () => {

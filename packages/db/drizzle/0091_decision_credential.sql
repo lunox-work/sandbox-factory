@@ -1,0 +1,4 @@
+ALTER TABLE "bounty_posted_spec" ADD COLUMN "confirmed_credential" text;--> statement-breakpoint
+ALTER TABLE "decision_confirmation" ADD COLUMN "credential" text;--> statement-breakpoint
+ALTER TABLE "bounty_posted_spec" ADD CONSTRAINT "bounty_posted_spec_confirmed_credential_check" CHECK ("bounty_posted_spec"."confirmed_credential" IS NULL OR "bounty_posted_spec"."confirmed_credential" in ('session', 'token', 'oauth'));--> statement-breakpoint
+ALTER TABLE "decision_confirmation" ADD CONSTRAINT "decision_confirmation_credential_check" CHECK ("decision_confirmation"."credential" IS NULL OR "decision_confirmation"."credential" in ('session', 'token', 'oauth'));

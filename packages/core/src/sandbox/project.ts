@@ -938,10 +938,17 @@ function runScript(entries: readonly string[]): string {
 
 /** The README's pointer to the contributor guide (`guide.ts`), a slice's and a starter's alike. */
 export const README_GUIDE = `Start with [\`${TASK_GUIDE_PATH}\`](${TASK_GUIDE_PATH}): the task, its scenarios, how it is accepted and how to submit it: zip this folder and upload it on your contribution page, or run **Lunox: Submit** in VS Code. [\`${AGENTS_GUIDE_PATH}\`](${AGENTS_GUIDE_PATH}) holds the commands and rules, for you or a coding agent. In VS Code, \`${VSCODE_DIR}/\` hides the build's output beside its source and debugs the walkthrough and the tests with source maps.`;
+/** How the README runs one public test file, in a layout's paths. */
+export function readmeOneTest(
+  paths: Pick<GuidePaths, "envFile" | "publicTestsDir">,
+): string {
+  return `Run one file with \`${SANDBOX_COMMANDS.build} && node --env-file=${paths.envFile} --test ${paths.publicTestsDir}/<name>.test.js\`.`;
+}
 /** How the README runs one public test file. */
-export const README_ONE_TEST = `Run one file with \`${SANDBOX_COMMANDS.build} && node --env-file=${ENV_FILE} --test ${PUBLIC_TESTS_DIR}/<name>.test.js\`.`;
+export const README_ONE_TEST = readmeOneTest(GUIDE_PATHS);
 
-function readme(input: {
+/** What a sliced project's README lists. */
+export interface ProjectReadmeInput {
   version: ProjectVersion;
   toolchain: Toolchain;
   editable: readonly string[];
@@ -953,7 +960,17 @@ function readme(input: {
   publicTests: readonly string[];
   fixtures: number;
   walkthrough: boolean;
-}): string {
+}
+
+/**
+ * A sliced project's `README.md`. Paths are the platform's layout unless
+ * given: the worker's carveout engine (`project-generator.ts`) writes the
+ * same README over carveout's harness.
+ */
+export function projectReadme(
+  input: ProjectReadmeInput,
+  paths: GuidePaths = GUIDE_PATHS,
+): string {
   const list = (items: readonly string[], empty: string) =>
     items.length === 0 ? [empty] : items.map((item) => `- \`${item}\``);
   return `${[
@@ -984,7 +1001,7 @@ function readme(input: {
     "",
     "## Mocks",
     "",
-    `Modules outside the task are declared by \`.d.ts\` stubs beside generated \`.js\` runtimes whose values are recording mocks (\`${MOCK_RUNTIME_PATH}\`). Service packages are replaced by mock packages under \`${MOCKS_DIR}/\`. A mock answers any property or call with another mock and records the call; \`mockImplementation(path, fn)\` installs behaviour and \`recordedCalls()\` reads it back. Fixture environment values live in \`${ENV_FILE}\`.`,
+    `Modules outside the task are declared by \`.d.ts\` stubs beside generated \`.js\` runtimes whose values are recording mocks (\`${paths.mockRuntimePath}\`). Service packages are replaced by mock packages under \`${paths.mocksDir}/\`. A mock answers any property or call with another mock and records the call; \`mockImplementation(path, fn)\` installs behaviour and \`recordedCalls()\` reads it back. Fixture environment values live in \`${paths.envFile}\`.`,
     "",
     ...(input.fixtures === 0
       ? []
@@ -994,7 +1011,7 @@ function readme(input: {
         ]),
     ...(input.walkthrough
       ? [
-          `\`${SANDBOX_COMMANDS.dev}\` runs \`${RUN_PATH}\`, a walkthrough of the task's main scenario.`,
+          `\`${SANDBOX_COMMANDS.dev}\` runs \`${paths.runPath}\`, a walkthrough of the task's main scenario.`,
           "",
         ]
       : []),
@@ -1029,7 +1046,7 @@ function readme(input: {
     "",
     ...list(input.publicTests, "None."),
     "",
-    README_ONE_TEST,
+    paths === GUIDE_PATHS ? README_ONE_TEST : readmeOneTest(paths),
     "",
     "Local results help you iterate. Acceptance is decided by the platform's own run of the files you submit, including tests that are not in this project.",
   ].join("\n")}\n`;
@@ -1539,7 +1556,7 @@ export function generateProject(input: ProjectInput): GeneratedProject {
   });
   add({
     path: "README.md",
-    text: readme({
+    text: projectReadme({
       version: input.version,
       toolchain,
       editable,
