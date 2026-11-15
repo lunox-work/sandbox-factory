@@ -388,6 +388,19 @@ test("GitHub refusing the merge (branch protection) is recorded and the pull req
     /does not merge cleanly/,
   );
   assert.deepEqual(conflicted.state.merged, []);
+  // A push resolving the conflict, its CI still running: the old refusal
+  // no longer stands.
+  conflicted.state.pull = {
+    ...conflicted.state.pull,
+    headSha: "cafe",
+    mergeable: true,
+  };
+  conflicted.state.runs = [
+    { name: "build", status: "in_progress", conclusion: null, url: "u" },
+  ];
+  assert.equal(await c.tracker.refresh("org_1", "sbm_1"), "read");
+  assert.equal(c.merges.byId.get("sbm_1")?.mergeError, null);
+  assert.equal(c.merges.byId.get("sbm_1")?.ciState, "pending");
   // A token that may not merge: recorded the same way.
   const forbidden = github({
     runs: passing,

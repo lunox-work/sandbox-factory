@@ -203,11 +203,14 @@ export class MergeCiTracker {
       return this.#ended(organizationId, merge, pull, "github", now);
 
     const read = await this.#readCi(target, pull, merge, now);
+    // A refusal stands only until the next read: one still standing is
+    // written again below when this read tries the merge again.
     const recorded = await merges.recordCi(organizationId, merge.submissionId, {
       ciState: read.state,
       ciSummary: read.summary,
       ciHeadSha: pull.headSha,
       ciCheckedAt: now,
+      mergeError: null,
     });
     if (recorded === null) return "untracked";
     if (read.state !== merge.ciState || pull.headSha !== merge.ciHeadSha)
