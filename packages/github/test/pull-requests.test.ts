@@ -373,3 +373,111 @@ test("missing permissions are named by what merge-back needs, a higher level cov
     "metadata:read",
   ]);
 });
+
+const pullAt = (overrides: Record<string, unknown> = {}) => ({
+  number: 7,
+  html_url: "https://github.com/acme/shop/pull/7",
+  title: "Fix it",
+  state: "open",
+  merged: false,
+  merge_commit_sha: "test-merge-sha",
+  mergeable: true,
+  head: { sha: "beef", ref: "lunox/sbm_1" },
+  ...overrides,
+});
+
+test("a pull request is read back with its head, whether it merges and what it landed as", async () => {
+  const { writer, fetch } = writerWith(() => json(pullAt()));
+  assert.deepEqual(await writer.getPullRequest("acme/shop", 7), {
+    number: 7,
+    url: "https://github.com/acme/shop/pull/7",
+    title: "Fix it",
+    state: "open",
+    merged: false,
+    // GitHub's test merge commit is not a landing.
+    mergeCommitSha: null,
+    headSha: "beef",
+    mergeable: true,
+  });
+  assert.equal(
+    fetch.calls[0]?.url,
+    "https://api.github.test/repos/acme/shop/pulls/7",
+  );
+  const merged = writerWith(() =>
+    json(
+      pullAt({
+        state: "closed",
+        merged: true,
+        merge_commit_sha: "landed",
+        mergeable: null,
+      }),
+    ),
+  );
+  const read = await merged.writer.getPullRequest("acme/shop", 7);
+  assert.equal(read.merged, true);
+  assert.equal(read.mergeCommitSha, "landed");
+  assert.equal(read.mergeable, null);
+  assert.equal(
+    (
+      await writerWith(() =>
+        json(pullAt({ title: undefined })),
+      ).writer.getPullRequest("acme/shop", 7)
+    ).title,
+    "",
+  );
+  await assert.rejects(
+    writerWith(() => json({ number: 7, html_url: "x" })).writer.getPullRequest(
+      "acme/shop",
+      7,
+    ),
+    /no state/,
+  );
+});
+
+test("a merge is squashed at the head CI was read on; GitHub's refusal is answered, not thrown", async () => {
+  const done = writerWith(() => json({ merged: true, sha: "landed" }));
+  assert.deepEqual(
+    await done.writer.merge("acme/shop", 7, { sha: "beef", title: "Fix it" }),
+    { merged: true, sha: "landed" },
+  );
+  const call = done.fetch.calls[0];
+  assert.equal(call?.method, "PUT");
+  assert.equal(
+    call?.url,
+    "https://api.github.test/repos/acme/shop/pulls/7/merge",
+  );
+  assert.deepEqual(call?.body, {
+    sha: "beef",
+    merge_method: "squash",
+    commit_title: "Fix it (#7)",
+  });
+
+  for (const [status, message] of [
+    [
+      405,
+      "At least 1 approving review is required by reviewers with write access.",
+    ],
+    [409, "Head branch was modified. Review and try the merge again."],
+    [422, 'Required status check "build" is expected.'],
+  ] as const) {
+    const refused = writerWith(() => json({ message }, status));
+    assert.deepEqual(
+      await refused.writer.merge("acme/shop", 7, { sha: "beef", title: "x" }),
+      { merged: false, status, reason: message },
+    );
+  }
+  await assert.rejects(
+    writerWith(() =>
+      json({ message: "Resource not accessible" }, 403),
+    ).writer.merge("acme/shop", 7, { sha: "beef", title: "x" }),
+    GithubAuthError,
+  );
+  await assert.rejects(
+    writerWith(() => json({ merged: false }, 200)).writer.merge(
+      "acme/shop",
+      7,
+      { sha: "beef", title: "x" },
+    ),
+    /no commit/,
+  );
+});

@@ -18,6 +18,12 @@
  * — runs that part after the answer, since GitHub times a delivery out at
  * ten seconds; the sweep re-reads it anyway if that is lost.
  *
+ * `check_suite`, `check_run`, `status` and `pull_request` (closed or a new
+ * head) are cues for merge-back's CI read-back (`merge-ci.ts`): matched to
+ * the repository's open merge-back pull requests by branch, head or number
+ * in the database, then read back from GitHub after the answer. A delivery
+ * naming none of them costs one query and no GitHub call.
+ *
  * Every handler is idempotent — a redelivery sets the same values again — so
  * there is no delivery table.
  *
@@ -36,6 +42,7 @@ import {
 } from "@sandbox-factory/github";
 import {
   GITHUB_WEBHOOK_HEADERS,
+  githubCiSignalEventSchema,
   githubInstallationEventSchema,
   githubInstallationRepositoriesEventSchema,
   githubPushEventSchema,
@@ -47,6 +54,7 @@ import type { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 
 import { installationClient } from "./credential.js";
+import type { MergeCiTracker } from "./merge-ci.js";
 import type { GithubSnapshotter } from "./snapshot.js";
 import { syncRepo } from "./sync.js";
 
@@ -59,6 +67,11 @@ export interface GithubWebhookOptions {
    * is read. It queues the work, so the answer is not held for it.
    */
   snapshotter?: Pick<GithubSnapshotter, "schedule"> | undefined;
+  /**
+   * Merge-back's CI read-back, told of the CI deliveries; absent, they
+   * are ignored and the sweep alone reads CI back.
+   */
+  mergeCi?: Pick<MergeCiTracker, "matching" | "refreshAll"> | undefined;
   webhookSecret: string;
   fetch?: typeof globalThis.fetch;
   now?: () => number;
@@ -180,9 +193,69 @@ export async function handleGithubEvent(
       return onPush(options, known, payload);
     case "repository":
       return onRepository(options, known, payload);
+    case "check_suite":
+    case "check_run":
+    case "status":
+    case "pull_request":
+      return onCiSignal(options, known, event, payload);
     default:
       return "ignored";
   }
+}
+
+/** The `pull_request` actions that change what a merge-back follows. */
+const PULL_REQUEST_CUES = new Set(["closed", "synchronize"]);
+
+/**
+ * A cue that a merge-back pull request's CI or state may have moved: the
+ * rows it names are read back from GitHub after the answer.
+ */
+async function onCiSignal(
+  options: GithubWebhookOptions,
+  { organizationId, connectionId }: Owner,
+  event: string,
+  payload: unknown,
+): Promise<WebhookOutcome> {
+  const mergeCi = options.mergeCi;
+  if (mergeCi === undefined) return "ignored";
+  const parsed = githubCiSignalEventSchema.safeParse(payload);
+  if (!parsed.success) return "ignored";
+  const delivery = parsed.data;
+  if (event === "pull_request" && !PULL_REQUEST_CUES.has(delivery.action ?? ""))
+    return "ignored";
+  const repo = await options.repos.findByExternalId(
+    organizationId,
+    connectionId,
+    String(delivery.repository.id),
+  );
+  if (repo === null) return "ignored";
+  const suite = delivery.check_suite;
+  const run = delivery.check_run;
+  const present = <T>(values: readonly (T | null | undefined)[]) =>
+    values.filter((value): value is T => value !== null && value !== undefined);
+  const matched = await mergeCi.matching(organizationId, repo.id, {
+    branches: present([
+      suite?.head_branch,
+      run?.check_suite?.head_branch,
+      delivery.pull_request?.head?.ref,
+      ...(delivery.branches ?? []).map((branch) => branch.name),
+    ]),
+    shas: present([
+      suite?.head_sha,
+      run?.head_sha,
+      delivery.sha,
+      delivery.pull_request?.head?.sha,
+    ]),
+    pullNumbers: present([
+      delivery.number,
+      ...(suite?.pull_requests ?? []).map((pull) => pull.number),
+      ...(run?.pull_requests ?? []).map((pull) => pull.number),
+    ]),
+  });
+  if (matched.length === 0) return "ignored";
+  // After the answer: three GitHub reads per pull request, and a merge.
+  backgroundOf(options)(mergeCi.refreshAll(organizationId, matched));
+  return "applied";
 }
 
 interface Owner {

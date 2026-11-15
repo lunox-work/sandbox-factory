@@ -129,3 +129,24 @@ test("no target for a repository gone, an unhealthy or uninstalled installation;
     }),
   );
 });
+
+test("CI read-back's permissions never block a merge-back: without them there is no CI reader and they are named", async () => {
+  const blind = await setup({ installationPermissions: { 9: granted } });
+  const target = await blind.targets.target("org_1", blind.repoId);
+  assert.deepEqual(target?.missingPermissions, []);
+  assert.equal(target?.ciReader, null);
+  assert.deepEqual(target?.ciMissingPermissions, [
+    "checks:read",
+    "statuses:read",
+  ]);
+
+  const all = { ...granted, checks: "read", statuses: "read" };
+  const f = await setup({ installationPermissions: { 9: all } });
+  const ready = await f.targets.target("org_1", f.repoId);
+  assert.deepEqual(ready?.ciMissingPermissions, []);
+  assert.ok(ready?.ciReader);
+  // All of them stored: a page read no longer asks GitHub.
+  assert.equal(f.probes(), 1);
+  await f.targets.target("org_1", f.repoId);
+  assert.equal(f.probes(), 1);
+});

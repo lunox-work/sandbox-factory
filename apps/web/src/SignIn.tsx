@@ -53,7 +53,12 @@ function readErrorFromUrl(): string | null {
 
 const initialError = readErrorFromUrl();
 
-export function SignIn() {
+export function SignIn({
+  context = "Sign in to Lunox.",
+}: {
+  /** The line under the brand: what signing in is for, on this page. */
+  context?: string | undefined;
+} = {}) {
   // Which provider is mid-redirect, so its button can show it. Not a boolean:
   // disabling every button but labelling only the one that was clicked is what
   // makes the wait legible.
@@ -120,7 +125,7 @@ export function SignIn() {
 
         <h1 className="signin-brand">Lunox</h1>
         <p className="signin-tagline">See less, Build more</p>
-        <p className="signin-context">Sign in to Lunox.</p>
+        <p className="signin-context">{context}</p>
 
         {error !== null && (
           <p className="signin-error" role="alert">

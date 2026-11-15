@@ -212,7 +212,9 @@ test's file name) of failing hidden tests, never a hidden test's name, body
 or output. The verdict is handed to the run's commit (`settleSubmission`,
 `RunSettlement`), never written before it: a lost lease or failed upload
 leaves neither the verdict nor `private/merge-patch.json`, and the
-submission `errored` once the run has ended. Its files are read from the key the submission row names.
+submission `errored` once the run has ended. Its files are read from the key the submission row names;
+guide and editor files and build output never reach it (the API drops them
+before storing, `withoutGuideFiles`, `withoutBuildOutput`).
 Before anything runs, carveout's `gainedIntegrity` refuses a file that
 gains a way to pass without the code. On a version sliced from a
 repository the run is on its snapshot, and a pass is carried back
@@ -338,7 +340,8 @@ values for every environment variable the slice reads, `README.md`,
 `sandbox-task.json` and the contributor guide
 (`packages/core/src/sandbox/guide.ts`: `TASK.md` with the renamed spec as
 Gherkin and its confirmed decisions when both scans pass them
-(`disclosableDecisions`), `AGENTS.md`, `CLAUDE.md`, `.vscode/`); it compiles with source maps
+(`disclosableDecisions`) and the zipped-folder upload as the way to submit,
+`AGENTS.md`, `CLAUDE.md`, `.vscode/`); it compiles with source maps
 beside the emitted `.js`. The local contract is `npm ci`, `npm run dev`,
 `npm run build`, `npm test` on Node 22+, fixed in `packages/core`. Only
 registry versions are installed: a dependency pinned to a URL, a path or an

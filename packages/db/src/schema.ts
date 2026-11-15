@@ -28,7 +28,7 @@
  *   provenance behind each, and the submissions judged by them.
  * - `schema/flows.ts` — views of how long people wait, read from the rows
  *   above; no tables.
- * - `schema/developer.ts` — the public API's workspace tokens, the
+ * - `schema/developer.ts` — the public API's workspace and contributor tokens, the
  *   audit log of what machine credentials changed, idempotency keys,
  *   webhooks out, and the model-token ledger the monthly quota counts.
  * - `schema/oauth.ts` — the OAuth provider plugin's clients, grants and
@@ -140,6 +140,8 @@ export type {
 } from "./schema/pricing.js";
 
 export {
+  contributorAssignment,
+  contributorInvite,
   sandbox,
   sandboxSource,
   sandboxVersion,
@@ -148,11 +150,14 @@ export {
   submissionMerge,
 } from "./schema/sandbox.js";
 export type {
+  ContributorAssignmentRow,
+  ContributorInviteRow,
   NewSubmissionRow,
   SandboxRow,
   SandboxSourceRow,
   SandboxVersionRow,
   SandboxVersionSourceRow,
+  MergeCiSummaryRecord,
   SubmissionMergeRow,
   SubmissionRow,
 } from "./schema/sandbox.js";
@@ -162,6 +167,7 @@ export { flowWait, flowWaitSample } from "./schema/flows.js";
 export {
   apiToken,
   auditEntry,
+  contributorToken,
   idempotencyKey,
   modelUsage,
   webhookDelivery,
@@ -170,6 +176,7 @@ export {
 export type {
   ApiTokenRow,
   AuditEntryRow,
+  ContributorTokenRow,
   IdempotencyKeyRow,
   ModelUsageRow,
   NewApiTokenRow,

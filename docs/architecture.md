@@ -124,8 +124,8 @@ string: exported consts are singular, column properties are camelCase.
   `auth` serves 503 on `/api/*`, so a deploy missing the auth environment
   fails closed.
 - **Every credential is one `Principal`** (`principal.ts`): user,
-  organization, scopes and `via`, one of `session`, `token`, `device` and
-  `oauth`. The guard is `credentials.ts`.
+  organization, scopes and `via`, one of `session`, `token`, `device`,
+  `oauth` and `contributor`. The guard is `credentials.ts`.
   - _Session_: cookie or `bearer()` token, no organization, every scope; roles
     decide, as before.
   - _Workspace API token_: `Authorization: Bearer lnx_…`, table `api_token`
@@ -142,15 +142,27 @@ string: exported consts are singular, column properties are camelCase.
     OAuth provider below; resolves like an API token to its grant's
     organization and scopes, acting as the person who consented. Refused
     (401) once expired, its grant revoked, or that person is no longer owner
-    or admin there. Any other bearer is still Better Auth's session.
+    or admin there. A contributor grant (below) is a contributor credential.
+    Any other bearer is still Better Auth's session.
+  - _Contributor token_: `Authorization: Bearer lnxc_…`, table
+    `contributor_token` (SHA-256 only), a person's own, made, listed and
+    revoked from their session (`/api/v1/me/contributor-tokens`,
+    `api-tokens/contributor.ts`; default 90 days). No organization, no role
+    read; holds `contributions:write` (`CONTRIBUTOR_SCOPES`, never in
+    `API_SCOPES`).
 - **Tokens are deny by default.** A bound credential reaches only routes in
   `apps/api/src/public-api/registry.ts`, matched by Hono pattern, holding the
   scope listed there (`API_SCOPES` in `packages/core/src/scopes.ts`). An
   unlisted route is 403 `not_public`; a missing scope 403
-  `insufficient_scope`. A scope never widens a role. A _self_ route
+  `insufficient_scope`. A scope never widens a role. Each entry has an
+  audience: contributor routes (`/contributions…`, `/invites/claim`) admit
+  only contributor credentials (`lnxc_`, contributor grants), else 403
+  `workspace_credential`; every other route only workspace credentials,
+  else 403 `contributor_credential`; the self route either. A _self_ route
   (`scope: null`) needs none and acts only on the presenting credential:
-  `POST /tokens/self/revoke` (`api-tokens/self.ts`) revokes an API token,
-  or an OAuth access token and its refresh token (the grant stands); the
+  `POST /tokens/self/revoke` (`api-tokens/self.ts`) revokes an API or
+  contributor token, or an OAuth access token and its refresh token (the
+  grant stands); the
   CLIs' `logout` calls it. Token management
   (`/orgs/:orgId/tokens`) is session-only, for owners and admins; tokens
   never manage tokens. Each registry entry names its request and response
@@ -177,6 +189,15 @@ string: exported consts are singular, column properties are camelCase.
   client and organization) and every token. Connected apps,
   `GET /orgs/:orgId/oauth/grants` and `POST …/grants/:id/revoke`, are
   session-only, owners and admins; revoking deletes the grant's tokens.
+  **A contributor grant binds none**: an app asking `contributions:write`
+  (`/mcp/contribute`) gets the contributor branch of the consent page (the
+  person's contributions listed), which sends `contributor`
+  (`CONTRIBUTOR_CONSENT`); the consent and tokens keep `reference_id` null
+  (it is a foreign key to `organization`), only the contributor scope is
+  admitted (`CONTRIBUTOR_SCOPE_ONLY`, `…_REQUIRED`), a workspace grant never
+  holds it (`CONTRIBUTOR_SCOPE_FORBIDDEN`), and the guard keeps only
+  `CONTRIBUTOR_SCOPES` from it. The person lists and revokes them at
+  `/api/v1/me/contributor-grants`.
 - **A session says who is asking, not what they may read.** Every store
   method takes the owner first and puts it in the query. Another owner's id
   returns 404, not 403, so ids cannot be enumerated.
@@ -188,7 +209,8 @@ string: exported consts are singular, column properties are camelCase.
 `apps/api/src/mcp/`: a remote MCP server on the SDK's Web-standard
 Streamable HTTP transport, **stateless** (a server and transport per POST,
 no session id, JSON responses; GET and DELETE answer 405). Endpoints are
-toolsets: `POST /mcp` (all), `/mcp/duediligence`, `/mcp/carveout`
+toolsets: `POST /mcp` (every workspace tool), `/mcp/duediligence`,
+`/mcp/carveout`, and `/mcp/contribute` (the contributor tools)
 (`MCP_TOOLSETS` in `packages/core/src/scopes.ts`, shared with the web app's
 MCP page). Each plugin's toolset carries its skill's whole hosted flow, from
 finding or posting a bounty to the verdict. Read tools are GETs; write tools
@@ -228,27 +250,41 @@ again answer the submission already made and queue its run when it has
 none (a `run_limit` 409 is `retryable`, with `Retry-After`). A grading run
 that ends without a verdict leaves the submission `errored` with a fixed
 `errorCode` (`SUBMISSION_ERRORS`); retried with its own files, or
-`POST …/submissions/:sid/regrade` (session only), its run is queued again
-in place, within the run's attempts, without spending the retry. A workspace
+`POST …/submissions/:sid/regrade` (`regrade`, `submissions:write`), its run
+is queued again in place, within the run's attempts, without spending the
+retry. `?dryRun=1` on a `files[]` submission or retry answers the preview a
+zipped folder gets, storing nothing. `create_contributor_invite` wraps
+`POST …/versions/:vid/invites`. A workspace
 that will not connect its repository uploads a public, pseudonymised
 carveout hand-off folder instead (`carveout handoff --platform`,
-`POST …/sandboxes/uploads`, `sandboxes:write`, owners and admins, no MCP
-tool: the body is too large and the receipt stays local): refused 422
+`POST …/sandboxes/uploads`, `sandboxes:write`, owners and admins; the MCP
+tool `upload_handoff` sends nothing: it checks the bounty and answers the
+`carveout login` and `carveout handoff … --platform … --bounty …` commands,
+since the folder is renamed on the maintainer's machine by a receipt that
+stays there): refused 422
 `carveout_too_old` (`minimumVersion`) below `UPLOAD_CARVEOUT_MIN_VERSION`
 for `carveout.version` or the record's `carveoutVersion`/`cutId`, checked
 for the workspace's names, credentials and plain paths, stored by hash, and
 imported by a `sandbox_import` run (origin `upload`). A passing
-submission on such a version comes back to the maintainer's machine as
-its changed files (`GET …/sandboxes/submissions/:sid/files`,
-`submissions:write`, never a hidden test) for `carveout patch --from`.
+submission on such a version (or a generated one) comes back to the
+maintainer's machine as its changed files (`get_submission_files`,
+`GET …/sandboxes/submissions/:sid/files`, `submissions:write`, never a
+hidden test) for `carveout patch --from`.
 Approving,
 publishing, confirming decisions and merging back have no tool. A request needs a
-bearer `lnx_` or `lnxat_` token, else 401 with
-`WWW-Authenticate: Bearer resource_metadata="…/.well-known/oauth-protected-resource/mcp…"`.
+bearer `lnx_`, `lnxc_` or `lnxat_` token, else 401 with
+`WWW-Authenticate: Bearer resource_metadata="…/.well-known/oauth-protected-resource/mcp…", scope="…"`.
+`/mcp/contribute` (`CONTRIBUTOR_TOOLS`, `CONTRIBUTOR_MCP_INSTRUCTIONS`)
+asks for `contributions:write` alone and serves `list_contributions`,
+`get_contribution`, `get_project_files`, `preview_submission` (`?dryRun=1`),
+`submit`, `list_my_submissions`, `get_my_submission`, `retry` and
+`regrade` over `/api/v1/contributions…`; a workspace credential's call is
+refused by the guard, as a contributor credential's on any other endpoint.
 **Every tool wraps one public route**, called in-process with the caller's
 own `Authorization`, so the guard, registry, scopes and `requireMembership`
-decide; a refusal is a tool error carrying the API's `code`. Tools take
-the workspace from `GET /me/orgs`. CloudFront routes `/mcp*` and
+decide; a refusal is a tool error carrying the API's `code`. Workspace
+tools take the workspace from `GET /me/orgs`; contributor tools name a
+version from `GET /contributions`. CloudFront routes `/mcp*` and
 `/.well-known/*` to the API uncached (`infra/cloudfront.tf`).
 
 ## Public API conventions
@@ -266,16 +302,18 @@ registry and scopes in [Auth](#auth):
 - **Idempotency** (`idempotency.ts`, `idempotency_key`): registry entries
   marked `idempotent` (the creates: bounties, webhooks, runs, builds,
   sandbox start and versions) and `POST .../tokens/cli` take
-  `Idempotency-Key` from a `token`, `oauth` or `device` principal. The
+  `Idempotency-Key` from a `token`, `oauth` or `device` principal (not on
+  contributor routes). The
   first 2xx or 4xx answer is kept 24 h per organization, route pattern and
   key, encrypted, and replayed with `Idempotent-Replayed: true`; another
   request under the key is 422 `idempotency_key_reused`, one still running
   409 `idempotency_key_in_use`; a 5xx or 429 frees the key.
 - **Audit log** (`audit/trail.ts`, `audit_entry`): every POST, PUT, PATCH
-  and DELETE by a `token`, `oauth` or `device` principal, refusals
-  included, and a session's token, grant or webhook management: credential,
-  client, person, method, route pattern, resource id, status, request id
-  (`X-Request-Id`). Never a body, secret or query string.
+  and DELETE by a `token`, `oauth`, `device` or `contributor` principal
+  (a contributor's in the workspace whose version it acted on), refusals
+  included, and a session's token, grant, webhook or contributor
+  management: credential, client, person, method, route pattern, resource
+  id, status, request id (`X-Request-Id`). Never a body, secret or query string.
   `GET /orgs/:orgId/audit` is session-only, owners and admins, cursor-paged.
   Kept 180 days (`AUDIT_RETENTION_DAYS`).
 - **Connect links**: `GET .../github/connect` and `.../jira/connect`
@@ -309,9 +347,13 @@ integration credentials.
 - **Events** (`WEBHOOK_EVENT_TYPES`, `emitter.ts`): `run.finished` and
   `proposal.priced` (each proposal a sizing run made) and
   `sandbox.build.finished` from the run change channel; `sandbox.published`
-  from the publish route; `writeback.failed` from `BountyDelivery`. A body is
-  `{ id, type, createdAt, organizationId, data }`, `data` ids and states
-  only. An event's id is derived from what it is about and a delivery is
+  from the publish route; `writeback.failed` from `BountyDelivery`;
+  `submission.graded` (verdict and counts, never a hidden name or scenario
+  key) from the run change channel; `submission.merge_opened` from the merge
+  route; `submission.ci` and `submission.merged` from merge-back's CI
+  read-back. A body is `{ id, type, createdAt, organizationId, data }`,
+  `data` ids and states only; the submission events' `data` is checked
+  against `WEBHOOK_EVENT_DATA_SCHEMAS` before it is enqueued. An event's id is derived from what it is about and a delivery is
   unique per endpoint and event, so each API process hearing a change owes
   one delivery. A change lost to a restart is lost, as for pages.
 - **Sender** (`sender.ts`): a loop in the API process claims due deliveries
@@ -409,6 +451,17 @@ with three tabs, `?tab=scope|price|sandbox`. A new one is written at
 `/bounties/new`. A sandbox version's files open at
 `/sandboxes/:workspace/:versionId?path=`, outside the shell. A repository's
 page is `/o/:slug/repositories/:repoId`; settings are `/o/:slug/settings`.
+
+**Contributors** (`features/contributions/`) have pages under no
+workspace: `/invite#<secret>` claims an invite (signed out, the secret
+waits in session storage, never in the sign-in's callback), `/contributions`
+lists their versions (also home for someone in no workspace, and a rail
+item whenever there is one) with "Tokens for your editor or agent"
+(`ContributorTokens.tsx`: `lnxc_` tokens, contributor-signed-in apps, the
+`/mcp/contribute` command), and `/contributions/:vid` holds the download,
+commands, the folder upload with its dry-run preview, and their verdicts.
+A version's Sandbox tab invites and revokes them
+(`features/sandbox/SandboxContributors.tsx`); its submissions name them.
 
 **Developers** (`features/developers/DevelopersPage.tsx`,
 `/o/:slug/developers[/tokens|apps|mcp|reference|usage]`) is the portal for
@@ -632,8 +685,25 @@ permissions are read from GitHub (`apps/api/src/github/merge-back.ts`);
 missing ones are 409 `app_permissions_missing` with `missing` and
 `acceptUrl`, which `GET …/versions/:vid/merge-back` (session only) also
 answers so the version page (`SandboxSubmissions.tsx`) disables the button
-with the reason. The repository's CI result is not read back
-yet: the App holds no `checks` or `statuses` read.
+with the reason. The body `{ "when": "ci_passes" }` (also on one already
+open) asks the platform to merge it once the repository's CI passes.
+**CI read-back** (`apps/api/src/github/merge-ci.ts`): each open merge-back
+pull request (`submission_merge.repo_id`, `pull_request_state`, `ci_*`,
+`merged_*`, `merge_error`) is read back on GitHub's `check_suite`,
+`check_run`, `status` and `pull_request` deliveries (`webhook.ts`, after
+the answer) and by the reconcile sweep for rows not read in four minutes
+(fourteen days after opening): its head's check runs and statuses
+(`summarizeCi`: `failing`, `pending`, `passing`, `none` after ten minutes
+with no checks, `unknown` without `checks:read`/`statuses:read`, which
+never block opening and readiness names in `ciMissing`). On `passing` with
+`ci_passes` it is merged squashed at the head read
+(`PullRequestWriter.merge`); never on any other state; GitHub's refusal
+(branch protection, review) is kept in `merge_error` and it stays open.
+Starter and upload versions have no pull request: `GET
+…/submissions/:sid/files` (and `/files/archive`, a `.zip`) answers a pass's
+changed files, a starter's in the version's own names (its project is
+generated already renamed, so nothing is reversed). The pull request
+carries no hidden suite.
 
 **CI judge.** `POST /api/judge` and `GET /api/judge/:id?workspace=`
 (`apps/api/src/judge/`), outside `/api/v1` as the webhook is, take a pull
@@ -779,8 +849,58 @@ pages the same files with contents (UTF-8 or base64) for agents
 each file's size and sha256 before serving: a mismatch is 502
 `project_mismatch`, never a partial body; over `PROJECT_ARCHIVE_MAX_BYTES`
 is 409 `project_too_large`. The handout's access (owners and admins; drafts
-too); the builder (`apps/api/src/sandbox/project.ts`, writer `zip.ts`)
-takes no access decision.
+too), or an invited contributor's own (below); the answers
+(`apps/api/src/sandbox/handout.ts`, builder `project.ts`, writer `zip.ts`)
+take no access decision.
+
+**Contributors.** Before a marketplace, an owner or admin invites one
+person outside the workspace to the current published version
+(`apps/api/src/sandbox/contributors.ts`, store
+`packages/db/src/contributors.ts`, tables `contributor_invite`,
+`contributor_assignment`). `POST …/versions/:vid/invites`
+(`sandboxes:write`; `not_published` otherwise) answers the `lnxinv_` secret
+once, in `claimUrl` (`<app>/invite#<secret>`; only its SHA-256 is kept),
+default 14 days, 1 claim; `GET …/versions/:vid/contributors`,
+`POST …/invites/:id/revoke`, `POST …/contributors/:id/revoke` (session
+writes audited). The person signs in and `POST /api/v1/invites/claim`
+`{ token }` (session or contributor credential, 10 a person per 15 min per process; revoked,
+expired, spent, unknown, or the version no longer live: one 404
+`invite_unavailable`; a member: 409 `already_member`) makes an assignment,
+never a membership. `/api/v1/contributions[/:vid[/handout|/archive|/handout/files|/submissions[/:sid[/retry|/regrade]]]]`
+sit outside `requireMembership`, in the registry with the contributor
+audience (a session or a contributor credential, `contributions:write`):
+each reads the caller's live assignment to `:vid` (owner = the
+assignment's), else 404, so a revoke ends access at once. A contributor
+reads the version's listing from its `sandbox-task.json`, the handout and
+its own submissions (no run, carry-back, merge or contributor field); one
+first submission per assignment (`already_submitted`), its one retry theirs
+alone (an owner's retry is 409 `contributor_submission`), new work only
+while the version is live (`not_open`). Owners' submission views carry
+`contributor`. The same files are the same submission per person
+(`submission_version_patch_unique`, nulls not distinct). Editors, agents
+and CLIs act as a contributor with an `lnxc_` token or a contributor OAuth
+grant ([Auth](#auth)); MCP at `/mcp/contribute`.
+
+**Folder submissions.** `POST …/submissions/zip` and
+`…/submissions/:sid/retry/zip`, a contributor's (session or contributor
+credential; a binary body in the OpenAPI document) and an owner's (session
+only), take the zipped project folder as the body (`application/zip`, at
+most `SUBMISSION_ZIP_MAX_BYTES`; `apps/api/src/sandbox/folder-upload.ts`,
+reader `unzip.ts`) and compare it with the handout's hashes
+(`folderSubmission`, `packages/core/src/sandbox/folder.ts`): changed
+editable files and new files grading takes are the submission; guide and
+editor files (`isGuidePath`: guides, `.vscode/`, `.idea/`, the extension's
+`.lunox/`) are ignored; `node_modules/`, `.git/`, OS files and build output
+(`isBuildOutput`) are skipped unread. Anything grading would refuse,
+a changed read-only file, or a deleted editable file (the merge patch has
+no deletions) is 422 `folder_refused` with `refused` by path before a
+submission exists; `?dryRun=1` answers `{ preview }` and stores nothing.
+Also `400 invalid_zip`/`unsafe_zip`, `413 zip_too_large`/`entry_too_large`,
+`422 not_the_project`/`wrong_version`/`no_changes`/`too_many_entries`.
+`files[]` submissions drop guide and editor files and build output the same
+way before storing (`withoutGuideFiles`, `withoutBuildOutput`), exactly as
+their `?dryRun=1` preview reports (`no_task_files` when nothing is left), so
+no grading rule changed.
 
 **Provenance.** A version's private source row records the slice's manifest
 and contract hashes, the transform (alias rules, dependency choices, hidden
@@ -952,11 +1072,21 @@ views (`packages/db/src/schema/flows.ts`), an operator's SQL prompt.
 
 ## The extension
 
-Reads `sandbox-task.json` from a clone for display and runs the fixed command
-table from `packages/core` in VS Code terminals, only when invoked, in a
-trusted workspace. The API address is a user or application setting; the
-stored token is keyed by origin. Sign-in is not built: the client's
-`getToken` callback is the seam.
+`apps/extension` (CommonJS bundle; only `extension.ts` imports `vscode`,
+logic in `commands.ts`, `contribute.ts`, `workspace.ts`, `zip.ts`). Platform
+address: user/application setting `sandboxFactory.platformUrl` (default
+`https://platform.lunox.work`; workspace values ignored). Commands, category
+**Lunox**:
+
+| Command                                                                                     | Does                                                                                                                                                                                            |
+| ------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Sign in with a contributor token / Sign out                                                 | Pastes an `lnxc_` token (link to `/contributions#contributor-tokens`), checked with `GET /contributions`, kept in `SecretStorage` keyed by origin; never in settings or disk                    |
+| Open contribution                                                                           | Lists contributions, downloads `…/archive`, unpacks it (zip-slip and symlink safe; non-empty folder only on confirm), writes `.lunox/contribution.json` (version, root, platform URL), opens it |
+| Preview submission / Submit                                                                 | Zips the folder (skips `node_modules/`, `.git/`, `.lunox/`, build output), `…/submissions/zip?dryRun=1`, shows files/ignored/refused, confirms, then submits or the one retry                   |
+| Grade again / Refresh submission status / Show submission                                   | Status bar polls `…/submissions/:sid` (grading, passed, `overfit: s3`, refused, errored with Grade again → `…/regrade`)                                                                         |
+| Open project folder, Show task, Install dependencies, Run the walkthrough, Run public tests | Reads `sandbox-task.json` for display; runs core's fixed command table in a terminal, in a trusted workspace only                                                                               |
+
+Device-flow sign-in is not built.
 
 ## Migration notes
 

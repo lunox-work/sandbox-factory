@@ -10,7 +10,7 @@
 
 import { createHash, randomBytes } from "node:crypto";
 
-import { API_TOKEN_PREFIX } from "sandbox-factory";
+import { API_TOKEN_PREFIX, CONTRIBUTOR_TOKEN_PREFIX } from "sandbox-factory";
 
 const ALPHABET =
   "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
@@ -42,14 +42,38 @@ export function generateSecret(
   return `${API_TOKEN_PREFIX}${randomBase62(SECRET_LENGTH, random)}`;
 }
 
+/** A contributor token's secret: `lnxc_` and the same 40 characters. */
+export function generateContributorSecret(
+  random: (size: number) => Uint8Array = randomBytes,
+): string {
+  return `${CONTRIBUTOR_TOKEN_PREFIX}${randomBase62(SECRET_LENGTH, random)}`;
+}
+
 /** The stored form: hex SHA-256 of the whole secret, prefix included. */
 export function hashSecret(secret: string): string {
   return createHash("sha256").update(secret, "utf8").digest("hex");
 }
 
-/** What a list shows to tell tokens apart: `lnx_` and eight characters. */
+/**
+ * What a list shows to tell tokens apart: the prefix (`lnx_`, `lnxc_`) and
+ * eight characters.
+ */
 export function displayPrefix(secret: string): string {
-  return secret.slice(0, API_TOKEN_PREFIX.length + DISPLAY_LENGTH);
+  const prefix = secret.startsWith(CONTRIBUTOR_TOKEN_PREFIX)
+    ? CONTRIBUTOR_TOKEN_PREFIX
+    : API_TOKEN_PREFIX;
+  return secret.slice(0, prefix.length + DISPLAY_LENGTH);
+}
+
+/** The bearer value in an `Authorization` header when it starts `prefix`. */
+function bearerWith(
+  header: string | undefined,
+  prefix: string,
+): string | undefined {
+  if (header === undefined) return undefined;
+  const match = /^Bearer[ \t]+(\S+)[ \t]*$/i.exec(header);
+  const value = match?.[1];
+  return value?.startsWith(prefix) === true ? value : undefined;
 }
 
 /**
@@ -57,8 +81,12 @@ export function displayPrefix(secret: string): string {
  * any other header, which is then a session's to answer.
  */
 export function bearerApiToken(header: string | undefined): string | undefined {
-  if (header === undefined) return undefined;
-  const match = /^Bearer[ \t]+(\S+)[ \t]*$/i.exec(header);
-  const value = match?.[1];
-  return value?.startsWith(API_TOKEN_PREFIX) === true ? value : undefined;
+  return bearerWith(header, API_TOKEN_PREFIX);
+}
+
+/** The secret in an `Authorization: Bearer lnxc_…` header, or undefined. */
+export function bearerContributorToken(
+  header: string | undefined,
+): string | undefined {
+  return bearerWith(header, CONTRIBUTOR_TOKEN_PREFIX);
 }

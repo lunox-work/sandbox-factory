@@ -68,6 +68,10 @@ const ORGANIZATIONS: Crumb = {
   screen: "organizations",
 };
 const BOUNTIES: Crumb = { label: "Bounties", screen: "bounties" };
+const CONTRIBUTIONS: Crumb = {
+  label: "Contributions",
+  screen: "contributions",
+};
 
 /**
  * The trail for a screen, root first.
@@ -97,8 +101,21 @@ export function trailFor(
    * the same reason as the bounty's, and read "Repository" until it arrives.
    */
   repositoryName?: string | undefined,
+  /** The contribution the last crumb names, on `contribution`; as the bounty's. */
+  contributionName?: string | undefined,
 ): Crumb[] {
   switch (screen) {
+    case "invite":
+      return [HOME, { label: "Invite" }];
+    // A contributor's versions are under no workspace.
+    case "contributions":
+      return [HOME, { label: "Contributions" }];
+    case "contribution":
+      return [
+        HOME,
+        CONTRIBUTIONS,
+        { label: contributionName ?? "Contribution" },
+      ];
     case "home":
       return [];
     case "not-found":
@@ -186,10 +203,13 @@ export function Breadcrumbs({
   organization,
   bountyName,
   repositoryName,
+  contributionName,
   onNavigate,
 }: {
   screen: Screen;
   organization?: TrailOrganization | undefined;
+  /** The contribution `contribution` is showing; see `trailFor`. */
+  contributionName?: string | undefined;
   /** The bounty `bounty` is showing; see `trailFor`. */
   bountyName?: string | undefined;
   /** The repository `org-repository` is showing; see `trailFor`. */
@@ -201,7 +221,13 @@ export function Breadcrumbs({
     connectionTab?: ConnectionTab,
   ) => void;
 }) {
-  const crumbs = trailFor(screen, organization, bountyName, repositoryName);
+  const crumbs = trailFor(
+    screen,
+    organization,
+    bountyName,
+    repositoryName,
+    contributionName,
+  );
 
   // Nothing to show on home, and a bare trail of one crumb is chrome rather
   // than navigation — it names where you are without offering a way up.

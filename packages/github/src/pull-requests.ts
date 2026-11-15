@@ -17,9 +17,20 @@
  * open pull request from it is returned rather than a second one opened. A
  * branch someone pushed other work to is refused (`BranchConflictError`),
  * never force-pushed.
+ *
+ * Once it is open, the same writer reads it back (`getPullRequest`) and,
+ * for a merge-back opened to merge when CI passes, merges it (`merge`):
+ * squashed, at the head the caller read CI on, so a push since is never
+ * merged unread. GitHub's refusal (branch protection, a review required,
+ * not mergeable) is answered, not thrown, so the caller records it.
  */
 
-import { failure, GithubApiError, GithubNotFound } from "./errors.js";
+import {
+  failure,
+  GithubApiError,
+  GithubNotFound,
+  readFailure,
+} from "./errors.js";
 import { API_URL, readJson, request, restHeaders } from "./http.js";
 import type { TokenProvider } from "./installation-tokens.js";
 
@@ -103,6 +114,33 @@ export interface PullRequestSummary {
   readonly url: string;
 }
 
+/** A pull request as a merge-back follows it. */
+export interface PullRequestRead {
+  readonly number: number;
+  readonly url: string;
+  readonly title: string;
+  readonly state: "open" | "closed";
+  readonly merged: boolean;
+  /** The commit it landed as; null until merged. */
+  readonly mergeCommitSha: string | null;
+  readonly headSha: string;
+  /** Null while GitHub is still working it out. */
+  readonly mergeable: boolean | null;
+}
+
+/** What GitHub said to a merge: merged, or why not (it stays open). */
+export type MergeOutcome =
+  | { readonly merged: true; readonly sha: string }
+  | {
+      readonly merged: false;
+      readonly status: number;
+      /** GitHub's own words: branch protection, a review required… */
+      readonly reason: string;
+    };
+
+/** The statuses GitHub refuses a merge with, which leave the pull request open. */
+const MERGE_REFUSED = new Set([405, 409, 422]);
+
 const isConflict = (error: unknown) =>
   error instanceof GithubApiError && error.status === 422;
 
@@ -120,7 +158,7 @@ export class PullRequestWriter {
   }
 
   async #call(
-    method: "GET" | "POST",
+    method: "GET" | "POST" | "PUT",
     path: string,
     what: string,
     body?: unknown,
@@ -196,6 +234,83 @@ export class PullRequestWriter {
       throw new Error("GitHub answered pull requests with no list.");
     const first = listed[0] as Record<string, unknown> | undefined;
     return first === undefined ? null : pullOf(first);
+  }
+
+  /** One pull request, as a merge-back follows it. */
+  async getPullRequest(
+    fullName: string,
+    number: number,
+  ): Promise<PullRequestRead> {
+    const pull = await this.#call(
+      "GET",
+      `/repos/${segments(fullName)}/pulls/${number}`,
+      "a pull request",
+    );
+    const { url } = pullOf(pull);
+    const state = pull["state"];
+    const headSha = (pull["head"] as { sha?: unknown } | undefined)?.sha;
+    if ((state !== "open" && state !== "closed") || typeof headSha !== "string")
+      throw new Error("GitHub answered the pull request with no state.");
+    const mergeable = pull["mergeable"];
+    const mergeCommit = pull["merge_commit_sha"];
+    const merged = pull["merged"] === true;
+    const title = pull["title"];
+    return {
+      number,
+      url,
+      title: typeof title === "string" ? title : "",
+      state,
+      merged,
+      mergeCommitSha:
+        merged && typeof mergeCommit === "string" ? mergeCommit : null,
+      headSha,
+      mergeable: typeof mergeable === "boolean" ? mergeable : null,
+    };
+  }
+
+  /**
+   * Merges the pull request, squashed, only while its head is still `sha`.
+   * A refusal GitHub answers with 405, 409 or 422 is returned; anything
+   * else (a token without write access, GitHub down) throws.
+   */
+  async merge(
+    fullName: string,
+    number: number,
+    input: { readonly sha: string; readonly title: string },
+  ): Promise<MergeOutcome> {
+    const response = await request(
+      this.#fetch,
+      `${this.#apiUrl}/repos/${segments(fullName)}/pulls/${number}/merge`,
+      {
+        method: "PUT",
+        headers: {
+          ...restHeaders(`Bearer ${await this.#token()}`),
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          sha: input.sha,
+          merge_method: "squash",
+          commit_title: `${input.title} (#${number})`,
+        }),
+      },
+    );
+    if (MERGE_REFUSED.has(response.status)) {
+      const { message } = await readFailure(response, "a merge");
+      return {
+        merged: false,
+        status: response.status,
+        reason: (message ?? `GitHub answered ${response.status}.`).slice(
+          0,
+          300,
+        ),
+      };
+    }
+    if (!response.ok) throw await failure(response, "a merge");
+    const parsed = (await readJson(response)) as Record<string, unknown> | null;
+    const sha = parsed?.["sha"];
+    if (parsed?.["merged"] !== true || typeof sha !== "string")
+      throw new Error("GitHub answered the merge with no commit.");
+    return { merged: true, sha };
   }
 
   /**

@@ -3,7 +3,7 @@
  * Better Auth's endpoints are faked at the auth client's `$fetch`.
  */
 
-import type { MembershipDto } from "@sandbox-factory/shared";
+import type { ContributionDto, MembershipDto } from "@sandbox-factory/shared";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 
 import { cleanup, fireEvent, render, screen } from "./render";
@@ -64,6 +64,7 @@ test("the consent address is /oauth/consent", () => {
 test("an app is offered what it asked for, never more", () => {
   expect(requestedScopes(SEARCH)).toEqual({
     api: ["workspace:read", "bounties:write"],
+    contributor: false,
     offline: true,
   });
   expect(defaultScopes(["workspace:read", "bounties:write"])).toEqual([
@@ -219,4 +220,75 @@ test("an unknown app, or a page opened by hand, says where to start", async () =
   cleanup();
   render(<OAuthConsent search="" organizations={null} loadError={null} />);
   expect(screen.getByText(/Start from the app/)).toBeTruthy();
+});
+
+const CONTRIBUTOR_SEARCH =
+  "?client_id=client_1&scope=contributions%3Awrite+offline_access&exp=1&sig=abc";
+
+const contribution = {
+  versionId: "sbv_1",
+  version: 2,
+  title: "Statement fees",
+  open: true,
+} as ContributionDto;
+
+test("an app asking for contributions signs the person in as a contributor, binding no workspace", async () => {
+  fetchAuth.mockImplementation(answer);
+  render(
+    <OAuthConsent
+      search={CONTRIBUTOR_SEARCH}
+      organizations={[membership("org_1", "owner", "Acme")]}
+      contributions={[contribution]}
+      loadError={null}
+    />,
+  );
+  expect(await screen.findByText(/as an invited contributor/)).toBeTruthy();
+  // Their invited tasks are listed; no workspace is offered.
+  expect(screen.getByText("Statement fees")).toBeTruthy();
+  expect(screen.queryByLabelText(/Acme/)).toBeNull();
+  expect(screen.getByText(/Nothing of any workspace/)).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "Allow" }));
+  expect(await screen.findByRole("status")).toHaveProperty(
+    "textContent",
+    "Allowed. Returning you to Claude Code…",
+  );
+  expect(fetchAuth).toHaveBeenCalledWith("/oauth2/consent", {
+    method: "POST",
+    headers: { [ORGANIZATION_HEADER]: "contributor" },
+    body: {
+      accept: true,
+      oauth_query: CONTRIBUTOR_SEARCH.slice(1),
+      scope: "contributions:write offline_access",
+    },
+  });
+});
+
+test("a contributor sign-in with no tasks says so, and one mixed with workspace scopes cannot be allowed", async () => {
+  fetchAuth.mockImplementation(answer);
+  render(
+    <OAuthConsent
+      search={CONTRIBUTOR_SEARCH}
+      organizations={[]}
+      contributions={[]}
+      loadError={null}
+    />,
+  );
+  expect(await screen.findByText(/Open an invite link first/)).toBeTruthy();
+  cleanup();
+  render(
+    <OAuthConsent
+      search="?client_id=client_1&scope=contributions%3Awrite+workspace%3Aread&sig=abc"
+      organizations={[membership("org_1", "owner")]}
+      contributions={[contribution]}
+      loadError={null}
+    />,
+  );
+  expect(await screen.findByRole("alert")).toHaveProperty(
+    "textContent",
+    expect.stringMatching(/never grants/),
+  );
+  expect(
+    (screen.getByRole("button", { name: "Allow" }) as HTMLButtonElement)
+      .disabled,
+  ).toBe(true);
 });

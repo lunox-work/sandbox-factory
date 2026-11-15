@@ -25,6 +25,7 @@ import {
   artifactUrlSchema,
   enqueueSliceResponseSchema,
   generateStarterResponseSchema,
+  folderPreviewResponseSchema,
   handoutFilesSchema,
   publishVersionResponseSchema,
   repositoryProposalListSchema,
@@ -45,9 +46,15 @@ import {
   startSandboxResponseSchema,
   submissionListSchema,
   mergeBackStatusResponseSchema,
+  submissionFilesResponseSchema,
   submissionResponseSchema,
+  contributorAssignmentResponseSchema,
+  contributorInviteResponseSchema,
+  contributorListResponseSchema,
+  createdContributorInviteResponseSchema,
 } from "@sandbox-factory/shared";
 import type {
+  CreateContributorInviteInput,
   ApproveSliceInput,
   BuildAllInput,
   CreateSandboxInput,
@@ -57,6 +64,7 @@ import type {
   EnqueueScopeInput,
   EnqueueSliceInput,
   HandoutFilesQuery,
+  MergeSubmissionInput,
   UpdateSandboxVersionInput,
 } from "@sandbox-factory/shared";
 
@@ -555,6 +563,29 @@ export class SandboxClient extends GithubAnalysisClient {
       ),
     ).submission;
   }
+  /**
+   * Submits the zipped project folder against a published version: what
+   * it changes in the task (`dryRun` answers that, refusals included, and
+   * stores nothing). A signed-in session's act; a token is refused.
+   */
+  async submitFolderToSandbox(
+    owner: string,
+    versionId: string,
+    folder: Blob,
+    { dryRun = false }: { dryRun?: boolean } = {},
+  ) {
+    const payload = await this.request(
+      `${this.#sandboxes(owner)}/versions/${encodeURIComponent(versionId)}/submissions/zip${dryRun ? "?dryRun=1" : ""}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/zip" },
+        body: folder,
+      },
+    );
+    return dryRun
+      ? { preview: folderPreviewResponseSchema.parse(payload).preview }
+      : { submission: submissionResponseSchema.parse(payload).submission };
+  }
   /** A failed submission's one retry, with new files. */
   async retrySubmission(
     owner: string,
@@ -582,15 +613,52 @@ export class SandboxClient extends GithubAnalysisClient {
   }
   /**
    * Merges a passing submission back: a pull request on the repository it
-   * was sliced from. A signed-in session's act; a token is refused.
+   * was sliced from; `{ when: "ci_passes" }` also has the platform merge
+   * it once the repository's CI passes (asked of one already open, it is
+   * recorded). A signed-in session's act; a token is refused.
    */
-  async mergeSubmission(owner: string, submissionId: string) {
+  async mergeSubmission(
+    owner: string,
+    submissionId: string,
+    input?: MergeSubmissionInput,
+  ) {
     return submissionResponseSchema.parse(
       await this.request(
         `${this.#sandboxes(owner)}/submissions/${encodeURIComponent(submissionId)}/merge`,
-        { method: "POST" },
+        input === undefined
+          ? { method: "POST" }
+          : { method: "POST", body: JSON.stringify(input) },
       ),
     ).submission;
+  }
+  /**
+   * A passing submission's changed files on a version with no repository
+   * to merge back to (uploaded or generated), never a hidden test.
+   */
+  async submissionFiles(
+    owner: string,
+    submissionId: string,
+    signal?: AbortSignal,
+  ) {
+    return submissionFilesResponseSchema.parse(
+      await this.request(
+        `${this.#sandboxes(owner)}/submissions/${encodeURIComponent(submissionId)}/files`,
+        { signal },
+      ),
+    );
+  }
+  /** The same files as a `.zip`, named by the API. */
+  async submissionFilesArchive(
+    owner: string,
+    submissionId: string,
+    signal?: AbortSignal,
+  ) {
+    const file = await this.requestFile(
+      `${this.#sandboxes(owner)}/submissions/${encodeURIComponent(submissionId)}/files/archive`,
+      "application/zip",
+      { signal },
+    );
+    return { ...file, filename: file.filename ?? `${submissionId}-files.zip` };
   }
   /**
    * Whether the version's passing submissions can be merged back now, and
@@ -609,6 +677,53 @@ export class SandboxClient extends GithubAnalysisClient {
       ),
     ).mergeBack;
   }
+  /**
+   * Invites one contributor to the version: the claim link and its secret,
+   * answered this once and never again. Only the current published version.
+   */
+  async createContributorInvite(
+    owner: string,
+    versionId: string,
+    input: CreateContributorInviteInput = {},
+  ) {
+    return createdContributorInviteResponseSchema.parse(
+      await this.request(
+        `${this.#sandboxes(owner)}/versions/${encodeURIComponent(versionId)}/invites`,
+        { method: "POST", body: JSON.stringify(input) },
+      ),
+    );
+  }
+  /** A version's invites and invited contributors, revoked ones too. */
+  async versionContributors(
+    owner: string,
+    versionId: string,
+    signal?: AbortSignal,
+  ) {
+    return contributorListResponseSchema.parse(
+      await this.request(
+        `${this.#sandboxes(owner)}/versions/${encodeURIComponent(versionId)}/contributors`,
+        { signal },
+      ),
+    );
+  }
+  /** Stops an invite admitting claims. */
+  async revokeContributorInvite(owner: string, inviteId: string) {
+    return contributorInviteResponseSchema.parse(
+      await this.request(
+        `${this.#sandboxes(owner)}/invites/${encodeURIComponent(inviteId)}/revoke`,
+        { method: "POST" },
+      ),
+    ).invite;
+  }
+  /** Ends an invited contributor's access to their version, at once. */
+  async revokeContributor(owner: string, assignmentId: string) {
+    return contributorAssignmentResponseSchema.parse(
+      await this.request(
+        `${this.#sandboxes(owner)}/contributors/${encodeURIComponent(assignmentId)}/revoke`,
+        { method: "POST" },
+      ),
+    ).contributor;
+  }
   /** What replaying the version would use, or why it cannot be replayed. */
   async sandboxReplay(owner: string, versionId: string, signal?: AbortSignal) {
     return replayResponseSchema.parse(
@@ -621,6 +736,7 @@ export class SandboxClient extends GithubAnalysisClient {
 }
 
 export * from "./memberships.js";
+export * from "./contributors.js";
 export * from "./bounties.js";
 export * from "./jira.js";
 export * from "./github.js";

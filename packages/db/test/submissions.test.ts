@@ -30,6 +30,7 @@ const row = (overrides: Partial<SubmissionRow> = {}): SubmissionRow => ({
   errorCode: null,
   runId: null,
   retryOf: null,
+  assignmentId: null,
   createdAt: now,
   updatedAt: now,
   ...overrides,
@@ -319,4 +320,101 @@ test("a failed or errored submission takes one retry, against the same version",
     store([[failed], [], []]).store.retry("owner", "sbm_1", retryInput),
     /returned no row/,
   );
+});
+
+test("an invited contributor makes one first submission per assignment, and only they retry it", async () => {
+  const contributor = {
+    ...input,
+    submittedBy: "user_c",
+    assignmentId: "cas_1",
+  };
+  const made = createSequencedFakeDb([
+    frozen,
+    [],
+    [],
+    [row({ submittedBy: "user_c", assignmentId: "cas_1" })],
+  ]);
+  const created = await createSubmissionStore(made.db).create(
+    "owner",
+    contributor,
+  );
+  assert.deepEqual(created.ok && created.submission.assignmentId, "cas_1");
+  assert.equal(made.calls[3]?.values?.["assignmentId"], "cas_1");
+  assert.equal(made.calls[3]?.values?.["submittedBy"], "user_c");
+  // Owners' submissions carry none.
+  const owners = createSequencedFakeDb([frozen, [], [row()]]);
+  await createSubmissionStore(owners.db).create("owner", input);
+  assert.equal(owners.calls[2]?.values?.["assignmentId"], null);
+  // CI judge's (no person) still finds its own.
+  const judged = await createSubmissionStore(
+    createSequencedFakeDb([frozen, [row({ submittedBy: null })]]).db,
+  ).create("owner", { ...input, submittedBy: null });
+  assert.deepEqual(judged.ok && judged.created, false);
+
+  // Other files under the same assignment: the first is named, not made.
+  assert.deepEqual(
+    await createSubmissionStore(
+      createSequencedFakeDb([frozen, [], [{ id: "sbm_first" }]]).db,
+    ).create("owner", contributor),
+    { ok: false, reason: "already_submitted", submissionId: "sbm_first" },
+  );
+  // Two first submissions at once: the loser is told of the winner's.
+  assert.deepEqual(
+    await createSubmissionStore(
+      createSequencedFakeDb([
+        frozen,
+        [],
+        [],
+        duplicate(),
+        [],
+        [{ id: "sbm_w" }],
+      ]).db,
+    ).create("owner", contributor),
+    { ok: false, reason: "already_submitted", submissionId: "sbm_w" },
+  );
+
+  // A contributor's submission is retried by them alone, under their assignment.
+  const theirs = row({
+    status: "failed",
+    submittedBy: "user_c",
+    assignmentId: "cas_1",
+  });
+  const retryInput = {
+    submittedBy: "user_c",
+    assignmentId: "cas_1",
+    patchKey: "k",
+    patchSha256: "b".repeat(64),
+  };
+  assert.deepEqual(
+    await createSubmissionStore(createSequencedFakeDb([[theirs]]).db).retry(
+      "owner",
+      "sbm_1",
+      { ...retryInput, submittedBy: "user_owner", assignmentId: null },
+    ),
+    { ok: false, reason: "contributor_submission" },
+  );
+  const retried = createSequencedFakeDb([
+    [theirs],
+    [],
+    [row({ id: "sbm_2", retryOf: "sbm_1", assignmentId: "cas_1" })],
+  ]);
+  const outcome = await createSubmissionStore(retried.db).retry(
+    "owner",
+    "sbm_1",
+    retryInput,
+  );
+  assert.equal(outcome.ok, true);
+  assert.equal(retried.calls[2]?.values?.["assignmentId"], "cas_1");
+});
+
+test("a version's submissions are listed for one person when asked", async () => {
+  const fake = createFakeDb([row()]);
+  const list = await createSubmissionStore(fake.db).list("owner", "sbv_1", {
+    submittedBy: "user_1",
+  });
+  assert.deepEqual(
+    list.map((item) => [item.id, item.assignmentId]),
+    [["sbm_1", null]],
+  );
+  assert.equal(fake.calls[0]?.filtered, true);
 });

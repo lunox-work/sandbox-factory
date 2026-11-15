@@ -27,6 +27,13 @@ import {
   type HandoutFilesDto,
 } from "@sandbox-factory/shared";
 
+import {
+  layoutOf,
+  TASK_DESCRIPTOR_PATH,
+  type GradingLayout,
+  type SandboxBuildManifest,
+} from "sandbox-factory";
+
 import { textOf } from "../object-text.js";
 import { zip, ZIP_MAX_ENTRIES, type ZipArchive } from "./zip.js";
 
@@ -310,3 +317,84 @@ const listed = ({ path, sizeBytes, sha256 }: ProjectFile) => ({
   sizeBytes,
   sha256,
 });
+
+/**
+ * One of a project's files as text, checked against its listed size and
+ * sha256; null when it is absent, unreadable, altered or not UTF-8.
+ */
+export async function projectFileText(
+  objects: Pick<ObjectStore, "get">,
+  file: Pick<ProjectFile, "objectKey" | "sizeBytes" | "sha256"> | undefined,
+): Promise<string | null> {
+  if (file === undefined) return null;
+  const bytes = await objects.get(file.objectKey);
+  if (
+    bytes === undefined ||
+    bytes.byteLength !== file.sizeBytes ||
+    sha256Of(bytes) !== file.sha256
+  )
+    return null;
+  return textOf(bytes);
+}
+
+/** What a version lets a submission change, as its build recorded it. */
+export interface VersionRules {
+  /** The descriptor's `editablePaths`; empty when it cannot be read. */
+  readonly editablePaths: readonly string[];
+  /** The descriptor's `versionId`, null when it cannot be read. */
+  readonly descriptorVersionId: string | null;
+  /** The build manifest's grading layout, else the platform's. */
+  readonly layout: GradingLayout;
+}
+
+/**
+ * The rules a built version's own files state: the editable paths in its
+ * `sandbox-task.json` and the layout in its build manifest, the two a
+ * grading run reads.
+ */
+export async function versionRules(
+  objects: Pick<ObjectStore, "get">,
+  project: PublicProject,
+): Promise<VersionRules> {
+  const descriptorText = await projectFileText(
+    objects,
+    project.files.find((file) => file.path === TASK_DESCRIPTOR_PATH),
+  );
+  let editablePaths: string[] = [];
+  let descriptorVersionId: string | null = null;
+  try {
+    const parsed = JSON.parse(descriptorText ?? "null") as {
+      editablePaths?: unknown;
+      versionId?: unknown;
+    } | null;
+    if (
+      Array.isArray(parsed?.editablePaths) &&
+      parsed.editablePaths.every((path) => typeof path === "string")
+    )
+      editablePaths = parsed.editablePaths as string[];
+    if (typeof parsed?.versionId === "string")
+      descriptorVersionId = parsed.versionId;
+  } catch {
+    // Unreadable: nothing is editable, and the grading run says so.
+  }
+  const manifestText = await projectFileText(
+    objects,
+    project.artifacts.find((file) => file.path === "build-manifest.json"),
+  );
+  let recorded: GradingLayout | undefined;
+  try {
+    recorded = (
+      JSON.parse(manifestText ?? "null") as Pick<
+        SandboxBuildManifest,
+        "layout"
+      > | null
+    )?.layout;
+  } catch {
+    recorded = undefined;
+  }
+  return {
+    editablePaths,
+    descriptorVersionId,
+    layout: layoutOf({ layout: recorded }),
+  };
+}

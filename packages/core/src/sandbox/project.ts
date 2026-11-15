@@ -886,7 +886,7 @@ function runScript(entries: readonly string[]): string {
 }
 
 /** The README's pointer to the contributor guide (`guide.ts`), a slice's and a starter's alike. */
-export const README_GUIDE = `Start with [\`${TASK_GUIDE_PATH}\`](${TASK_GUIDE_PATH}): the task, its scenarios, how it is accepted and how to submit it. [\`${AGENTS_GUIDE_PATH}\`](${AGENTS_GUIDE_PATH}) holds the commands and rules, for you or a coding agent. In VS Code, \`${VSCODE_DIR}/\` hides the build's output beside its source and debugs the walkthrough and the tests with source maps.`;
+export const README_GUIDE = `Start with [\`${TASK_GUIDE_PATH}\`](${TASK_GUIDE_PATH}): the task, its scenarios, how it is accepted and how to submit it: zip this folder and upload it on your contribution page, or run **Lunox: Submit** in VS Code. [\`${AGENTS_GUIDE_PATH}\`](${AGENTS_GUIDE_PATH}) holds the commands and rules, for you or a coding agent. In VS Code, \`${VSCODE_DIR}/\` hides the build's output beside its source and debugs the walkthrough and the tests with source maps.`;
 /** How the README runs one public test file. */
 export const README_ONE_TEST = `Run one file with \`${SANDBOX_COMMANDS.build} && node --env-file=${ENV_FILE} --test ${PUBLIC_TESTS_DIR}/<name>.test.js\`.`;
 

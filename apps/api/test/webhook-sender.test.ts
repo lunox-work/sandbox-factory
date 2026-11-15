@@ -264,6 +264,7 @@ function emitter(
     analysis?: StoredAnalysisRun | null;
     bounty?: Partial<StoredBountyRun> | null;
     failing?: boolean;
+    submission?: Record<string, unknown> | null;
   } = {},
 ) {
   const events: Array<{ organizationId: string; event: WebhookEvent }> = [];
@@ -293,6 +294,9 @@ function emitter(
         Promise.resolve({
           version: { sandboxId: "sbx_1" },
         } as Awaited<ReturnType<SandboxStore["getVersion"]>>),
+    },
+    submissions: {
+      get: () => Promise.resolve((options.submission ?? null) as never),
     },
     onEnqueued: () => {
       kicks += 1;
@@ -478,4 +482,111 @@ test("a failed enqueue is reported, never thrown", async () => {
     store: { enqueue: () => Promise.resolve([]) },
   });
   assert.equal(await quiet.emit("org_1", "run.finished", "k", {}), 0);
+});
+
+test("a grading run that ended is submission.graded: verdict and counts, never a hidden name or scenario key", async () => {
+  const graded = {
+    id: "sbm_1",
+    sandboxVersionId: "sbv_1",
+    status: "failed",
+    runId: "arn_1",
+    result: {
+      verdict: "overfit",
+      public: { passed: 3, total: 3 },
+      hidden: { passed: 1, total: 2 },
+      failedScenarios: ["refund-rounding"],
+      refused: [],
+    },
+  };
+  const run = analysisRun({
+    tool: "submission_grade",
+    status: "succeeded",
+    params: { grader: "submission", submissionId: "sbm_1" } as never,
+  });
+  const { instance, events } = emitter({ analysis: run, submission: graded });
+  await instance.onRunChange({
+    organizationId: "org_1",
+    kind: "analysis",
+    id: "arn_1",
+  });
+  assert.deepEqual(
+    events.map(({ event }) => event.type),
+    ["run.finished", "submission.graded"],
+  );
+  const event = events[1]?.event;
+  assert.equal(event?.id, eventId("org_1", "submission.graded", "sbm_1:arn_1"));
+  assert.deepEqual(event?.payload.data, {
+    submissionId: "sbm_1",
+    sandboxVersionId: "sbv_1",
+    runId: "arn_1",
+    status: "failed",
+    verdict: "overfit",
+    public: { passed: 3, total: 3 },
+    hidden: { passed: 1, total: 2 },
+    carryBack: null,
+  });
+  assert.doesNotMatch(JSON.stringify(event?.payload), /refund-rounding/);
+
+  // Errored, with no result: no verdict or counts.
+  const errored = emitter({
+    analysis: { ...run, status: "failed" },
+    submission: { ...graded, status: "errored", result: null },
+  });
+  await errored.instance.onRunChange({
+    organizationId: "org_1",
+    kind: "analysis",
+    id: "arn_1",
+  });
+  assert.deepEqual(errored.events[1]?.event.payload.data, {
+    submissionId: "sbm_1",
+    sandboxVersionId: "sbv_1",
+    runId: "arn_1",
+    status: "errored",
+    verdict: null,
+    public: null,
+    hidden: null,
+    carryBack: null,
+  });
+
+  // Still waiting, graded by another run, or gone: nothing.
+  for (const submission of [
+    { ...graded, status: "running" },
+    { ...graded, runId: "arn_2" },
+    null,
+  ]) {
+    const quiet = emitter({ analysis: run, submission });
+    await quiet.instance.onRunChange({
+      organizationId: "org_1",
+      kind: "analysis",
+      id: "arn_1",
+    });
+    assert.deepEqual(
+      quiet.events.map(({ event }) => event.type),
+      ["run.finished"],
+    );
+  }
+});
+
+test("a submission event whose data is not its schema's is reported and never enqueued", async () => {
+  const { instance, events, errors } = emitter();
+  assert.equal(
+    await instance.emit("org_1", "submission.merged", "sbm_1:merged", {
+      submissionId: "sbm_1",
+      by: "someone",
+    }),
+    0,
+  );
+  assert.deepEqual(events, []);
+  assert.deepEqual(errors, ["webhook_event_invalid"]);
+  assert.equal(
+    await instance.emit("org_1", "submission.merged", "sbm_1:merged", {
+      submissionId: "sbm_1",
+      sandboxVersionId: "sbv_1",
+      pullRequestNumber: 7,
+      pullRequestUrl: "https://github.com/acme/shop/pull/7",
+      mergedCommitSha: "landed",
+      by: "platform",
+    }),
+    1,
+  );
 });

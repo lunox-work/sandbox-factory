@@ -39,10 +39,14 @@ product proposals and historical explainers are optional design context.
   writebacks. Owners and admins manage tokens and connected apps at
   `/o/:slug/developers`. Not built: the portal's webhook, CI and audit
   pages. See [Public API conventions](./architecture.md#public-api-conventions).
-- The VS Code extension can run a local task. Its sign-in flow is not built.
-- Not built: contributor submission, adjudication, escrow, payouts,
-  reputation, merge-back, Slack and knowledge integrations. See the
-  [roadmap](./roadmap.md).
+- The VS Code extension signs in with a contributor token, opens a
+  contribution, runs it, and previews and submits it with the verdict in the
+  status bar. Device-flow sign-in is not built.
+- Invited contributors claim one published version from an invite link
+  and submit their zipped project folder from its page, or over the API
+  ([Sandboxes](./architecture.md#sandboxes)). Not built: a
+  marketplace, adjudication, escrow, payouts, reputation, Slack and
+  knowledge integrations. See the [roadmap](./roadmap.md).
 
 ## Read by task
 
@@ -79,7 +83,7 @@ The full import rules are in [architecture](./architecture.md#dependency-directi
 | `apps/api`               | `@sandbox-factory/api`      | Hono API and background orchestration                                               |
 | `apps/web`               | `@sandbox-factory/web`      | React dashboard                                                                     |
 | `apps/worker`            | `@sandbox-factory/worker`   | Private analysis, scope/fixture agents and sandbox builds                           |
-| `apps/extension`         | `sandbox-factory-vscode`    | VS Code task commands                                                               |
+| `apps/extension`         | `sandbox-factory-vscode`    | VS Code contributor commands                                                        |
 | `tooling/tsconfig`       | `@sandbox-factory/tsconfig` | Shared compiler settings                                                            |
 | `tooling/coverage-guard` | `@sandbox-factory/coverage` | Detect source files omitted from coverage                                           |
 

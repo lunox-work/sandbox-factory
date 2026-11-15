@@ -14,6 +14,7 @@
  */
 
 import type {
+  ContributorStore,
   DecisionConfirmationStore,
   SubmissionMergeStore,
   SubmissionStore,
@@ -34,6 +35,7 @@ import type {
 } from "@sandbox-factory/db";
 
 import type { MergeBackTargets } from "../github/merge-back.js";
+import type { SubmissionEventEmit } from "../github/merge-ci.js";
 
 export interface SandboxRouteOptions {
   readonly sandboxes: SandboxStore;
@@ -46,10 +48,30 @@ export interface SandboxRouteOptions {
     SubmissionStore,
     "create" | "get" | "list" | "retry"
   >;
+  /**
+   * Invited contributors (`contributors.ts`): their invites and
+   * assignments. Absent, nobody is invited and the contributor routes
+   * answer 404.
+   */
+  readonly contributors?: ContributorStore;
+  /**
+   * The link a claim secret is handed out in: the web app's invite page,
+   * the secret in its fragment. Absent, the page's path alone.
+   */
+  readonly inviteUrl?: (token: string) => string;
+  /**
+   * A person's role in an organization, which a claim reads so a member
+   * never claims a contributor's access to their own workspace. Supplied
+   * by `createApp`, from the store its membership guard reads.
+   */
+  readonly roleOf?: (
+    userId: string,
+    organizationId: string,
+  ) => Promise<string | undefined>;
   /** Merge-backs; absent with `mergeBack`, no pull request is opened. */
   readonly merges?: Pick<
     SubmissionMergeStore,
-    "get" | "list" | "claim" | "finish" | "release"
+    "get" | "list" | "claim" | "finish" | "release" | "setMergeWhen"
   >;
   /**
    * The repository a merge-back writes to, with a writer whose token is
@@ -118,6 +140,11 @@ export interface SandboxRouteOptions {
       readonly at: Date;
     },
   ) => void;
+  /**
+   * Owes a workspace webhook event about a submission: the merge route's
+   * `submission.merge_opened`. Absent, none is sent.
+   */
+  readonly onSubmissionEvent?: SubmissionEventEmit;
   /** Asks the profiler for a revision's profile it does not have yet. */
   readonly requestProfile?: (
     organizationId: string,

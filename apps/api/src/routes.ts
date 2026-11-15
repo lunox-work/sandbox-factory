@@ -26,6 +26,7 @@ import type { ErrorHandler } from "hono";
 import { NotFoundError, RepositoryInUseError } from "@sandbox-factory/db";
 import type {
   ApiTokenStore,
+  ContributorTokenStore,
   AuditStore,
   IdempotencyStore,
   EmailStore,
@@ -36,6 +37,7 @@ import type {
   WorkspaceSetupStore,
 } from "@sandbox-factory/db";
 
+import { mountContributorTokenRoutes } from "./api-tokens/contributor.js";
 import { mountApiTokenRoutes } from "./api-tokens/routes.js";
 import { mountSelfRevokeRoute } from "./api-tokens/self.js";
 import { mountAuditRoutes } from "./audit/routes.js";
@@ -135,7 +137,11 @@ export interface AppOptions {
     | (Omit<GithubRouteOptions, "roleOf"> &
         Pick<
           GithubWebhookOptions,
-          "webhookSecret" | "background" | "onBackgroundError" | "log"
+          | "webhookSecret"
+          | "background"
+          | "onBackgroundError"
+          | "log"
+          | "mergeCi"
         >)
     | undefined;
   /** Commercial routes. Rate-card reads remain mounted without model config. */
@@ -192,6 +198,11 @@ export interface AppOptions {
    * database.
    */
   oauthGrants?: OAuthGrantStore | undefined;
+  /**
+   * Contributor tokens (`lnxc_…`), a person's own. Without it every one is
+   * refused and their routes are not mounted.
+   */
+  contributorTokens?: ContributorTokenStore | undefined;
   /**
    * Public origin of the API (`BETTER_AUTH_URL`), which OAuth discovery
    * and MCP's sign-in challenges name. Without it neither is mounted.
@@ -251,6 +262,7 @@ export function createApp({
   originVerify,
   apiTokens,
   oauthGrants,
+  contributorTokens,
   publicUrl,
   usage,
   monthlyModelTokens = MONTHLY_MODEL_TOKENS_DEFAULT,
@@ -396,6 +408,7 @@ export function createApp({
       auth,
       apiTokens,
       oauthGrants,
+      contributorTokens,
       resourceMetadata:
         publicUrl === undefined ? undefined : resourceMetadataUrl(publicUrl),
       roleOf:
@@ -408,7 +421,19 @@ export function createApp({
   );
 
   /** A bound credential ends itself: a client's logout. */
-  mountSelfRevokeRoute(app, { tokens: apiTokens, grants: oauthGrants });
+  mountSelfRevokeRoute(app, {
+    tokens: apiTokens,
+    grants: oauthGrants,
+    contributorTokens,
+  });
+
+  /** A person's own contributor tokens and contributor OAuth grants. */
+  if (contributorTokens !== undefined)
+    mountContributorTokenRoutes(app, {
+      tokens: contributorTokens,
+      grants: oauthGrants,
+      now,
+    });
 
   /**
    * Who am I? `id` is the account: permanent, and what anything durable must
@@ -858,7 +883,14 @@ export function createApp({
       });
     }
     if (settings !== undefined) mountSettingsRoutes(app, settings);
-    if (sandbox !== undefined) mountSandboxRoutes(app, sandbox);
+    // A claim reads the claimer's role here, from the store the
+    // membership guard above reads: a member claims nothing.
+    if (sandbox !== undefined)
+      mountSandboxRoutes(app, {
+        roleOf: (userId, organizationId) =>
+          organizations.roleOf(userId, organizationId),
+        ...sandbox,
+      });
     else
       app.all("/api/v1/orgs/:orgId/sandboxes/*", (c) =>
         c.json(

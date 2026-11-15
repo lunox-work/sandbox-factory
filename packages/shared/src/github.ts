@@ -276,6 +276,56 @@ export const githubRepositoryEventSchema = z
   })
   .loose();
 
+const pullStubsSchema = z
+  .array(z.object({ number: z.number().int() }).loose())
+  .optional();
+
+/**
+ * `check_suite`, `check_run`, `status` and `pull_request` deliveries, read
+ * only for what names a merge-back's pull request: its branch, head commit
+ * or number. Each is a cue to read the pull request back, never a state.
+ */
+export const githubCiSignalEventSchema = z
+  .object({
+    action: z.string().optional(),
+    repository: repositoryStubSchema,
+    check_suite: z
+      .object({
+        head_sha: z.string().optional(),
+        head_branch: z.string().nullable().optional(),
+        pull_requests: pullStubsSchema,
+      })
+      .loose()
+      .optional(),
+    check_run: z
+      .object({
+        head_sha: z.string().optional(),
+        check_suite: z
+          .object({ head_branch: z.string().nullable().optional() })
+          .loose()
+          .optional(),
+        pull_requests: pullStubsSchema,
+      })
+      .loose()
+      .optional(),
+    /** `status`: the commit and the branches whose head it is. */
+    sha: z.string().optional(),
+    branches: z.array(z.object({ name: z.string() }).loose()).optional(),
+    /** `pull_request`. */
+    number: z.number().int().optional(),
+    pull_request: z
+      .object({
+        head: z
+          .object({ sha: z.string().optional(), ref: z.string().optional() })
+          .loose()
+          .optional(),
+      })
+      .loose()
+      .optional(),
+  })
+  .loose();
+export type GithubCiSignalEvent = z.infer<typeof githubCiSignalEventSchema>;
+
 /**
  * The headers a delivery arrives with, lowercased as Hono reads them.
  *

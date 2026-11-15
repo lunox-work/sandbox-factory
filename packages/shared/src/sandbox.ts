@@ -659,6 +659,91 @@ export const createSubmissionSchema = z.strictObject({
     ),
 });
 
+/**
+ * The largest zipped project folder `POST …/submissions/zip` reads, as
+ * sent. `node_modules/` may ride along (it is skipped unread), so the cap
+ * leaves room for it; the files read are bounded apart.
+ */
+export const SUBMISSION_ZIP_MAX_BYTES = 48 * 1024 * 1024;
+
+/**
+ * What an uploaded project folder would submit (`?dryRun=1`), or why it
+ * cannot: the files it changes or adds, the guide and editor files it
+ * changed (never submitted), how many entries were skipped unread
+ * (`node_modules/`, `.git/`, OS files, build output), the read-only files
+ * it lacks (the version's text stands) and each refusal by path.
+ */
+export const folderPreviewSchema = z.object({
+  files: z.array(
+    z.object({
+      path: z.string(),
+      change: z.enum(["changed", "added"]),
+    }),
+  ),
+  ignored: z.array(z.string()),
+  skipped: z.number().int().nonnegative(),
+  missing: z.array(z.string()),
+  refused: z.array(z.object({ path: z.string(), reason: z.string() })),
+});
+export type FolderPreviewDto = z.infer<typeof folderPreviewSchema>;
+export const folderPreviewResponseSchema = z.object({
+  preview: folderPreviewSchema,
+});
+/**
+ * `?dryRun=1` on a submission or retry (files JSON or zipped folder):
+ * answer what it would submit (`folderPreviewResponseSchema`, 200) and
+ * store nothing.
+ */
+export const submissionDryRunQuerySchema = z.object({
+  dryRun: z.enum(["1", "true"]).optional(),
+});
+
+/**
+ * A merge-back's pull request, as read back from GitHub. `when`: `open`
+ * opens it and leaves it to the repository's people; `ci_passes` also
+ * merges it (squash) once its CI passes and GitHub lets it.
+ */
+export const MERGE_WHEN = ["open", "ci_passes"] as const;
+export type MergeWhen = (typeof MERGE_WHEN)[number];
+export const PULL_REQUEST_STATES = ["open", "merged", "closed"] as const;
+export type PullRequestState = (typeof PULL_REQUEST_STATES)[number];
+/**
+ * Its head commit's checks and commit statuses: `none` when the repository
+ * reported none within a grace period; `unknown` when the GitHub App has
+ * not been granted `checks:read` and `statuses:read` to read them.
+ */
+export const MERGE_CI_STATES = [
+  "pending",
+  "passing",
+  "failing",
+  "none",
+  "unknown",
+] as const;
+export type MergeCiState = (typeof MERGE_CI_STATES)[number];
+/** Counts over check runs and commit statuses, and the failing ones' names. */
+export const mergeCiSummarySchema = z.object({
+  total: z.number().int().nonnegative(),
+  passed: z.number().int().nonnegative(),
+  failed: z.number().int().nonnegative(),
+  pending: z.number().int().nonnegative(),
+  failing: z.array(z.string()).max(20),
+  /** The first failing check's page, else the first check's; null for none. */
+  detailsUrl: z.string().nullable(),
+});
+export type MergeCiSummary = z.infer<typeof mergeCiSummarySchema>;
+export const mergeCiSchema = z.object({
+  state: z.enum(MERGE_CI_STATES),
+  summary: mergeCiSummarySchema.nullable(),
+  /** The commit the state describes: the pull request's head when read. */
+  headSha: z.string().nullable(),
+  checkedAt: z.iso.datetime().nullable(),
+});
+/** Body for `POST …/submissions/:sid/merge`; empty opens the pull request alone. */
+export const mergeSubmissionSchema = z.strictObject({
+  when: z.enum(MERGE_WHEN).default("open"),
+});
+export type MergeSubmissionInput = z.input<typeof mergeSubmissionSchema>;
+
 const suiteCountSchema = z.object({
   passed: z.number().int().nonnegative(),
   total: z.number().int().nonnegative(),
@@ -694,15 +779,47 @@ export const submissionDtoSchema = z.object({
   runId: z.string().nullable(),
   /** The submission this one retries; null for a first attempt. */
   retryOf: z.string().nullable(),
-  /** The pull request it was merged back as (gate 3); null before. */
+  /**
+   * The pull request it was merged back as (gate 3); null before. The
+   * fields after `createdAt` are what the platform has read back of it
+   * since (`apps/api/src/github/merge-ci.ts`); absent from an older API.
+   */
   merge: z
     .object({
       pullRequestNumber: z.number().int(),
       pullRequestUrl: z.string(),
       branch: z.string(),
       createdAt: z.iso.datetime(),
+      /** `ci_passes`: the platform merges it once its CI passes. */
+      when: z.enum(MERGE_WHEN).default("open"),
+      pullRequestState: z.enum(PULL_REQUEST_STATES).default("open"),
+      ci: mergeCiSchema.default({
+        state: "pending",
+        summary: null,
+        headSha: null,
+        checkedAt: null,
+      }),
+      /** The commit it landed as on the base branch, once merged. */
+      mergedCommitSha: z.string().nullable().default(null),
+      mergedAt: z.iso.datetime().nullable().default(null),
+      /** Why GitHub refused the platform's merge (branch protection…); it stays open. */
+      mergeError: z.string().nullable().default(null),
     })
     .nullable(),
+  /**
+   * The invited contributor who made it, as the workspace knows them; null
+   * for the workspace's own people and the CI judge, and absent from an
+   * API older than contributors.
+   */
+  contributor: z
+    .object({
+      assignmentId: z.string(),
+      userId: z.string(),
+      name: z.string(),
+      email: z.string(),
+    })
+    .nullable()
+    .default(null),
   createdAt: z.iso.datetime(),
   updatedAt: z.iso.datetime(),
 });
@@ -732,6 +849,12 @@ export const mergeBackStatusSchema = z.object({
   error: z.string().nullable(),
   missing: z.array(z.string()),
   acceptUrl: z.string().nullable(),
+  /**
+   * What reading the pull request's CI back still needs (`checks:read`,
+   * `statuses:read`), accepted at `acceptUrl`. It never blocks opening
+   * one: CI then reads `unknown`, and merging when CI passes is refused.
+   */
+  ciMissing: z.array(z.string()).default([]),
 });
 export const mergeBackStatusResponseSchema = z.object({
   mergeBack: mergeBackStatusSchema,
@@ -826,15 +949,21 @@ export const uploadResponseSchema = z.object({
 
 /**
  * `GET /sandboxes/submissions/:sid/files`: a passing submission's changed
- * files on an uploaded version, for `carveout patch --from`: what the
- * contributor changed or added, at the folder's paths, never a hidden test.
+ * files on a version with no repository to merge back to, never a hidden
+ * test. On an uploaded version, for `carveout patch --from`, at the
+ * folder's paths, with the receipt's hash (`upload`); on a generated
+ * (starter) one, at the version's own paths and names (`upload` null).
  */
 export const submissionFilesResponseSchema = z.object({
   submission: submissionDtoSchema,
-  upload: z.object({
-    recordSha256: z.string(),
-    carveoutVersion: z.string(),
-  }),
+  /** Absent from an API older than starter take-back: an upload. */
+  origin: z.enum(["upload", "starter"]).default("upload"),
+  upload: z
+    .object({
+      recordSha256: z.string(),
+      carveoutVersion: z.string(),
+    })
+    .nullable(),
   files: z.array(z.object({ path: z.string(), text: z.string() })),
 });
 export type SubmissionFilesResponseDto = z.infer<

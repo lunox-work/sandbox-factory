@@ -461,6 +461,8 @@ function fixture(
     /** The merge-back store and target; absent, none. */
     merges: unknown;
     mergeBack: unknown;
+    /** Collects each submission webhook event the routes owe. */
+    events: unknown[];
     /** What a grading run `arn_grade` wrote, by path. */
     gradeRun: Record<string, string>;
     /**
@@ -933,6 +935,13 @@ function fixture(
     ...(overrides.mergeBack === undefined
       ? {}
       : { mergeBack: overrides.mergeBack as never }),
+    ...(overrides.events === undefined
+      ? {}
+      : {
+          onSubmissionEvent: (...event: unknown[]) => {
+            overrides.events?.push(event);
+          },
+        }),
     previews: {
       preview: async (owner: string, runId: string) =>
         overrides.previewing === true &&
@@ -4716,7 +4725,8 @@ function githubRepository() {
  * read back) and a target over `githubRepository`, or a writer that fails.
  */
 function mergeBackFake(
-  target: "ok" | "gone" | "forbidden" | "down" | "missing" = "ok",
+  target:
+    "ok" | "gone" | "forbidden" | "down" | "missing" | "ci_missing" = "ok",
   options: { finishFails?: number } = {},
 ) {
   const github = githubRepository();
@@ -4753,7 +4763,7 @@ function mergeBackFake(
         rows.set(input.submissionId, {
           status: "pending",
           claimed: true,
-          merge: { id: "smg_1", ...input, createdAt: stamp },
+          merge: { id: "smg_1", ...input, createdAt: stamp, ...unread },
         });
         return { status: "claimed" };
       },
@@ -4774,6 +4784,14 @@ function mergeBackFake(
         const row = rows.get(id);
         if (row !== undefined) row.claimed = false;
       },
+      setMergeWhen: async (_owner: string, id: string, when: string) => {
+        const row = rows.get(id);
+        const merge = row?.merge as { pullRequestState?: string } | undefined;
+        if (row?.status !== "opened" || merge?.pullRequestState !== "open")
+          return null;
+        row.merge = { ...row.merge, mergeWhen: when };
+        return row.merge;
+      },
     },
     mergeBack: {
       target: async (
@@ -4793,6 +4811,9 @@ function mergeBackFake(
                   : [],
               acceptUrl:
                 "https://github.com/organizations/acme/settings/installations/9",
+              ciMissingPermissions:
+                target === "ci_missing" ? ["checks:read", "statuses:read"] : [],
+              ciReader: null,
               writer: {
                 open: async (input: PullRequestInput) => {
                   opened.push(input);
@@ -4807,6 +4828,26 @@ function mergeBackFake(
     },
   };
 }
+
+/** What an opened merge-back holds before anything is read back. */
+const unread = {
+  pullRequestState: "open",
+  ciState: "pending",
+  ciSummary: null,
+  ciHeadSha: null,
+  ciCheckedAt: null,
+  mergedCommitSha: null,
+  mergedAt: null,
+  mergeError: null,
+};
+const unreadDto = {
+  when: "open",
+  pullRequestState: "open",
+  ci: { state: "pending", summary: null, headSha: null, checkedAt: null },
+  mergedCommitSha: null,
+  mergedAt: null,
+  mergeError: null,
+};
 
 const carried = JSON.stringify({
   schemaVersion: 1,
@@ -4836,11 +4877,13 @@ const passedSubmission = (overrides: object = {}) => {
 
 test("a passing submission is merged back as one pull request on the version's commit, from a signed-in session", async () => {
   const back = mergeBackFake();
+  const events: unknown[] = [];
   const f = fixture("admin", {
     submissions: passedSubmission(),
     merges: back.merges,
     mergeBack: back.mergeBack,
     gradeRun: { "private/merge-patch.json": carried },
+    events,
   });
   const first = await f.request("POST", "/submissions/sbm_1/merge");
   assert.equal(first.status, 201);
@@ -4852,7 +4895,23 @@ test("a passing submission is merged back as one pull request on the version's c
     pullRequestUrl: "https://github.com/acme/shop/pull/7",
     branch: "lunox/sbm_1",
     createdAt: stamp,
+    ...unreadDto,
   });
+  // The workspace is told, once.
+  assert.deepEqual(events, [
+    [
+      "org_1",
+      "submission.merge_opened",
+      "sbm_1:7",
+      {
+        submissionId: "sbm_1",
+        sandboxVersionId: "sbv_1",
+        pullRequestNumber: 7,
+        pullRequestUrl: "https://github.com/acme/shop/pull/7",
+        when: "open",
+      },
+    ],
+  ]);
   const asked = back.opened[0] as Record<string, unknown>;
   assert.deepEqual(
     {
@@ -4886,7 +4945,10 @@ test("a passing submission is merged back as one pull request on the version's c
     repositoryFullName: "acme/shop",
     branch: "lunox/sbm_1",
     openedBy: "user_1",
+    repoId: "ghr_1",
+    mergeWhen: "open",
     createdAt: stamp,
+    ...unread,
     commitSha: "beef",
     pullRequestNumber: 7,
     pullRequestUrl: "https://github.com/acme/shop/pull/7",
@@ -4900,6 +4962,7 @@ test("a passing submission is merged back as one pull request on the version's c
   assert.deepEqual(await again.json(), body);
   assert.equal(back.opened.length, 1);
   assert.equal(back.github.state.pulls.length, 1);
+  assert.equal(events.length, 1, "told once");
   // Read back on the submission and in the version's list.
   const read = (await (
     await f.request("GET", "/submissions/sbm_1")
@@ -5162,7 +5225,30 @@ test("a version's merge-back readiness says why a merge would be refused before 
   const ready = mergeBackFake();
   assert.deepEqual(await read(with_(ready)), [
     200,
-    { mergeBack: { code: null, error: null, missing: [], acceptUrl: null } },
+    {
+      mergeBack: {
+        code: null,
+        error: null,
+        missing: [],
+        acceptUrl: null,
+        ciMissing: [],
+      },
+    },
+  ]);
+  // CI read-back's permissions are named, with where to accept them, and
+  // never block opening a pull request.
+  assert.deepEqual(await read(with_(mergeBackFake("ci_missing"))), [
+    200,
+    {
+      mergeBack: {
+        code: null,
+        error: null,
+        missing: [],
+        acceptUrl:
+          "https://github.com/organizations/acme/settings/installations/9",
+        ciMissing: ["checks:read", "statuses:read"],
+      },
+    },
   ]);
   // A page read trusts the stored permissions; only a merge asks GitHub.
   assert.deepEqual(ready.asked, ["stored"]);
@@ -5176,6 +5262,7 @@ test("a version's merge-back readiness says why a merge would be refused before 
         missing: ["contents:write", "pull_requests:write"],
         acceptUrl:
           "https://github.com/organizations/acme/settings/installations/9",
+        ciMissing: [],
       },
     },
   ]);
@@ -5215,4 +5302,168 @@ test("a build and a generated version are refused with 429 once the month's mode
     assert.match(body.error, /monthly model-token limit/, path);
     assert.ok(Number(response.headers.get("retry-after")) > 0, path);
   }
+});
+
+test("a merge asked to merge when CI passes is recorded so; refused while CI cannot be read; asked of one already open, recorded once", async () => {
+  const back = mergeBackFake();
+  const events: unknown[] = [];
+  const f = fixture("admin", {
+    submissions: passedSubmission(),
+    merges: back.merges,
+    mergeBack: back.mergeBack,
+    gradeRun: { "private/merge-patch.json": carried },
+    events,
+  });
+  const opened = await f.request("POST", "/submissions/sbm_1/merge", {
+    when: "ci_passes",
+  });
+  assert.equal(opened.status, 201);
+  const body = (await opened.json()) as {
+    submission: { merge: { when: string; ci: { state: string } } };
+  };
+  assert.equal(body.submission.merge.when, "ci_passes");
+  assert.equal(body.submission.merge.ci.state, "pending");
+  assert.equal(
+    (back.rows.get("sbm_1")?.merge as { mergeWhen: string }).mergeWhen,
+    "ci_passes",
+  );
+  assert.match(
+    String((back.opened[0] as { body: string }).body),
+    /merges it \(squashed\) once this repository's CI passes/,
+  );
+  assert.equal(
+    ((events[0] as unknown[])[3] as { when: string }).when,
+    "ci_passes",
+  );
+  // Asked again, either way: the same submission, nothing new.
+  for (const when of ["ci_passes", "open"]) {
+    const again = await f.request("POST", "/submissions/sbm_1/merge", { when });
+    assert.equal(again.status, 200);
+  }
+  assert.equal(back.opened.length, 1);
+
+  // An installation without checks/statuses read: merging on CI is
+  // refused before anything is claimed; opening alone still works.
+  const blind = mergeBackFake("ci_missing");
+  const g = mergeReady(blind);
+  const refused = await g.request("POST", "/submissions/sbm_1/merge", {
+    when: "ci_passes",
+  });
+  assert.equal(refused.status, 409);
+  assert.deepEqual(await refused.json(), {
+    error:
+      "The GitHub App cannot read this repository's CI (checks and statuses: read), so it could never see it pass. An installation admin accepts its new permissions on GitHub, or open the pull request alone.",
+    code: "ci_permissions_missing",
+    missing: ["checks:read", "statuses:read"],
+    acceptUrl: "https://github.com/organizations/acme/settings/installations/9",
+  });
+  assert.equal(blind.rows.size, 0);
+  assert.equal(
+    (await g.request("POST", "/submissions/sbm_1/merge", { when: "open" }))
+      .status,
+    201,
+  );
+  // ...and asked later of that open one, refused the same way.
+  const later = await g.request("POST", "/submissions/sbm_1/merge", {
+    when: "ci_passes",
+  });
+  assert.equal(later.status, 409);
+  assert.equal(
+    ((await later.json()) as { code: string }).code,
+    "ci_permissions_missing",
+  );
+
+  // One opened alone, then asked to merge when CI passes: recorded.
+  const plain = mergeBackFake();
+  const h = mergeReady(plain);
+  await h.request("POST", "/submissions/sbm_1/merge");
+  const upgraded = await h.request("POST", "/submissions/sbm_1/merge", {
+    when: "ci_passes",
+  });
+  assert.equal(upgraded.status, 200);
+  assert.equal(
+    ((await upgraded.json()) as { submission: { merge: { when: string } } })
+      .submission.merge.when,
+    "ci_passes",
+  );
+  assert.equal(plain.opened.length, 1);
+  // Merged or closed meanwhile, or a repository gone: refused.
+  const row = plain.rows.get("sbm_1");
+  if (row !== undefined)
+    row.merge = { ...row.merge, mergeWhen: "open", pullRequestState: "merged" };
+  const ended = await h.request("POST", "/submissions/sbm_1/merge", {
+    when: "ci_passes",
+  });
+  assert.equal(ended.status, 409);
+  assert.equal(
+    ((await ended.json()) as { code: string }).code,
+    "pull_request_ended",
+  );
+  const gone = mergeBackFake();
+  const k = mergeReady(gone);
+  await k.request("POST", "/submissions/sbm_1/merge");
+  const goneRow = gone.rows.get("sbm_1");
+  if (goneRow !== undefined)
+    goneRow.merge = { ...goneRow.merge, repoId: "ghr_gone" };
+  const unavailable = await k.request("POST", "/submissions/sbm_1/merge", {
+    when: "ci_passes",
+  });
+  assert.equal(
+    ((await unavailable.json()) as { code: string }).code,
+    "repository_unavailable",
+  );
+  // Raced to merged between the read and the write.
+  const raced = mergeBackFake();
+  const r = mergeReady(raced);
+  await r.request("POST", "/submissions/sbm_1/merge");
+  raced.merges.setMergeWhen = async () => null;
+  assert.equal(
+    (
+      (await (
+        await r.request("POST", "/submissions/sbm_1/merge", {
+          when: "ci_passes",
+        })
+      ).json()) as { code: string }
+    ).code,
+    "pull_request_ended",
+  );
+  // One opened before CI read-back (no repository recorded) is not followed.
+  const old = mergeBackFake();
+  const o = mergeReady(old);
+  await o.request("POST", "/submissions/sbm_1/merge");
+  const oldRow = old.rows.get("sbm_1");
+  if (oldRow !== undefined) oldRow.merge = { ...oldRow.merge, repoId: null };
+  assert.equal(
+    (
+      (await (
+        await o.request("POST", "/submissions/sbm_1/merge", {
+          when: "ci_passes",
+        })
+      ).json()) as { code: string }
+    ).code,
+    "pull_request_ended",
+  );
+});
+
+test("a merge body that is not one of its forms is refused 400 before anything is read", async () => {
+  const back = mergeBackFake();
+  const f = mergeReady(back);
+  for (const body of [{ when: "later" }, { when: "open", extra: 1 }, [1]]) {
+    const response = await f.request("POST", "/submissions/sbm_1/merge", body);
+    assert.equal(response.status, 400);
+    assert.equal(
+      ((await response.json()) as { code: string }).code,
+      "invalid_merge",
+    );
+  }
+  const broken = await f.request(
+    "POST",
+    "/submissions/sbm_1/merge",
+    undefined,
+    "org_1",
+    { "Content-Type": "application/json" },
+  );
+  // No body at all is the default.
+  assert.equal(broken.status, 201);
+  assert.equal(back.opened.length, 1);
 });

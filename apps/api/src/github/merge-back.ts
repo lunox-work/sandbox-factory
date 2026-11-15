@@ -10,6 +10,10 @@
  * webhook neither blocks the button nor lets a merge through; what GitHub
  * says is written back. Refused answers are kept for a minute, so a page
  * read repeatedly does not ask each time; a merge always asks.
+ *
+ * Reading the pull request's CI back needs `CI_READ_PERMISSIONS` too. They
+ * never block a merge-back: without them the target has no `ciReader`,
+ * names them in `ciMissingPermissions`, and CI reads `unknown`.
  */
 
 import type {
@@ -18,14 +22,22 @@ import type {
   GithubRepoStore,
 } from "@sandbox-factory/db";
 import {
+  CI_READ_PERMISSIONS,
   type InstallationTokens,
   MERGE_BACK_PERMISSIONS,
   missingPermissions,
+  type PullRequestCiReader,
   type PullRequestWriter,
 } from "@sandbox-factory/github";
 import { githubInstallationSettingsUrl } from "@sandbox-factory/shared";
 
-import { mergeBackWriter } from "./credential.js";
+import { mergeBackWriter, mergeCiReader } from "./credential.js";
+
+/** Everything a merge-back and its CI read-back use. */
+const ALL_PERMISSIONS: Readonly<Record<string, string>> = {
+  ...MERGE_BACK_PERMISSIONS,
+  ...CI_READ_PERMISSIONS,
+};
 
 /** How long a live read of an installation's permissions stands for a page read. */
 export const PERMISSIONS_TTL_MS = 60_000;
@@ -33,9 +45,13 @@ export const PERMISSIONS_TTL_MS = 60_000;
 export interface MergeBackTarget {
   readonly fullName: string;
   readonly defaultBranch: string;
-  readonly writer: Pick<PullRequestWriter, "open">;
+  readonly writer: Pick<PullRequestWriter, "open" | "getPullRequest" | "merge">;
   /** `name:level`, e.g. `pull_requests:write`; empty when all are held. */
   readonly missingPermissions: readonly string[];
+  /** Reads the pull request's CI; null while `ciMissingPermissions` has any. */
+  readonly ciReader: Pick<PullRequestCiReader, "checkRuns" | "statuses"> | null;
+  /** What reading CI back still needs, e.g. `checks:read`; never blocking. */
+  readonly ciMissingPermissions: readonly string[];
   /** The installation's page on GitHub, where an admin accepts them. */
   readonly acceptUrl: string;
 }
@@ -79,10 +95,7 @@ export function mergeBackTargets(
     fresh: boolean,
   ): Promise<Readonly<Record<string, string>> | null> {
     const stored = connection.permissions;
-    if (
-      !fresh &&
-      missingPermissions(stored, MERGE_BACK_PERMISSIONS).length === 0
-    )
+    if (!fresh && missingPermissions(stored, ALL_PERMISSIONS).length === 0)
       return stored;
     const cached = refused.get(connection.installationId);
     if (
@@ -101,7 +114,7 @@ export function mergeBackTargets(
     }
     if (state === null) return null;
     const live = state.permissions;
-    if (missingPermissions(live, MERGE_BACK_PERMISSIONS).length > 0)
+    if (missingPermissions(live, ALL_PERMISSIONS).length > 0)
       refused.set(connection.installationId, { permissions: live, at: now() });
     else refused.delete(connection.installationId);
     if (!samePermissions(stored, live)) {
@@ -130,6 +143,7 @@ export function mergeBackTargets(
         fresh,
       );
       if (permissions === null) return null;
+      const ciMissing = missingPermissions(permissions, CI_READ_PERMISSIONS);
       return {
         fullName: repo.fullName,
         defaultBranch: repo.defaultBranch,
@@ -143,6 +157,16 @@ export function mergeBackTargets(
           permissions,
           MERGE_BACK_PERMISSIONS,
         ),
+        ciReader:
+          ciMissing.length > 0
+            ? null
+            : mergeCiReader(
+                options.installations,
+                connection.installationId,
+                repo.externalId,
+                options.fetch,
+              ),
+        ciMissingPermissions: ciMissing,
         acceptUrl: githubInstallationSettingsUrl(
           connection.accountType,
           connection.accountLogin,

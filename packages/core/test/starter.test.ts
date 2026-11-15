@@ -493,6 +493,11 @@ test("a starter becomes a standalone project with its tests and config", () => {
   assert.doesNotMatch(text("AGENTS.md"), /mockImplementation|mocks\//);
   assert.equal(text("CLAUDE.md"), "@AGENTS.md\n");
   assert.match(text("README.md"), /\[`TASK\.md`\]\(TASK\.md\)/);
+  assert.match(
+    text("README.md"),
+    /zip this folder and upload it on your contribution page/,
+  );
+  assert.match(text("TASK.md"), /## Submit\n\nZip this folder and upload it/);
   for (const path of [
     ".vscode/launch.json",
     ".vscode/settings.json",

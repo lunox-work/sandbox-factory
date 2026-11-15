@@ -7,12 +7,15 @@
 
 import type {
   ApiTokenStore,
+  ContributorTokenStore,
+  GrantOwner,
   NewApiToken,
   OAuthGrant,
   OAuthGrantStore,
   OrganizationStore,
   ResolvedApiToken,
   StoredApiToken,
+  StoredContributorToken,
 } from "@sandbox-factory/db";
 
 import type { Auth } from "../src/auth.js";
@@ -133,6 +136,78 @@ export function memoryTokens(): ApiTokenStore & {
   };
 }
 
+/** Contributor tokens in memory, as Postgres keeps them: a person's own. */
+export function memoryContributorTokens(
+  people: Record<string, { id: string; email: string; name: string }> = {
+    [ada.id]: ada,
+  },
+): ContributorTokenStore & {
+  rows: Array<StoredContributorToken & { hash: string }>;
+  touches: Array<{ id: string; at: Date }>;
+} {
+  const rows: Array<StoredContributorToken & { hash: string }> = [];
+  const touches: Array<{ id: string; at: Date }> = [];
+  const stored = ({
+    hash: _hash,
+    ...row
+  }: StoredContributorToken & { hash: string }): StoredContributorToken => row;
+  return {
+    rows,
+    touches,
+    create(userId, input) {
+      const row = {
+        id: `ctk_${rows.length + 1}`,
+        userId,
+        name: input.name,
+        prefix: input.prefix,
+        hash: input.hash,
+        createdAt: new Date("2026-11-15T00:00:00.000Z"),
+        expiresAt: input.expiresAt,
+        lastUsedAt: null,
+        revokedAt: null,
+      };
+      rows.push(row);
+      return Promise.resolve(stored(row));
+    },
+    list(userId) {
+      return Promise.resolve(
+        rows.filter((row) => row.userId === userId).map(stored),
+      );
+    },
+    revoke(userId, id) {
+      const index = rows.findIndex(
+        (row) => row.userId === userId && row.id === id,
+      );
+      const row = rows[index];
+      if (row === undefined) return Promise.resolve(undefined);
+      const revoked = {
+        ...row,
+        revokedAt: row.revokedAt ?? new Date("2026-11-16T00:00:00.000Z"),
+      };
+      rows[index] = revoked;
+      return Promise.resolve(stored(revoked));
+    },
+    findByHash(hash) {
+      const row = rows.find(
+        (candidate) => candidate.hash === hash && candidate.revokedAt === null,
+      );
+      const person = row === undefined ? undefined : people[row.userId];
+      if (row === undefined || person === undefined)
+        return Promise.resolve(undefined);
+      return Promise.resolve({ ...stored(row), user: person });
+    },
+    touch(userId, id, at) {
+      const index = rows.findIndex(
+        (each) => each.userId === userId && each.id === id,
+      );
+      const row = rows[index];
+      if (row !== undefined) rows[index] = { ...row, lastUsedAt: at };
+      touches.push({ id, at });
+      return Promise.resolve();
+    },
+  };
+}
+
 /** Roles by `${userId}:${organizationId}`, changeable mid-test. */
 export function roleStore(roles: Record<string, string>): OrganizationStore {
   const organizations = [
@@ -177,26 +252,36 @@ interface OAuthTokenRow {
  * plugin would have written, read the way `OAuthGrantStore` reads it.
  */
 export function memoryGrants(): OAuthGrantStore & {
-  grants: Array<OAuthGrant & { organizationId: string }>;
+  grants: Array<OAuthGrant & { organizationId: string | null }>;
   tokens: OAuthTokenRow[];
   touches: Array<{ grantId: string; at: Date }>;
-  /** A grant for Ada in `organizationId`, and the hash of one token for it. */
+  /**
+   * A grant for Ada in `organizationId` (null: a contributor grant), and
+   * the hash of one token for it.
+   */
   issue(input: {
-    organizationId: string;
+    organizationId: string | null;
     scopes: string[];
     hash: string;
     expiresAt: Date;
   }): string;
 } {
-  const grants: Array<OAuthGrant & { organizationId: string }> = [];
+  const grants: Array<OAuthGrant & { organizationId: string | null }> = [];
   const tokens: OAuthTokenRow[] = [];
   const touches: Array<{ grantId: string; at: Date }> = [];
   const listed = ({
     organizationId: _owner,
     ...grant
   }: OAuthGrant & {
-    organizationId: string;
+    organizationId: string | null;
   }): OAuthGrant => grant;
+  const owns = (
+    owner: GrantOwner,
+    grant: OAuthGrant & { organizationId: string | null },
+  ) =>
+    typeof owner === "string"
+      ? grant.organizationId === owner
+      : grant.organizationId === null && grant.user.id === owner.contributor;
   return {
     grants,
     tokens,
@@ -240,21 +325,18 @@ export function memoryGrants(): OAuthGrantStore & {
         grantLastUsedAt: grant.lastUsedAt,
       });
     },
-    touch(_organizationId, grantId, at) {
+    touch(_owner, grantId, at) {
       touches.push({ grantId, at });
       return Promise.resolve();
     },
-    list(organizationId) {
+    list(owner) {
       return Promise.resolve(
-        grants
-          .filter((grant) => grant.organizationId === organizationId)
-          .map(listed),
+        grants.filter((grant) => owns(owner, grant)).map(listed),
       );
     },
-    revoke(organizationId, grantId) {
+    revoke(owner, grantId) {
       const index = grants.findIndex(
-        (grant) =>
-          grant.organizationId === organizationId && grant.id === grantId,
+        (grant) => owns(owner, grant) && grant.id === grantId,
       );
       const grant = grants[index];
       if (grant === undefined) return Promise.resolve(undefined);
@@ -263,10 +345,10 @@ export function memoryGrants(): OAuthGrantStore & {
         if (token.grantId === grantId) token.revoked = true;
       return Promise.resolve(listed(grant));
     },
-    revokeAccessToken(organizationId, tokenId) {
+    revokeAccessToken(owner, tokenId) {
       const token = tokens.find(({ id }) => id === tokenId);
       const grant = grants.find(({ id }) => id === token?.grantId);
-      if (token === undefined || grant?.organizationId !== organizationId)
+      if (token === undefined || grant === undefined || !owns(owner, grant))
         return Promise.resolve(false);
       token.revoked = true;
       return Promise.resolve(true);

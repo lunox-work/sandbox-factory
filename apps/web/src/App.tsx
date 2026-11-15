@@ -1,4 +1,4 @@
-import { ServerDataProvider } from "./data/query";
+import { ServerDataProvider, useContributionsQuery } from "./data/query";
 import {
   useLocation,
   pushLocation,
@@ -31,6 +31,14 @@ const SandboxFilesPage = lazy(() =>
     default: SandboxFilesPage,
   })),
 );
+import {
+  ContributionPage,
+  ContributionsPage,
+} from "./features/contributions/ContributionPage";
+import {
+  InvitePage,
+  stashInviteToken,
+} from "./features/contributions/InvitePage";
 import { DeviceApprovalPage } from "./features/developers/DeviceApproval";
 import { DevelopersPage } from "./features/developers/DevelopersPage";
 import { OAuthConsentPage } from "./features/developers/OAuthConsent";
@@ -40,6 +48,9 @@ import { useWorkspaceSetup } from "./features/onboarding/useWorkspaceSetup";
 import {
   bountiesUrl,
   canonicalUrl,
+  contributionForPath,
+  contributionPath,
+  INVITE_PATH,
   isPlainLeftClick,
   NEW_ORG_PATH,
   ORGANIZATIONS_PATH,
@@ -65,6 +76,13 @@ export function App() {
   // So does approving a command-line client's sign-in, or an app's.
   const deviceCode = deviceCodeForPath(pathname, search);
   const oauthConsent = isOAuthConsentPath(pathname);
+  const invite = pathname.replace(/\/+$/, "") === INVITE_PATH;
+
+  // Signed out on an invite link: its secret moves out of the address
+  // before a provider's round trip could carry it (`InvitePage`).
+  useEffect(() => {
+    if (session === null && invite) stashInviteToken();
+  }, [session, invite]);
 
   // Three states, not two: rendering sign-in while the session resolves would
   // flash it at a signed-in user on every reload.
@@ -77,7 +95,15 @@ export function App() {
   }
 
   if (session === null) {
-    return <SignIn />;
+    return (
+      <SignIn
+        context={
+          invite
+            ? "Sign in to accept your invite. You will land on the task."
+            : undefined
+        }
+      />
+    );
   }
 
   /**
@@ -136,6 +162,14 @@ function Signed({
   const screen = screenForPath(location.pathname);
   const repositoryId = repositoryForPath(location.pathname);
   const developerSection = developerSectionForPath(location.pathname);
+  const contributionId = contributionForPath(location.pathname);
+  /*
+    The versions the person was invited to: under no workspace, so the rail
+    offers them whatever the workspace in it is, and home shows them to
+    someone in no workspace at all.
+  */
+  const contributions = useContributionsQuery();
+  const hasContributions = (contributions.data?.length ?? 0) > 0;
 
   // An old `/organizations` or `/o/acme/jira` link opens the page, then the
   // address bar is brought up to date. Replaced rather than pushed: it is the
@@ -185,6 +219,10 @@ function Signed({
 
   /** The repository on its own page, reported up by `RepositoryPage` likewise. */
   const [repositoryName, setRepositoryName] = useState<string | undefined>(
+    undefined,
+  );
+  /** The contribution on its own page, reported up likewise. */
+  const [contributionName, setContributionName] = useState<string | undefined>(
     undefined,
   );
 
@@ -262,15 +300,27 @@ function Signed({
                     ? "New bounty"
                     : screen === "developers"
                       ? "Developers"
-                      : screen === "bounty"
-                        ? (bountyName ?? "Bounty")
-                        : screen === "org-repository"
-                          ? (repositoryName ?? "Repository")
-                          : screen === "not-found"
-                            ? "Page not found"
-                            : (organizations.active?.name ?? "Workspace");
+                      : screen === "invite"
+                        ? "Invite"
+                        : screen === "contributions"
+                          ? "Contributions"
+                          : screen === "contribution"
+                            ? (contributionName ?? "Contribution")
+                            : screen === "bounty"
+                              ? (bountyName ?? "Bounty")
+                              : screen === "org-repository"
+                                ? (repositoryName ?? "Repository")
+                                : screen === "not-found"
+                                  ? "Page not found"
+                                  : (organizations.active?.name ?? "Workspace");
     document.title = `${page} · Lunox`;
-  }, [bountyName, organizations.active?.name, repositoryName, screen]);
+  }, [
+    bountyName,
+    contributionName,
+    organizations.active?.name,
+    repositoryName,
+    screen,
+  ]);
 
   useEffect(() => {
     if (!shouldFocusPage.current) {
@@ -395,6 +445,7 @@ function Signed({
         image={image}
         invitationCount={invitations.count}
         onboardingOnly={onboardingOnly}
+        contributions={hasContributions}
         organizations={organizations}
         onSelectOrganization={(organization) => {
           // Choosing the one already shown is a no-op, not a history entry.
@@ -461,10 +512,33 @@ function Signed({
             repositoryName={
               screen === "org-repository" ? repositoryName : undefined
             }
+            contributionName={
+              screen === "contribution" ? contributionName : undefined
+            }
             onNavigate={navigate}
           />
         )}
-        {screen === "account" ? (
+        {screen === "invite" ? (
+          <InvitePage
+            // Replaced, not pushed: Back should not claim the invite again.
+            onClaimed={(url) => {
+              shouldFocusPage.current = true;
+              replaceLocation(url);
+            }}
+            onOpenHome={() => navigate("home")}
+          />
+        ) : screen === "contributions" ? (
+          <ContributionsPage
+            onOpen={(versionId) => visit(contributionPath(versionId))}
+          />
+        ) : screen === "contribution" && contributionId !== undefined ? (
+          <ContributionPage
+            // Keyed, so moving between two never shows the other's verdicts.
+            key={contributionId}
+            versionId={contributionId}
+            onTitle={setContributionName}
+          />
+        ) : screen === "account" ? (
           <Account
             onJoined={() => {
               void organizations.refresh();
@@ -679,6 +753,12 @@ function Signed({
             <Page>
               <LoadingLine />
             </Page>
+          ) : hasContributions && organizations.error === null ? (
+            // In no workspace but invited to work on a version: that work
+            // is what home has to show.
+            <ContributionsPage
+              onOpen={(versionId) => visit(contributionPath(versionId))}
+            />
           ) : (
             // A list that failed is not one with no workspace in it; both
             // say so, and the second offers to make one.

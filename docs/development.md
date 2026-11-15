@@ -42,9 +42,10 @@ never derive integration configuration from production environment files.
   Complete wire fixtures exercise response validation; cache ownership and
   non-overlapping observation regressions live in `server-data.test.tsx`.
   Confirm a UI regression test fails before the fix.
-- Extension tests use `node:test` with a fake `Host`. Keep logic in `commands.ts`,
-  `task.ts` and `origin.ts`; only `extension.ts` imports `vscode`. That entry point,
-  `build.ts` and type-only `host.ts` are excluded from coverage.
+- Extension tests use `node:test` with a fake `Host` (`test/fake-host.ts`), a
+  fake platform client and real temp folders. Keep logic out of `extension.ts`,
+  the only file that imports `vscode`. That entry point, `build.ts` and
+  type-only `host.ts` are excluded from coverage.
 - Core's `*-laws.test.ts` and `*-properties.test.ts` check what a rule
   promises of every input rather than of chosen examples: the pricing
   arithmetic and stage rules over their whole bounded domain, handles,
@@ -87,9 +88,15 @@ a reset endpoint or auth bypass to the product for the suite.
 
 `npm run test:flow` builds the API and worker, then runs
 [`e2e/flow/flow.mjs`](../e2e/flow/flow.mjs): an empty database to a published
-sandbox version, its archive built and tested as a contributor would, a partial
-then a passing submission, the merge-back pull request and the repository's own
-test on it, and a Jira-imported bounty sized; through the API's HTTP routes and
+sandbox version, a second signed-in person invited to it and claiming it, a
+contributor token (`lnxc_`) listing it and paging its project (API and
+`/mcp/contribute`), its archive downloaded, built and tested by that contributor, their partial
+submission (`files[]`) then passing retry (the zipped folder, previewed
+first), the owner's merge-back pull request, its CI read back (the sweep,
+then a signed `check_suite` delivery) and merged once that passes, the
+repository's own test on it, the contributor revoked, and a Jira-imported
+bounty sized;
+through the API's HTTP routes and
 in-process worker runs (local-process provider, npm from the public registry,
 cache kept in `$TMPDIR/sandbox-factory-flow-npm-cache`). It needs a local
 Postgres, `DATABASE_URL` naming only the server (default
@@ -100,7 +107,8 @@ refuses a non-local host. It creates and drops its own
 - The API is composed in `compose.mjs` as `apps/api/src/server.ts` composes it;
   a dependency added there must be added there too.
 - Fakes only at the edges (`fakes.mjs`): in-memory objects, GitHub's REST API
-  (reads, installation probe, merge-back's Git data and pull requests) via the
+  (reads, installation probe, merge-back's Git data and pull requests, check
+  runs, statuses and the merge) via the
   existing `fetch` options, Jira's client via `clientFor`, graphify's Python
   run, a sizing caller that
   answers through each tool's `parse`, and one scripted agent model whose

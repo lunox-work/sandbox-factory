@@ -7,6 +7,7 @@ import { serve } from "@hono/node-server";
 import {
   AUDIT_RETENTION_DAYS,
   createApiTokenStore,
+  createContributorTokenStore,
   createAuditStore,
   createOAuthGrantStore,
   createBountyRunStore,
@@ -19,6 +20,7 @@ import {
   createBountyProposalStore,
   createBountySpecStore,
   createDecisionConfirmationStore,
+  createContributorStore,
   createSubmissionMergeStore,
   createSubmissionStore,
   createEmailStore,
@@ -51,7 +53,7 @@ import {
 } from "@sandbox-factory/db";
 
 import { InstallationTokens } from "@sandbox-factory/github";
-import { buildBanner } from "@sandbox-factory/shared";
+import { buildBanner, CONTRIBUTOR_INVITE_PATH } from "@sandbox-factory/shared";
 
 import { createAuth } from "./auth.js";
 import { createAvatarService } from "./avatars/service.js";
@@ -101,6 +103,7 @@ import {
 } from "./bounties/held-context.js";
 import { installationClient } from "./github/credential.js";
 import { mergeBackTargets } from "./github/merge-back.js";
+import { MergeCiTracker, type SubmissionEventEmit } from "./github/merge-ci.js";
 import {
   AnthropicCaller,
   DeepSeekCaller,
@@ -491,6 +494,43 @@ const github =
         onBackgroundError: (code: string, error: unknown) =>
           console.error(code, describeError(error)),
       };
+/**
+ * Merge-backs: the store, where they write (`mergeBackTargets`: a token
+ * for the one repository, minted with MERGE_BACK_PERMISSIONS, its
+ * installation's permissions read before a merge), and the tracker that
+ * reads each open pull request's CI back and merges one opened to merge
+ * when CI passes, told by the webhook and swept by the reconciler.
+ */
+const submissionStore = createSubmissionStore(connection.db);
+const submissionMerges = createSubmissionMergeStore(connection.db);
+const mergeTargets =
+  github === undefined
+    ? undefined
+    : mergeBackTargets({
+        repos: githubRepos,
+        connections: github.connections,
+        installations: github.installations,
+      });
+/** Submission events, to the emitter declared below; called only later. */
+const emitSubmissionEvent: SubmissionEventEmit = (
+  organizationId,
+  type,
+  key,
+  data,
+) => {
+  void webhookEmitter.emit(organizationId, type, key, data);
+};
+const mergeCi =
+  mergeTargets === undefined
+    ? undefined
+    : new MergeCiTracker({
+        merges: submissionMerges,
+        targets: mergeTargets,
+        submissions: submissionStore,
+        emit: emitSubmissionEvent,
+        onError: (code, detail) =>
+          console.error(detail === undefined ? code : `${code} ${detail}`),
+      });
 const githubReconciler =
   github === undefined
     ? undefined
@@ -499,6 +539,7 @@ const githubReconciler =
         connections: github.connections,
         installations: github.installations,
         snapshotter: githubSnapshotter,
+        mergeCi,
         onError: (code, detail) =>
           console.error(detail === undefined ? code : `${code} ${detail}`),
       });
@@ -542,19 +583,18 @@ const sandbox =
     : {
         sandboxes: sandboxStore,
         cuts: sandboxStore,
-        submissions: createSubmissionStore(connection.db),
-        ...(github === undefined
+        submissions: submissionStore,
+        // Invited contributors; a claim link opens the web app's invite
+        // page, the secret in the fragment, which no server receives.
+        contributors: createContributorStore(connection.db),
+        inviteUrl: (token: string) =>
+          `${appUrl(env)}${CONTRIBUTOR_INVITE_PATH}#${token}`,
+        ...(mergeTargets === undefined
           ? {}
           : {
-              merges: createSubmissionMergeStore(connection.db),
-              // A merge-back writes with a token for the one repository,
-              // minted with MERGE_BACK_PERMISSIONS and nothing else.
-              // It reads the installation's permissions before a merge.
-              mergeBack: mergeBackTargets({
-                repos: githubRepos,
-                connections: github.connections,
-                installations: github.installations,
-              }),
+              merges: submissionMerges,
+              mergeBack: mergeTargets,
+              onSubmissionEvent: emitSubmissionEvent,
             }),
         runs: analysisRuns,
         artifacts: analysis.artifacts,
@@ -759,6 +799,7 @@ const webhookEmitter = new WebhookEmitter({
   analysisRuns,
   bountyRuns,
   sandboxes: sandboxStore,
+  submissions: submissionStore,
   onEnqueued: () => webhookSender.kick(),
   onError: (code) => console.error(code),
 });
@@ -795,7 +836,7 @@ const app = createApp({
   profiles,
   organizations,
   jira,
-  github,
+  github: github === undefined ? undefined : { ...github, mergeCi },
   analysis,
   sandbox,
   pricing: {
@@ -876,6 +917,7 @@ const app = createApp({
   flows: { waits: createFlowWaitStore(connection.db) },
   apiTokens: createApiTokenStore(connection.db),
   oauthGrants: createOAuthGrantStore(connection.db),
+  contributorTokens: createContributorTokenStore(connection.db),
   publicUrl: env.BETTER_AUTH_URL,
   usage: createUsageStore(connection.db),
   monthlyModelTokens: env.MONTHLY_MODEL_TOKENS_PER_ORG,

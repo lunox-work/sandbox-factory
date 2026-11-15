@@ -1,6 +1,7 @@
 /**
- * The remote MCP server: `POST /mcp` (every tool), `/mcp/duediligence` and
- * `/mcp/carveout` (toolsets; see `tools.ts`).
+ * The remote MCP server: `POST /mcp` (every workspace tool),
+ * `/mcp/duediligence` and `/mcp/carveout` (toolsets), and `/mcp/contribute`
+ * (an invited contributor's own tools); see `tools.ts`.
  *
  * - **Stateless.** Each POST builds a server and a Streamable HTTP
  *   transport (the SDK's Web-standard one, which takes Hono's `Request`
@@ -8,11 +9,15 @@
  *   SSE stream outlives a request, so a Fargate Spot restart or the CDN's
  *   read timeout loses nothing. GET and DELETE answer 405.
  * - **The API decides access.** A request must carry a bearer API token
- *   (`lnx_…`) or OAuth access token (`lnxat_…`); without one, or when the
- *   API refuses it (401), the answer is 401 with a `WWW-Authenticate`
- *   naming this endpoint's protected-resource metadata, which is how an
- *   MCP client finds where to sign in. Tools call the API in-process with
- *   the same `Authorization` header, through the same guard as any client.
+ *   (`lnx_…`), contributor token (`lnxc_…`) or OAuth access token
+ *   (`lnxat_…`); without one, or when the API refuses it (401), the answer
+ *   is 401 with a `WWW-Authenticate` naming this endpoint's
+ *   protected-resource metadata and scopes, which is how an MCP client
+ *   finds where to sign in (as a contributor at `/mcp/contribute`). Tools
+ *   call the API in-process with the same `Authorization` header, through
+ *   the same guard as any client: a workspace credential's call to a
+ *   contributor tool's route is refused there (`workspace_credential`), and
+ *   the other way round (`contributor_credential`).
  */
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -20,12 +25,16 @@ import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/
 import type { Context, Hono } from "hono";
 import { OFFLINE_ACCESS_SCOPE } from "sandbox-factory";
 
-import { bearerApiToken } from "../api-tokens/secret.js";
+import {
+  bearerApiToken,
+  bearerContributorToken,
+} from "../api-tokens/secret.js";
 import type { AuthVariables } from "../http-context.js";
 import { resourceMetadataUrl } from "../oauth/discovery.js";
 import { bearerOAuthToken } from "../oauth/provider.js";
 import {
   registerTools,
+  toolsetAudience,
   toolsetScopes,
   TOOLSETS,
   type ApiCall,
@@ -35,14 +44,32 @@ type Env = { Variables: AuthVariables };
 
 export const MCP_INSTRUCTIONS =
   "Lunox turns software work into priced bounties: each bounty is scoped, " +
-  "sized and priced, then given a sandbox sliced from the workspace's " +
-  "repositories that a contributor can build and be judged in. These tools " +
-  "read one workspace's bounties, proposals, repositories, Jira boards, " +
-  "sandboxes and runs. Posting work is available: write a bounty or " +
-  "import one from a GitHub or Jira issue, size it, change its spec, and " +
-  "get the link that connects GitHub or Jira. Approvals happen in the web " +
-  "app: approving a price or a slice, publishing a sandbox and confirming " +
-  "decisions are a person's act there.";
+  "sized and priced, then given a sandbox (a sliced repository, a carveout " +
+  "hand-off upload, or a project generated from the bounty) that a " +
+  "contributor builds and is judged in by public and hidden tests. These " +
+  "tools act in one workspace: read its bounties, proposals, repositories, " +
+  "Jira boards, sandboxes and runs; write or import a bounty, size it, " +
+  "change its spec, slice and build a sandbox, read its project, invite a " +
+  "contributor to a published version, submit and judge work, and take a " +
+  "passing submission's files back. A person acts in the web app: " +
+  "approving a price (it waits for the complexity profile and for the " +
+  "spec's decisions to be confirmed), approving a slice, confirming " +
+  "decisions and publishing. Uploads run on the person's machine with " +
+  "carveout (upload_handoff gives the command). A refusal comes back as a " +
+  "tool error with the API's code.";
+
+/** What a contributor's MCP client is told: their own work, nothing else. */
+export const CONTRIBUTOR_MCP_INSTRUCTIONS =
+  "Lunox: you are signed in as an invited contributor. These tools reach " +
+  "only the versions you were invited to (list_contributions) and your own " +
+  "submissions, never a workspace. For a version: read it (get_contribution " +
+  "and TASK.md), write its project to disk (get_project_files), install, " +
+  "build and test it locally with its commands, change only its editable " +
+  "files, then preview_submission and submit the changed files; poll " +
+  "get_my_submission for the verdict. One first submission, then one retry " +
+  "if it did not pass; an errored submission (grading could not run) is " +
+  "regraded without spending the retry. Never edit the public tests, " +
+  "package.json, the lockfile or config: the submission is refused.";
 
 /** What an MCP client signing in at `path` is told to ask for. */
 export function challengeScope(path: string): string {
@@ -56,9 +83,10 @@ export function mountMcpRoutes(
   app: Hono<Env>,
   { baseUrl }: { baseUrl: string },
 ): void {
-  for (const [path, toolset] of Object.entries(TOOLSETS)) {
+  for (const path of Object.keys(TOOLSETS)) {
     const metadata = resourceMetadataUrl(baseUrl, path);
     const scope = challengeScope(path);
+    const contributor = toolsetAudience(path) === "contributor";
 
     /** RFC 6750 and RFC 9728: where to sign in, and why this failed. */
     const challenge = (c: Context<Env>, invalid: boolean) => {
@@ -74,7 +102,9 @@ export function mountMcpRoutes(
               code: "invalid_token",
             }
           : {
-              error: "Sign in, or send a workspace API token as a bearer.",
+              error: contributor
+                ? "Sign in as a contributor, or send your contributor token (lnxc_) as a bearer."
+                : "Sign in, or send a workspace API token as a bearer.",
               code: "unauthorized",
             },
         401,
@@ -85,6 +115,7 @@ export function mountMcpRoutes(
       const authorization = c.req.header("authorization");
       if (
         bearerApiToken(authorization) === undefined &&
+        bearerContributorToken(authorization) === undefined &&
         bearerOAuthToken(authorization) === undefined
       ) {
         return challenge(c, false);
@@ -112,14 +143,21 @@ export function mountMcpRoutes(
       };
 
       // The guard's verdict on the credential itself, before any tool runs:
-      // a client refreshes or signs in again only on an HTTP 401.
+      // a client refreshes or signs in again only on an HTTP 401. The guard
+      // resolves a credential before it admits a route, so a valid
+      // contributor credential is a 403 here, not a 401: any answer but 401
+      // leaves the verdict to each tool's own call.
       if ((await call("/api/v1/me")).status === 401) return challenge(c, true);
 
       const server = new McpServer(
         { name: "lunox", version: "1.0.0" },
-        { instructions: MCP_INSTRUCTIONS },
+        {
+          instructions: contributor
+            ? CONTRIBUTOR_MCP_INSTRUCTIONS
+            : MCP_INSTRUCTIONS,
+        },
       );
-      registerTools(server, toolset, call);
+      registerTools(server, path, call, { baseUrl });
       const transport = new WebStandardStreamableHTTPServerTransport({
         sessionIdGenerator: undefined,
         enableJsonResponse: true,

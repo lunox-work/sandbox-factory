@@ -91,7 +91,8 @@ export class ApiClient {
     init?.signal?.throwIfAborted();
     const headers = new Headers(init?.headers);
     if (!headers.has("Accept")) headers.set("Accept", "application/json");
-    if (init?.body !== undefined) {
+    // JSON unless the caller names the body's type (a zipped folder).
+    if (init?.body !== undefined && !headers.has("Content-Type")) {
       headers.set("Content-Type", "application/json");
     }
     if (token !== null && token !== "") {

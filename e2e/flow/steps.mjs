@@ -49,15 +49,21 @@ export async function api(
   path,
   { as, body, expected = [200] } = {},
 ) {
+  // Bytes go as they are, as a zipped folder; anything else as JSON.
+  const raw = body instanceof Uint8Array;
   const response = await flow.platform.app.request(
     path.replace(":org", flow.organizationId),
     {
       method,
       headers: {
         ...(as ?? flow.session),
-        ...(body === undefined ? {} : { "content-type": "application/json" }),
+        ...(body === undefined
+          ? {}
+          : { "content-type": raw ? "application/zip" : "application/json" }),
       },
-      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+      ...(body === undefined
+        ? {}
+        : { body: raw ? body : JSON.stringify(body) }),
     },
   );
   const text = await response.text();

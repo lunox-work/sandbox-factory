@@ -56,8 +56,16 @@ export const ID_PREFIXES = [
   "sbx",
   "sbv",
   "sbm",
+  /**
+   * A contributor's invite to one published version, and the assignment a
+   * claimed one makes: their access to that version alone.
+   */
+  "cin",
+  "cas",
   /** A workspace API token. */
   "tok",
+  /** A contributor's own token (`lnxc_…`), bound to no workspace. */
+  "ctk",
   /** One audit log entry: a change a machine credential made. */
   "aud",
   /** A webhook endpoint, and one event's delivery to it. */

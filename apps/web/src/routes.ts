@@ -10,6 +10,38 @@ export const BOUNTIES_PATH = "/bounties";
 export const NEW_BOUNTY_PATH = "/bounties/new";
 /** Getting the workspace in the rail set up: its own page, beside home. */
 export const ONBOARDING_PATH = "/onboarding";
+/**
+ * Where a contributor's invite link lands, `/invite#lnxinv_…`: the secret
+ * rides in the fragment, which no server and no `Referer` receives.
+ */
+export const INVITE_PATH = "/invite";
+/** The versions an invited contributor works on, under no workspace. */
+export const CONTRIBUTIONS_PATH = "/contributions";
+
+/** One contribution's page: `/contributions/sbv_1`. */
+export function contributionPath(versionId: string): string {
+  return `${CONTRIBUTIONS_PATH}/${encodeURIComponent(versionId)}`;
+}
+
+/** The version a contribution's page names; undefined for any other path. */
+export function contributionForPath(pathname: string): string | undefined {
+  const [root, section, versionId, ...rest] = pathname
+    .replace(/\/+$/, "")
+    .split("/");
+  if (
+    root !== "" ||
+    section !== "contributions" ||
+    versionId === undefined ||
+    versionId === "" ||
+    rest.length > 0
+  )
+    return undefined;
+  try {
+    return decodeURIComponent(versionId);
+  } catch {
+    return undefined;
+  }
+}
 
 /**
  * An open bounty as an address names it: the workspace it is read and changed
@@ -538,6 +570,9 @@ export function screenForPath(pathname: string): Screen {
     return "organizations";
   }
   if (path === ONBOARDING_PATH) return "onboarding";
+  if (path === INVITE_PATH) return "invite";
+  if (path === CONTRIBUTIONS_PATH) return "contributions";
+  if (contributionForPath(path) !== undefined) return "contribution";
   if (path === NEW_BOUNTY_PATH) return "new-bounty";
   if (developerSectionForPath(path) !== undefined) return "developers";
   if (bountyForPath(path) !== undefined) return "bounty";
@@ -596,6 +631,13 @@ export function pathForScreen(
           : `/o/${slug}/settings?connection=${connectionTab}`;
     case "onboarding":
       return ONBOARDING_PATH;
+    case "invite":
+      return INVITE_PATH;
+    // A contribution's page is addressed by `contributionPath`; with none
+    // named here, the list it is one of.
+    case "contributions":
+    case "contribution":
+      return id === undefined ? CONTRIBUTIONS_PATH : contributionPath(id);
     case "bounties":
       return BOUNTIES_PATH;
     // A bounty's page is addressed by `bountyPagePath`; with none named here,

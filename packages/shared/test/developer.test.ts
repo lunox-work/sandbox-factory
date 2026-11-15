@@ -3,7 +3,11 @@ import { test } from "node:test";
 
 import {
   apiTokenDtoSchema,
+  contributorTokenDtoSchema,
+  CONTRIBUTOR_TOKEN_DEFAULT_DAYS,
   createApiTokenSchema,
+  createContributorTokenSchema,
+  createdContributorTokenResponseSchema,
   createCliTokenSchema,
   createdApiTokenResponseSchema,
   oauthGrantListSchema,
@@ -94,4 +98,41 @@ test("a granted app lists its client, the person and the scopes, never a token",
     grants: [{ ...grant, accessToken: "lnxat_secret" }],
   });
   assert.deepEqual(parsed.grants, [grant]);
+});
+
+test("a contributor token is named, lasts 90 days unless said, and is never a workspace token", () => {
+  assert.deepEqual(createContributorTokenSchema.parse({ name: " Cursor " }), {
+    name: "Cursor",
+    expiresInDays: CONTRIBUTOR_TOKEN_DEFAULT_DAYS,
+  });
+  assert.equal(
+    createContributorTokenSchema.parse({ name: "CLI", expiresInDays: null })
+      .expiresInDays,
+    null,
+  );
+  for (const bad of [{ name: "" }, { name: "x", expiresInDays: 0 }])
+    assert.equal(createContributorTokenSchema.safeParse(bad).success, false);
+  const listed = {
+    id: "ctk_1",
+    name: "Cursor",
+    prefix: "lnxc_abcd1234",
+    createdAt: "2026-11-15T00:00:00.000Z",
+    expiresAt: null,
+    lastUsedAt: null,
+    revokedAt: null,
+  };
+  assert.deepEqual(contributorTokenDtoSchema.parse(listed), listed);
+  // A workspace token's prefix is not a contributor token's.
+  assert.equal(
+    contributorTokenDtoSchema.safeParse({ ...listed, prefix: "lnx_abcd1234" })
+      .success,
+    false,
+  );
+  assert.equal(
+    createdContributorTokenResponseSchema.safeParse({
+      token: listed,
+      secret: "lnx_abc",
+    }).success,
+    false,
+  );
 });

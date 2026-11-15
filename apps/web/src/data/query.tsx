@@ -19,6 +19,7 @@ import {
   PricingClient,
   BountyClient,
   BountyRunClient,
+  ContributorClient,
   GithubAnalysisClient,
   SandboxClient,
   WorkspaceSettingsClient,
@@ -98,12 +99,24 @@ export const clients = {
   analysis: new GithubAnalysisClient(options),
   sandbox: new SandboxClient(options),
   settings: new WorkspaceSettingsClient(options),
+  contributions: new ContributorClient(options),
 };
 export function useInvitationsQuery() {
   const userId = useUserId();
   return useQuery({
     queryKey: queryKeys.me(userId, "invitations"),
     queryFn: ({ signal }) => clients.memberships.invitations(signal),
+  });
+}
+/**
+ * The versions the person was invited to work on, under no workspace: the
+ * rail offers them when there is one, and a contributor's pages read it.
+ */
+export function useContributionsQuery() {
+  const userId = useUserId();
+  return useQuery({
+    queryKey: queryKeys.me(userId, "contributions"),
+    queryFn: ({ signal }) => clients.contributions.contributions(signal),
   });
 }
 export function useOwnerQuery<T>(

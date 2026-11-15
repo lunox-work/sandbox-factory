@@ -17,4 +17,9 @@ export interface AuthVariables {
   requestId: string;
   /** A create's new id, for its audit entry (`audit/trail.ts`). */
   auditResourceId: string;
+  /**
+   * The workspace a route outside `/orgs/:orgId` acted in, for its audit
+   * entry: a contributor route's assignment's (`sandbox/contributors.ts`).
+   */
+  auditOrganizationId: string;
 }

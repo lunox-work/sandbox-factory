@@ -58,12 +58,17 @@ const blobSha = (bytes) =>
     .update(bytes)
     .digest("hex");
 
-/** What merge-back needs the App's installation to have accepted. */
+/**
+ * What merge-back needs the App's installation to have accepted, and CI
+ * read-back's checks and statuses read.
+ */
 export const WRITE_PERMISSIONS = {
   contents: "write",
   pull_requests: "write",
   metadata: "read",
   issues: "read",
+  checks: "read",
+  statuses: "read",
 };
 const LEVELS = ["read", "write", "admin"];
 const covers = (granted, wanted) =>
@@ -78,7 +83,10 @@ const covers = (granted, wanted) =>
  * accepted permissions, `installation.permissions`, which a step may
  * change), the recursive tree, languages and blobs; and the Git data and
  * pull-request routes a merge-back writes through, kept in memory so the
- * opened pull request's files can be read back (`pulls`). A token carries
+ * opened pull request's files can be read back (`pulls`), and what CI
+ * read-back reads of one: the pull request, its head's check runs (each
+ * head's in `checkRuns`, which a step sets) and commit statuses, and the
+ * merge, which squashes it and records how (`pull.mergedWith`). A token carries
  * what it was minted with: a mint asking for more than the installation
  * holds is refused 422, as GitHub refuses it, and a write the token may
  * not make is refused 403. Anything else is answered 404 and recorded in
@@ -129,12 +137,14 @@ export function fakeGithub({ files, commitSha }) {
   const refs = new Map();
   /** Every pull request opened, with the files its head commit adds. */
   const pulls = [];
+  /** Check runs by head commit, as GitHub's `check_runs` lists them. */
+  const checkRuns = new Map();
   const digest = (value) => blobSha(Buffer.from(JSON.stringify(value)));
-  const may = (init, name) => {
+  const may = (init, name, level = "write") => {
     const token = String(new Headers(init.headers).get("authorization"))
       .replace(/^(Bearer|token) /i, "")
       .trim();
-    return covers(tokens.get(token) ?? {}, { [name]: "write" });
+    return covers(tokens.get(token) ?? {}, { [name]: level });
   };
   const forbidden = () =>
     json(403, { message: "Resource not accessible by integration" });
@@ -277,6 +287,52 @@ export function fakeGithub({ files, commitSha }) {
       pulls.push(pull);
       return json(201, summary(pull));
     }
+    // CI read-back: the pull request, its head's checks, the merge.
+    const pullAt = /^\/pulls\/(\d+)(\/merge)?$/.exec(path.slice(repo.length));
+    const pull =
+      pullAt === null
+        ? undefined
+        : pulls.find((each) => each.number === Number(pullAt[1]));
+    if (method === "GET" && pull !== undefined && pullAt?.[2] === undefined) {
+      if (!may(init, "pull_requests", "read")) return forbidden();
+      return json(200, {
+        ...summary(pull),
+        title: pull.title,
+        merged: pull.mergedWith !== undefined,
+        merge_commit_sha: pull.mergedWith?.sha ?? null,
+        mergeable: pull.state === "open" ? true : null,
+        head: { sha: pull.commitSha, ref: pull.head },
+      });
+    }
+    if (method === "PUT" && pull !== undefined && pullAt?.[2] === "/merge") {
+      if (!may(init, "contents")) return forbidden();
+      const asked = body(init);
+      if (pull.state !== "open")
+        return json(405, { message: "Pull Request is not mergeable" });
+      if (asked.sha !== pull.commitSha)
+        return json(409, { message: "Head branch was modified." });
+      const sha = digest({ merged: pull.number, head: pull.commitSha });
+      pull.state = "closed";
+      pull.mergedWith = {
+        sha,
+        method: asked.merge_method,
+        title: asked.commit_title,
+        head: asked.sha,
+      };
+      return json(200, { sha, merged: true, message: "Pull Request merged" });
+    }
+    const checksAt = new RegExp(
+      `^${repo}/commits/([0-9a-f]+)/(check-runs|status)$`,
+    ).exec(path);
+    if (method === "GET" && checksAt !== null) {
+      const runs = checkRuns.get(checksAt[1]) ?? [];
+      if (checksAt[2] === "check-runs") {
+        if (!may(init, "checks", "read")) return forbidden();
+        return json(200, { total_count: runs.length, check_runs: runs });
+      }
+      if (!may(init, "statuses", "read")) return forbidden();
+      return json(200, { state: "pending", total_count: 0, statuses: [] });
+    }
     unexpected.push(`${method} ${path}`);
     return json(404, { message: "Not Found" });
   }
@@ -290,6 +346,7 @@ export function fakeGithub({ files, commitSha }) {
     pulls,
     refs,
     commits,
+    checkRuns,
   };
 }
 

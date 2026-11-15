@@ -1,7 +1,7 @@
 {
   "name": "sandbox-factory-vscode",
-  "displayName": "sandbox-factory",
-  "description": "sandbox-factory in VS Code.",
+  "displayName": "Lunox",
+  "description": "Work on a Lunox contribution in VS Code: download it, run its tests, submit it and follow the verdict.",
   "version": "0.0.1",
   "publisher": "lunox",
   "license": "MIT",
@@ -24,42 +24,84 @@
   "contributes": {
     "commands": [
       {
+        "command": "sandboxFactory.signIn",
+        "title": "Sign in with a contributor token",
+        "category": "Lunox"
+      },
+      {
+        "command": "sandboxFactory.signOut",
+        "title": "Sign out",
+        "category": "Lunox"
+      },
+      {
+        "command": "sandboxFactory.openContribution",
+        "title": "Open contribution",
+        "category": "Lunox"
+      },
+      {
+        "command": "sandboxFactory.previewSubmission",
+        "title": "Preview submission",
+        "category": "Lunox"
+      },
+      {
+        "command": "sandboxFactory.submit",
+        "title": "Submit",
+        "category": "Lunox"
+      },
+      {
+        "command": "sandboxFactory.gradeAgain",
+        "title": "Grade again",
+        "category": "Lunox"
+      },
+      {
+        "command": "sandboxFactory.refreshStatus",
+        "title": "Refresh submission status",
+        "category": "Lunox"
+      },
+      {
+        "command": "sandboxFactory.showSubmission",
+        "title": "Show submission",
+        "category": "Lunox"
+      },
+      {
         "command": "sandboxFactory.openTask",
-        "title": "sandbox-factory: Open Task"
+        "title": "Open project folder",
+        "category": "Lunox"
       },
       {
         "command": "sandboxFactory.showTask",
-        "title": "sandbox-factory: Show Task"
+        "title": "Show task",
+        "category": "Lunox"
       },
       {
         "command": "sandboxFactory.installDependencies",
-        "title": "sandbox-factory: Install Dependencies"
+        "title": "Install dependencies",
+        "category": "Lunox"
       },
       {
         "command": "sandboxFactory.runApp",
-        "title": "sandbox-factory: Run App"
+        "title": "Run the walkthrough",
+        "category": "Lunox"
       },
       {
         "command": "sandboxFactory.runTests",
-        "title": "sandbox-factory: Run Public Tests"
-      },
-      {
-        "command": "sandboxFactory.signIn",
-        "title": "sandbox-factory: Set API Token"
+        "title": "Run public tests",
+        "category": "Lunox"
       },
       {
         "command": "sandboxFactory.showVersion",
-        "title": "sandbox-factory: Show Version"
+        "title": "Show version",
+        "category": "Lunox"
       }
     ],
     "configuration": {
-      "title": "sandbox-factory",
+      "title": "Lunox",
       "properties": {
-        "sandboxFactory.apiBaseUrl": {
+        "sandboxFactory.platformUrl": {
           "type": "string",
-          "default": "http://localhost:4000",
+          "default": "https://platform.lunox.work",
           "scope": "application",
-          "description": "Base URL of the sandbox-factory API. A user or application setting: a workspace value is ignored so a repository cannot redirect authenticated requests."
+          "description": "Address of the Lunox platform (its web app and API). A user or application setting: a workspace value is ignored so a repository cannot redirect authenticated requests. Your contributor token is kept per address, in the OS keychain."
         }
       }
     }
@@ -87,7 +129,7 @@
   "capabilities": {
     "untrustedWorkspaces": {
       "supported": "limited",
-      "description": "Open Task and Show Task work anywhere. Install Dependencies, Run App and Run Public Tests run the task's npm scripts and need a trusted workspace."
+      "description": "Signing in, opening a contribution, previewing and submitting work anywhere. Install Dependencies, Run the walkthrough and Run Public Tests run the project's npm scripts and need a trusted workspace."
     }
   }
 }

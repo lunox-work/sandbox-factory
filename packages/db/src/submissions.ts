@@ -17,12 +17,16 @@
  * names it in `retryOf`; the contributor is told only the first one's
  * scenario keys. An errored one never ran to a verdict, so it is also
  * graded again with its own files (`reopenSubmission`, when its run is
- * queued again), which spends no retry. A verdict is never computed here;
+ * queued again), which spends no retry. An invited contributor
+ * (`assignmentId`) makes one first submission per assignment, and only they
+ * retry it; a workspace's own owners and admins make any number. The same
+ * files from the same person are the same submission, never another
+ * person's. A verdict is never computed here;
  * `submissionVerdict` in core decides it from the counts, so the rule is
  * the same wherever it is read.
  */
 
-import { and, desc, eq, inArray } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull } from "drizzle-orm";
 import {
   submissionVerdict,
   type SubmissionError,
@@ -51,6 +55,8 @@ export interface StoredSubmission {
   readonly runId: string | null;
   /** The submission this one retries; null for a first attempt. */
   readonly retryOf: string | null;
+  /** The invited contributor's assignment it was made under, if any. */
+  readonly assignmentId: string | null;
   readonly createdAt: string;
   readonly updatedAt: string;
 }
@@ -61,6 +67,11 @@ export interface NewSubmission {
   readonly submittedBy: string | null;
   readonly patchKey: string;
   readonly patchSha256: string;
+  /**
+   * An invited contributor's assignment: one first submission each.
+   * Absent or null for a workspace's own people and the CI judge.
+   */
+  readonly assignmentId?: string | null;
 }
 
 export type CreateSubmissionResult =
@@ -70,7 +81,13 @@ export type CreateSubmissionResult =
       /** False when this patch was already submitted against the version. */
       readonly created: boolean;
     }
-  | { readonly ok: false; readonly reason: "not-found" | "not_frozen" };
+  | { readonly ok: false; readonly reason: "not-found" | "not_frozen" }
+  /** The assignment's first submission was made, with other files. */
+  | {
+      readonly ok: false;
+      readonly reason: "already_submitted";
+      readonly submissionId: string;
+    };
 
 export type RetrySubmissionResult =
   | {
@@ -97,7 +114,9 @@ export type RetrySubmissionResult =
         /** The submission's one retry was made, with other files. */
         | "retry_used"
         /** These files were already submitted against the version. */
-        | "same_patch";
+        | "same_patch"
+        /** An invited contributor's submission, which only they retry. */
+        | "contributor_submission";
     };
 
 export interface SubmissionStore {
@@ -123,10 +142,11 @@ export interface SubmissionStore {
     submissionId: string,
     input: Omit<NewSubmission, "sandboxVersionId">,
   ): Promise<RetrySubmissionResult>;
-  /** A version's submissions, newest first. */
+  /** A version's submissions, newest first; `submittedBy`'s alone when given. */
   list(
     organizationId: string,
     sandboxVersionId: string,
+    filter?: { readonly submittedBy?: string },
   ): Promise<StoredSubmission[]>;
 }
 
@@ -249,6 +269,7 @@ const toSubmission = (row: SubmissionRow): StoredSubmission => ({
   errorCode: row.errorCode ?? null,
   runId: row.runId,
   retryOf: row.retryOf ?? null,
+  assignmentId: row.assignmentId ?? null,
   createdAt: row.createdAt.toISOString(),
   updatedAt: row.updatedAt.toISOString(),
 });
@@ -296,10 +317,30 @@ export function createSubmissionStore(db: Database): SubmissionStore {
             eq(submission.organizationId, owner),
             eq(submission.sandboxVersionId, input.sandboxVersionId),
             eq(submission.patchSha256, input.patchSha256),
+            input.submittedBy === null
+              ? isNull(submission.submittedBy)
+              : eq(submission.submittedBy, input.submittedBy),
           ),
         )
         .limit(1)) as SubmissionRow[]
     )[0];
+  /** An assignment's first submission, which it makes once. */
+  const firstOf = async (owner: string, assignmentId: string) =>
+    (
+      await db
+        .select({ id: submission.id })
+        .from(submission)
+        .where(
+          and(
+            eq(submission.organizationId, owner),
+            eq(submission.assignmentId, assignmentId),
+            isNull(submission.retryOf),
+          ),
+        )
+        .limit(1)
+    )[0];
+  const assignmentId = (input: { readonly assignmentId?: string | null }) =>
+    input.assignmentId ?? null;
   return {
     get,
     async create(owner, input) {
@@ -309,6 +350,20 @@ export function createSubmissionStore(db: Database): SubmissionStore {
       const found = await existing(owner, input);
       if (found !== undefined)
         return { ok: true, submission: toSubmission(found), created: false };
+      const assigned = assignmentId(input);
+      const madeAlready = async () => {
+        const first =
+          assigned === null ? undefined : await firstOf(owner, assigned);
+        return first === undefined
+          ? undefined
+          : ({
+              ok: false,
+              reason: "already_submitted",
+              submissionId: first.id,
+            } as const);
+      };
+      const refused = await madeAlready();
+      if (refused !== undefined) return refused;
       try {
         const rows = (await db
           .insert(submission)
@@ -317,6 +372,7 @@ export function createSubmissionStore(db: Database): SubmissionStore {
             organizationId: owner,
             sandboxVersionId: input.sandboxVersionId,
             submittedBy: input.submittedBy,
+            assignmentId: assigned,
             patchKey: input.patchKey,
             patchSha256: input.patchSha256,
           })
@@ -326,11 +382,15 @@ export function createSubmissionStore(db: Database): SubmissionStore {
           throw new Error("Submission insert returned no row.");
         return { ok: true, submission: toSubmission(row), created: true };
       } catch (error) {
-        // The same upload twice at once: the second finds the first's row.
+        // The same upload twice at once: the second finds the first's row;
+        // two first submissions under one assignment, the other's refusal.
         if (!isUniqueViolation(error)) throw error;
         const raced = await existing(owner, input);
-        if (raced === undefined) throw error;
-        return { ok: true, submission: toSubmission(raced), created: false };
+        if (raced !== undefined)
+          return { ok: true, submission: toSubmission(raced), created: false };
+        const lost = await madeAlready();
+        if (lost === undefined) throw error;
+        return lost;
       }
     },
 
@@ -349,6 +409,12 @@ export function createSubmissionStore(db: Database): SubmissionStore {
           created: false,
           regrade: true,
         };
+      // An invited contributor's retry is theirs to spend.
+      if (
+        original.assignmentId !== null &&
+        original.submittedBy !== input.submittedBy
+      )
+        return { ok: false, reason: "contributor_submission" };
       if (original.retryOf !== null) return { ok: false, reason: "is_retry" };
       if (original.status === "passed") return { ok: false, reason: "passed" };
       if (original.status === "queued" || original.status === "running")
@@ -382,6 +448,7 @@ export function createSubmissionStore(db: Database): SubmissionStore {
             organizationId: owner,
             sandboxVersionId: original.sandboxVersionId,
             submittedBy: input.submittedBy,
+            assignmentId: assignmentId(input),
             patchKey: input.patchKey,
             patchSha256: input.patchSha256,
             retryOf: id,
@@ -401,7 +468,7 @@ export function createSubmissionStore(db: Database): SubmissionStore {
       }
     },
 
-    async list(owner, versionId) {
+    async list(owner, versionId, filter = {}) {
       const rows = (await db
         .select()
         .from(submission)
@@ -409,6 +476,9 @@ export function createSubmissionStore(db: Database): SubmissionStore {
           and(
             eq(submission.organizationId, owner),
             eq(submission.sandboxVersionId, versionId),
+            filter.submittedBy === undefined
+              ? undefined
+              : eq(submission.submittedBy, filter.submittedBy),
           ),
         )
         .orderBy(

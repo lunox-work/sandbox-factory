@@ -346,6 +346,12 @@ test("submissions: listed, read, submitted, retried, graded again, merged back a
     runId: "arn_grade",
     retryOf: null,
     merge: null,
+    contributor: {
+      assignmentId: "cas_1",
+      userId: "user_c",
+      name: "Grace Hopper",
+      email: "g@example.test",
+    },
     createdAt: stamp,
     updatedAt: stamp,
   };
@@ -354,15 +360,24 @@ test("submissions: listed, read, submitted, retried, graded again, merged back a
     error: "Accept the new permissions.",
     missing: ["pull_requests:write"],
     acceptUrl: "https://github.com/settings/installations/9",
+    ciMissing: ["checks:read"],
+  };
+  const taken = {
+    submission,
+    origin: "starter",
+    upload: null,
+    files: [{ path: "src/a.ts", text: "b" }],
   };
   const calls: { url: string; init?: RequestInit }[] = [];
   const fetch = (async (input: unknown, init?: RequestInit) => {
     calls.push({ url: String(input), init });
     const body = String(input).endsWith("/merge-back")
       ? { mergeBack }
-      : String(input).endsWith("/submissions") && init?.method === undefined
-        ? { submissions: [submission] }
-        : { submission };
+      : String(input).endsWith("/files")
+        ? taken
+        : String(input).endsWith("/submissions") && init?.method === undefined
+          ? { submissions: [submission] }
+          : { submission };
     return new Response(JSON.stringify(body), {
       status: 200,
       headers: { "Content-Type": "application/json" },
@@ -382,7 +397,9 @@ test("submissions: listed, read, submitted, retried, graded again, merged back a
   await client.retrySubmission("org 1", "sbm 1", files);
   await client.regradeSubmission("org 1", "sbm 1");
   await client.mergeSubmission("org 1", "sbm 1");
+  await client.mergeSubmission("org 1", "sbm 1", { when: "ci_passes" });
   assert.deepEqual(await client.mergeBackStatus("org 1", "sbv 1"), mergeBack);
+  assert.deepEqual(await client.submissionFiles("org 1", "sbm 1"), taken);
   const base = "https://api.test/api/v1/orgs/org%201/sandboxes";
   assert.deepEqual(
     calls.map((call) => [call.init?.method ?? "GET", call.url]),
@@ -393,10 +410,15 @@ test("submissions: listed, read, submitted, retried, graded again, merged back a
       ["POST", `${base}/submissions/sbm%201/retry`],
       ["POST", `${base}/submissions/sbm%201/regrade`],
       ["POST", `${base}/submissions/sbm%201/merge`],
+      ["POST", `${base}/submissions/sbm%201/merge`],
       ["GET", `${base}/versions/sbv%201/merge-back`],
+      ["GET", `${base}/submissions/sbm%201/files`],
     ],
   );
   assert.equal(calls[2]?.init?.body, JSON.stringify({ files }));
+  // No body opens the pull request alone; `when` is sent when asked.
+  assert.equal(calls[5]?.init?.body, undefined);
+  assert.equal(calls[6]?.init?.body, JSON.stringify({ when: "ci_passes" }));
 });
 
 test("the public project downloads as a file named by the API, and reads as pages of contents", async () => {
@@ -508,4 +530,28 @@ test("a refused file download that is not JSON throws with its status", async ()
       new Response(null, { status: 404 })) as typeof globalThis.fetch,
   });
   await assert.rejects(empty.projectArchive("org_1", "sbv_1"), { status: 404 });
+});
+
+test("a passing submission's files download as a .zip named by the API, at the submission's route", async () => {
+  const zip = new Uint8Array([0x50, 0x4b, 0x05, 0x06]);
+  const urls: string[] = [];
+  let disposition: string | null = 'attachment; filename="sbm_1-files.zip"';
+  const fetch = (async (input: unknown) => {
+    urls.push(String(input));
+    const headers = new Headers({ "Content-Type": "application/zip" });
+    if (disposition !== null) headers.set("Content-Disposition", disposition);
+    return new Response(zip, { status: 200, headers });
+  }) as typeof globalThis.fetch;
+  const client = new SandboxClient({ baseUrl: "https://api.test", fetch });
+  const file = await client.submissionFilesArchive("org 1", "sbm 1");
+  assert.equal(file.filename, "sbm_1-files.zip");
+  assert.deepEqual(new Uint8Array(await file.blob.arrayBuffer()), zip);
+  assert.deepEqual(urls, [
+    "https://api.test/api/v1/orgs/org%201/sandboxes/submissions/sbm%201/files/archive",
+  ]);
+  disposition = null;
+  assert.equal(
+    (await client.submissionFilesArchive("org_1", "sbm_1")).filename,
+    "sbm_1-files.zip",
+  );
 });

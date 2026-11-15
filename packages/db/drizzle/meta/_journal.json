@@ -596,6 +596,27 @@
       "when": 1794677717159,
       "tag": "0084_submission_merge_pending",
       "breakpoints": true
+    },
+    {
+      "idx": 85,
+      "version": "7",
+      "when": 1794688549515,
+      "tag": "0085_contributor_invites",
+      "breakpoints": true
+    },
+    {
+      "idx": 86,
+      "version": "7",
+      "when": 1794692656995,
+      "tag": "0086_submission_merge_ci",
+      "breakpoints": true
+    },
+    {
+      "idx": 87,
+      "version": "7",
+      "when": 1794694453873,
+      "tag": "0087_contributor_tokens",
+      "breakpoints": true
     }
   ]
 }

@@ -10,7 +10,11 @@
  * - `Authorization: Bearer lnxat_…` is an OAuth access token the provider
  *   in `oauth/provider.ts` issued, looked up the same way. Its grant (the
  *   consent: person, client, organization) must still stand, and the
- *   person must still be an owner or admin there.
+ *   person must still be an owner or admin there. A contributor grant
+ *   (no organization) needs no role: it is a contributor credential.
+ * - `Authorization: Bearer lnxc_…` is a contributor token: a person's own,
+ *   unrevoked and unexpired. No role is read; which versions it reaches is
+ *   their assignments' to say, route by route.
  * - Anything else is Better Auth's to answer, as it always was: the web
  *   app's cookie, or the extension's `bearer()` session token (bare
  *   alphanumerics, never one of the prefixes above). A session a device
@@ -21,20 +25,35 @@
  * - `session`: every route, unchanged; roles decide the rest.
  * - `device`: only the routes a command-line client needs to mint its
  *   token (`DEVICE_ROUTES`).
- * - `token` and `oauth`: only routes in the public registry, and
- *   only with the scope the registry names for them (a self route names
- *   none: it acts on the presenting credential alone). A route not listed is
- *   refused, whatever the scopes: deny by default. Which organization it
- *   may name is `requireMembership`'s check, in `routes.ts`.
+ * - `token`, `oauth` and `contributor`: only routes in the public
+ *   registry, and only with the scope the registry names for them (a self
+ *   route names none: it acts on the presenting credential alone). A route
+ *   not listed is refused, whatever the scopes: deny by default. Each
+ *   listed route has an audience: a workspace credential never reaches a
+ *   contributor route (`workspace_credential`), nor a contributor
+ *   credential a workspace's (`contributor_credential`). Which
+ *   organization it may name is `requireMembership`'s check, in `routes.ts`.
  */
 
-import type { ApiTokenStore, OAuthGrantStore } from "@sandbox-factory/db";
+import type {
+  ApiTokenStore,
+  ContributorTokenStore,
+  OAuthGrantStore,
+} from "@sandbox-factory/db";
 import type { Context, MiddlewareHandler } from "hono";
 import { matchedRoutes } from "hono/route";
-import { isApiScope } from "sandbox-factory";
+import {
+  CONTRIBUTOR_SCOPES,
+  isApiScope,
+  isContributorScope,
+} from "sandbox-factory";
 
 import { isAtLeastAdmin } from "./access.js";
-import { bearerApiToken, hashSecret } from "./api-tokens/secret.js";
+import {
+  bearerApiToken,
+  bearerContributorToken,
+  hashSecret,
+} from "./api-tokens/secret.js";
 import type { Auth } from "./auth.js";
 import type { AuthVariables } from "./http-context.js";
 import { bearerOAuthToken, hashOAuthToken } from "./oauth/provider.js";
@@ -58,6 +77,9 @@ export interface CredentialOptions {
   /** Without it, every OAuth access token is refused. */
   readonly oauthGrants?:
     Pick<OAuthGrantStore, "findAccessToken" | "touch"> | undefined;
+  /** Without it, every contributor token is refused. */
+  readonly contributorTokens?:
+    Pick<ContributorTokenStore, "findByHash" | "touch"> | undefined;
   /**
    * The protected-resource metadata URL (RFC 9728) a refused bearer is
    * pointed at, so an OAuth client knows where to sign in again.
@@ -91,6 +113,12 @@ const INVALID_TOKEN = {
 
 const INVALID_ACCESS_TOKEN = {
   error: "This access token is not valid. Sign in again.",
+  code: "invalid_token",
+} as const;
+
+const INVALID_CONTRIBUTOR_TOKEN = {
+  error:
+    "This contributor token is not valid. Make a new one on your Contributions page.",
   code: "invalid_token",
 } as const;
 
@@ -139,40 +167,101 @@ export function credentialGuard(
     };
   }
 
-  /** An OAuth access token's principal: its grant's person, workspace and scopes. */
+  /**
+   * An OAuth access token's principal: its grant's person, workspace and
+   * scopes; or, for a contributor grant (no workspace), the person as a
+   * contributor holding the contributor scope alone.
+   */
   async function oauthPrincipal(value: string): Promise<Principal | undefined> {
     const { oauthGrants, roleOf } = options;
-    if (oauthGrants === undefined || roleOf === undefined) return undefined;
+    if (oauthGrants === undefined) return undefined;
     const found = await oauthGrants.findAccessToken(hashOAuthToken(value));
     const at = now();
     if (found === undefined || found.expiresAt.getTime() <= at.getTime())
       return undefined;
-    const role = await roleOf(found.user.id, found.organizationId);
-    if (role === undefined || !isAtLeastAdmin(role)) return undefined;
+    const { organizationId } = found;
+    let role: string | undefined;
+    if (organizationId !== null) {
+      if (roleOf === undefined) return undefined;
+      role = await roleOf(found.user.id, organizationId);
+      if (role === undefined || !isAtLeastAdmin(role)) return undefined;
+    }
     const staleBefore = stale(found.grantLastUsedAt, at);
     if (staleBefore !== undefined) {
       oauthGrants
-        .touch(found.organizationId, found.grantId, at, staleBefore)
+        .touch(
+          organizationId ?? { contributor: found.user.id },
+          found.grantId,
+          at,
+          staleBefore,
+        )
         .catch((error: unknown) => {
           console.error("Failed to record an OAuth grant's use", error);
         });
     }
-    return {
+    const common = {
       user: found.user,
-      organizationId: found.organizationId,
-      // `offline_access` reaches no route; only the API's scopes count.
-      scopes: found.scopes.filter(isApiScope),
       via: "oauth",
       credentialId: found.id,
       client: found.clientId,
-      role,
+    } as const;
+    // `offline_access` reaches no route. A workspace grant counts only the
+    // API's scopes, a contributor grant only the contributor's, whatever
+    // either was consented with.
+    return organizationId === null
+      ? {
+          ...common,
+          organizationId: null,
+          scopes: found.scopes.filter(isContributorScope),
+          contributor: true,
+        }
+      : {
+          ...common,
+          organizationId,
+          scopes: found.scopes.filter(isApiScope),
+          role,
+        };
+  }
+
+  /** A contributor token's principal: its person, no workspace, no role. */
+  async function contributorPrincipal(
+    secret: string,
+  ): Promise<Principal | undefined> {
+    const { contributorTokens } = options;
+    if (contributorTokens === undefined) return undefined;
+    const found = await contributorTokens.findByHash(hashSecret(secret));
+    const at = now();
+    if (
+      found === undefined ||
+      found.revokedAt !== null ||
+      (found.expiresAt !== null && found.expiresAt.getTime() <= at.getTime())
+    )
+      return undefined;
+    const staleBefore = stale(found.lastUsedAt, at);
+    if (staleBefore !== undefined) {
+      contributorTokens
+        .touch(found.userId, found.id, at, staleBefore)
+        .catch((error: unknown) => {
+          console.error("Failed to record a contributor token's use", error);
+        });
+    }
+    return {
+      user: found.user,
+      organizationId: null,
+      scopes: CONTRIBUTOR_SCOPES,
+      via: "contributor",
+      credentialId: found.id,
+      contributor: true,
     };
   }
 
   /** The refusal for a bearer that names a credential no longer valid. */
   function invalid(
     c: Context<Env>,
-    body: typeof INVALID_TOKEN | typeof INVALID_ACCESS_TOKEN,
+    body:
+      | typeof INVALID_TOKEN
+      | typeof INVALID_ACCESS_TOKEN
+      | typeof INVALID_CONTRIBUTOR_TOKEN,
   ) {
     c.header(
       "WWW-Authenticate",
@@ -188,9 +277,14 @@ export function credentialGuard(
     const authorization = c.req.header("authorization");
     const secret = bearerApiToken(authorization);
     const accessToken = bearerOAuthToken(authorization);
+    const contributorSecret = bearerContributorToken(authorization);
     if (secret !== undefined) {
       const resolved = await tokenPrincipal(secret);
       if (resolved === undefined) return invalid(c, INVALID_TOKEN);
+      principal = resolved;
+    } else if (contributorSecret !== undefined) {
+      const resolved = await contributorPrincipal(contributorSecret);
+      if (resolved === undefined) return invalid(c, INVALID_CONTRIBUTOR_TOKEN);
       principal = resolved;
     } else if (accessToken !== undefined) {
       const resolved = await oauthPrincipal(accessToken);
@@ -244,13 +338,28 @@ export function admit(
           code: "device_session",
         };
   }
-  // A bound credential: `token` or `oauth`.
+  // A bound credential: `token`, `oauth` or `contributor`.
   const declared =
     route === undefined ? undefined : publicRoute(route.method, route.path);
   if (declared === undefined) {
     return {
       error: "This route is not part of the public API.",
       code: "not_public",
+    };
+  }
+  const audience = declared.audience ?? "workspace";
+  if (audience === "workspace" && principal.contributor === true) {
+    return {
+      error:
+        "A contributor credential reaches only your own contributions (/api/v1/contributions, MCP at /mcp/contribute), never a workspace's routes.",
+      code: "contributor_credential",
+    };
+  }
+  if (audience === "contributor" && principal.contributor !== true) {
+    return {
+      error:
+        "Contributor routes take a contributor credential (an lnxc_ token or a contributor sign-in), never a workspace's.",
+      code: "workspace_credential",
     };
   }
   // A self route needs no scope: it can only reach the credential itself.

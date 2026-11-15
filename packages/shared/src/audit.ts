@@ -6,7 +6,13 @@
 
 import { z } from "zod";
 
-export const AUDIT_VIAS = ["session", "token", "oauth", "device"] as const;
+export const AUDIT_VIAS = [
+  "session",
+  "token",
+  "oauth",
+  "device",
+  "contributor",
+] as const;
 
 export const auditEntryDtoSchema = z.object({
   id: z.string().min(1),

@@ -45,21 +45,21 @@ It is **not** the sign-in OAuth app (`GITHUB_CLIENT_ID` / `_SECRET`), which is
 a plain OAuth app asking for `read:user user:email`. Keep the two apart: the
 App's client id and secret are `GITHUB_APP_CLIENT_ID` / `_SECRET`.
 
-| Setting                                                | Value                                                                                    |
-| ------------------------------------------------------ | ---------------------------------------------------------------------------------------- |
-| Homepage URL                                           | `https://platform.lunox.work`                                                            |
-| Callback URL                                           | `https://platform.lunox.work/api/v1/github/callback`                                     |
-| Expire user authorization tokens                       | **On**                                                                                   |
-| Request user authorization (OAuth) during installation | **On**                                                                                   |
-| Setup URL                                              | the callback URL again, if the form allows one (see below)                               |
-| Redirect on update                                     | **On**                                                                                   |
-| Webhook → Active                                       | On                                                                                       |
-| Webhook URL                                            | `https://platform.lunox.work/api/github/webhook`                                         |
-| Webhook secret                                         | `openssl rand -hex 32` → `GITHUB_APP_WEBHOOK_SECRET`                                     |
-| Repository permissions                                 | Contents: **Write**, Pull requests: **Write**, Issues: **Read**, Metadata: **Read**      |
-| Organization and account permissions                   | none                                                                                     |
-| Subscribe to events                                    | Push, Repository (Installation and Installation repositories arrive without subscribing) |
-| Where can this GitHub App be installed?                | Any account                                                                              |
+| Setting                                                | Value                                                                                                                                  |
+| ------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------- |
+| Homepage URL                                           | `https://platform.lunox.work`                                                                                                          |
+| Callback URL                                           | `https://platform.lunox.work/api/v1/github/callback`                                                                                   |
+| Expire user authorization tokens                       | **On**                                                                                                                                 |
+| Request user authorization (OAuth) during installation | **On**                                                                                                                                 |
+| Setup URL                                              | the callback URL again, if the form allows one (see below)                                                                             |
+| Redirect on update                                     | **On**                                                                                                                                 |
+| Webhook → Active                                       | On                                                                                                                                     |
+| Webhook URL                                            | `https://platform.lunox.work/api/github/webhook`                                                                                       |
+| Webhook secret                                         | `openssl rand -hex 32` → `GITHUB_APP_WEBHOOK_SECRET`                                                                                   |
+| Repository permissions                                 | Contents: **Write**, Pull requests: **Write**, Checks: **Read**, Commit statuses: **Read**, Issues: **Read**, Metadata: **Read**       |
+| Organization and account permissions                   | none                                                                                                                                   |
+| Subscribe to events                                    | Push, Repository, Check suite, Check run, Status, Pull request (Installation and Installation repositories arrive without subscribing) |
+| Where can this GitHub App be installed?                | Any account                                                                                                                            |
 
 Why the less obvious ones:
 
@@ -81,8 +81,17 @@ Why the less obvious ones:
   Existing installations must accept the new permissions on GitHub (the
   installation's settings page); until then merge answers 409
   `app_permissions_missing` and the version page disables the button and
-  links there. Checks/Statuses: Read are planned for reading the
-  repository's CI back; not requested yet.
+  links there.
+- **Checks and Commit statuses: Read are for CI read-back** on a merge-back's
+  pull request (`apps/api/src/github/merge-ci.ts`), with a token minted for
+  one repository with those alone (`CI_READ_PERMISSIONS`). They never block
+  opening one: without them CI reads `unknown`, readiness names them in
+  `ciMissing`, and "merge when CI passes" is refused 409
+  `ci_permissions_missing`. Merging itself uses the writer's Contents: Write.
+  The Check suite, Check run, Status and Pull request events are cues to
+  read a followed pull request back; the reconcile sweep re-reads it every
+  few minutes when a delivery is lost. Existing installations must accept
+  the new permissions and event subscriptions on GitHub.
 - **No organization permissions, on purpose.** Members: read would let the
   API check that the person administers an organization instead of the
   repository count above, at the cost of every client approving one more

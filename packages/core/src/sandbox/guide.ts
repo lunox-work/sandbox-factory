@@ -36,6 +36,12 @@ export const AGENTS_GUIDE_PATH = "AGENTS.md";
 /** Claude Code's name for `AGENTS.md`, which it imports, as carveout's cut writes it. */
 export const CLAUDE_GUIDE_PATH = "CLAUDE.md";
 export const VSCODE_DIR = ".vscode";
+/**
+ * Where the VS Code extension notes which contribution a folder is
+ * (`contribution.json`: the version, the folder's root, the platform's
+ * address; never a token). Not generated; a submission leaves it out.
+ */
+export const LUNOX_DIR = ".lunox";
 
 /** Where a generated project keeps what the guide names. */
 export interface GuidePaths {
@@ -202,13 +208,13 @@ export function taskGuide(input: ContributorGuideInput): string {
     "",
     "You may also add new TypeScript files (`.ts`, `.tsx`) beside them, in a directory that already holds one of them: never at the root, never a test or a declaration file.",
     "",
-    `Read-only: ${harness.join(", ")}. They are the version's. This file, \`${AGENTS_GUIDE_PATH}\`, \`${CLAUDE_GUIDE_PATH}\`, \`README.md\` and \`${VSCODE_DIR}/\` are for you; leave them out of a submission too.`,
+    `Read-only: ${harness.join(", ")}. They are the version's. This file, \`${AGENTS_GUIDE_PATH}\`, \`${CLAUDE_GUIDE_PATH}\`, \`README.md\` and \`${VSCODE_DIR}/\` are for you: a submission leaves them out, changed or not.`,
     "",
     "## What gets a submission refused",
     "",
     "The verdict is `refused`, with each file and why, when a submission:",
     "",
-    "- changes or adds a file outside the task: a weakened, skipped or rewritten public test, or a test file added, among them. Leaving a file out never deletes it; it keeps the version's text.",
+    "- changes or adds a file outside the task: a weakened, skipped or rewritten public test, or a test file added, among them. Leaving a file out of a `files` submission never deletes it; it keeps the version's text.",
     "- changes `package.json`, the lockfile, compiler or npm configuration, the fixture environment or the scripts that run the tests.",
     "- adds a way to pass the tests without the code: telling a test run from a real one, ending the process early, swallowing uncaught errors, or rewriting the assertion library, the runner or a built-in.",
     `- reaches the test run from task code: the mock runtime's controls (\`recordedCalls\`, \`mockImplementation\`, \`resetMocks\`) or \`${paths.harnessDir}/\`, the modules \`node:test\`, \`node:assert\`, \`node:module\`, \`node:vm\` or \`node:inspector\`, \`require\`, \`eval\` or \`Function\`, or \`process\` and \`globalThis\` read by a computed name.`,
@@ -217,16 +223,18 @@ export function taskGuide(input: ContributorGuideInput): string {
     "",
     "## Submit",
     "",
-    "A submission is the files you changed or added, each whole, at its path in this project. There is no push, branch or pull request, and nothing is read from your machine.",
+    `Zip this folder and upload it on your contribution page, or run **Lunox: Submit** in VS Code with the Lunox extension (\`Lunox: Open contribution\` downloads and opens this folder). Either way the platform compares the folder with the version and shows what would be submitted before you confirm: the files you changed or added. \`node_modules/\`, the build's \`.js\` and \`.map\` output, \`.git/\`, this file, \`${AGENTS_GUIDE_PATH}\`, \`${CLAUDE_GUIDE_PATH}\`, \`README.md\`, \`${VSCODE_DIR}/\` and \`${LUNOX_DIR}/\` are left out; a changed read-only file is named so you can revert it before anything is submitted, and a deleted task file cannot be submitted yet. There is no push, branch or pull request.`,
     "",
-    `- With the platform's MCP server: \`submit_patch\` with this version's id (\`${version.versionId}\`) and \`files: [{ path, text }]\`; read the verdict with \`get_verdict\`.`,
-    `- With its API: \`POST /api/v1/orgs/<workspace>/sandboxes/versions/${version.versionId}/submissions\` with \`{ "files": [{ "path": "...", "text": "..." }] }\`.`,
+    "A coding agent submits as you, with either:",
+    "",
+    `- The platform's MCP server for contributors, \`/mcp/contribute\`: \`preview_submission\` says what would be submitted, \`submit\` takes this version's id (\`${version.versionId}\`) and \`files: [{ path, text }]\` (each changed or added file whole, at its path in this project), and \`get_my_submission\` reads the verdict.`,
+    `- A contributor token (\`lnxc_…\`, made on your contributions page) as the bearer: \`POST /api/v1/contributions/${version.versionId}/submissions/zip\` with the zipped folder (\`Content-Type: application/zip\`; \`?dryRun=1\` previews it and stores nothing), then \`GET /api/v1/contributions/${version.versionId}/submissions/<submissionId>\` for the verdict.`,
     "",
     "Grading runs in the background. The verdict is `passed`, `incomplete` (a public test fails), `overfit` (the public tests pass, a hidden test fails, with its scenario key) or `refused`, with the public and hidden counts.",
     "",
     "## One retry",
     "",
-    "A submission that did not pass can be retried once, with changed files (`retry` on the MCP server, or `POST …/sandboxes/submissions/<submissionId>/retry`). A retry is not retried, and a passed submission has nothing to retry.",
+    "A submission that did not pass can be retried once, with changed files: upload the folder again on your contribution page or run **Lunox: Submit** again (or `retry` on `/mcp/contribute`, or `POST …/submissions/<submissionId>/retry/zip`). A retry is not retried, and a passed submission has nothing to retry.",
     "",
     "When grading could not run at all (the verdict is missing and the submission is `errored`: timed out, interrupted, or failed on the platform's side), it is graded again with the same files. That is not your doing and does not spend the retry.",
   ].join("\n")}\n`;

@@ -1,12 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { SANDBOX_COMMANDS } from "sandbox-factory";
-import {
-  cloneTarget,
-  commandLine,
-  describeTask,
-  parseDescriptor,
-} from "../src/task.js";
+import { commandLine, describeTask, parseDescriptor } from "../src/task.js";
 import { descriptor } from "./fixtures.js";
 
 test("a descriptor is parsed strictly and a repository cannot change the commands", () => {
@@ -39,37 +34,4 @@ test("a descriptor is parsed strictly and a repository cannot change the command
     describeTask(descriptor as never),
     /Fix the widget \(v2, M\) · 1 editable file\(s\) · 2 public test file\(s\)/,
   );
-});
-
-test("clone targets accept https and ssh repository URLs and name the folder", () => {
-  assert.deepEqual(cloneTarget(" https://github.com/acme-org/task-repo.git "), {
-    ok: true,
-    url: "https://github.com/acme-org/task-repo.git",
-    folder: "task-repo",
-  });
-  assert.deepEqual(cloneTarget("https://github.com/acme-org/task-repo/"), {
-    ok: true,
-    url: "https://github.com/acme-org/task-repo/",
-    folder: "task-repo",
-  });
-  assert.deepEqual(cloneTarget("https://ghe.corp:8443/acme/task"), {
-    ok: true,
-    url: "https://ghe.corp:8443/acme/task",
-    folder: "task",
-  });
-  assert.deepEqual(cloneTarget("git@github.com:acme-org/task.git"), {
-    ok: true,
-    url: "git@github.com:acme-org/task.git",
-    folder: "task",
-  });
-  for (const bad of [
-    "",
-    "http://github.com/a/b",
-    "ftp://x/y/z",
-    "https://github.com/onlyowner",
-    "file:///tmp/x",
-    "https://github.com/a/..",
-    "-c core.sshCommand=evil",
-  ])
-    assert.equal(cloneTarget(bad).ok, false, bad);
 });

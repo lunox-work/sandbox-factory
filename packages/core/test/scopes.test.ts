@@ -6,9 +6,15 @@ import {
   API_TOKEN_PREFIX,
   CLI_CLIENT_IDS,
   cliScopes,
+  CONTRIBUTOR_SCOPE,
+  CONTRIBUTOR_SCOPES,
+  CONTRIBUTOR_TOKEN_PREFIX,
   isApiScope,
   isCliClient,
+  isContributorScope,
+  MCP_CONTRIBUTOR_PATH,
   MCP_DEFAULT_SCOPES,
+  MCP_TOOLSETS,
   OAUTH_ACCESS_TOKEN_PREFIX,
   OAUTH_REFRESH_TOKEN_PREFIX,
   OFFLINE_ACCESS_SCOPE,
@@ -46,9 +52,10 @@ test("each command-line client holds only known scopes, reading included", () =>
     assert.equal(isCliClient(value), false);
 });
 
-test("OAuth tokens carry prefixes no other credential starts with", () => {
+test("each token kind carries a prefix no other credential starts with", () => {
   const prefixes = [
     API_TOKEN_PREFIX,
+    CONTRIBUTOR_TOKEN_PREFIX,
     OAUTH_ACCESS_TOKEN_PREFIX,
     OAUTH_REFRESH_TOKEN_PREFIX,
   ];
@@ -63,4 +70,27 @@ test("OAuth tokens carry prefixes no other credential starts with", () => {
 test("MCP asks for reading only by default, and offline access is no API scope", () => {
   assert.deepEqual([...MCP_DEFAULT_SCOPES], ["workspace:read"]);
   assert.equal(isApiScope(OFFLINE_ACCESS_SCOPE), false);
+});
+
+test("the contributor scope is no API scope, and no CLI client or workspace toolset holds it", () => {
+  assert.deepEqual([...CONTRIBUTOR_SCOPES], [CONTRIBUTOR_SCOPE]);
+  assert.equal(isContributorScope("contributions:write"), true);
+  assert.equal(isApiScope(CONTRIBUTOR_SCOPE), false);
+  for (const scope of API_SCOPES)
+    assert.equal(isContributorScope(scope), false);
+  for (const client of CLI_CLIENT_IDS)
+    assert.equal(
+      (cliScopes(client) as readonly string[]).includes(CONTRIBUTOR_SCOPE),
+      false,
+    );
+});
+
+test("the contributor endpoint's tools are its own; every workspace toolset is within /mcp", () => {
+  const all = new Set<string>(MCP_TOOLSETS["/mcp"]);
+  for (const [path, names] of Object.entries(MCP_TOOLSETS)) {
+    if (path === MCP_CONTRIBUTOR_PATH) continue;
+    for (const name of names) assert.ok(all.has(name), `${path}: ${name}`);
+  }
+  assert.ok(MCP_TOOLSETS[MCP_CONTRIBUTOR_PATH].includes("list_contributions"));
+  assert.equal(all.has("list_contributions"), false);
 });

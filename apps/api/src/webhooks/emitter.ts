@@ -10,8 +10,17 @@
  *   terminal state is `run.finished`, a sandbox build or starter run is
  *   also `sandbox.build.finished`, and each proposal a sizing run made is
  *   `proposal.priced`. Like the pages, a change lost to a restart is lost.
+ *   A grading run that ended is `submission.graded` (its submission's
+ *   verdict and counts, never a hidden test's name or a scenario key).
  * - `sandbox.published`: the publish route, once the version is published.
  * - `writeback.failed`: the Jira writeback worker, once it fails one.
+ * - `submission.merge_opened`: the merge route, once the pull request is
+ *   recorded. `submission.ci` and `submission.merged`: merge-back's CI
+ *   read-back (`github/merge-ci.ts`).
+ *
+ * The submission events' `data` is checked against its schema
+ * (`WEBHOOK_EVENT_DATA_SCHEMAS`) before anything is enqueued: one that does
+ * not match is reported and dropped, never delivered half-formed.
  *
  * **Once per event, whatever saw it.** An event's id is derived from what
  * it is about (`eventId`), and a delivery is unique per endpoint and event,
@@ -30,9 +39,14 @@ import type {
   BountyRunStore,
   RunChange,
   SandboxStore,
+  SubmissionStore,
   WebhookStore,
 } from "@sandbox-factory/db";
-import type { WebhookEventType } from "@sandbox-factory/shared";
+import {
+  WEBHOOK_EVENT_DATA_SCHEMAS,
+  type WebhookEventType,
+} from "@sandbox-factory/shared";
+import { isSubmissionGradeParams } from "sandbox-factory";
 
 /** A stable id for the event `type` about `key` in an organization. */
 export function eventId(
@@ -73,6 +87,8 @@ export interface WebhookEmitterOptions {
   readonly bountyRuns?: Pick<BountyRunStore, "get"> | undefined;
   /** To name a built version's sandbox; without it the id is left out. */
   readonly sandboxes?: Pick<SandboxStore, "getVersion"> | undefined;
+  /** A graded submission's verdict; without it no `submission.graded`. */
+  readonly submissions?: Pick<SubmissionStore, "get"> | undefined;
   /** Something was enqueued: the sender should look now. */
   readonly onEnqueued?: (() => void) | undefined;
   readonly now?: (() => Date) | undefined;
@@ -98,6 +114,16 @@ export class WebhookEmitter {
     data: Record<string, unknown>,
   ): Promise<number> {
     try {
+      const schema =
+        type in WEBHOOK_EVENT_DATA_SCHEMAS
+          ? WEBHOOK_EVENT_DATA_SCHEMAS[
+              type as keyof typeof WEBHOOK_EVENT_DATA_SCHEMAS
+            ]
+          : undefined;
+      if (schema !== undefined && !schema.safeParse(data).success) {
+        this.#options.onError?.("webhook_event_invalid");
+        return 0;
+      }
       const at = (this.#options.now ?? (() => new Date()))();
       const id = eventId(organizationId, type, key);
       const made = await this.#options.store.enqueue(
@@ -136,6 +162,8 @@ export class WebhookEmitter {
         errorCode: run.errorCode,
       },
     });
+    if (run.tool === "submission_grade" && isSubmissionGradeParams(run.params))
+      await this.#graded(organizationId, run.id, run.params.submissionId);
     if (!BUILD_TOOLS.has(run.tool) || !("sandboxVersionId" in run.params))
       return;
     const versionId = run.params.sandboxVersionId;
@@ -149,6 +177,42 @@ export class WebhookEmitter {
       sandboxVersionId: versionId,
       status: run.status,
     });
+  }
+
+  /** The submission a grading run that ended settled, once per run. */
+  async #graded(
+    organizationId: string,
+    runId: string,
+    submissionId: string,
+  ): Promise<void> {
+    const found = await this.#options.submissions?.get(
+      organizationId,
+      submissionId,
+    );
+    if (
+      found === undefined ||
+      found === null ||
+      found.runId !== runId ||
+      (found.status !== "passed" &&
+        found.status !== "failed" &&
+        found.status !== "errored")
+    )
+      return;
+    await this.emit(
+      organizationId,
+      "submission.graded",
+      `${found.id}:${runId}`,
+      {
+        submissionId: found.id,
+        sandboxVersionId: found.sandboxVersionId,
+        runId,
+        status: found.status,
+        verdict: found.result?.verdict ?? null,
+        public: found.result?.public ?? null,
+        hidden: found.result?.hidden ?? null,
+        carryBack: found.result?.carryBack ?? null,
+      },
+    );
   }
 
   async #sizing({ organizationId, id }: RunChange): Promise<void> {

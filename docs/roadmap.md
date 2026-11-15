@@ -138,13 +138,11 @@ How well gate 1 predicts gates 2 and 3 is the sandbox's own quality, which
 
 #### Gate 3: upstream
 
-| Exists                                                 | Missing                                                                                                                     |
-| ------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------- |
-| Read-only, repository-scoped tokens (`contents: read`) | Write access for a branch and a pull request (`contents: write`, `pull_requests: write`), asked for at merge-back time only |
-|                                                        | Opening the pull request at the pinned commit, rebased onto the default branch                                              |
-|                                                        | Reporting the repository's CI back to the submission, as pass or fail                                                       |
-|                                                        | An integration agent for the small fixes a reversed patch needs upstream (below)                                            |
-|                                                        | Hidden tests that also run upstream (below)                                                                                 |
+| Exists                                                                                                     | Missing                                                                          |
+| ---------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------- |
+| Merge-back's pull request at the pinned commit (`contents: write`, `pull_requests: write`, one repository) | Rebasing it onto the default branch                                              |
+| The repository's CI read back onto the submission, and merging when it passes (`checks`/`statuses: read`)  | An integration agent for the small fixes a reversed patch needs upstream (below) |
+|                                                                                                            | Hidden tests that also run upstream (below)                                      |
 
 ### Supporting work
 

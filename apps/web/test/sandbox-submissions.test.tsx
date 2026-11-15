@@ -2,6 +2,7 @@ import { cleanup, render, screen, waitFor } from "./render";
 import { userEvent } from "@testing-library/user-event";
 import { afterEach, expect, test, vi } from "vitest";
 import {
+  mergeLabel,
   SandboxSubmissions,
   submissionLabel,
 } from "../src/features/sandbox/SandboxSubmissions";
@@ -133,6 +134,7 @@ test("a refused merge-back says why; a generated version offers none; an empty l
   );
   cleanup();
 
+  // A generated or uploaded version: nothing to merge into; its files instead.
   serve([submission()]);
   render(
     <SandboxSubmissions
@@ -145,6 +147,9 @@ test("a refused merge-back says why; a generated version offers none; an empty l
   expect(screen.queryByRole("button", { name: "Open pull request" })).toBe(
     null,
   );
+  expect(
+    screen.getByRole("button", { name: "Download the passing files" }),
+  ).toBeTruthy();
   cleanup();
 
   serve([]);
@@ -324,4 +329,304 @@ test("a GitHub App without merge-back's permissions disables the button, says wh
     "The repository is gone, or its GitHub installation is not healthy.",
   );
   expect(screen.queryByRole("link")).toBe(null);
+});
+
+const opened = (overrides: object = {}) => ({
+  pullRequestNumber: 7,
+  pullRequestUrl: "https://github.com/acme/shop/pull/7",
+  branch: "lunox/sbm_1",
+  createdAt: stamp,
+  ...overrides,
+});
+
+test("a pass can be opened to merge when CI passes, which sends that with the merge", async () => {
+  const bodies: unknown[] = [];
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/merge")) {
+        bodies.push(
+          init?.body === undefined ? null : JSON.parse(String(init.body)),
+        );
+        return json({
+          submission: submission({ merge: opened({ when: "ci_passes" }) }),
+        });
+      }
+      if (url.endsWith("/merge-back")) return json({ mergeBack: ready });
+      return json({
+        submissions: [
+          submission({
+            merge: bodies.length === 0 ? null : opened({ when: "ci_passes" }),
+          }),
+        ],
+      });
+    }),
+  );
+  render(
+    <SandboxSubmissions organizationId="org_1" versionId="sbv_1" canMerge />,
+  );
+  const button = await screen.findByRole("button", {
+    name: "Open and merge when CI passes",
+  });
+  await waitFor(() =>
+    expect((button as HTMLButtonElement).disabled).toBe(false),
+  );
+  await userEvent.click(button);
+  expect(
+    (await screen.findByTestId("submission-merge-state")).textContent,
+  ).toBe("CI not started · merges when CI passes");
+  expect(bodies).toEqual([{ when: "ci_passes" }]);
+  // Already merging on CI: not offered again.
+  expect(screen.queryByRole("button", { name: "Merge when CI passes" })).toBe(
+    null,
+  );
+});
+
+test("without CI read-back's permissions, merging on CI is disabled with why and where to accept them; opening alone is not", async () => {
+  serve([submission()], undefined, () => ({
+    ...ready,
+    acceptUrl: "https://github.com/organizations/acme/settings/installations/9",
+    ciMissing: ["checks:read", "statuses:read"],
+  }));
+  render(
+    <SandboxSubmissions organizationId="org_1" versionId="sbv_1" canMerge />,
+  );
+  const hint = await screen.findByTestId("merge-back-ci");
+  expect(hint.textContent).toContain("missing checks:read, statuses:read");
+  expect(
+    screen
+      .getByRole("link", { name: "Accept new permissions on GitHub" })
+      .getAttribute("href"),
+  ).toBe("https://github.com/organizations/acme/settings/installations/9");
+  const onCi = screen.getByRole("button", {
+    name: "Open and merge when CI passes",
+  });
+  expect((onCi as HTMLButtonElement).disabled).toBe(true);
+  expect(onCi.getAttribute("aria-describedby")).toBe("merge-back-ci");
+  expect(
+    (
+      screen.getByRole("button", {
+        name: "Open pull request",
+      }) as HTMLButtonElement
+    ).disabled,
+  ).toBe(false);
+});
+
+test("an opened pull request's row shows its CI, a refused merge, and that it merged; one opened alone can be set to merge on CI", async () => {
+  const calls: string[] = [];
+  let row = opened({
+    ci: {
+      state: "failing",
+      summary: {
+        total: 3,
+        passed: 2,
+        failed: 1,
+        pending: 0,
+        failing: ["e2e"],
+        detailsUrl: "https://ci.test/e2e",
+      },
+      headSha: "beef",
+      checkedAt: stamp,
+    },
+  });
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      calls.push(`${init?.method ?? "GET"} ${url} ${String(init?.body ?? "")}`);
+      if (url.endsWith("/merge")) {
+        row = { ...row, when: "ci_passes" } as typeof row;
+        return json({ submission: submission({ merge: row }) });
+      }
+      if (url.endsWith("/merge-back")) return json({ mergeBack: ready });
+      return json({ submissions: [submission({ merge: row })] });
+    }),
+  );
+  render(
+    <SandboxSubmissions organizationId="org_1" versionId="sbv_1" canMerge />,
+  );
+  const state = await screen.findByTestId("submission-merge-state");
+  expect(state.textContent).toBe("CI failing: e2e details");
+  expect(
+    screen.getByRole("link", { name: "details" }).getAttribute("href"),
+  ).toBe("https://ci.test/e2e");
+  await userEvent.click(
+    screen.getByRole("button", { name: "Merge when CI passes" }),
+  );
+  await waitFor(() =>
+    expect(screen.queryByRole("button", { name: "Merge when CI passes" })).toBe(
+      null,
+    ),
+  );
+  expect(calls).toContain(
+    `POST /api/v1/orgs/org_1/sandboxes/submissions/sbm_1/merge ${JSON.stringify({ when: "ci_passes" })}`,
+  );
+  cleanup();
+
+  // Passing, GitHub refused (branch protection): said, and still open.
+  row = opened({
+    when: "ci_passes",
+    ci: {
+      state: "passing",
+      summary: {
+        total: 1,
+        passed: 1,
+        failed: 0,
+        pending: 0,
+        failing: [],
+        detailsUrl: null,
+      },
+      headSha: "beef",
+      checkedAt: stamp,
+    },
+    mergeError: "At least 1 approving review is required.",
+  });
+  render(
+    <SandboxSubmissions organizationId="org_1" versionId="sbv_1" canMerge />,
+  );
+  expect(
+    (await screen.findByTestId("submission-merge-state")).textContent,
+  ).toBe("CI passing (1/1) · merges when CI passes");
+  expect(
+    screen.getByText(/GitHub refused the merge: At least 1 approving review/),
+  ).toBeTruthy();
+  cleanup();
+
+  row = opened({
+    pullRequestState: "merged",
+    mergedCommitSha: "0123456789abcdef",
+    mergeError: "At least 1 approving review is required.",
+  });
+  render(
+    <SandboxSubmissions organizationId="org_1" versionId="sbv_1" canMerge />,
+  );
+  expect(
+    (await screen.findByTestId("submission-merge-state")).textContent,
+  ).toBe("Merged as 0123456");
+  expect(screen.queryByText(/GitHub refused/)).toBe(null);
+  expect(screen.getByRole("link", { name: /Pull request #7/ })).toBeTruthy();
+});
+
+test("a merged-back pull request's label for each state it can be read in", () => {
+  const label = (overrides: object) => mergeLabel(opened(overrides) as never);
+  const summary = (passed: number, total: number) => ({
+    total,
+    passed,
+    failed: 0,
+    pending: total - passed,
+    failing: [],
+    detailsUrl: null,
+  });
+  const ci = (state: string, value: unknown = null) => ({
+    ci: { state, summary: value, headSha: null, checkedAt: null },
+  });
+  expect(
+    label({ when: "open", pullRequestState: "open", ...ci("pending") }),
+  ).toBe("CI not started");
+  expect(
+    label({
+      when: "open",
+      pullRequestState: "open",
+      ...ci("pending", summary(1, 3)),
+    }),
+  ).toBe("CI running (1/3 passed)");
+  expect(
+    label({ when: "open", pullRequestState: "open", ...ci("passing") }),
+  ).toBe("CI passing");
+  expect(
+    label({ when: "open", pullRequestState: "open", ...ci("failing") }),
+  ).toBe("CI failing");
+  expect(
+    label({ when: "ci_passes", pullRequestState: "open", ...ci("none") }),
+  ).toBe("No CI checks reported · merges when CI passes");
+  expect(
+    label({ when: "ci_passes", pullRequestState: "open", ...ci("unknown") }),
+  ).toBe("CI not readable: the GitHub App needs checks and statuses read");
+  expect(
+    label({
+      pullRequestState: "merged",
+      mergedCommitSha: null,
+      ...ci("passing"),
+    }),
+  ).toBe("Merged");
+  expect(label({ pullRequestState: "closed", ...ci("failing") })).toBe(
+    "Closed without merging",
+  );
+});
+
+test("a pass on a version with no repository downloads its changed files as the .zip the API names", async () => {
+  const calls: string[] = [];
+  let refuse = false;
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      calls.push(url);
+      if (url.endsWith("/files/archive"))
+        return refuse
+          ? json(
+              {
+                error: "The submission's files could not be read.",
+                code: "artifacts_unavailable",
+              },
+              502,
+            )
+          : Promise.resolve(
+              new Response(new Uint8Array([0x50, 0x4b, 0x05, 0x06]), {
+                status: 200,
+                headers: {
+                  "content-type": "application/zip",
+                  "content-disposition":
+                    'attachment; filename="sbm_1-files.zip"',
+                },
+              }),
+            );
+      return json({
+        submissions: [
+          submission(),
+          submission({ id: "sbm_0", status: "failed", verdict: "incomplete" }),
+        ],
+      });
+    }),
+  );
+  // jsdom has no object URLs; the page makes one and lets it go.
+  const { createObjectURL, revokeObjectURL } = URL;
+  URL.createObjectURL = () => "blob:files";
+  URL.revokeObjectURL = () => undefined;
+  const clicked: string[] = [];
+  const click = vi
+    .spyOn(HTMLAnchorElement.prototype, "click")
+    .mockImplementation(function (this: HTMLAnchorElement) {
+      clicked.push(this.download);
+    });
+  render(
+    <SandboxSubmissions
+      organizationId="org_1"
+      versionId="sbv_1"
+      canMerge={false}
+    />,
+  );
+  // One button: the failing submission offers none.
+  const buttons = await screen.findAllByRole("button", {
+    name: "Download the passing files",
+  });
+  expect(buttons).toHaveLength(1);
+  await userEvent.click(buttons[0] as HTMLElement);
+  await waitFor(() => expect(clicked).toEqual(["sbm_1-files.zip"]));
+  expect(calls).toContain(
+    "/api/v1/orgs/org_1/sandboxes/submissions/sbm_1/files/archive",
+  );
+  // No merge-back readiness is read for such a version.
+  expect(calls.some((url) => url.endsWith("/merge-back"))).toBe(false);
+  refuse = true;
+  await userEvent.click(
+    screen.getByRole("button", { name: "Download the passing files" }),
+  );
+  expect((await screen.findByRole("alert")).textContent).toContain(
+    "could not be read",
+  );
+  click.mockRestore();
+  URL.createObjectURL = createObjectURL;
+  URL.revokeObjectURL = revokeObjectURL;
 });

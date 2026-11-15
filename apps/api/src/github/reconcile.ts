@@ -22,6 +22,10 @@
  * Each repository is read with a token narrowed to it and to reads, so the
  * sweep holds no token that could reach another repository it is reading.
  *
+ * It then re-reads merge-back pull requests' CI (`merge-ci.ts`), which
+ * deliveries keep current within seconds and this keeps current within
+ * minutes when one is lost or the API cannot receive them.
+ *
  * Every API task runs one. Two tasks reading the same repository in the same
  * minute cost a second conditional request, which is cheaper than any lock.
  * Within a task, a sweep never starts while the last one is still running.
@@ -41,6 +45,7 @@ import {
 } from "@sandbox-factory/github";
 
 import { installationClient } from "./credential.js";
+import type { MergeCiTracker } from "./merge-ci.js";
 import type { GithubSnapshotter } from "./snapshot.js";
 import { syncRepo } from "./sync.js";
 
@@ -62,6 +67,8 @@ export interface GithubReconcilerOptions {
   readonly installations: InstallationTokens;
   /** Asked for a snapshot of every repository read; absent, none are taken. */
   readonly snapshotter?: Pick<GithubSnapshotter, "schedule"> | undefined;
+  /** Merge-back's CI read-back, swept after the repositories; absent, not. */
+  readonly mergeCi?: Pick<MergeCiTracker, "sweep"> | undefined;
   readonly fetch?: typeof globalThis.fetch;
   readonly now?: () => Date;
   readonly setInterval?: typeof globalThis.setInterval;
@@ -214,6 +221,14 @@ export class GithubReconciler {
           // One row that cannot be written must not end the batch.
           this.#report("github_reconcile_write_failed", writeError);
         }
+      }
+    }
+
+    if (!this.#stopping && this.#options.mergeCi !== undefined) {
+      try {
+        await this.#options.mergeCi.sweep();
+      } catch (error) {
+        this.#report("merge_ci_sweep_failed", error);
       }
     }
 

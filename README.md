@@ -72,13 +72,16 @@ make ext
 ```
 
 Then open this repo in VS Code and press <kbd>F5</kbd>. A second window opens
-with the extension loaded — the sandbox-factory icon is in its activity bar.
+with the extension loaded; its commands are under **Lunox** in the command
+palette. For a local stack, set `sandboxFactory.platformUrl` to
+`http://localhost:5173` in that window's user settings.
 
 The extension is a bundle the editor loads, so it runs on your machine rather
-than in Docker and `make ext` needs Node 22.12+ within 22.x, or 24+. It opens a
-sandbox task (a local clone or a URL to clone), shows what the task is, and runs
-its install, app and test commands in VS Code terminals when you ask, in a
-trusted workspace only. **Show Version** reports the extension's and the API's builds.
+than in Docker and `make ext` needs Node 22.12+ within 22.x, or 24+. A
+contributor signs in with a contributor token, opens a contribution (download
+and unpack), runs its install, app and test commands in VS Code terminals in a
+trusted workspace, and previews and submits the folder with the verdict in the
+status bar. **Show Version** reports the extension's and the API's builds.
 
 ## Develop it
 

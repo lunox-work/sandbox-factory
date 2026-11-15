@@ -1,19 +1,21 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
-  DEFAULT_API_ORIGIN,
-  resolveApiOrigin,
+  DEFAULT_PLATFORM_ORIGIN,
+  resolvePlatformOrigin,
   tokenKeyFor,
+  tokenProblem,
+  tokensPageUrl,
 } from "../src/origin.js";
 
-test("the API origin comes from user settings only, and tokens are bound to it", () => {
-  assert.deepEqual(resolveApiOrigin(undefined), {
-    origin: DEFAULT_API_ORIGIN,
+test("the platform origin comes from user settings only, and tokens are bound to it", () => {
+  assert.deepEqual(resolvePlatformOrigin(undefined), {
+    origin: DEFAULT_PLATFORM_ORIGIN,
     overrideIgnored: false,
     invalid: false,
   });
   assert.deepEqual(
-    resolveApiOrigin({
+    resolvePlatformOrigin({
       defaultValue: "http://localhost:4000",
       globalValue: "https://api.example.test/base/",
     }),
@@ -25,7 +27,7 @@ test("the API origin comes from user settings only, and tokens are bound to it",
   );
   // A repository's settings cannot redirect authenticated requests.
   assert.deepEqual(
-    resolveApiOrigin({
+    resolvePlatformOrigin({
       defaultValue: "http://localhost:4000",
       globalValue: "https://api.example.test",
       workspaceValue: "https://evil.example.test",
@@ -37,21 +39,25 @@ test("the API origin comes from user settings only, and tokens are bound to it",
     },
   );
   assert.deepEqual(
-    resolveApiOrigin({
-      defaultValue: "http://localhost:4000",
+    resolvePlatformOrigin({
+      defaultValue: "https://platform.lunox.work",
       workspaceFolderValue: "https://evil.example.test",
     }),
-    { origin: "http://localhost:4000", overrideIgnored: true, invalid: false },
+    {
+      origin: "https://platform.lunox.work",
+      overrideIgnored: true,
+      invalid: false,
+    },
   );
-  assert.deepEqual(resolveApiOrigin({ globalValue: "not a url" }), {
-    origin: DEFAULT_API_ORIGIN,
+  assert.deepEqual(resolvePlatformOrigin({ globalValue: "not a url" }), {
+    origin: DEFAULT_PLATFORM_ORIGIN,
     overrideIgnored: false,
     invalid: true,
   });
   assert.deepEqual(
-    resolveApiOrigin({ globalValue: "ftp://files.example.test" }),
+    resolvePlatformOrigin({ globalValue: "ftp://files.example.test" }),
     {
-      origin: DEFAULT_API_ORIGIN,
+      origin: DEFAULT_PLATFORM_ORIGIN,
       overrideIgnored: false,
       invalid: true,
     },
@@ -61,4 +67,16 @@ test("the API origin comes from user settings only, and tokens are bound to it",
     "sandboxFactory.token:https://api.example.test",
   );
   assert.notEqual(tokenKeyFor("https://a.test"), tokenKeyFor("https://b.test"));
+});
+
+test("the tokens page is on the platform, and only a contributor token is taken", () => {
+  assert.equal(DEFAULT_PLATFORM_ORIGIN, "https://platform.lunox.work");
+  assert.equal(
+    tokensPageUrl("https://platform.lunox.work"),
+    "https://platform.lunox.work/contributions#contributor-tokens",
+  );
+  assert.equal(tokenProblem("lnxc_abc"), null);
+  // A workspace API token, or anything else, is not a contributor's.
+  assert.match(tokenProblem("lnx_abc") ?? "", /starts with lnxc_/);
+  assert.match(tokenProblem("hello") ?? "", /Contributions page/);
 });

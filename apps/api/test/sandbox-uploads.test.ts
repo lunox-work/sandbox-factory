@@ -18,6 +18,7 @@ import {
   type SandboxRouteOptions,
 } from "../src/sandbox/routes.js";
 import { changedSubmissionFiles, checkUpload } from "../src/sandbox/uploads.js";
+import { unzip } from "./zip-reader.js";
 
 const stamp = "2026-11-12T00:00:00.000Z";
 const sha = (text: string) => createHash("sha256").update(text).digest("hex");
@@ -909,14 +910,22 @@ test("files are given back only for a passing submission on an uploaded version,
     assert.equal(response.status, 409);
     assert.equal(await codeOf(response), "not_passed");
   }
-  for (const origin of ["slice", "starter"] as const) {
-    const response = await fixture("owner", { origin }).request(
-      "GET",
-      "/submissions/sbm_up/files",
-    );
-    assert.equal(response.status, 409);
-    assert.equal(await codeOf(response), "not_uploaded");
-  }
+  // A sliced version is merged back by its pull request instead.
+  const sliced = await fixture("owner", { origin: "slice" }).request(
+    "GET",
+    "/submissions/sbm_up/files",
+  );
+  assert.equal(sliced.status, 409);
+  assert.equal(await codeOf(sliced), "not_uploaded");
+  assert.equal(
+    (
+      await fixture("owner", { origin: "slice" }).request(
+        "GET",
+        "/submissions/sbm_up/files/archive",
+      )
+    ).status,
+    409,
+  );
   const unreadable = await fixture("owner", {
     build: { "project/src/price.ts": "x" },
   }).request("GET", "/submissions/sbm_up/files");
@@ -925,6 +934,53 @@ test("files are given back only for a passing submission on an uploaded version,
     build: { "build-manifest.json": "{}" },
   }).request("GET", "/submissions/sbm_up/files");
   assert.equal(noUpload.status, 502);
+  const noFiles = await fixture("owner", {
+    origin: "starter",
+    build: { "build-manifest.json": "{}" },
+  }).request("GET", "/submissions/sbm_up/files");
+  assert.equal(noFiles.status, 502);
+});
+
+test("a passing submission on a generated (starter) version gives back what it changed in the version's own names, and as a .zip", async () => {
+  const f = fixture("owner", { origin: "starter" });
+  const response = await f.request("GET", "/submissions/sbm_up/files");
+  assert.equal(response.status, 200);
+  const answer = (await response.json()) as {
+    origin: string;
+    upload: unknown;
+    files: { path: string; text: string }[];
+  };
+  // No receipt and nothing to reverse: the starter was generated already
+  // in these names, which are the version's files the workspace reads.
+  assert.equal(answer.origin, "starter");
+  assert.equal(answer.upload, null);
+  assert.deepEqual(
+    answer.files.map((file) => file.path),
+    ["src/helper.ts", "src/price.ts"],
+  );
+  const archive = await f.request("GET", "/submissions/sbm_up/files/archive");
+  assert.equal(archive.status, 200);
+  assert.equal(archive.headers.get("Content-Type"), "application/zip");
+  assert.equal(archive.headers.get("Cache-Control"), "no-store");
+  assert.match(
+    archive.headers.get("Content-Disposition") ?? "",
+    /attachment; filename="sbm_up-files\.zip"/,
+  );
+  const entries = unzip(new Uint8Array(await archive.arrayBuffer()));
+  assert.deepEqual(
+    entries.map((entry) => [entry.name, entry.bytes.toString("utf8")]),
+    answer.files.map((file) => [file.path, file.text]),
+  );
+  // Refused as the JSON is: a member, or a submission that did not pass.
+  assert.equal(
+    (
+      await fixture("member", { origin: "starter" }).request(
+        "GET",
+        "/submissions/sbm_up/files/archive",
+      )
+    ).status,
+    403,
+  );
 });
 
 test("a token reaches the upload with sandboxes:write and the files with submissions:write only", () => {

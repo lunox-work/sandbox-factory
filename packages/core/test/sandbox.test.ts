@@ -1334,8 +1334,32 @@ test("the project carries the contributor guide: TASK.md, AGENTS.md, CLAUDE.md a
     /## What you may change\n\nOnly these files are the task:\n\n- `src\/app\.ts`\n/,
   );
   assert.match(task, /`mocks\/`, the `\.d\.ts` stubs/);
-  assert.match(task, /`submit_patch` with this version's id \(`sbv_1`\)/);
-  assert.match(task, /versions\/sbv_1\/submissions/);
+  // Uploading the zipped folder (or the extension) comes first; an agent's
+  // ways are the contributor MCP server and a contributor token.
+  assert.match(
+    task,
+    /## Submit\n\nZip this folder and upload it on your contribution page, or run \*\*Lunox: Submit\*\* in VS Code/,
+  );
+  assert.match(task, /a changed read-only file is named so you can revert it/);
+  assert.match(task, /a deleted task file cannot be submitted yet/);
+  assert.match(task, /`\.vscode\/` are for you: a submission leaves them out/);
+  assert.match(task, /`\.vscode\/` and `\.lunox\/` are left out/);
+  assert.ok(
+    task.indexOf("upload it on your contribution page") <
+      task.indexOf("`/mcp/contribute`"),
+    "the upload is the first way named",
+  );
+  assert.match(
+    task,
+    /`\/mcp\/contribute`: `preview_submission`.*`submit` takes this version's id \(`sbv_1`\).*`get_my_submission` reads the verdict/,
+  );
+  assert.match(
+    task,
+    /`lnxc_…`.*`POST \/api\/v1\/contributions\/sbv_1\/submissions\/zip` with the zipped folder/,
+  );
+  // The workspace tools are not a contributor's.
+  assert.doesNotMatch(task, /submit_patch|get_verdict|\/orgs\//);
+  assert.match(task, /upload the folder again on your contribution page/);
   assert.match(task, /retried once/);
   assert.match(task, /does not spend the retry/);
   assert.doesNotMatch(task, /push(ed)? commit/);
@@ -1351,6 +1375,10 @@ test("the project carries the contributor guide: TASK.md, AGENTS.md, CLAUDE.md a
   const readme = text("README.md");
   assert.match(readme, /\[`TASK\.md`\]\(TASK\.md\)/);
   assert.match(readme, /\[`AGENTS\.md`\]\(AGENTS\.md\)/);
+  assert.match(
+    readme,
+    /how to submit it: zip this folder and upload it on your contribution page, or run \*\*Lunox: Submit\*\* in VS Code\./,
+  );
   assert.match(readme, /Run one file with `npm run build && node/);
   const settings = JSON.parse(text(".vscode/settings.json")) as Record<
     string,

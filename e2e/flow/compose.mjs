@@ -6,7 +6,9 @@
  * Python run, GitHub's REST API and Jira's client. Nothing starts a timer: the
  * profiler, the cutter and the preparer are swept by `settle()`, which also
  * claims and runs every queued run, so a step's background work is done
- * when it returns.
+ * when it returns. A GitHub delivery's work after its answer (merge-back's
+ * CI read-back) is awaited by `settle()` too, which then sweeps CI as the
+ * reconciler would.
  *
  * Kept beside server.ts by hand: a dependency server.ts gains is one this
  * composition must gain too, or the flow stops reaching the step that
@@ -30,6 +32,8 @@ import {
   createBountyStore,
   createBountyWritebackStore,
   createConnection,
+  createContributorStore,
+  createContributorTokenStore,
   createDecisionConfirmationStore,
   createEmailStore,
   createGithubConnectionStore,
@@ -72,6 +76,7 @@ import {
 } from "../../apps/api/dist/bounties/held-context.js";
 import { installationClient } from "../../apps/api/dist/github/credential.js";
 import { mergeBackTargets } from "../../apps/api/dist/github/merge-back.js";
+import { MergeCiTracker } from "../../apps/api/dist/github/merge-ci.js";
 import { GithubSnapshotter } from "../../apps/api/dist/github/snapshot.js";
 import {
   JIRA_SIZE_PROMPT_VERSION,
@@ -152,10 +157,13 @@ export async function composePlatform({
   const sandboxStore = createSandboxStore(db);
   const submissions = createSubmissionStore(db);
   const apiTokens = createApiTokenStore(db);
+  const contributorTokens = createContributorTokenStore(db);
   const contextFor = (organizationId, bounty) =>
     heldContext({ contexts: bountyContexts }, organizationId, bounty);
 
   const secret = randomBytes(32).toString("base64url");
+  /** What the App signs its deliveries with; a step signs its own. */
+  const webhookSecret = randomBytes(16).toString("hex");
   const oauth = { clientId: "flow-client", clientSecret: "flow-secret" };
   const auth = createAuth({
     db,
@@ -297,15 +305,26 @@ export async function composePlatform({
 
   /** Every publication the sandbox routes announce. */
   const published = [];
+  /** Every submission webhook event owed: `[organizationId, type, key, data]`. */
+  const events = [];
+  const emitEvent = (...event) => {
+    events.push(event);
+  };
+  /** A GitHub delivery's work after its answer, which `settle()` awaits. */
+  const deliveries = [];
   let sandboxCutter;
   let sandboxPreparer;
   const merges = createSubmissionMergeStore(db);
   const decisions = createDecisionConfirmationStore(db);
+  const contributors = createContributorStore(db);
   const sandbox = {
     sandboxes: sandboxStore,
     cuts: sandboxStore,
     submissions,
     merges,
+    // As server.ts: invited contributors, the secret in the link's fragment.
+    contributors,
+    inviteUrl: (token) => `${APP_URL}/invite#${token}`,
     // As server.ts builds it, with the writer on the fake GitHub.
     mergeBack: mergeBackTargets({
       repos: githubRepos,
@@ -313,6 +332,7 @@ export async function composePlatform({
       installations,
       fetch: github.fetch,
     }),
+    onSubmissionEvent: emitEvent,
     runs: analysisRuns,
     artifacts,
     objects,
@@ -349,6 +369,14 @@ export async function composePlatform({
     maxActive: MAX_ACTIVE,
     onLaunchError: () => fault("analysis_worker_launch_failed"),
   };
+  // As server.ts: merge-back's CI read-back, told by the webhook and swept.
+  const mergeCi = new MergeCiTracker({
+    merges,
+    targets: sandbox.mergeBack,
+    submissions,
+    emit: emitEvent,
+    onError: fault,
+  });
   const rubricPricer = new RubricPricer({
     proposals: bountyProposals,
     profiles: bountyProfiles,
@@ -415,7 +443,13 @@ export async function composePlatform({
       appSlug: "lunox-flow",
       clientId: oauth.clientId,
       clientSecret: oauth.clientSecret,
-      webhookSecret: randomBytes(16).toString("hex"),
+      webhookSecret,
+      mergeCi,
+      background: (work) => {
+        deliveries.push(
+          work.catch((error) => fault("github_webhook_failed", error)),
+        );
+      },
       secret,
       apiUrl: API_URL,
       appUrl: APP_URL,
@@ -467,6 +501,7 @@ export async function composePlatform({
       onChanged: () => sandboxPreparer.kick(),
     },
     apiTokens,
+    contributorTokens,
     publicUrl: API_URL,
   });
 
@@ -581,6 +616,8 @@ export async function composePlatform({
    */
   async function settle(maxPasses = 25) {
     for (let pass = 0; pass < maxPasses; pass += 1) {
+      await Promise.all(deliveries.splice(0));
+      await mergeCi.sweep();
       await bountyProfiler.sweep();
       await sandboxCutter.sweep();
       await sandboxPreparer.sweep(true);
@@ -608,6 +645,7 @@ export async function composePlatform({
     stores: {
       organizations,
       apiTokens,
+      contributorTokens,
       githubConnections,
       githubRepos,
       repoSnapshots,
@@ -619,12 +657,16 @@ export async function composePlatform({
       modelUsage,
       submissions,
       merges,
+      contributors,
       jiraConnections,
       jiraBoards,
     },
     snapshotter,
     objects,
     published,
+    events,
+    webhookSecret,
+    mergeCi,
     faults,
     ranRuns,
     claimed,

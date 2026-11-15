@@ -5,15 +5,20 @@
  * It names nothing: the credential revoked is the one presenting the
  * request, read from the principal the guard resolved, so no body, path or
  * scope can point it at another. A self route in the registry (no scope
- * needed). An API token is revoked as its workspace's list would revoke
- * it; an OAuth access token is revoked with the refresh token it came
- * with, while the grant stands (revoking that is a person's act, from
- * connected apps). The next request with it is 401.
+ * needed, either audience). An API token is revoked as its workspace's list
+ * would revoke it, a contributor token as its person's would; an OAuth
+ * access token is revoked with the refresh token it came with, while the
+ * grant stands (revoking that is a person's act, from connected apps). The
+ * next request with it is 401.
  *
  * A session has nothing to revoke here; it signs out through Better Auth.
  */
 
-import type { ApiTokenStore, OAuthGrantStore } from "@sandbox-factory/db";
+import type {
+  ApiTokenStore,
+  ContributorTokenStore,
+  OAuthGrantStore,
+} from "@sandbox-factory/db";
 import type { Hono } from "hono";
 
 import type { AuthVariables } from "../http-context.js";
@@ -23,17 +28,33 @@ export const SELF_REVOKE_PATH = "/api/v1/tokens/self/revoke";
 export interface SelfRevokeOptions {
   readonly tokens?: Pick<ApiTokenStore, "revoke"> | undefined;
   readonly grants?: Pick<OAuthGrantStore, "revokeAccessToken"> | undefined;
+  readonly contributorTokens?:
+    Pick<ContributorTokenStore, "revoke"> | undefined;
 }
 
 type Env = { Variables: AuthVariables };
 
 export function mountSelfRevokeRoute(
   app: Hono<Env>,
-  { tokens, grants }: SelfRevokeOptions,
+  { tokens, grants, contributorTokens }: SelfRevokeOptions,
 ): void {
   app.post(SELF_REVOKE_PATH, async (c) => {
     const principal = c.get("principal");
     const { organizationId, credentialId } = principal;
+    if (principal.contributor === true) {
+      const revoked =
+        principal.via === "contributor"
+          ? (await contributorTokens?.revoke(
+              principal.user.id,
+              credentialId,
+            )) !== undefined
+          : ((await grants?.revokeAccessToken(
+              { contributor: principal.user.id },
+              credentialId,
+            )) ?? false);
+      if (!revoked) return c.json({ error: "Not found" }, 404);
+      return c.body(null, 204);
+    }
     if (organizationId === null) {
       return c.json(
         {

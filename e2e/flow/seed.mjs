@@ -2,7 +2,8 @@
  * What exists before the flow's first request, written the way the product
  * writes it wherever it can: the fixture's files and source archive, a
  * signed-in person (the user and session rows Better Auth writes at sign-in;
- * test-only, never a product route), their workspace made through Better
+ * test-only, never a product route) and a second one outside the workspace
+ * (the contributor the owner invites), the first's workspace made through Better
  * Auth's own organization endpoint, an API token minted as the token
  * route mints one, and the GitHub installation, repository and snapshot
  * through the stores and the snapshotter the install, sync and push flows
@@ -81,6 +82,14 @@ export const PERSON = {
   username: "ada-flow",
   sessionToken: "flowsessiontoken0000000000000001",
 };
+/** Someone outside the workspace, signed in, whom its owner invites. */
+export const CONTRIBUTOR = {
+  id: "usr_flow_contributor",
+  name: "Grace Hopper",
+  email: "grace@flow.test",
+  username: "grace-flow",
+  sessionToken: "flowsessiontoken0000000000000002",
+};
 export const WORKSPACE = { name: "Orvanta", slug: "orvanta" };
 
 /**
@@ -100,6 +109,19 @@ export async function seed(platform, { commitSha, archive }) {
     values ('ses_flow_owner', ${PERSON.sessionToken}, now() + interval '1 day', ${PERSON.id}, now(), now())
   `);
   const session = { authorization: `Bearer ${PERSON.sessionToken}` };
+  // The contributor's sign-in, the same rows; no membership in the
+  // owner's workspace, now or later.
+  await db.execute(sql`
+    insert into "user" (id, name, email, email_verified, username, display_username)
+    values (${CONTRIBUTOR.id}, ${CONTRIBUTOR.name}, ${CONTRIBUTOR.email}, true, ${CONTRIBUTOR.username}, ${CONTRIBUTOR.username})
+  `);
+  await db.execute(sql`
+    insert into session (id, token, expires_at, user_id, created_at, updated_at)
+    values ('ses_flow_contributor', ${CONTRIBUTOR.sessionToken}, now() + interval '1 day', ${CONTRIBUTOR.id}, now(), now())
+  `);
+  const contributorSession = {
+    authorization: `Bearer ${CONTRIBUTOR.sessionToken}`,
+  };
 
   // The workspace, made as the web app makes one.
   const created = await app.request("/api/auth/organization/create", {
@@ -187,6 +209,7 @@ export async function seed(platform, { commitSha, archive }) {
     repoId: registered.id,
     snapshotId: snapshot.id,
     session,
+    contributorSession,
     token: { authorization: `Bearer ${token}` },
   };
 }

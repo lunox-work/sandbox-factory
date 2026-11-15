@@ -13,10 +13,21 @@ import {
 } from "@sandbox-factory/db";
 import { OAUTH_ACCESS_TOKEN_PREFIX } from "sandbox-factory";
 
-import { generateSecret, hashSecret } from "../src/api-tokens/secret.js";
-import { challengeScope, MCP_INSTRUCTIONS } from "../src/mcp/routes.js";
 import {
+  generateContributorSecret,
+  generateSecret,
+  hashSecret,
+} from "../src/api-tokens/secret.js";
+import {
+  challengeScope,
+  CONTRIBUTOR_MCP_INSTRUCTIONS,
+  MCP_INSTRUCTIONS,
+} from "../src/mcp/routes.js";
+import {
+  CONTRIBUTOR_TOOLS,
+  handoffCommands,
   registerTools,
+  shellWord,
   toolError,
   TOOLS,
   TOOLSETS,
@@ -31,6 +42,7 @@ import { createApp } from "../src/routes.js";
 import {
   ada,
   fakeAuth,
+  memoryContributorTokens,
   memoryGrants,
   memoryTokens,
   ORG,
@@ -54,6 +66,7 @@ const settingsStore: WorkspaceSettingsStore = {
 function setup(runCounts: RunCount[] = []) {
   const tokens = memoryTokens();
   const grants = memoryGrants();
+  const contributorTokens = memoryContributorTokens();
   const usageCalls: Array<{ organizationId: string }> = [];
   const server = createApp({
     corsOrigins: [],
@@ -62,6 +75,7 @@ function setup(runCounts: RunCount[] = []) {
     settings: { settings: settingsStore },
     apiTokens: tokens,
     oauthGrants: grants,
+    contributorTokens,
     usage: {
       runCounts: (organizationId) => {
         usageCalls.push({ organizationId });
@@ -79,11 +93,14 @@ function setup(runCounts: RunCount[] = []) {
     publicUrl: BASE,
   });
 
-  /** An OAuth access token for a grant in ORG with `scopes`. */
-  function oauth(scopes: string[]): string {
+  /** An OAuth access token for a grant in ORG (null: a contributor's) with `scopes`. */
+  function oauth(
+    scopes: string[],
+    organizationId: string | null = ORG,
+  ): string {
     const raw = randomBytes(24).toString("base64url");
     grants.issue({
-      organizationId: ORG,
+      organizationId,
       scopes,
       hash: hashOAuthToken(raw),
       expiresAt: new Date(Date.now() + 15 * 60_000),
@@ -100,6 +117,18 @@ function setup(runCounts: RunCount[] = []) {
       prefix: secret.slice(0, 12),
       hash: hashSecret(secret),
       scopes,
+      expiresAt: null,
+    });
+    return secret;
+  }
+
+  /** Ada's own contributor token. */
+  async function contributorToken() {
+    const secret = generateContributorSecret();
+    await contributorTokens.create(ada.id, {
+      name: "Editor",
+      prefix: secret.slice(0, 13),
+      hash: hashSecret(secret),
       expiresAt: null,
     });
     return secret;
@@ -124,6 +153,7 @@ function setup(runCounts: RunCount[] = []) {
       server.request(path, init),
     oauth,
     apiToken,
+    contributorToken,
     connect,
     usageCalls,
   };
@@ -142,6 +172,9 @@ const WRITE_TOOLS = new Set([
   "submit_patch",
   "judge",
   "retry",
+  "regrade",
+  "create_contributor_invite",
+  "submit",
 ]);
 
 function textOf(result: unknown): string {
@@ -179,10 +212,14 @@ test("each endpoint lists exactly its toolset", async () => {
       "prepare",
       "get_handout",
       "get_project_files",
+      "upload_handoff",
+      "create_contributor_invite",
       "submit_patch",
       "judge",
       "retry",
+      "regrade",
       "get_verdict",
+      "get_submission_files",
       "connect_github",
       "connect_jira",
     ],
@@ -197,6 +234,7 @@ test("each endpoint lists exactly its toolset", async () => {
       "import_github_issue",
       "import_jira_issue",
       "size_bounty",
+      "respec",
       "get_decisions",
       "confirm_link",
       "list_sandboxes",
@@ -205,9 +243,12 @@ test("each endpoint lists exactly its toolset", async () => {
       "prepare",
       "get_handout",
       "get_project_files",
+      "create_contributor_invite",
       "judge",
       "retry",
+      "regrade",
       "get_verdict",
+      "get_submission_files",
     ],
     "/mcp/carveout": [
       "list_workspaces",
@@ -219,6 +260,7 @@ test("each endpoint lists exactly its toolset", async () => {
       "confirm_link",
       "post_bounty",
       "import_github_issue",
+      "import_jira_issue",
       "size_bounty",
       "list_repositories",
       "get_snapshot",
@@ -229,11 +271,27 @@ test("each endpoint lists exactly its toolset", async () => {
       "start_sandbox",
       "cut_slice",
       "prepare",
+      "upload_handoff",
       "get_handout",
       "get_project_files",
+      "create_contributor_invite",
       "submit_patch",
+      "judge",
       "retry",
+      "regrade",
       "get_verdict",
+      "get_submission_files",
+    ],
+    "/mcp/contribute": [
+      "list_contributions",
+      "get_contribution",
+      "get_project_files",
+      "preview_submission",
+      "submit",
+      "list_my_submissions",
+      "get_my_submission",
+      "retry",
+      "regrade",
     ],
   };
   assert.deepEqual(Object.keys(TOOLSETS), Object.keys(expected));
@@ -241,9 +299,19 @@ test("each endpoint lists exactly its toolset", async () => {
     [...(TOOLSETS["/mcp"] ?? [])].sort(),
     TOOLS.map((entry) => entry.name).sort(),
   );
+  assert.deepEqual(
+    [...(TOOLSETS["/mcp/contribute"] ?? [])].sort(),
+    CONTRIBUTOR_TOOLS.map((entry) => entry.name).sort(),
+  );
   for (const [path, names] of Object.entries(expected)) {
+    // Listing reaches no route: any valid credential lists any toolset.
     const client = await connect(path, token);
-    assert.equal(client.getInstructions(), MCP_INSTRUCTIONS);
+    assert.equal(
+      client.getInstructions(),
+      path === "/mcp/contribute"
+        ? CONTRIBUTOR_MCP_INSTRUCTIONS
+        : MCP_INSTRUCTIONS,
+    );
     const { tools } = await client.listTools();
     assert.deepEqual(
       tools.map((tool) => tool.name).sort(),
@@ -271,9 +339,10 @@ const SIGN_IN_SCOPES: Record<string, string> = {
   "/mcp":
     "workspace:read integrations:write bounties:write pricing:write specs:write sandboxes:write submissions:write offline_access",
   "/mcp/duediligence":
-    "workspace:read bounties:write pricing:write sandboxes:write submissions:write offline_access",
+    "workspace:read bounties:write pricing:write specs:write sandboxes:write submissions:write offline_access",
   "/mcp/carveout":
     "workspace:read bounties:write pricing:write sandboxes:write submissions:write offline_access",
+  "/mcp/contribute": "contributions:write offline_access",
 };
 
 test("each endpoint asks for the scopes its tools need", () => {
@@ -287,12 +356,12 @@ test("each endpoint asks for the scopes its tools need", () => {
   }
 });
 
-test("each tool declares the scope of the public route it calls", () => {
+test("each tool declares the scope and audience of the public route it calls", () => {
   // Every argument a route is built from reads as "x"; the query is dropped.
   const args = new Proxy({}, { get: () => "x" }) as Record<string, unknown>;
   const pattern = (route: string) =>
     new RegExp(`^${route.replace(/:[A-Za-z]+/g, "[^/]+")}$`);
-  for (const entry of TOOLS) {
+  for (const entry of [...TOOLS, ...CONTRIBUTOR_TOOLS]) {
     const path = entry.route(args, "org_x").split("?")[0] ?? "";
     const declared = PUBLIC_ROUTES.find(
       (route) =>
@@ -300,7 +369,15 @@ test("each tool declares the scope of the public route it calls", () => {
     );
     assert.ok(declared, `${entry.name}: ${entry.method} ${path}`);
     assert.equal(entry.scope, declared.scope, entry.name);
+    assert.equal(
+      entry.audience,
+      declared.audience ?? "workspace",
+      `${entry.name}: ${path}`,
+    );
   }
+  for (const entry of TOOLS) assert.equal(entry.audience, "workspace");
+  for (const entry of CONTRIBUTOR_TOOLS)
+    assert.equal(entry.audience, "contributor");
 });
 
 test("a tool answers the route's data, in the credential's workspace", async () => {
@@ -390,7 +467,12 @@ test("an unmounted route is a tool error too, never a crash", async () => {
 
 test("no credential is a 401 that says where to sign in", async () => {
   const { request } = setup();
-  for (const path of ["/mcp", "/mcp/duediligence", "/mcp/carveout"]) {
+  for (const path of [
+    "/mcp",
+    "/mcp/duediligence",
+    "/mcp/carveout",
+    "/mcp/contribute",
+  ]) {
     const res = await request(path, {
       method: "POST",
       headers: {
@@ -481,6 +563,7 @@ test("a run refused at the monthly token limit is a tool error saying so and whe
 /** The tools over a fake API that records each call and answers `reply`. */
 async function overFakeApi(
   reply: (path: string, init: ApiCallInit) => { status: number; body: unknown },
+  path = "/mcp",
 ) {
   const calls: Array<{ path: string; init: ApiCallInit }> = [];
   const call: ApiCall = (path, init = {}) => {
@@ -493,13 +576,14 @@ async function overFakeApi(
     return Promise.resolve(reply(path, init));
   };
   const server = new McpServer({ name: "lunox", version: "1.0.0" });
-  registerTools(server, TOOLSETS["/mcp"] ?? [], call);
+  registerTools(server, path, call, { baseUrl: BASE });
   const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
   await server.connect(serverSide);
   const client = new Client({ name: "test", version: "1.0.0" });
   await client.connect(clientSide);
-  const routed = () => calls.filter(({ path }) => path !== "/api/v1/me/orgs");
-  return { client, routed };
+  const routed = () =>
+    calls.filter((entry) => entry.path !== "/api/v1/me/orgs");
+  return { client, routed, calls };
 }
 
 test("each write tool posts to its one route, in the credential's workspace", async () => {
@@ -817,4 +901,280 @@ test("a write tool calls the API in-process with its method, body and Accept", a
   const link = await all.callTool({ name: "connect_github", arguments: {} });
   assert.equal(link.isError, true);
   await all.close();
+});
+
+test("upload_handoff checks the bounty and answers the carveout commands, sending no folder", async () => {
+  const { client, routed } = await overFakeApi(() => ({
+    status: 200,
+    body: { bounty: { id: "bty_1" } },
+  }));
+  const result = await client.callTool({
+    name: "upload_handoff",
+    arguments: {
+      bountyId: "bty_1",
+      entryPoints: ["src/fees.ts", "src/fees.ts"],
+      accept: ["tests/fee minimum.test.ts"],
+      title: "Statement fees",
+    },
+  });
+  assert.notEqual(result.isError, true);
+  // One read: the bounty, in the credential's workspace.
+  assert.deepEqual(
+    routed().map(({ path, init }) => [path, init.method]),
+    [[`/api/v1/orgs/${ORG}/bounties/bty_1`, undefined]],
+  );
+  const lines = textOf(result).split("\n");
+  assert.ok(
+    lines.includes(
+      `npx -y carveout@latest login --platform ${BASE} --org ${ORG}`,
+    ),
+    textOf(result),
+  );
+  assert.ok(
+    lines.includes(
+      `npx -y carveout@latest handoff src/fees.ts --out handoff --accept 'tests/fee minimum.test.ts' --platform ${BASE} --bounty bty_1 --title 'Statement fees'`,
+    ),
+    textOf(result),
+  );
+  assert.match(textOf(result), /receipt stays on this machine/);
+  // A bounty the workspace does not hold: the API's refusal, no command.
+  const { client: missing } = await overFakeApi(() => ({
+    status: 404,
+    body: { error: "Not found." },
+  }));
+  const refused = await missing.callTool({
+    name: "upload_handoff",
+    arguments: {
+      bountyId: "bty_9",
+      entryPoints: ["a.ts"],
+      accept: ["a.test.ts"],
+    },
+  });
+  assert.equal(refused.isError, true);
+  assert.doesNotMatch(textOf(refused), /carveout/);
+  await client.close();
+  await missing.close();
+});
+
+test("handoff commands quote what a shell would split", () => {
+  assert.equal(shellWord("src/a.ts"), "src/a.ts");
+  assert.equal(shellWord("it's"), `'it'\\''s'`);
+  assert.deepEqual(
+    handoffCommands({
+      platform: "https://platform.lunox.work",
+      organizationId: "org_1",
+      bountyId: "bty_1",
+      entryPoints: ["src/a.ts"],
+      accept: ["tests/a.test.ts"],
+      out: "out dir",
+      task: "TASK.md",
+    }),
+    [
+      "npx -y carveout@latest login --platform https://platform.lunox.work --org org_1",
+      "npx -y carveout@latest handoff src/a.ts --out 'out dir' --task TASK.md --accept tests/a.test.ts --platform https://platform.lunox.work --bounty bty_1",
+    ],
+  );
+});
+
+test("invite, regrade and take-back tools call their one route each", async () => {
+  const { client, routed } = await overFakeApi(() => ({
+    status: 201,
+    body: { ok: true },
+  }));
+  const cases: Array<{
+    name: string;
+    arguments: Record<string, unknown>;
+    path: string;
+    method?: string;
+    body?: unknown;
+  }> = [
+    {
+      name: "create_contributor_invite",
+      arguments: { versionId: "sbv_1", label: "Grace", maxClaims: 2 },
+      path: `/api/v1/orgs/${ORG}/sandboxes/versions/sbv_1/invites`,
+      method: "POST",
+      body: { label: "Grace", maxClaims: 2 },
+    },
+    {
+      name: "regrade",
+      arguments: { submissionId: "sbm_1" },
+      path: `/api/v1/orgs/${ORG}/sandboxes/submissions/sbm_1/regrade`,
+      method: "POST",
+    },
+    {
+      name: "get_submission_files",
+      arguments: { submissionId: "sbm_1" },
+      path: `/api/v1/orgs/${ORG}/sandboxes/submissions/sbm_1/files`,
+    },
+  ];
+  for (const [index, entry] of cases.entries()) {
+    const result = await client.callTool({
+      name: entry.name,
+      arguments: entry.arguments,
+    });
+    assert.notEqual(result.isError, true, entry.name);
+    const sent = routed()[index];
+    assert.equal(sent?.path, entry.path, entry.name);
+    assert.equal(sent?.init.method, entry.method, entry.name);
+    if (entry.body !== undefined)
+      assert.deepEqual(sent?.init.body, entry.body, entry.name);
+  }
+  await client.close();
+});
+
+test("contributor tools call their own routes, naming no workspace", async () => {
+  const { client, calls } = await overFakeApi(
+    () => ({ status: 202, body: { ok: true } }),
+    "/mcp/contribute",
+  );
+  const files = [{ path: "src/fees.ts", text: "export const fee = () => 25;" }];
+  const C = "/api/v1/contributions/sbv_1";
+  const cases: Array<{
+    name: string;
+    arguments: Record<string, unknown>;
+    path: string;
+    method?: string;
+    body?: unknown;
+  }> = [
+    {
+      name: "list_contributions",
+      arguments: {},
+      path: "/api/v1/contributions",
+    },
+    { name: "get_contribution", arguments: { versionId: "sbv_1" }, path: C },
+    {
+      name: "get_project_files",
+      arguments: { versionId: "sbv_1", cursor: "c.2", maxBytes: 5_000 },
+      path: `${C}/handout/files?cursor=c.2&maxBytes=5000`,
+    },
+    {
+      name: "preview_submission",
+      arguments: { versionId: "sbv_1", files },
+      path: `${C}/submissions?dryRun=1`,
+      method: "POST",
+      body: { files },
+    },
+    {
+      name: "preview_submission",
+      arguments: { versionId: "sbv_1", files, retryOf: "sbm_1" },
+      path: `${C}/submissions/sbm_1/retry?dryRun=1`,
+      method: "POST",
+      body: { files },
+    },
+    {
+      name: "submit",
+      arguments: { versionId: "sbv_1", files },
+      path: `${C}/submissions`,
+      method: "POST",
+      body: { files },
+    },
+    {
+      name: "list_my_submissions",
+      arguments: { versionId: "sbv_1" },
+      path: `${C}/submissions`,
+    },
+    {
+      name: "get_my_submission",
+      arguments: { versionId: "sbv_1", submissionId: "sbm_1" },
+      path: `${C}/submissions/sbm_1`,
+    },
+    {
+      name: "retry",
+      arguments: { versionId: "sbv_1", submissionId: "sbm_1", files },
+      path: `${C}/submissions/sbm_1/retry`,
+      method: "POST",
+      body: { files },
+    },
+    {
+      name: "regrade",
+      arguments: { versionId: "sbv_1", submissionId: "sbm_1" },
+      path: `${C}/submissions/sbm_1/regrade`,
+      method: "POST",
+    },
+  ];
+  for (const [index, entry] of cases.entries()) {
+    const result = await client.callTool({
+      name: entry.name,
+      arguments: entry.arguments,
+    });
+    assert.notEqual(result.isError, true, entry.name);
+    const sent = calls[index];
+    assert.equal(sent?.path, entry.path, entry.name);
+    assert.equal(sent?.init.method, entry.method, entry.name);
+    if (entry.body !== undefined)
+      assert.deepEqual(sent?.init.body, entry.body, entry.name);
+  }
+  // Never the workspace lookup: a contributor credential has none.
+  assert.equal(calls.length, cases.length);
+  // The rules ride in the descriptions an agent reads.
+  const { tools } = await client.listTools();
+  const submit = tools.find((tool) => tool.name === "submit");
+  assert.match(submit?.description ?? "", /one retry/);
+  assert.match(submit?.description ?? "", /not spent/);
+  assert.match(submit?.description ?? "", /never change tests\//);
+  assert.match(submit?.description ?? "", /submissions\/zip/);
+  const preview = tools.find((tool) => tool.name === "preview_submission");
+  assert.equal(preview?.annotations?.readOnlyHint, true);
+  await client.close();
+});
+
+test("a contributor token signs in at /mcp/contribute and reaches no workspace tool", async () => {
+  const { request, contributorToken, connect, apiToken, oauth } = setup();
+  const secret = await contributorToken();
+  // Valid, so no challenge: the endpoint lists its tools.
+  const own = await connect("/mcp/contribute", secret);
+  const { tools } = await own.listTools();
+  assert.ok(tools.some((tool) => tool.name === "submit"));
+  await own.close();
+  // At a workspace endpoint, each tool's call is refused by the guard.
+  const elsewhere = await connect("/mcp", secret);
+  const workspaces = await elsewhere.callTool({
+    name: "list_workspaces",
+    arguments: {},
+  });
+  assert.equal(workspaces.isError, true);
+  assert.equal(
+    (JSON.parse(textOf(workspaces)) as { code: string }).code,
+    "contributor_credential",
+  );
+  await elsewhere.close();
+  // A contributor OAuth grant is the same kind of credential.
+  const granted = await connect(
+    "/mcp/carveout",
+    oauth(["contributions:write", "offline_access"], null),
+  );
+  const bounties = await granted.callTool({
+    name: "list_bounties",
+    arguments: {},
+  });
+  assert.equal(
+    (JSON.parse(textOf(bounties)) as { code: string }).code,
+    "contributor_credential",
+  );
+  await granted.close();
+  // A workspace token at the contributor endpoint: no contribution answers it.
+  const workspace = await connect(
+    "/mcp/contribute",
+    await apiToken(["workspace:read"]),
+  );
+  const listed = await workspace.callTool({
+    name: "list_contributions",
+    arguments: {},
+  });
+  assert.equal(listed.isError, true);
+  await workspace.close();
+  // An unknown lnxc_ value is a 401 that says where to sign in again.
+  const res = await request("/mcp/contribute", {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${generateContributorSecret()}`,
+      "content-type": "application/json",
+    },
+    body: "{}",
+  });
+  assert.equal(res.status, 401);
+  assert.match(
+    res.headers.get("www-authenticate") ?? "",
+    /oauth-protected-resource\/mcp\/contribute", scope="contributions:write offline_access", error="invalid_token"/,
+  );
 });

@@ -13,6 +13,19 @@ const claim = {
   repositoryFullName: "acme/shop",
   branch: "lunox/sbm_1",
   openedBy: "user_1",
+  repoId: "ghr_1",
+  mergeWhen: "open" as const,
+};
+/** What an opened row holds of its pull request before anything is read back. */
+const followed = {
+  pullRequestState: "open",
+  ciState: "pending",
+  ciSummary: null,
+  ciHeadSha: "beef",
+  ciCheckedAt: null,
+  mergedCommitSha: null,
+  mergedAt: null,
+  mergeError: null,
 };
 const opened = {
   commitSha: "beef",
@@ -29,13 +42,22 @@ const pending = {
   pullRequestNumber: null,
   pullRequestUrl: null,
   createdAt: at,
+  ...followed,
+  ciHeadSha: null,
 };
-const row = { ...pending, status: "opened", claimedAt: null, ...opened };
+const row = {
+  ...pending,
+  status: "opened",
+  claimedAt: null,
+  ...opened,
+  ciHeadSha: "beef",
+};
 const stored = {
   id: "smg_1",
   ...claim,
   ...opened,
   createdAt: at.toISOString(),
+  ...followed,
 };
 const store = (responses: unknown[][]) => {
   const made = createSequencedFakeDb(responses);
@@ -62,7 +84,9 @@ test("a merge-back is claimed pending before GitHub is asked, one claim per subm
   assert.deepEqual(Object.keys(insert?.conflictSet ?? {}).sort(), [
     "branch",
     "claimedAt",
+    "mergeWhen",
     "openedBy",
+    "repoId",
     "repositoryFullName",
   ]);
   assert.ok(MERGE_CLAIM_LEASE_MS >= 60_000);
@@ -91,6 +115,7 @@ test("a claim is finished with what GitHub opened, or released for a retry", asy
     status: "opened",
     claimedAt: null,
     ...opened,
+    ciHeadSha: "beef",
   });
   // Finished already (a lapsed claim taken over): the first record stands.
   assert.deepEqual(
@@ -126,4 +151,119 @@ test("only an opened merge-back is read back by the owner", async () => {
   assert.equal(none.calls.length, 0);
   // The default clock is the process's.
   assert.ok(createSubmissionMergeStore(createSequencedFakeDb([]).db));
+});
+
+test("an open pull request is followed: merge when CI passes, by repository, and the sweep's due rows", async () => {
+  const asked = store([[{ ...row, mergeWhen: "ci_passes" }]]);
+  assert.deepEqual(
+    await asked.store.setMergeWhen("org_1", "sbm_1", "ci_passes"),
+    { ...stored, mergeWhen: "ci_passes" },
+  );
+  assert.deepEqual(asked.calls[0]?.values, { mergeWhen: "ci_passes" });
+  assert.equal(asked.calls[0]?.filtered, true);
+  // Merged or closed already: nothing to ask.
+  assert.equal(
+    await store([[]]).store.setMergeWhen("org_1", "sbm_1", "ci_passes"),
+    null,
+  );
+
+  const byRepo = store([[row, pending]]);
+  assert.deepEqual(await byRepo.store.openForRepo("org_1", "ghr_1"), [stored]);
+  assert.equal(byRepo.calls[0]?.filtered, true);
+
+  const due = store([[{ ...row, organizationId: "org_2" }, pending]]);
+  assert.deepEqual(
+    await due.store.dueForCi(at, new Date(at.getTime() - 86_400_000), 50),
+    [{ organizationId: "org_2", merge: stored }],
+  );
+  assert.equal(due.calls[0]?.limited, 50);
+  assert.equal(due.calls[0]?.filtered, true);
+});
+
+test("a CI read and a merge are recorded only on a pull request still open", async () => {
+  const summary = {
+    total: 2,
+    passed: 1,
+    failed: 1,
+    pending: 0,
+    failing: ["e2e"],
+    detailsUrl: "https://ci.test/e2e",
+  };
+  const read = {
+    ciState: "failing" as const,
+    ciSummary: summary,
+    ciHeadSha: "cafe",
+    ciCheckedAt: at,
+  };
+  const recorded = store([
+    [
+      {
+        ...row,
+        ciState: "failing",
+        ciSummary: summary,
+        ciHeadSha: "cafe",
+        ciCheckedAt: at,
+      },
+    ],
+  ]);
+  assert.deepEqual(await recorded.store.recordCi("org_1", "sbm_1", read), {
+    ...stored,
+    ciState: "failing",
+    ciSummary: summary,
+    ciHeadSha: "cafe",
+    ciCheckedAt: at.toISOString(),
+  });
+  // An absent refusal is kept; a given one (or null) is written.
+  assert.deepEqual(recorded.calls[0]?.values, read);
+  const refused = store([[{ ...row, mergeError: "Review required." }]]);
+  assert.equal(
+    (
+      await refused.store.recordCi("org_1", "sbm_1", {
+        ...read,
+        mergeError: "Review required.",
+      })
+    )?.mergeError,
+    "Review required.",
+  );
+  assert.equal(refused.calls[0]?.values?.["mergeError"], "Review required.");
+  assert.equal(await store([[]]).store.recordCi("org_1", "sbm_1", read), null);
+
+  const ended = {
+    pullRequestState: "merged" as const,
+    mergedCommitSha: "landed",
+    mergedAt: at,
+    checkedAt: at,
+  };
+  const merged = store([
+    [
+      {
+        ...row,
+        pullRequestState: "merged",
+        mergedCommitSha: "landed",
+        mergedAt: at,
+        ciCheckedAt: at,
+      },
+    ],
+  ]);
+  assert.deepEqual(
+    await merged.store.recordPullRequest("org_1", "sbm_1", ended),
+    {
+      ...stored,
+      pullRequestState: "merged",
+      mergedCommitSha: "landed",
+      mergedAt: at.toISOString(),
+      ciCheckedAt: at.toISOString(),
+    },
+  );
+  assert.deepEqual(merged.calls[0]?.values, {
+    pullRequestState: "merged",
+    mergedCommitSha: "landed",
+    mergedAt: at,
+    ciCheckedAt: at,
+  });
+  // Seen merged already by another process: it reports, this one does not.
+  assert.equal(
+    await store([[]]).store.recordPullRequest("org_1", "sbm_1", ended),
+    null,
+  );
 });

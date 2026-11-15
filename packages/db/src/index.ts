@@ -123,6 +123,10 @@ export {
   MERGE_CLAIM_LEASE_MS,
 } from "./submission-merges.js";
 export type {
+  MergeCiRead,
+  MergeCiState,
+  MergeEnded,
+  MergeWhen,
   NewSubmissionMergeClaim,
   OpenedSubmissionMerge,
   StoredSubmissionMerge,
@@ -198,6 +202,13 @@ export type {
   ResolvedApiToken,
   StoredApiToken,
 } from "./api-tokens.js";
+export { createContributorTokenStore } from "./contributor-tokens.js";
+export type {
+  ContributorTokenStore,
+  NewContributorToken,
+  ResolvedContributorToken,
+  StoredContributorToken,
+} from "./contributor-tokens.js";
 export { AUDIT_RETENTION_DAYS, createAuditStore } from "./audit.js";
 export type {
   AuditEntry,
@@ -229,6 +240,7 @@ export type {
 } from "./idempotency.js";
 export { createOAuthGrantStore } from "./oauth-grants.js";
 export type {
+  GrantOwner,
   OAuthGrant,
   OAuthGrantStore,
   ResolvedOAuthAccessToken,
@@ -344,6 +356,14 @@ export type {
   PublicationEvidence,
   UpdateVersionResult,
 } from "./sandboxes.js";
+export { createContributorStore } from "./contributors.js";
+export type {
+  ClaimInviteResult,
+  ContributorStore,
+  NewContributorInvite,
+  StoredContributorAssignment,
+  StoredContributorInvite,
+} from "./contributors.js";
 export { createSubmissionStore } from "./submissions.js";
 export type {
   CreateSubmissionResult,

@@ -6,17 +6,24 @@
  * One whose carry back to the repository's names failed its grading run's
  * check stays passed, says so, and offers no merge.
  * One whose grading could not run says why and is graded again from here
- * with the same files, which spends no retry.
+ * with the same files, which spends no retry. An invited contributor's
+ * submission names them.
  * Whether a merge would be refused is read first (`mergeBackStatus`): the
  * button is disabled with the reason, and a GitHub App that has not
  * accepted the permissions merge-back needs links to where an admin
  * accepts them. Read again when the person comes back to the tab.
+ * A pull request can also be opened to merge when the repository's CI
+ * passes, which needs the App to read checks and statuses; once open, its
+ * row says where its CI and the pull request stand, read back by the
+ * platform, and is read again while either may still move.
+ * A version with no repository (generated or uploaded) has nothing to
+ * merge into: a pass offers its changed files as a `.zip` instead.
  */
 
 import { ApiError } from "@sandbox-factory/client";
 import type { SubmissionDto } from "@sandbox-factory/shared";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { GitPullRequest, RotateCcw } from "lucide-react";
+import { Download, GitMerge, GitPullRequest, RotateCcw } from "lucide-react";
 import { useState } from "react";
 
 import { Badge } from "@/components/ui/badge";
@@ -27,6 +34,45 @@ import { dateTime } from "../../lib/format";
 
 /** How often a list with a submission still being graded is read again. */
 const GRADING_POLL_MS = 10_000;
+/** How often a list with an open pull request whose CI may move is read again. */
+const CI_POLL_MS = 30_000;
+
+type Merge = NonNullable<SubmissionDto["merge"]>;
+
+/** Where an opened pull request stands, as its row says it. */
+export function mergeLabel(merge: Merge): string {
+  if (merge.pullRequestState === "merged")
+    return merge.mergedCommitSha === null
+      ? "Merged"
+      : `Merged as ${merge.mergedCommitSha.slice(0, 7)}`;
+  if (merge.pullRequestState === "closed") return "Closed without merging";
+  const summary = merge.ci.summary;
+  const ci = {
+    pending:
+      summary === null || summary.total === 0
+        ? "CI not started"
+        : `CI running (${summary.passed}/${summary.total} passed)`,
+    passing: `CI passing${summary === null ? "" : ` (${summary.passed}/${summary.total})`}`,
+    failing: `CI failing${
+      summary === null || summary.failing.length === 0
+        ? ""
+        : `: ${summary.failing.join(", ")}`
+    }`,
+    none: "No CI checks reported",
+    unknown: "CI not readable: the GitHub App needs checks and statuses read",
+  }[merge.ci.state];
+  return merge.when === "ci_passes" &&
+    merge.ci.state !== "failing" &&
+    merge.ci.state !== "unknown"
+    ? `${ci} · merges when CI passes`
+    : ci;
+}
+
+/** Whether an open pull request's row may still change: read it again. */
+const moving = (merge: Merge | null) =>
+  merge !== null &&
+  merge.pullRequestState === "open" &&
+  (merge.when === "ci_passes" || merge.ci.state === "pending");
 
 const VERDICT_LABELS: Record<NonNullable<SubmissionDto["verdict"]>, string> = {
   passed: "Passed",
@@ -61,7 +107,10 @@ export function SandboxSubmissions({
 }: {
   organizationId: string;
   versionId: string;
-  /** Whether the version was sliced from a repository and the caller may merge. */
+  /**
+   * Whether the version was sliced from a repository and the caller may
+   * merge; otherwise a pass offers its files to download.
+   */
   canMerge: boolean;
 }) {
   const userId = useUserId();
@@ -76,12 +125,16 @@ export function SandboxSubmissions({
     queryKey: key,
     queryFn: ({ signal }) =>
       clients.sandbox.sandboxSubmissions(organizationId, versionId, signal),
-    refetchInterval: (query) =>
-      (query.state.data ?? []).some(
-        (item) => item.status === "queued" || item.status === "running",
+    refetchInterval: (query) => {
+      const listed = query.state.data ?? [];
+      if (
+        listed.some(
+          (item) => item.status === "queued" || item.status === "running",
+        )
       )
-        ? GRADING_POLL_MS
-        : false,
+        return GRADING_POLL_MS;
+      return listed.some((item) => moving(item.merge)) ? CI_POLL_MS : false;
+    },
   });
   const statusKey = queryKeys.resource(
     userId,
@@ -102,7 +155,11 @@ export function SandboxSubmissions({
     mergeStatus.data === undefined || mergeStatus.data.code === null
       ? null
       : mergeStatus.data;
+  /** What reading CI back still needs; merging on CI is offered only without. */
+  const ciMissing = mergeStatus.data?.ciMissing ?? [];
+  const ciAcceptUrl = mergeStatus.data?.acceptUrl ?? null;
   const [merging, setMerging] = useState<string | null>(null);
+  const [downloading, setDownloading] = useState<string | null>(null);
   const [regrading, setRegrading] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -127,13 +184,34 @@ export function SandboxSubmissions({
       setBusy(null);
     }
   }
-  const merge = (submissionId: string) =>
+  const merge = (submissionId: string, when: "open" | "ci_passes" = "open") =>
     act(submissionId, setMerging, async () => {
       try {
-        await clients.sandbox.mergeSubmission(organizationId, submissionId);
+        await clients.sandbox.mergeSubmission(
+          organizationId,
+          submissionId,
+          when === "open" ? undefined : { when },
+        );
       } finally {
         await queryClient.invalidateQueries({ queryKey: statusKey });
       }
+    });
+  /** Saves a pass's changed files as the `.zip` the API names. */
+  const download = (submissionId: string) =>
+    act(submissionId, setDownloading, async () => {
+      const { blob, filename } = await clients.sandbox.submissionFilesArchive(
+        organizationId,
+        submissionId,
+      );
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = filename;
+      document.body.append(link);
+      link.click();
+      link.remove();
+      // After the click has handed the file to the browser.
+      setTimeout(() => URL.revokeObjectURL(url), 0);
     });
   const regrade = (submissionId: string) =>
     act(submissionId, setRegrading, () =>
@@ -141,12 +219,17 @@ export function SandboxSubmissions({
     );
 
   const list = submissions.data ?? [];
+  const passing = (item: SubmissionDto) =>
+    item.status !== "errored" && item.verdict === "passed";
   const mergeable = (item: SubmissionDto) =>
     canMerge &&
     item.merge === null &&
-    item.status !== "errored" &&
-    item.verdict === "passed" &&
+    passing(item) &&
     item.carryBack !== "failed";
+  const ciTitle =
+    ciMissing.length > 0
+      ? `The GitHub App cannot read this repository's CI yet (missing ${ciMissing.join(", ")}).`
+      : undefined;
   if (submissions.isPending)
     return (
       <p className="text-muted-foreground text-sm">Reading submissions…</p>
@@ -160,7 +243,8 @@ export function SandboxSubmissions({
   if (list.length === 0)
     return (
       <p className="text-muted-foreground text-sm">
-        No submissions yet. Published versions take them over the API and MCP.
+        No submissions yet. Invited contributors upload theirs from their
+        contribution page; the workspace submits over the API and MCP.
       </p>
     );
   return (
@@ -187,6 +271,14 @@ export function SandboxSubmissions({
                   </span>
                 )}
               </div>
+              {item.contributor !== null && (
+                <span className="text-xs" data-testid="submission-contributor">
+                  By {item.contributor.name}{" "}
+                  <span className="text-muted-foreground">
+                    {item.contributor.email} · invited contributor
+                  </span>
+                </span>
+              )}
               <span className="text-muted-foreground text-xs">
                 {item.public !== null && item.hidden !== null
                   ? `Public ${item.public.passed}/${item.public.total} · Hidden ${item.hidden.passed}/${item.hidden.total}`
@@ -208,6 +300,7 @@ export function SandboxSubmissions({
                   Grading it again uses the same files and keeps its retry.
                 </span>
               )}
+              {item.merge !== null && <MergeState merge={item.merge} />}
               {item.refused.map((refusal) => (
                 <span
                   key={`${refusal.path}:${refusal.reason}`}
@@ -228,20 +321,37 @@ export function SandboxSubmissions({
                 {regrading === item.id ? "Queueing…" : "Grade again"}
               </Button>
             ) : item.merge !== null ? (
-              <Button asChild variant="outline" size="sm">
-                <a
-                  href={item.merge.pullRequestUrl}
-                  target="_blank"
-                  rel="noopener"
-                >
-                  <GitPullRequest />
-                  Pull request #{item.merge.pullRequestNumber}
-                </a>
-              </Button>
-            ) : (
-              mergeable(item) && (
+              <div className="flex flex-wrap items-center gap-2">
+                {item.merge.pullRequestState === "open" &&
+                  item.merge.when === "open" &&
+                  canMerge && (
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      disabled={merging !== null || ciMissing.length > 0}
+                      title={ciTitle}
+                      onClick={() => void merge(item.id, "ci_passes")}
+                    >
+                      <GitMerge />
+                      {merging === item.id ? "Saving…" : "Merge when CI passes"}
+                    </Button>
+                  )}
+                <Button asChild variant="outline" size="sm">
+                  <a
+                    href={item.merge.pullRequestUrl}
+                    target="_blank"
+                    rel="noopener"
+                  >
+                    <GitPullRequest />
+                    Pull request #{item.merge.pullRequestNumber}
+                  </a>
+                </Button>
+              </div>
+            ) : mergeable(item) ? (
+              <div className="flex flex-wrap items-center gap-2">
                 <Button
                   size="sm"
+                  variant="outline"
                   disabled={merging !== null || blocked !== null}
                   title={blocked?.error ?? undefined}
                   aria-describedby={
@@ -251,6 +361,40 @@ export function SandboxSubmissions({
                 >
                   <GitPullRequest />
                   {merging === item.id ? "Opening…" : "Open pull request"}
+                </Button>
+                <Button
+                  size="sm"
+                  disabled={
+                    merging !== null || blocked !== null || ciMissing.length > 0
+                  }
+                  title={blocked?.error ?? ciTitle}
+                  aria-describedby={
+                    blocked !== null
+                      ? "merge-back-blocked"
+                      : ciMissing.length > 0
+                        ? "merge-back-ci"
+                        : undefined
+                  }
+                  onClick={() => void merge(item.id, "ci_passes")}
+                >
+                  <GitMerge />
+                  Open and merge when CI passes
+                </Button>
+              </div>
+            ) : (
+              !canMerge &&
+              passing(item) && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={downloading !== null}
+                  title="The files this submission changed, as a .zip, never a hidden test."
+                  onClick={() => void download(item.id)}
+                >
+                  <Download />
+                  {downloading === item.id
+                    ? "Preparing…"
+                    : "Download the passing files"}
                 </Button>
               )
             )}
@@ -281,11 +425,72 @@ export function SandboxSubmissions({
           )}
         </p>
       )}
+      {blocked === null &&
+        ciMissing.length > 0 &&
+        list.some(
+          (item) =>
+            mergeable(item) ||
+            (item.merge !== null && item.merge.pullRequestState === "open"),
+        ) && (
+          <p
+            id="merge-back-ci"
+            className="text-muted-foreground text-xs"
+            data-testid="merge-back-ci"
+          >
+            The GitHub App cannot read this repository&apos;s CI yet (missing{" "}
+            {ciMissing.join(", ")}), so pull requests open without it and
+            nothing merges on CI.
+            {ciAcceptUrl !== null && (
+              <>
+                {" "}
+                <a
+                  href={ciAcceptUrl}
+                  target="_blank"
+                  rel="noopener"
+                  className="text-foreground underline underline-offset-2"
+                >
+                  Accept new permissions on GitHub
+                </a>
+              </>
+            )}
+          </p>
+        )}
       {error !== null && (
         <p role="alert" className="text-destructive text-xs">
           {error}
         </p>
       )}
     </div>
+  );
+}
+
+/** An opened pull request's state, its CI's page, and a merge GitHub refused. */
+function MergeState({ merge }: { merge: Merge }) {
+  const open = merge.pullRequestState === "open";
+  const details = open ? (merge.ci.summary?.detailsUrl ?? null) : null;
+  return (
+    <>
+      <span className="text-xs" data-testid="submission-merge-state">
+        {mergeLabel(merge)}
+        {details !== null && (
+          <>
+            {" "}
+            <a
+              href={details}
+              target="_blank"
+              rel="noopener"
+              className="text-muted-foreground underline underline-offset-2"
+            >
+              details
+            </a>
+          </>
+        )}
+      </span>
+      {open && merge.mergeError !== null && (
+        <span className="text-muted-foreground text-xs">
+          GitHub refused the merge: {merge.mergeError}
+        </span>
+      )}
+    </>
   );
 }

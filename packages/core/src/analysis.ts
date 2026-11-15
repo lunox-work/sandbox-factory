@@ -258,8 +258,11 @@ export const SLICE_TOOL_VERSION = "slice@6+carveout@0.3.1";
  * tree and commands did not change; a draft an older builder built is built
  * again. Also: confirmed decisions are quoted to the hidden-tests and
  * reference agents and carried in `TASK.md`, and the manifest records the
- * publication gates (`PublicationGates`); one number for both, since
- * neither had shipped at @13.
+ * publication gates (`PublicationGates`), and `TASK.md` and the README say
+ * to submit by uploading the zipped folder on the contribution page or with
+ * the VS Code extension's Lunox: Submit (an agent: `/mcp/contribute` or a
+ * contributor token on the zip route); one number for all, since none had
+ * shipped at @13.
  */
 export const SANDBOX_BUILD_RUN_VERSION = "sandbox_build@13";
 /** Bumped when the scope agent's tools, prompt or proposal shape change meaning. */
@@ -270,7 +273,8 @@ export const FIXTURES_TOOL_VERSION = "fixtures@4";
  * Bumped when the starter agent's tools, prompt, set or project change meaning.
  * @6: the project carries the contributor guide and source maps, as
  * `sandbox_build@13`, with its confirmed decisions quoted to the agent and
- * its publication gates recorded, folded into the same unshipped number.
+ * its publication gates recorded and the upload and extension wording,
+ * folded into the same unshipped number.
  */
 export const STARTER_TOOL_VERSION = "sandbox_starter@6";
 /**

@@ -2,10 +2,15 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { createdApiTokenResponseSchema } from "@sandbox-factory/shared";
-import { API_SCOPES, isApiScope } from "sandbox-factory";
+import { API_SCOPES, isApiScope, isContributorScope } from "sandbox-factory";
 import { z } from "zod";
 
+import {
+  generateContributorSecret,
+  hashSecret,
+} from "../src/api-tokens/secret.js";
 import { admit, DEVICE_ROUTES } from "../src/credentials.js";
+import type { Principal } from "../src/principal.js";
 import {
   buildOpenApiDocument,
   openApiPath,
@@ -16,6 +21,7 @@ import { createApp, type AppOptions } from "../src/routes.js";
 import {
   ada,
   fakeAuth,
+  memoryContributorTokens,
   memoryTokens,
   ORG,
   roleStore,
@@ -40,12 +46,22 @@ test("every registry entry declares its scope, request and response schemas", ()
     assert.equal(seen.has(key), false, `${key} is listed twice`);
     seen.add(key);
     assert.match(route.path, /^\/api\/v1\//, key);
-    // Only a self route goes without a scope; it names no resource.
+    // Only a self route goes without a scope; it names no resource. A
+    // contributor route takes the contributor scope, any other an API scope.
+    const audience = route.audience ?? "workspace";
     assert.equal(
       route.scope === null
-        ? /\/self\//.test(route.path)
-        : isApiScope(route.scope),
+        ? /\/self\//.test(route.path) && audience === "any"
+        : audience === "contributor"
+          ? isContributorScope(route.scope)
+          : audience === "workspace" && isApiScope(route.scope),
       true,
+      key,
+    );
+    // The contributor routes are exactly `/contributions` and the claim.
+    assert.equal(
+      audience === "contributor",
+      /^\/api\/v1\/(contributions(\/|$)|invites\/claim$)/.test(route.path),
       key,
     );
     assert.ok(route.summary.length > 0, key);
@@ -54,7 +70,11 @@ test("every registry entry declares its scope, request and response schemas", ()
     if (route.method === "GET" || route.method === "DELETE")
       assert.equal(route.request, null, `${key} cannot take a body`);
     if (route.request !== null)
-      assert.ok(route.request instanceof z.ZodType, `${key} request`);
+      assert.ok(
+        route.request instanceof z.ZodType ||
+          /^application\/zip$/.test(route.request.file),
+        `${key} request`,
+      );
     const { response } = route;
     if ("file" in response) {
       // A file to save is only ever read.
@@ -68,7 +88,11 @@ test("every registry entry declares its scope, request and response schemas", ()
     }
     // Reads need only `workspace:read`, but for the one that hands a
     // contributor's work back (`submissions:write`); writes never take it.
-    if (route.scope !== null && !WRITE_SCOPED_READS.has(key))
+    if (
+      route.scope !== null &&
+      audience === "workspace" &&
+      !WRITE_SCOPED_READS.has(key)
+    )
       assert.equal(
         route.scope === "workspace:read",
         route.method === "GET" && response.status !== 302,
@@ -128,9 +152,15 @@ test("GET /api/v1/openapi.json is served without a credential, valid and whole",
     const operation =
       document.paths[openApiPath(route.path)]?.[route.method.toLowerCase()];
     assert.ok(operation, `${route.method} ${route.path} is missing`);
-    assert.deepEqual(operation.security, [
-      { apiToken: route.scope === null ? [] : [route.scope] },
-    ]);
+    const scopes = route.scope === null ? [] : [route.scope];
+    assert.deepEqual(
+      operation.security,
+      route.audience === "any"
+        ? [{ apiToken: scopes }, { contributorToken: scopes }]
+        : route.audience === "contributor"
+          ? [{ contributorToken: scopes }]
+          : [{ apiToken: scopes }],
+    );
     assert.equal(
       operations.has(operation.operationId),
       false,
@@ -201,6 +231,19 @@ test("the document describes bodies, queries, redirects and removals", () => {
       ?.content,
     { "application/zip": { schema: { type: "string", format: "binary" } } },
   );
+  // A zipped folder is a binary body, not JSON, and says how to preview.
+  const zipped =
+    document.paths["/api/v1/contributions/{vid}/submissions/zip"]?.["post"];
+  assert.deepEqual(
+    (zipped?.["requestBody"] as { content: unknown } | undefined)?.content,
+    { "application/zip": { schema: { type: "string", format: "binary" } } },
+  );
+  assert.ok(
+    (zipped?.["parameters"] as Array<{ name: string }>).some(
+      ({ name }) => name === "dryRun",
+    ),
+  );
+  assert.equal(zipped?.["x-audience"], "contributor");
   assert.equal(
     operationId({
       method: "GET",
@@ -280,14 +323,75 @@ function spreadable(...keys: string[]): unknown {
   );
 }
 
+test("a workspace credential reaches no contributor route, a contributor credential no workspace route", () => {
+  const workspace: Principal = {
+    user: ada,
+    organizationId: ORG,
+    scopes: [...API_SCOPES],
+    via: "token",
+    credentialId: "tok_1",
+    role: "owner",
+  };
+  const contributor: Principal = {
+    user: ada,
+    organizationId: null,
+    scopes: ["contributions:write"],
+    via: "contributor",
+    credentialId: "ctk_1",
+    contributor: true,
+  };
+  const grant: Principal = {
+    ...contributor,
+    via: "oauth",
+    credentialId: "at_1",
+  };
+  for (const route of PUBLIC_ROUTES) {
+    const key = `${route.method} ${route.path}`;
+    const audience = route.audience ?? "workspace";
+    const asWorkspace = admit(workspace, route);
+    const asContributor = admit(contributor, route);
+    if (audience === "contributor")
+      assert.equal(asWorkspace?.code, "workspace_credential", key);
+    else assert.equal(asWorkspace, undefined, key);
+    if (audience === "workspace")
+      assert.equal(asContributor?.code, "contributor_credential", key);
+    else assert.equal(asContributor, undefined, key);
+    assert.deepEqual(admit(grant, route), asContributor, key);
+  }
+  // Scopes never widen it: a contributor credential holding every API
+  // scope still reaches no workspace route.
+  const widened = { ...contributor, scopes: [...API_SCOPES] };
+  assert.equal(
+    admit(widened, { method: "GET", path: "/api/v1/orgs/:orgId" })?.code,
+    "contributor_credential",
+  );
+  // And a contributor credential without its scope reaches nothing of its own.
+  assert.equal(
+    admit(
+      { ...contributor, scopes: [] },
+      { method: "GET", path: "/api/v1/contributions" },
+    )?.code,
+    "insufficient_scope",
+  );
+});
+
 test("no route outside the registry answers a token, and every entry is a route", async () => {
   const stub = anything();
   const tokens = memoryTokens();
+  const contributorTokens = memoryContributorTokens();
+  const contributorSecret = generateContributorSecret();
+  await contributorTokens.create(ada.id, {
+    name: "Editor",
+    prefix: contributorSecret.slice(0, 13),
+    hash: hashSecret(contributorSecret),
+    expiresAt: null,
+  });
   const server = createApp({
     corsOrigins: [],
     auth: fakeAuth(),
     organizations: roleStore({ [`${ada.id}:${ORG}`]: "owner" }),
     apiTokens: tokens,
+    contributorTokens,
     emails: stub as AppOptions["emails"],
     profiles: stub as AppOptions["profiles"],
     jira: spreadable(
@@ -356,7 +460,34 @@ test("no route outside the registry answers a token, and every entry is a route"
       "not_public",
       key,
     );
+    // Nor a contributor token.
+    const contributorRes = await server.request(url, {
+      method,
+      headers: { authorization: `Bearer ${contributorSecret}` },
+    });
+    assert.equal(contributorRes.status, 403, key);
     refused += 1;
+  }
+  // Through the whole app: each registry route refuses the other kind.
+  for (const route of PUBLIC_ROUTES) {
+    const audience = route.audience ?? "workspace";
+    if (audience === "any") continue;
+    const url = route.path
+      .replace(":orgId", ORG)
+      .replace(/:[A-Za-z]+(\{[^}]*\})?/g, "x1");
+    const other = audience === "workspace" ? contributorSecret : secret;
+    const res = await server.request(url, {
+      method: route.method,
+      headers: { authorization: `Bearer ${other}` },
+    });
+    assert.equal(res.status, 403, `${route.method} ${route.path}`);
+    assert.equal(
+      ((await res.json()) as { code: string }).code,
+      audience === "workspace"
+        ? "contributor_credential"
+        : "workspace_credential",
+      `${route.method} ${route.path}`,
+    );
   }
   // The private surface is most of the API; a handful would mean the
   // modules did not mount.

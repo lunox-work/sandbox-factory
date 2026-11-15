@@ -180,6 +180,18 @@ afterEach(() => {
 test("home has no trail", () => {
   // A lone crumb reading "Home" on the home screen is chrome, not navigation.
   expect(trailFor("home")).toEqual([]);
+  // A contributor's pages are under no workspace.
+  expect(trailFor("contributions").map((c) => c.label)).toEqual([
+    "Home",
+    "Contributions",
+  ]);
+  expect(
+    trailFor("contribution", undefined, undefined, undefined, "Fees").map(
+      (c) => c.label,
+    ),
+  ).toEqual(["Home", "Contributions", "Fees"]);
+  expect(trailFor("contribution").at(-1)?.label).toBe("Contribution");
+  expect(trailFor("invite").map((c) => c.label)).toEqual(["Home", "Invite"]);
 });
 
 test("each screen's trail names every step above it", () => {

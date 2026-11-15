@@ -19,6 +19,7 @@ export * from "./round-trip.js";
 export * from "./secrets.js";
 export * from "./expression.js";
 export * from "./fixtures.js";
+export * from "./folder.js";
 export * from "./grading.js";
 export * from "./guide.js";
 export * from "./layout.js";

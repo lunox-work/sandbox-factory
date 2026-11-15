@@ -3,11 +3,16 @@
  * after it is answered.
  *
  * Recorded: every POST, PUT, PATCH and DELETE a machine credential makes
- * (`token`, `oauth`, `device`), refusals included, and a person's session
- * managing credentials or webhooks (`MANAGEMENT`). Each entry names the
- * credential, the person, the route's pattern (never the URL, so no query
- * string), the resource the path names, the status and the request id.
- * Never a body or a secret.
+ * (`token`, `oauth`, `device`, `contributor`), refusals included, and a
+ * person's session
+ * managing credentials, webhooks or contributors (`MANAGEMENT`). Each entry
+ * names the credential, the person, the route's pattern (never the URL, so
+ * no query string), the resource the path names, the status and the
+ * request id.
+ * Never a body or a secret. A contributor credential has no workspace of
+ * its own: its entry is the workspace whose version it acted on, which the
+ * contributor route notes (`auditOrganizationId`); a refusal before that
+ * names none and is not recorded.
  *
  * Mounted on `/api/v1/*` before the credential guard, so it sees the
  * guard's refusals of a bound credential too (the guard sets the principal
@@ -32,9 +37,12 @@ const MUTATING: ReadonlySet<string> = new Set([
   "DELETE",
 ]);
 
-/** What a person's session does that is recorded too. */
+/**
+ * What a person's session does that is recorded too: credentials, webhooks,
+ * and who outside the workspace may work on its versions.
+ */
 const MANAGEMENT =
-  /^\/api\/v1\/orgs\/:orgId\/(tokens|oauth\/grants|webhooks)(\/|$)/;
+  /^\/api\/v1\/orgs\/:orgId\/(tokens|oauth\/grants|webhooks|sandboxes\/versions\/:vid\/invites|sandboxes\/invites|sandboxes\/contributors)(\/|$)/;
 
 /**
  * The resource a request's path names: its last parameter other than the
@@ -72,10 +80,11 @@ export function auditTrail(options: {
     if (principal === undefined || route === undefined) return;
     if (principal.via === "session" && !MANAGEMENT.test(route.path)) return;
     const member = c.get("member") as AuthVariables["member"] | undefined;
+    const noted = c.get("auditOrganizationId") as string | undefined;
     const organizationId =
-      member?.organizationId ?? principal.organizationId ?? null;
+      member?.organizationId ?? principal.organizationId ?? noted ?? null;
     if (organizationId === null) return;
-    const noted = c.get("auditResourceId") as string | undefined;
+    const resource = c.get("auditResourceId") as string | undefined;
     try {
       await options.audit.record(organizationId, {
         via: principal.via satisfies AuditVia,
@@ -84,7 +93,7 @@ export function auditTrail(options: {
         userId: principal.user.id,
         method: c.req.method,
         route: route.path,
-        resourceId: noted ?? pathResource(route.path, c.req.path),
+        resourceId: resource ?? pathResource(route.path, c.req.path),
         status: c.res.status,
         requestId: c.get("requestId"),
       });

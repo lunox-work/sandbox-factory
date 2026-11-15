@@ -12,21 +12,31 @@
  * - `oauth`: an OAuth access token (`lnxat_…`) from the provider in
  *   `oauth/provider.ts`. Resolves like `token`: the organization and scopes
  *   its grant was consented to, acting as the person who consented while
- *   they stay owner or admin there.
+ *   they stay owner or admin there. A grant made as a contributor binds no
+ *   organization and resolves like `contributor` instead (`contributor`).
+ * - `contributor`: a contributor token (`lnxc_…`), a person's own. No
+ *   organization and no role: it acts as that person on the versions they
+ *   were invited to, which their assignments decide, route by route.
  *
- * Bound credentials (`token`, `oauth`) reach only the routes the public
- * registry declares, with the scope declared there; see `credentials.ts`.
+ * Bound credentials (`token`, `oauth`, `contributor`) reach only the routes
+ * the public registry declares, with the scope declared there; a
+ * contributor credential only the contributor routes, a workspace one only
+ * the workspace's (`credentials.ts`).
  */
 
-import { API_SCOPES, type ApiScope } from "sandbox-factory";
+import { API_SCOPES, type CredentialScope } from "sandbox-factory";
 
-export type CredentialKind = "session" | "token" | "oauth" | "device";
+export type CredentialKind =
+  "session" | "token" | "oauth" | "device" | "contributor";
 
 export interface Principal {
   readonly user: { id: string; email: string; name: string };
-  /** The organization a bound credential belongs to; null for a session. */
+  /**
+   * The organization a workspace credential belongs to; null for a session
+   * and for a contributor credential.
+   */
   readonly organizationId: string | null;
-  readonly scopes: readonly ApiScope[];
+  readonly scopes: readonly CredentialScope[];
   readonly via: CredentialKind;
   /** The credential itself: a session's id, or a token's. */
   readonly credentialId: string;
@@ -37,11 +47,23 @@ export interface Principal {
   readonly client?: string | undefined;
   /** A bound credential's acting role, read when it was presented. */
   readonly role?: string | undefined;
+  /**
+   * A contributor credential: an `lnxc_` token, or an OAuth grant made as
+   * a contributor. It reaches the contributor routes alone.
+   */
+  readonly contributor?: true | undefined;
 }
 
-/** Whether a credential belongs to one organization and carries scopes. */
+/**
+ * Whether a credential is bound: it carries scopes, reaches only the
+ * public registry's routes, and names its own organization or none.
+ */
 export function isBound(principal: Principal): boolean {
-  return principal.via === "token" || principal.via === "oauth";
+  return (
+    principal.via === "token" ||
+    principal.via === "oauth" ||
+    principal.via === "contributor"
+  );
 }
 
 /** A signed-in person's session: every scope, no organization. */

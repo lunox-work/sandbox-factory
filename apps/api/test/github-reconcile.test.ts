@@ -528,3 +528,32 @@ test("each repository read asks for a snapshot; one that failed asks for none", 
   }).sweep();
   assert.deepEqual(asked, []);
 });
+
+test("the sweep then re-reads merge-back pull requests' CI; a failure there is reported, not fatal", async () => {
+  const stores = memoryGithub();
+  const connectionId = await seedConnection(stores, "org_1", "9");
+  await seedRepo(stores, "org_1", connectionId);
+  const fetch = fakeGithub(world());
+  const errors: string[] = [];
+  let swept = 0;
+  const reconciler = new GithubReconciler({
+    repos: stores.repos,
+    connections: stores.connections,
+    installations: installationTokens(fetch),
+    fetch,
+    now: () => LATER,
+    mergeCi: {
+      sweep: async () => {
+        swept += 1;
+        if (swept === 2) throw new Error("database away");
+        return { read: 1, failed: 0 };
+      },
+    },
+    onError: (code) => errors.push(code),
+  });
+  assert.equal((await reconciler.sweep()).read, 1);
+  assert.equal(swept, 1);
+  await reconciler.sweep();
+  assert.equal(swept, 2);
+  assert.deepEqual(errors, ["merge_ci_sweep_failed"]);
+});
