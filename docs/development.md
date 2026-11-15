@@ -94,8 +94,9 @@ contributor token (`lnxc_`) listing it and paging its project (API and
 submission (`files[]`) then passing retry (the zipped folder, previewed
 first), the owner's merge-back pull request, its CI read back (the sweep,
 then a signed `check_suite` delivery) and merged once that passes, the
-repository's own test on it, the contributor revoked, and a Jira-imported
-bounty sized;
+repository's own test on it, the contributor revoked, a Jira-imported
+bounty sized, and `/usage` metering the model tokens, evaluator seconds and
+grading attempts it spent;
 through the API's HTTP routes and
 in-process worker runs (local-process provider, npm from the public registry,
 cache kept in `$TMPDIR/sandbox-factory-flow-npm-cache`). It needs a local

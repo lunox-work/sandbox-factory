@@ -89,6 +89,10 @@ import { GithubSnapshotter } from "./github/snapshot.js";
 import { resolveImageDigest } from "./image-digest.js";
 import { jiraClientFor, jiraClientsFor } from "./jira/credential.js";
 import { createGithubOidcVerifier } from "./judge/oidc.js";
+import {
+  GRADING_ATTEMPTS_PER_ASSIGNMENT_DAY,
+  MODEL_TOKENS_START_FLOOR,
+} from "./quota.js";
 import { createApp } from "./routes.js";
 import { SandboxCutter } from "./sandbox/cutter.js";
 import { SandboxPreparer } from "./sandbox/preparer.js";
@@ -138,7 +142,22 @@ const repoSnapshots = createRepoSnapshotStore(connection.db);
  * run already admitted is never cut off for tokens: admission is the guard,
  * and the ledger every model reply writes (`modelUsage`) is the truth.
  */
-const tokenQuota = { monthlyLimit: env.MONTHLY_MODEL_TOKENS_PER_ORG };
+const tokenQuota = {
+  monthlyLimit: env.MONTHLY_MODEL_TOKENS_PER_ORG,
+  startFloor: MODEL_TOKENS_START_FLOOR,
+};
+/**
+ * The monthly evaluator cap new build, import and grading runs are admitted
+ * by, from the ledger every evaluation job writes, and the brakes on
+ * invited contributors' grading (`quota.ts`).
+ */
+const evaluatorQuota = {
+  monthlySeconds: env.MONTHLY_EVALUATOR_SECONDS_PER_ORG,
+};
+const gradingBrakes = {
+  perAssignmentDaily: GRADING_ATTEMPTS_PER_ASSIGNMENT_DAY,
+  perOrganizationDaily: env.CONTRIBUTOR_GRADING_RUNS_PER_ORG_DAY,
+};
 const modelUsage = createModelUsageStore(connection.db);
 const bountyRuns = createBountyRunStore(connection.db, { tokenQuota });
 const bountyProposals = createBountyProposalStore(connection.db);
@@ -548,7 +567,11 @@ const githubReconciler =
 const avatars =
   objects === undefined ? undefined : createAvatarService({ store: objects });
 
-const analysisRuns = createAnalysisRunStore(connection.db, { tokenQuota });
+const analysisRuns = createAnalysisRunStore(connection.db, {
+  tokenQuota,
+  evaluatorQuota,
+  gradingBrakes,
+});
 /** What the price reads a repository's brief through. */
 const briefArtifacts = createArtifactStore(connection.db);
 const workerLauncher = new WorkerLauncher({
@@ -617,6 +640,11 @@ const sandbox =
           const found = await organizations.get(organizationId);
           return found === undefined ? [] : [found.name, found.slug];
         },
+        // Issue keys of the workspace's Jira projects reach no public file.
+        ticketKeys: async (organizationId: string) =>
+          (await jiraBoards.list(organizationId)).flatMap((board) =>
+            board.projectKey === null ? [] : [board.projectKey],
+          ),
         contextFor,
         profiles: bountyProfiles,
         // Declared below, on the same footing; called only on a request.
@@ -921,6 +949,7 @@ const app = createApp({
   publicUrl: env.BETTER_AUTH_URL,
   usage: createUsageStore(connection.db),
   monthlyModelTokens: env.MONTHLY_MODEL_TOKENS_PER_ORG,
+  monthlyEvaluatorSeconds: env.MONTHLY_EVALUATOR_SECONDS_PER_ORG,
   audit,
   idempotencyKeys,
   webhooks: {

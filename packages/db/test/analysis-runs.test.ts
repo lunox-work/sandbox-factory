@@ -814,6 +814,7 @@ test("a new model run is refused at the monthly token limit, before the spend ca
     {
       ok: false,
       reason: "quota_exceeded",
+      kind: "model_tokens",
       used: 5_000,
       limit: 5_000,
       resetsAt: new Date("2026-12-01T00:00:00.000Z"),
@@ -1123,12 +1124,110 @@ test("a worker taking a grading run marks its submission running in the same com
   );
 });
 
+test("a new grading or build run is refused at the evaluator cap, with its kind; other runs are not", async () => {
+  const evaluatorQuota = {
+    monthlySeconds: 600,
+    now: () => new Date("2026-11-12T08:30:00.000Z"),
+  };
+  // Lock, no cached run, then the ledger: refused before the spend cap.
+  const full = createSequencedFakeDb([
+    [{ id: "owner" }],
+    [],
+    [{ seconds: 600 }],
+  ]);
+  assert.deepEqual(
+    await createAnalysisRunStore(full.db, { evaluatorQuota }).enqueue(
+      "owner",
+      null,
+      gradeInput,
+    ),
+    {
+      ok: false,
+      reason: "quota_exceeded",
+      kind: "evaluator_seconds",
+      used: 600,
+      limit: 600,
+      resetsAt: new Date("2026-12-01T00:00:00.000Z"),
+    },
+  );
+  assert.ok(full.calls.every((call) => call.kind === "select"));
+  // graphify creates no job: lock, snapshot, cache, spend cap, insert.
+  const graph = createSequencedFakeDb([
+    [{ id: "owner" }],
+    [{ repoId: "repo" }],
+    [],
+    [],
+    [row()],
+  ]);
+  const queued = await createAnalysisRunStore(graph.db, {
+    evaluatorQuota: { ...evaluatorQuota, monthlySeconds: 1 },
+  }).enqueue("owner", "snapshot", input);
+  assert.equal(queued.ok && queued.created, true);
+});
+
+test("an invited contributor's grading run is braked, a day's attempts at a time, and counted when admitted", async () => {
+  const gradingBrakes = {
+    perAssignmentDaily: 10,
+    perOrganizationDaily: 100,
+    now: () => new Date("2026-11-12T08:30:00.000Z"),
+  };
+  const oldest = new Date("2026-11-11T09:00:00.000Z");
+  // Lock, no cached run, spend cap, the submission's assignment, its count.
+  const braked = createSequencedFakeDb([
+    [{ id: "owner" }],
+    [],
+    [],
+    [{ assignmentId: "cas_1" }],
+    [{ count: 10, oldest }],
+  ]);
+  assert.deepEqual(
+    await createAnalysisRunStore(braked.db, { gradingBrakes }).enqueue(
+      "owner",
+      null,
+      gradeInput,
+    ),
+    {
+      ok: false,
+      reason: "rate_limited",
+      scope: "assignment",
+      limit: 10,
+      retryAt: new Date("2026-11-12T09:00:00.000Z"),
+    },
+  );
+  assert.ok(braked.calls.every((call) => call.kind === "select"));
+  // Under both brakes: queued, and the attempt names the assignment.
+  const admitted = createSequencedFakeDb([
+    [{ id: "owner" }],
+    [],
+    [],
+    [{ assignmentId: "cas_1" }],
+    [{ count: 1, oldest }],
+    [{ count: 1, oldest }],
+    [gradeRow()],
+    [],
+    [],
+  ]);
+  const queued = await createAnalysisRunStore(admitted.db, {
+    gradingBrakes,
+  }).enqueue("owner", null, gradeInput);
+  assert.equal(queued.ok && queued.created, true);
+  const attempt = admitted.calls.find(
+    (call) =>
+      call.kind === "insert" && String(call.values?.["id"]).startsWith("gat_"),
+  );
+  assert.equal(attempt?.values?.["assignmentId"], "cas_1");
+  assert.equal(attempt?.values?.["runId"], "arn_grade");
+});
+
 test("a grading run queued again reopens its errored submission; one out of attempts errors a waiting one", async () => {
   const again = createSequencedFakeDb([
     [{ id: "owner" }],
     [gradeRow({ status: "failed", attempt: 1, errorCode: "tool_failed" })],
     [],
+    // The submission's assignment: a workspace's own, none.
+    [],
     [gradeRow({ status: "queued", attempt: 2 })],
+    [],
     [],
   ]);
   const queued = await createAnalysisRunStore(again.db).enqueue(
@@ -1137,12 +1236,26 @@ test("a grading run queued again reopens its errored submission; one out of atte
     gradeInput,
   );
   assert.equal(queued.ok && queued.created, true);
-  const reopen = again.calls[4];
+  // The attempt is counted in the same transaction.
+  const attempt = again.calls[5];
+  assert.equal(attempt?.kind, "insert");
+  assert.match(String(attempt?.values?.["id"]), /^gat_/);
+  assert.deepEqual(
+    { ...attempt?.values, id: undefined },
+    {
+      id: undefined,
+      organizationId: "owner",
+      submissionId: "sbm_1",
+      assignmentId: null,
+      runId: "arn_grade",
+    },
+  );
+  const reopen = again.calls[6];
   assert.equal(reopen?.kind, "update");
   assert.equal(reopen?.values?.["status"], "queued");
   assert.equal(reopen?.values?.["errorCode"], null);
   assert.equal(reopen?.filtered, true);
-  assert.equal(again.calls[5]?.kind, "execute");
+  assert.equal(again.calls[7]?.kind, "execute");
 
   const spent = createSequencedFakeDb([
     [{ id: "owner" }],

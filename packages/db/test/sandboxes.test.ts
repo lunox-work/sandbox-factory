@@ -87,6 +87,7 @@ const sourceRow = (
   dependencyChoices: {},
   acceptanceTests: [],
   fixtures: null,
+  disclosureAcknowledgements: [],
   scope,
   harnessSha256: null,
   toolchainDigest: null,
@@ -889,6 +890,86 @@ test("fixtures are part of the transform: replacing or dropping them clears evid
   assert.equal(cleared.ok && cleared.source.fixtures, null);
   assert.equal(dropped.calls[1]?.values?.["fixtures"], null);
   assert.equal(dropped.calls[1]?.values?.["buildRunId"], null);
+});
+
+test("disclosure acknowledgements replaced with the transform clear evidence; alone they keep it", async () => {
+  const acknowledgements = [
+    {
+      kind: "host" as const,
+      value: "stripe.com",
+      note: "Public docs.",
+      by: "user_1",
+      at: "2026-11-15T00:00:00.000Z",
+    },
+  ];
+  const current = {
+    version: versionRow(),
+    source: sourceRow({ buildRunId: "arn_old", harnessSha256: "h".repeat(64) }),
+    commitSha: "a".repeat(40),
+  };
+  const fake = createSequencedFakeDb([
+    [current],
+    [sourceRow({ disclosureAcknowledgements: acknowledgements })],
+  ]);
+  const result = await createSandboxStore(fake.db).updateDraft(
+    "owner",
+    "sbv_1",
+    {
+      disclosureAcknowledgements: acknowledgements,
+      transformConfigSha256: "n".repeat(64),
+    },
+  );
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.deepEqual(result.source.disclosureAcknowledgements, acknowledgements);
+  assert.deepEqual(
+    fake.calls[1]?.values?.["disclosureAcknowledgements"],
+    acknowledgements,
+  );
+  assert.equal(fake.calls[1]?.values?.["buildRunId"], null);
+  assert.equal(fake.calls[1]?.values?.["harnessSha256"], null);
+  // Alone (an uploaded or generated draft's, checked at publication) the
+  // list keeps the build's evidence.
+  const alone = createSequencedFakeDb([
+    [current],
+    [
+      sourceRow({
+        buildRunId: "arn_old",
+        harnessSha256: "h".repeat(64),
+        disclosureAcknowledgements: acknowledgements,
+      }),
+    ],
+  ]);
+  const kept = await createSandboxStore(alone.db).updateDraft(
+    "owner",
+    "sbv_1",
+    { disclosureAcknowledgements: acknowledgements },
+  );
+  assert.equal(kept.ok && kept.source.buildRunId, "arn_old");
+  assert.deepEqual(
+    alone.calls[1]?.values?.["disclosureAcknowledgements"],
+    acknowledgements,
+  );
+  assert.equal("buildRunId" in (alone.calls[1]?.values ?? {}), false);
+  assert.equal("harnessSha256" in (alone.calls[1]?.values ?? {}), false);
+  // A row from before the column reads as none.
+  const old = createSequencedFakeDb([
+    [
+      {
+        ...current,
+        source: {
+          ...current.source,
+          disclosureAcknowledgements: undefined as never,
+        },
+      },
+    ],
+  ]);
+  const read = await createSandboxStore(old.db).updateDraft(
+    "owner",
+    "sbv_1",
+    {},
+  );
+  assert.deepEqual(read.ok && read.source.disclosureAcknowledgements, []);
 });
 
 test("recording a build clears the old build's evidence but not its own, and refuses and cancels a changed or frozen one", async () => {

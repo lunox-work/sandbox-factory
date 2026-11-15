@@ -259,8 +259,22 @@ export type {
   ModelUsageStore,
   NewModelUsage,
   QuotaExceeded,
+  QuotaKind,
   TokenQuota,
 } from "./model-usage.js";
+export {
+  billedSeconds,
+  createEvaluatorUsageStore,
+  EVALUATOR_TOOLS,
+  NO_EVALUATOR_USE,
+} from "./evaluator-usage.js";
+export type {
+  EvaluatorQuota,
+  EvaluatorUse,
+  EvaluatorUsageStore,
+  NewEvaluatorUsage,
+} from "./evaluator-usage.js";
+export type { GradingBrakes, GradingRateLimited } from "./grading-attempts.js";
 export type {
   Membership,
   OrganizationMember,

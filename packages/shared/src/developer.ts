@@ -166,9 +166,9 @@ const tokenCount = z.number().int().nonnegative();
 
 /**
  * Runs started in a window, counted by family, kind and state, and the
- * model tokens the workspace's runs spent this calendar month (UTC) against
- * its monthly limit. The month is not the window: the limit resets at
- * `modelTokens.resetsAt` whatever `days` asked for.
+ * model tokens and evaluator seconds the workspace's runs spent this
+ * calendar month (UTC) against its monthly limits. The month is not the
+ * window: the limits reset at `resetsAt` whatever `days` asked for.
  */
 export const usageResponseSchema = z.object({
   window: z.object({
@@ -200,6 +200,33 @@ export const usageResponseSchema = z.object({
     outputTokens: tokenCount,
     cacheReadTokens: tokenCount,
     cacheWriteTokens: tokenCount,
+  }),
+  /**
+   * The evaluation jobs the workspace's runs used this calendar month (UTC):
+   * whole seconds per job, rounded up, against the monthly cap new build,
+   * import and grading runs are refused at (`quota_exceeded`, kind
+   * `evaluator_seconds`).
+   */
+  evaluatorSeconds: z.object({
+    from: z.iso.datetime(),
+    resetsAt: z.iso.datetime(),
+    used: tokenCount,
+    limit: z.number().int().positive(),
+    remaining: tokenCount,
+    jobs: tokenCount,
+    /** By the run's tool. */
+    byKind: z.array(
+      z.object({ kind: z.string(), seconds: tokenCount, jobs: tokenCount }),
+    ),
+  }),
+  /** Counts over the same month. */
+  thisMonth: z.object({
+    /** Grading runs queued for submissions: first gradings, retries, regrades. */
+    gradingAttempts: tokenCount,
+    /** Of those, invited contributors'. */
+    contributorGradingAttempts: tokenCount,
+    /** Hand-off folders uploaded as versions. */
+    uploads: tokenCount,
   }),
 });
 

@@ -318,3 +318,69 @@ export const modelUsage = pgTable(
 );
 
 export type ModelUsageRow = typeof modelUsage.$inferSelect;
+
+/**
+ * The evaluator ledger, beside the model-token one: one row per evaluation
+ * job a worker run created (a build's baseline, a hidden-tests or reference
+ * candidate, a calibration's rerun, a grading run's jobs, an import's), with
+ * the seconds it was alive from creation to teardown, rounded up. What the
+ * monthly evaluator cap counts and `GET .../usage` reports; see
+ * `evaluator-usage.ts`. `run_id` has no foreign key, as `model_usage`'s.
+ */
+export const evaluatorUsage = pgTable(
+  "evaluator_usage",
+  {
+    id: text("id").primaryKey(),
+    organizationId: text("organization_id")
+      .notNull()
+      .references(() => organization.id, { onDelete: "cascade" }),
+    runId: text("run_id").notNull(),
+    /** The analysis run's tool. */
+    kind: text("kind").notNull(),
+    /** The provider that ran the job (`e2b`, `local-process`). */
+    provider: text("provider").notNull(),
+    seconds: integer("seconds").notNull(),
+    at: at("at").notNull().defaultNow(),
+  },
+  (table) => [
+    index("evaluator_usage_organization_at_idx").on(
+      table.organizationId,
+      table.at,
+    ),
+    check("evaluator_usage_seconds_check", sql`${table.seconds} >= 0`),
+  ],
+);
+
+export type EvaluatorUsageRow = typeof evaluatorUsage.$inferSelect;
+
+/**
+ * One row per grading run admitted for a submission: a first grading, a
+ * retry's, or an errored one queued again. Dry runs never reach a run, so
+ * never write one. What the contributor brakes count (an assignment's
+ * attempts a day, a workspace's contributor attempts a day) and the usage
+ * page's grading count. `assignment_id` is the submission's: null for a
+ * workspace's own submission and the CI judge's. No foreign keys but the
+ * organization's: an attempt stays counted when its submission goes.
+ */
+export const gradingAttempt = pgTable(
+  "grading_attempt",
+  {
+    id: text("id").primaryKey(),
+    organizationId: text("organization_id")
+      .notNull()
+      .references(() => organization.id, { onDelete: "cascade" }),
+    submissionId: text("submission_id").notNull(),
+    assignmentId: text("assignment_id"),
+    runId: text("run_id").notNull(),
+    at: at("at").notNull().defaultNow(),
+  },
+  (table) => [
+    index("grading_attempt_organization_at_idx").on(
+      table.organizationId,
+      table.at,
+    ),
+    index("grading_attempt_assignment_at_idx").on(table.assignmentId, table.at),
+  ],
+);
+
+export type GradingAttemptRow = typeof gradingAttempt.$inferSelect;

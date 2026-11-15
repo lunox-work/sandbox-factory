@@ -131,11 +131,33 @@ test("a month under its limit admits; one at or over it is refused until it rese
       {
         ok: false,
         reason: "quota_exceeded",
+        kind: "model_tokens",
         used,
         limit: 1_000,
         resetsAt: new Date("2026-12-01T00:00:00.000Z"),
       },
     );
+});
+
+test("a run is refused once fewer than the floor's tokens are left, never on its budget", async () => {
+  const quota = { monthlyLimit: 1_000, startFloor: 100, now: november };
+  // 100 left: a run starts, whatever its agents may spend.
+  assert.equal(
+    await quotaExceeded(createFakeDb(spent(900)).db, "org_1", quota),
+    null,
+  );
+  // 99 left: too little to get anywhere.
+  assert.deepEqual(
+    await quotaExceeded(createFakeDb(spent(901)).db, "org_1", quota),
+    {
+      ok: false,
+      reason: "quota_exceeded",
+      kind: "model_tokens",
+      used: 901,
+      limit: 1_000,
+      resetsAt: new Date("2026-12-01T00:00:00.000Z"),
+    },
+  );
 });
 
 test("only the tools that may call a model are held to the quota", () => {

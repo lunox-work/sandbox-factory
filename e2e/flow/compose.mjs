@@ -35,6 +35,7 @@ import {
   createContributorStore,
   createContributorTokenStore,
   createDecisionConfirmationStore,
+  createEvaluatorUsageStore,
   createEmailStore,
   createGithubConnectionStore,
   createGithubGrantStore,
@@ -51,6 +52,7 @@ import {
   createSubmissionMergeStore,
   createSubmissionStore,
   createTokenCipher,
+  createUsageStore,
   createWorkspaceSettingsStore,
 } from "@sandbox-factory/db";
 import { InstallationTokens } from "@sandbox-factory/github";
@@ -63,6 +65,7 @@ import { decisionsConfirmUrl } from "../../apps/api/dist/pricing/decisions.js";
 import { BountyExecutor } from "../../apps/api/dist/pricing/executor.js";
 import { BountyProfiler } from "../../apps/api/dist/pricing/profiler.js";
 import { RubricPricer } from "../../apps/api/dist/pricing/rubric.js";
+import { MODEL_TOKENS_START_FLOOR } from "../../apps/api/dist/quota.js";
 import { SandboxCutter } from "../../apps/api/dist/sandbox/cutter.js";
 import { SandboxPreparer } from "../../apps/api/dist/sandbox/preparer.js";
 import { touchedSource } from "../../apps/api/dist/sandbox/routes.js";
@@ -91,6 +94,7 @@ import {
 import { executeRun } from "../../apps/worker/dist/run.js";
 import { createTaskReader } from "../../apps/worker/dist/tasks.js";
 import { meteredAgent } from "../../apps/worker/dist/agent/metered.js";
+import { meteredProvider } from "../../apps/worker/dist/evaluation/metered.js";
 import { createLocalProcessProvider } from "../../apps/worker/dist/evaluation/local-process.js";
 import { createAbstractionsAdapter } from "../../apps/worker/dist/tools/abstractions.js";
 import { createBriefAdapter } from "../../apps/worker/dist/tools/brief.js";
@@ -140,7 +144,26 @@ export async function composePlatform({
   const tokenCipher = createTokenCipher(randomBytes(32).toString("base64"));
   const repoSnapshots = createRepoSnapshotStore(db);
   const modelUsage = createModelUsageStore(db);
-  const bountyRuns = createBountyRunStore(db);
+  const evaluatorUsage = createEvaluatorUsageStore(db);
+  /**
+   * The admission limits, as server.ts wires them, generous enough that
+   * the flow never meets them. A step lowers one in place (the stores read
+   * it at each admission) to see a refusal, then puts it back.
+   */
+  const limits = {
+    tokenQuota: {
+      monthlyLimit: 10_000_000_000,
+      startFloor: MODEL_TOKENS_START_FLOOR,
+    },
+    evaluatorQuota: { monthlySeconds: 100_000_000 },
+    gradingBrakes: {
+      perAssignmentDaily: 1_000,
+      perOrganizationDaily: 100_000,
+    },
+  };
+  const bountyRuns = createBountyRunStore(db, {
+    tokenQuota: limits.tokenQuota,
+  });
   const bountyProposals = createBountyProposalStore(db);
   const bountySpecs = createBountySpecStore(db);
   const bountyProfiles = createBountyProfileStore(db);
@@ -152,7 +175,7 @@ export async function composePlatform({
   const rateCards = createRateCardStore(db);
   const githubConnections = createGithubConnectionStore(db);
   const githubRepos = createGithubRepoStore(db);
-  const analysisRuns = createAnalysisRunStore(db);
+  const analysisRuns = createAnalysisRunStore(db, limits);
   const artifacts = createArtifactStore(db);
   const sandboxStore = createSandboxStore(db);
   const submissions = createSubmissionStore(db);
@@ -354,6 +377,10 @@ export async function composePlatform({
       const found = await organizations.get(organizationId);
       return found === undefined ? [] : [found.name, found.slug];
     },
+    ticketKeys: async (organizationId) =>
+      (await jiraBoards.list(organizationId)).flatMap((board) =>
+        board.projectKey === null ? [] : [board.projectKey],
+      ),
     contextFor,
     profiles: bountyProfiles,
     requestProfile: async (owner, input) => {
@@ -502,6 +529,10 @@ export async function composePlatform({
     },
     apiTokens,
     contributorTokens,
+    // As server.ts: `/usage` reads the run tables and both ledgers.
+    usage: createUsageStore(db),
+    monthlyModelTokens: limits.tokenQuota.monthlyLimit,
+    monthlyEvaluatorSeconds: limits.evaluatorQuota.monthlySeconds,
     publicUrl: API_URL,
   });
 
@@ -520,6 +551,9 @@ export async function composePlatform({
     limits: { maxTurns: 20, maxTokens: 4_000_000 },
   };
   const agentFor = (run) => meteredAgent(agent, run, modelUsage, fault);
+  // As main.ts: each run's jobs on the evaluator ledger.
+  const providerFor = (run) =>
+    meteredProvider(provider, run, evaluatorUsage, fault);
   const adapterFor = (run) => {
     switch (run.tool) {
       case "graphify":
@@ -535,17 +569,23 @@ export async function composePlatform({
       case "slice":
         return createSliceAdapter({ packageTypes });
       case "sandbox_build":
-        return createSandboxBuildAdapter({ agent: agentFor(run), provider });
+        return createSandboxBuildAdapter({
+          agent: agentFor(run),
+          provider: providerFor(run),
+        });
       case "scope":
         return createScopeAdapter(agentFor(run), { packageTypes });
       case "fixtures":
         return createFixturesAdapter(agentFor(run));
       case "sandbox_starter":
-        return createStarterAdapter({ agent: agentFor(run), provider });
+        return createStarterAdapter({
+          agent: agentFor(run),
+          provider: providerFor(run),
+        });
       case "submission_grade":
-        return createSubmissionGradeAdapter({ provider });
+        return createSubmissionGradeAdapter({ provider: providerFor(run) });
       case "sandbox_import":
-        return createSandboxImportAdapter({ provider });
+        return createSandboxImportAdapter({ provider: providerFor(run) });
     }
     throw new Error(`No adapter for ${run.tool}.`);
   };
@@ -655,6 +695,7 @@ export async function composePlatform({
       bountyProfiles,
       bountyProposals,
       modelUsage,
+      evaluatorUsage,
       submissions,
       merges,
       contributors,
@@ -662,6 +703,7 @@ export async function composePlatform({
       jiraBoards,
     },
     snapshotter,
+    limits,
     objects,
     published,
     events,

@@ -11,6 +11,10 @@
 
 import type { SliceManifest, BoundaryContract } from "../slice/manifest.js";
 import type { AliasRule } from "./aliases.js";
+import {
+  openDisclosureFindings,
+  type DisclosureAcknowledgement,
+} from "./disclosure.js";
 import type { VersionFixtures } from "./fixtures.js";
 import type { SandboxBuildManifest } from "./build.js";
 
@@ -353,6 +357,13 @@ export interface VersionSourceRecord {
   readonly disclosureRunId: string | null;
   readonly approvedBy: string | null;
   readonly approvedAt: string | null;
+  /**
+   * The disclosure findings an owner said may be public
+   * (`DisclosureAcknowledgement`): part of a sliced draft's transform,
+   * which its build does not block on; checked at publication for an
+   * uploaded or generated one (`gatesOf`). Absent: none.
+   */
+  readonly disclosureAcknowledgements?: readonly DisclosureAcknowledgement[];
 }
 
 /**
@@ -370,6 +381,13 @@ export interface TransformConfig {
   readonly acceptanceTests: readonly AcceptanceTest[];
   readonly fixtures: VersionFixtures | null;
   readonly starterSha256?: string;
+  /**
+   * A sliced version's disclosure acknowledgements, which its build reads;
+   * no key at all when there are none, so a version without any hashes as
+   * it did before them. Never an uploaded or generated version's: its
+   * build reads none, and publication checks them (`gatesOf`).
+   */
+  readonly disclosureAcknowledgements?: readonly DisclosureAcknowledgement[];
 }
 
 /** What `transformConfigSha256` hashes, once made canonical. */
@@ -379,7 +397,10 @@ export function transformConfigOf(input: {
   readonly acceptanceTests: readonly AcceptanceTest[];
   readonly fixtures?: VersionFixtures | null;
   readonly starterSha256?: string | null;
+  readonly disclosureAcknowledgements?:
+    readonly DisclosureAcknowledgement[] | null;
 }): TransformConfig {
+  const acknowledgements = input.disclosureAcknowledgements ?? [];
   return {
     schemaVersion: 2,
     aliasRules: input.aliasRules,
@@ -389,6 +410,9 @@ export function transformConfigOf(input: {
     ...(input.starterSha256 == null
       ? {}
       : { starterSha256: input.starterSha256 }),
+    ...(acknowledgements.length === 0
+      ? {}
+      : { disclosureAcknowledgements: acknowledgements }),
   };
 }
 
@@ -494,7 +518,11 @@ export const PUBLICATION_GATE_CODES: Readonly<Record<FreezeGate, string>> = {
  * `freezeReadiness` takes them: the evidence, and the run ids the source
  * records for the round trip and the disclosure scan (the build's, each
  * when it passed). A round trip with nothing to carry to (a generated or
- * uploaded version) passes. `recorded` is false for a build made before
+ * uploaded version) passes. A disclosure gate acknowledged at publication
+ * (`pending_acknowledgement`) passes once the draft's `acknowledgements`
+ * cover every finding it recorded and it recorded them all
+ * (`openDisclosureFindings`); no build again is needed, its files never
+ * having depended on them. `recorded` is false for a build made before
  * the gates, whose manifest has none.
  */
 export function gatesOf(
@@ -507,6 +535,10 @@ export function gatesOf(
     | "baseline"
     | "gates"
   >,
+  acknowledgements: readonly Pick<
+    DisclosureAcknowledgement,
+    "kind" | "value"
+  >[] = [],
 ): {
   readonly recorded: boolean;
   readonly roundTripRunId: string | null;
@@ -516,8 +548,18 @@ export function gatesOf(
   const gates = manifest.gates;
   const roundTripOk =
     gates !== undefined && gates.roundTrip.status !== "failed";
+  const disclosure = gates?.disclosure;
+  const pending =
+    disclosure?.status === "pending_acknowledgement" &&
+    disclosure.acknowledgedAt === "publish"
+      ? openDisclosureFindings(disclosure, acknowledgements)
+      : null;
+  const open =
+    pending === null ? 0 : pending.findings.length + pending.unrecorded;
   const disclosureOk =
-    gates !== undefined && gates.disclosure.status === "passed";
+    disclosure !== undefined &&
+    (disclosure.status === "passed" ||
+      (pending !== null && disclosure.blocking === 0 && open === 0));
   return {
     recorded: gates !== undefined,
     roundTripRunId: roundTripOk ? buildRunId : null,
@@ -529,11 +571,11 @@ export function gatesOf(
       baselineOk: manifest.baseline?.ok === true,
       roundTripOk,
       disclosureBlocking:
-        gates === undefined
+        disclosure === undefined
           ? null
           : disclosureOk
             ? 0
-            : Math.max(1, gates.disclosure.blocking),
+            : Math.max(1, disclosure.blocking + open),
     },
   };
 }

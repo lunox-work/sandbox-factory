@@ -2,12 +2,16 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import {
+  DISCLOSURE_FINDINGS_EVALUATED,
   disclosableDecisions,
   disclosureGate,
+  disclosureRecords,
   freezeReadiness,
   gatesOf,
   noChangeRoundTrip,
+  openDisclosureFindings,
   PUBLICATION_GATE_CODES,
+  scanDisclosure,
   type AliasRule,
   type PublicationGates,
   type VersionSourceRecord,
@@ -244,4 +248,137 @@ test("the disclosure gate counts the scans' blockers alone", () => {
     names: 0,
     blocking: 0,
   });
+});
+
+test("an upload's or starter's findings wait for publication: the build stays ready, the draft's list settles the gate", () => {
+  const found = scanDisclosure([
+    {
+      path: "src/app.ts",
+      text: "// See https://docs.stripe.com/api and mail jo@acme.io\n",
+    },
+  ]);
+  assert.equal(found.length, 2);
+  const pending = disclosureGate([], 0, "upload", {
+    findings: disclosureRecords(found, [], DISCLOSURE_FINDINGS_EVALUATED),
+    total: found.length,
+    unacknowledged: found.length,
+    acknowledgedAt: "publish",
+  });
+  // Not a blocker: the build read no acknowledgement.
+  assert.equal(pending.status, "pending_acknowledgement");
+  assert.equal(pending.blocking, 0);
+  assert.equal(pending.acknowledgedAt, "publish");
+  assert.equal(pending.acknowledged, 0);
+  assert.deepEqual(
+    pending.findings?.map(({ kind, value, acknowledged }) => [
+      kind,
+      value,
+      acknowledged,
+    ]),
+    [
+      ["email", "jo@acme.io", false],
+      ["url", "https://docs.stripe.com/api", false],
+    ],
+  );
+  const read = (
+    acknowledgements: { kind: "host" | "email"; value: string }[],
+  ) => {
+    const gated = gatesOf(
+      "arn_build",
+      {
+        ...manifest,
+        gates: {
+          roundTrip: { status: "not_applicable", files: 0, problems: [] },
+          disclosure: pending,
+        },
+      },
+      acknowledgements,
+    );
+    return freezeReadiness(
+      {
+        ...source,
+        roundTripRunId: gated.roundTripRunId,
+        disclosureRunId: gated.disclosureRunId,
+      },
+      gated.evidence,
+    ).failed;
+  };
+  assert.deepEqual(read([]), ["disclosure"]);
+  // A host covers the link on it; the address still holds it.
+  assert.deepEqual(read([{ kind: "host", value: "stripe.com" }]), [
+    "disclosure",
+  ]);
+  assert.deepEqual(
+    openDisclosureFindings(pending, [
+      { kind: "host", value: "stripe.com" },
+    ]).findings.map((finding) => finding.value),
+    ["jo@acme.io"],
+  );
+  assert.deepEqual(
+    read([
+      { kind: "host", value: "stripe.com" },
+      { kind: "email", value: "jo@acme.io" },
+    ]),
+    [],
+  );
+  // Findings past the record cannot be acknowledged: they hold it.
+  const overflowing = { ...pending, total: found.length + 3 };
+  assert.deepEqual(
+    openDisclosureFindings(overflowing, [
+      { kind: "host", value: "stripe.com" },
+      { kind: "email", value: "jo@acme.io" },
+    ]),
+    { findings: [], unrecorded: 3 },
+  );
+  const held = gatesOf(
+    "arn_build",
+    {
+      ...manifest,
+      gates: {
+        roundTrip: { status: "not_applicable", files: 0, problems: [] },
+        disclosure: overflowing,
+      },
+    },
+    [
+      { kind: "host", value: "stripe.com" },
+      { kind: "email", value: "jo@acme.io" },
+    ],
+  );
+  assert.equal(held.evidence.disclosureBlocking, 3);
+  // Names or credentials fail the gate whatever is acknowledged.
+  const leaked = disclosureGate(
+    [{ code: "secret_found", file: "a.ts", detail: "" }],
+    0,
+    "upload",
+    {
+      findings: disclosureRecords(found, []),
+      total: found.length,
+      unacknowledged: found.length,
+      acknowledgedAt: "publish",
+    },
+  );
+  assert.equal(leaked.status, "failed");
+  assert.equal(leaked.blocking, 1);
+  // Nothing found passes outright; a sliced build's gate reads its marks.
+  assert.equal(
+    disclosureGate([], 0, "upload", {
+      findings: [],
+      total: 0,
+      unacknowledged: 0,
+      acknowledgedAt: "publish",
+    }).status,
+    "passed",
+  );
+  const sliced = disclosureGate([], 2, "build", {
+    findings: disclosureRecords(found, [
+      { kind: "email", value: "jo@acme.io" },
+    ]),
+    total: 2,
+    unacknowledged: 1,
+  });
+  assert.equal(sliced.acknowledgedAt, undefined);
+  assert.deepEqual(
+    openDisclosureFindings(sliced, [{ kind: "host", value: "stripe.com" }]),
+    { findings: [sliced.findings?.[1]], unrecorded: 0 },
+  );
 });

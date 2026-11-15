@@ -18,7 +18,13 @@
  * carried files in place (`repositoryTree`, the reversed check): a carry
  * that maps line by line can still name what the repository does not
  * have. A pass that fails there keeps its verdict, is marked
- * `carryBack: "failed"`, and has no merge patch.
+ * `carryBack: "failed"`, and has no merge patch. So is one whose carry
+ * renames a word a contributor wrote by a pair learned from part of a text
+ * rule rather than by the table (`carriedWordHazards`), before that job:
+ * that carry can build and pass, in code the contributor did not write.
+ * And so is one whose carry is refused for the carry's own limit, not the
+ * contributor's doing (`carryLimitOf`: a stranded name, a new file at a
+ * path the repository holds outside the slice).
  *
  * Only counts, the verdict and the scenario keys of failing hidden tests
  * (`s1`, from the file names the hidden-tests scaffold writes) leave the
@@ -34,16 +40,21 @@ import { verdict as judge } from "duediligence/api";
 import type { SuiteResult } from "duediligence/api";
 import type { AliasImplementation } from "carveout/pseudonyms";
 import {
+  CARRIED_TESTS_DIR,
+  CARRIED_WORDS_REASON,
   PLATFORM_LAYOUT,
   PSEUDONYMS_FILE,
   SUBMISSION_GRADE_TOOL_VERSION,
   TASK_DESCRIPTOR_PATH,
+  carriedWordHazards,
+  carryLimitOf,
   forwardChange,
   gradingTree,
   isSubmissionGradeParams,
   layoutOf,
   projectPathOf,
   reverseSubmission,
+  reversedCarriedTest,
   stagedHiddenTest,
 } from "sandbox-factory";
 import type {
@@ -175,7 +186,7 @@ async function buildTables(
     throw new AnalysisError("tool_failed");
   const manifest = JSON.parse(manifestText) as Pick<
     SandboxBuildManifest,
-    "renames" | "files" | "engines"
+    "renames" | "files" | "engines" | "carriedTests"
   >;
   const table = JSON.parse(tableText) as { rules: AliasRule[] };
   // The renaming the version was built with, which alone carries it back.
@@ -212,6 +223,31 @@ export async function carriedBack(
 }
 
 /**
+ * The added lines of a carried-back pass whose carry renamed a word the
+ * table does not (`carriedWordHazards`): carveout 0.3.1's carry reads a
+ * contributor's word that equals part of a text rule as the client's.
+ */
+export async function carriedWords(
+  input: Pick<ToolRunInput, "inputs" | "sourceDir">,
+  buildRunId: string,
+  versionFiles: readonly GeneratedFile[],
+  submitted: readonly { readonly path: string; readonly text: string }[],
+  carried: readonly { readonly path: string; readonly text: string }[],
+) {
+  const { manifest, rules, aliases } = await buildTables(input, buildRunId);
+  const project = projectOf(versionFiles);
+  return carriedWordHazards({
+    submitted,
+    carried,
+    publicText: (path) => project.get(path) ?? null,
+    repositoryText: (path) => sourceText(input.sourceDir, path),
+    rules,
+    renames: manifest.renames,
+    aliases,
+  });
+}
+
+/**
  * The version in the repository's names, with a passing submission's
  * carried-back files in place: what the reversed check builds and tests
  * before merge-back is offered.
@@ -244,6 +280,16 @@ export function repositoryTree(input: {
   readonly rules: readonly AliasRule[];
   readonly renames: readonly { readonly from: string; readonly to: string }[];
   readonly aliases: AliasImplementation;
+  /**
+   * The repository's tests the build carried (its manifest's
+   * `carriedTests.kept`): each goes back to `tests/public/carried/` at
+   * its repository path, renamed back as the table renamed it there, its
+   * imports pointed at where their targets went (`reversedCarriedTest`).
+   */
+  readonly carriedTests?: readonly {
+    readonly path: string;
+    readonly from: string;
+  }[];
 }): {
   readonly files: GeneratedFile[];
   readonly refused: readonly { path: string; reason: string }[];
@@ -251,20 +297,49 @@ export function repositoryTree(input: {
   const inverse = input.aliases.invertAliasRules(input.rules);
   const unscoped = inverse.map((rule) => ({ ...rule, paths: [] }));
   const movedFrom = new Map(input.renames.map(({ from, to }) => [to, from]));
+  const carriedFrom = new Map(
+    (input.carriedTests ?? []).map(({ path, from }) => [path, from]),
+  );
   const files = new Map<string, GeneratedFile>();
   const refused: { path: string; reason: string }[] = [];
+  // Every file's path first: a carried test's imports need its targets'.
+  const reversedPaths = new Map(
+    input.versionFiles.map((file) => {
+      const from = carriedFrom.get(file.path);
+      const path =
+        from !== undefined
+          ? `${CARRIED_TESTS_DIR}/${from}`
+          : (movedFrom.get(file.path) ??
+            (input.sources.has(file.path)
+              ? file.path
+              : input.aliases.renameFile(
+                  { path: file.path, text: "" },
+                  unscoped,
+                ).path));
+      return [file.path, path] as const;
+    }),
+  );
   for (const file of input.versionFiles) {
     const source = input.sources.has(file.path);
-    const path =
-      movedFrom.get(file.path) ??
-      (source
-        ? file.path
-        : input.aliases.renameFile({ path: file.path, text: "" }, unscoped)
-            .path);
-    const text = input.aliases.renameFile(
-      { path, text: file.text },
-      source ? inverse : unscoped,
-    ).text;
+    const path = reversedPaths.get(file.path) ?? file.path;
+    const from = carriedFrom.get(file.path);
+    const text =
+      from === undefined
+        ? input.aliases.renameFile(
+            { path, text: file.text },
+            source ? inverse : unscoped,
+          ).text
+        : reversedCarriedTest({
+            publicPath: file.path,
+            publicText: file.text,
+            reversedPath: path,
+            reversedText: input.aliases.renameFile(
+              { path: from, text: file.text },
+              inverse,
+            ).text,
+            holds: (publicPath) => reversedPaths.has(publicPath),
+            reversedOf: (publicPath) => reversedPaths.get(publicPath) ?? null,
+          });
     if (files.has(path)) {
       refused.push({
         path,
@@ -340,6 +415,9 @@ async function passesInRepositoryNames(
     rules,
     renames: manifest.renames,
     aliases,
+    ...(manifest.carriedTests === undefined
+      ? {}
+      : { carriedTests: manifest.carriedTests.kept }),
   });
   if (tree.refused.length > 0) {
     input.log(
@@ -347,6 +425,11 @@ async function passesInRepositoryNames(
     );
     return false;
   }
+  const carriedTests = manifest.carriedTests?.kept ?? [];
+  if (carriedTests.length > 0)
+    input.log(
+      `Reversed check: ${carriedTests.length} carried test(s) back in the repository's names: ${carriedTests.map(({ from }) => `${CARRIED_TESTS_DIR}/${from}`).join(", ")}.`,
+    );
   const hidden = tree.files.filter((file) => file.class === "test-private");
   const { baseline } = await baselineOf(provider, {
     label: `${context.submissionId}-repository`,
@@ -667,9 +750,42 @@ export function createSubmissionGradeAdapter(options: {
           versionFiles,
           read.files,
         );
-        if (carried.refused.length > 0)
-          result = { ...result, verdict: "refused", refused: carried.refused };
-        else if (
+        const misread =
+          carried.refused.length > 0
+            ? []
+            : await carriedWords(
+                input,
+                buildRunId,
+                versionFiles,
+                read.files,
+                carried.files,
+              );
+        // The carry's own limits (a stranded name, a new file at a path
+        // the repository holds outside the slice) withhold merge-back; any
+        // other refusal is the contributor's, and refuses the submission.
+        const project = projectOf(versionFiles);
+        const split = carryLimitOf(
+          carried.refused,
+          (path) => !project.has(path),
+        );
+        if (split.contributor.length > 0)
+          result = {
+            ...result,
+            verdict: "refused",
+            refused: [...split.contributor, ...split.limits],
+          };
+        else if (split.limits.length > 0) {
+          input.log(
+            `Carry-back withheld: ${split.limits.map(({ path, reason }) => `${path}: ${reason}`).join("; ")}`,
+          );
+          result = { ...result, carryBack: "failed" };
+        } else if (misread.length > 0) {
+          // The platform's carry, not the contributor's work: as below.
+          input.log(
+            `${CARRIED_WORDS_REASON} ${misread.map(({ path, line }) => `${path}:${line}`).join(", ")}`,
+          );
+          result = { ...result, carryBack: "failed" };
+        } else if (
           !(await passesInRepositoryNames(options.provider, input, {
             submissionId: params.submissionId,
             buildRunId,

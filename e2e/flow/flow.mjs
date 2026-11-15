@@ -22,10 +22,15 @@ import {
 } from "./fakes.mjs";
 import { PERSON, fixtureFiles, seed, sourceArchive } from "./seed.mjs";
 import { JIRA_STEPS, ROUND_TRIP_STEPS } from "./roundtrip-steps.mjs";
-import { PUBLISH_STEPS, say } from "./steps.mjs";
+import { PUBLISH_STEPS, USAGE_STEPS, say } from "./steps.mjs";
 
 /** Every step, in order; a later part appends its own list. */
-const STEPS = [...PUBLISH_STEPS, ...ROUND_TRIP_STEPS, ...JIRA_STEPS];
+const STEPS = [
+  ...PUBLISH_STEPS,
+  ...ROUND_TRIP_STEPS,
+  ...JIRA_STEPS,
+  ...USAGE_STEPS,
+];
 /**
  * npm's cache for the worker's jobs and the contributor's machine, kept
  * between runs so an install reads the registry once; content-addressed,

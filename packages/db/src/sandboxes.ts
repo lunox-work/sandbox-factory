@@ -20,6 +20,7 @@ import type {
   ApprovedTaskSnapshot,
   StoredApprovedTaskSnapshot,
   DependencyChoice,
+  DisclosureAcknowledgement,
   SandboxStatus,
   ScopeRecord,
   VersionFixtures,
@@ -168,6 +169,8 @@ export interface SandboxVersionPatch {
   readonly acceptanceTests?: readonly AcceptanceTest[];
   /** Null drops the version's fixtures. */
   readonly fixtures?: VersionFixtures | null;
+  /** The whole list, replacing the draft's. */
+  readonly disclosureAcknowledgements?: readonly DisclosureAcknowledgement[];
   readonly transformConfigSha256?: string;
   readonly scope?: ScopeRecord;
   /**
@@ -522,6 +525,7 @@ const toSource = (
   dependencyChoices: row.dependencyChoices,
   acceptanceTests: row.acceptanceTests,
   fixtures: row.fixtures ?? null,
+  disclosureAcknowledgements: row.disclosureAcknowledgements ?? [],
   scope: row.scope,
   harnessSha256: row.harnessSha256,
   toolchainDigest: row.toolchainDigest,
@@ -1019,12 +1023,20 @@ export function createSandboxStore(db: Database): SandboxStore {
         if (patch.acceptanceTests !== undefined)
           sourceSet.acceptanceTests = [...patch.acceptanceTests];
         if (patch.fixtures !== undefined) sourceSet.fixtures = patch.fixtures;
+        if (patch.disclosureAcknowledgements !== undefined)
+          sourceSet.disclosureAcknowledgements = [
+            ...patch.disclosureAcknowledgements,
+          ];
         if (patch.transformConfigSha256 !== undefined)
           sourceSet.transformConfigSha256 = patch.transformConfigSha256;
         if (patch.scope !== undefined) sourceSet.scope = patch.scope;
         let sourceRow = current.source;
         if (Object.keys(sourceSet).length > 0) {
-          // A changed transform invalidates evidence gathered for the old one.
+          // A changed transform invalidates evidence gathered for the old
+          // one. Disclosure acknowledgements alone do not: a sliced draft's
+          // come with the transform they rehash, and an uploaded or
+          // generated draft's are checked at publication, its build having
+          // read none.
           const invalidates =
             patch.aliasRules !== undefined ||
             patch.dependencyChoices !== undefined ||

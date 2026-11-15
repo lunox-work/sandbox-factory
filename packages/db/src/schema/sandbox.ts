@@ -43,6 +43,7 @@ import type {
   AliasRule,
   StoredApprovedTaskSnapshot,
   DependencyChoice,
+  DisclosureAcknowledgement,
   SandboxStatus,
   ScopeRecord,
   SubmissionError,
@@ -204,6 +205,14 @@ export const sandboxVersionSource = pgTable(
       .default([]),
     /** Behaviour for the mocked seams and the dev walkthrough; null when none. */
     fixtures: jsonb("fixtures").$type<VersionFixtures>(),
+    /**
+     * Disclosure findings an owner said may be public, which a build does
+     * not block on; part of the transform (`transformConfigOf`).
+     */
+    disclosureAcknowledgements: jsonb("disclosure_acknowledgements")
+      .$type<DisclosureAcknowledgement[]>()
+      .notNull()
+      .default([]),
     /** Editable paths, generated paths and resolved dependencies. */
     scope: jsonb("scope").$type<ScopeRecord>().notNull(),
     /** Required at freeze; assembled by the build (5B). */

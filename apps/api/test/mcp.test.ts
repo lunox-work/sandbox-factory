@@ -88,6 +88,13 @@ function setup(runCounts: RunCount[] = []) {
           cacheReadTokens: 8_000,
           cacheWriteTokens: 500,
         }),
+      evaluator: () => Promise.resolve({ seconds: 90, jobs: 2, byKind: [] }),
+      submissionsAndUploads: () =>
+        Promise.resolve({
+          gradingAttempts: 1,
+          contributorGradingAttempts: 0,
+          uploads: 0,
+        }),
     },
     monthlyModelTokens: 50_000,
     publicUrl: BASE,
@@ -405,8 +412,10 @@ test("a tool answers the route's data, in the credential's workspace", async () 
     window: { days: number };
     runs: Array<{ count: number }>;
     modelTokens: { used: number; limit: number; remaining: number };
+    evaluatorSeconds: { used: number };
   };
   assert.equal(parsed.window.days, 7);
+  assert.equal(parsed.evaluatorSeconds.used, 90);
   assert.equal(parsed.runs[0]?.count, 2);
   // This month's model tokens, against the workspace's monthly limit.
   assert.equal(parsed.modelTokens.used, 10_000);
@@ -741,6 +750,17 @@ test("slice, sandbox, prepare and handout tools call their one route each", asyn
         entryPoints: ["src/a.ts"],
         budget: { maxFiles: 40, maxDepth: 1 },
       },
+    },
+    {
+      name: "plan_slice",
+      arguments: {
+        repositoryId: "ghr_1",
+        entryPoints: ["src/a.ts"],
+        carryTests: false,
+      },
+      path: `/api/v1/orgs/${ORG}/github/repositories/ghr_1/slices`,
+      method: "POST",
+      body: { entryPoints: ["src/a.ts"], carryTests: false },
     },
     {
       name: "start_sandbox",

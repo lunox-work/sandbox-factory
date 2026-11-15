@@ -84,8 +84,9 @@ export interface SubmissionResult {
   }[];
   /**
    * `failed`: the submission passed, but carried back to the repository's
-   * names it did not build and pass both suites there, so it is not merged
-   * back. The contributor's work stands as passed; only the merge is
+   * names it did not build and pass both suites there, or its carry renamed
+   * a word the contributor wrote that the name table does not rename
+   * (`carriedWordHazards`), so it is not merged back. The contributor's work stands as passed; only the merge is
    * withheld. Absent when it carried, or when nothing is carried back (a
    * version with no repository, an upload, a pull request already in the
    * repository's names), and on a result graded before the check.

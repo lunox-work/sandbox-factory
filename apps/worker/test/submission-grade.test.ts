@@ -9,6 +9,7 @@ import {
   renameFile,
   renameFileV1,
 } from "carveout/pseudonyms";
+import { NEW_FILE_ON_REPOSITORY_PATH_REASON } from "sandbox-factory";
 import type {
   AliasRule,
   EvaluationCommand,
@@ -726,6 +727,28 @@ test("the repository-named tree: the version renamed back, sources under their s
   );
 });
 
+test("a pass whose carry meets the carry's own limit keeps its verdict and withholds merge-back", async () => {
+  // A new file beside the task's, at a path the repository already holds
+  // outside the slice: the carry cannot place it, which is not the
+  // contributor's doing.
+  const { result, patch, fake, logged } = await grade(
+    [...change, { path: "src/helper.ts", text: "export const h = 1;\n" }],
+    passing,
+    { ...repository, "src/helper.ts": "export const other = 2;\n" },
+  );
+  assert.equal(result.verdict, "passed");
+  assert.equal(result.carryBack, "failed");
+  assert.equal(result.refused, undefined);
+  assert.equal(patch, null);
+  assert.equal(fake.jobs(), 1);
+  assert.ok(
+    logged.some((line) =>
+      line.includes(`src/helper.ts: ${NEW_FILE_ON_REPOSITORY_PATH_REASON}`),
+    ),
+    logged.join("\n"),
+  );
+});
+
 test("a reversed tree that cannot be placed withholds merge-back without a second job", async () => {
   // The version has two files that land on one path in the repository's names.
   const rules: AliasRule[] = [
@@ -753,4 +776,142 @@ test("a reversed tree that cannot be placed withholds merge-back without a secon
   assert.equal(patch, null);
   assert.equal(fake.jobs(), 1);
   assert.ok(logged.some((line) => /could not be placed/.test(line)));
+});
+
+test("a pass whose carry renames a word the contributor wrote by part of a text rule is withheld from merge-back without a second job", async () => {
+  // A multi-word text rule: carveout 0.3.1's carry learns `Shop -> Payments`
+  // from the comment, and would carry an added `Shop` as `Payments`.
+  const rules: AliasRule[] = [
+    {
+      before: "Orvanta Payments",
+      after: "Northwind Shop",
+      kind: "text",
+      paths: [],
+    },
+  ];
+  const repositoryText =
+    "// Orvanta Payments settles it.\nexport const feature = () => 0;\n";
+  const publicText =
+    "// Northwind Shop settles it.\nexport const feature = () => 0;\n";
+  const build = builtFor(
+    { carveout: CARVEOUT_VERSION },
+    { rules, project: { "project/src/feature.ts": publicText } },
+  );
+  const source = { "src/feature.ts": repositoryText };
+  const { result, patch, fake, logged } = await grade(
+    [
+      {
+        path: "src/feature.ts",
+        text: `${publicText.replace("() => 0", "() => Shop")}const Shop = 1;\n`,
+      },
+    ],
+    passing,
+    source,
+    undefined,
+    build,
+  );
+  assert.equal(result.verdict, "passed");
+  assert.equal(result.carryBack, "failed");
+  assert.equal(patch, null);
+  assert.equal(fake.jobs(), 1);
+  assert.ok(
+    logged.some((line) =>
+      /merge-back is withheld\. src\/feature\.ts:2, src\/feature\.ts:3$/.test(
+        line,
+      ),
+    ),
+    logged.join("\n"),
+  );
+  // The brand written whole is the table's: it carries, and is merged back.
+  const whole = await grade(
+    [
+      {
+        path: "src/feature.ts",
+        text: `${publicText.replace("() => 0", "() => 1")}// Northwind Shop pays.\n`,
+      },
+    ],
+    passing,
+    source,
+    undefined,
+    build,
+  );
+  assert.equal(whole.result.carryBack, undefined);
+  assert.deepEqual(whole.patch, {
+    schemaVersion: 1,
+    commitSha: "c0ffee",
+    files: [
+      {
+        path: "src/feature.ts",
+        text: "// Orvanta Payments settles it.\nexport const feature = () => 1;\n// Orvanta Payments pays.\n",
+      },
+    ],
+  });
+});
+
+test("in the repository-named tree a carried test is back at its repository path, renamed there, its imports following their targets", () => {
+  const rules: AliasRule[] = [
+    { before: "orvanta", after: "northwind", kind: "path", paths: [] },
+    {
+      before: "orvantaFee",
+      after: "entryFee",
+      kind: "identifier",
+      paths: ["src/billing/fees.ts", "test/orvanta/fee.test.ts"],
+    },
+    { before: "Orvanta", after: "Northwind", kind: "text", paths: [] },
+  ];
+  const file = (path: string, text: string, cls = "source") => ({
+    path,
+    text,
+    class: cls as "source",
+    public: true,
+  });
+  const CARRIED = "tests/public/carried/test/northwind/fee.test.ts";
+  const tree = repositoryTree({
+    versionFiles: [
+      file("src/northwind/fees.ts", "export const entryFee = () => 0;\n"),
+      file("src/northwind/ledger.js", "export const balance = 0;\n", "mock"),
+      file(
+        "src/northwind/ledger.d.ts",
+        "export declare const balance: number;\n",
+        "stub",
+      ),
+      file(
+        CARRIED,
+        [
+          'import { test } from "node:test";',
+          'import { entryFee } from "../../../../../src/northwind/fees.js";',
+          'import { balance } from "../../../../../src/northwind/ledger.js";',
+          'test("the Northwind fee", () => entryFee(balance));',
+          "",
+        ].join("\n"),
+        "test-public",
+      ),
+    ],
+    sources: new Set(["src/northwind/fees.ts"]),
+    carried: [],
+    repositoryText: () => null,
+    rules,
+    // The fee module came from a folder the table's words do not name.
+    renames: [{ from: "src/billing/fees.ts", to: "src/northwind/fees.ts" }],
+    aliases: CURRENT_ALIASES,
+    carriedTests: [{ path: CARRIED, from: "test/orvanta/fee.test.ts" }],
+  });
+  assert.deepEqual(tree.refused, []);
+  const byPath = new Map(tree.files.map((f) => [f.path, f]));
+  const carried = byPath.get("tests/public/carried/test/orvanta/fee.test.ts");
+  assert.equal(carried?.class, "test-public");
+  assert.equal(
+    carried?.text,
+    [
+      'import { test } from "node:test";',
+      // Scoped to the test's repository path, the fee's rule applies there.
+      'import { orvantaFee } from "../../../../../src/billing/fees.js";',
+      'import { balance } from "../../../../../src/orvanta/ledger.js";',
+      'test("the Orvanta fee", () => orvantaFee(balance));',
+      "",
+    ].join("\n"),
+  );
+  assert.ok(byPath.has("src/billing/fees.ts"));
+  assert.ok(byPath.has("src/orvanta/ledger.js"));
+  assert.ok(!byPath.has(CARRIED));
 });

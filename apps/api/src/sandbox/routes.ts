@@ -56,13 +56,16 @@ import {
   sandboxSliceResponseSchema,
   sandboxVersionListSchema,
   sandboxVersionResponseSchema,
+  sliceSandboxSchema,
   sliceVersionResponseSchema,
+  setDisclosureAcknowledgementsSchema,
   startSandboxResponseSchema,
   updateSandboxVersionSchema,
 } from "@sandbox-factory/shared";
 import type { Context, Hono } from "hono";
 import { inWebSession } from "../analysis/routes.js";
 import {
+  canonicalJson,
   replayOf,
   resolveScope,
   stepHeldBy,
@@ -139,6 +142,7 @@ const sourceDto = (source: StoredVersionSource, hideTests: boolean) => ({
   buildRunId: source.buildRunId,
   roundTripRunId: source.roundTripRunId,
   disclosureRunId: source.disclosureRunId,
+  disclosureAcknowledgements: source.disclosureAcknowledgements ?? [],
   approvedBy: source.approvedBy,
   approvedAt: source.approvedAt,
   createdAt: source.createdAt,
@@ -569,7 +573,23 @@ export function mountSandboxRoutes(
     if (sandbox === null) return c.json({ error: "Not found." }, 404);
     const refusal = await held(owner, sandbox.bountyId);
     if (refusal !== null) return c.json(refusal, 409);
-    const sliced = await service.slice(owner, c.get("user").id, sandbox, now());
+    // The body is optional: none reads as `{}`.
+    const text = await c.req.text().catch(() => "");
+    let json: unknown = null;
+    try {
+      json = text.trim() === "" ? {} : JSON.parse(text);
+    } catch {
+      // Not JSON: refused below.
+    }
+    const body = sliceSandboxSchema.safeParse(json);
+    if (!body.success) return c.json({ error: "Invalid slice request." }, 400);
+    const sliced = await service.slice(
+      owner,
+      c.get("user").id,
+      sandbox,
+      now(),
+      body.data,
+    );
     if (!sliced.ok) return failed(c, sliced);
     return c.json(
       sliceVersionResponseSchema.parse({
@@ -803,12 +823,101 @@ export function mountSandboxRoutes(
                 dependencyChoices,
                 acceptanceTests,
                 fixtures,
+                disclosureAcknowledgements:
+                  current.source.disclosureAcknowledgements,
               }),
               scope,
             }
           : {}),
       },
       now(),
+    );
+    if (!result.ok) return refused(c, result.reason);
+    return c.json(versionResponse(result, true, !inWebSession(c)));
+  });
+
+  /**
+   * The disclosure findings an owner or admin says may be public, the
+   * draft's whole list replaced; an entry keeps who made it and when while
+   * its note stands. A sliced draft's list is part of its transform (its
+   * build redacts generated prose and stub comments by it and blocks on
+   * the findings no entry covers), so a change clears the build's evidence
+   * and the draft is built again. An uploaded or generated draft's build
+   * read no list, so its files never depend on it: the list is stored with
+   * the transform and the evidence untouched, and publication checks it
+   * against the findings the build recorded (`gatesOf`), no build again.
+   * Session only, as publishing is: not in the public registry, so no
+   * token or agent acknowledges a finding for a person.
+   */
+  app.put(`${base}/versions/:vid/disclosure-acknowledgements`, async (c) => {
+    if (!isAtLeastAdmin(c.get("member").role))
+      return c.json(
+        {
+          error: "Only owners and admins can acknowledge disclosure findings.",
+        },
+        403,
+      );
+    const owner = c.get("member").organizationId;
+    const body = setDisclosureAcknowledgementsSchema.safeParse(
+      await c.req.json().catch(() => null),
+    );
+    if (!body.success)
+      return c.json(
+        {
+          error: "Invalid acknowledgements.",
+          code: "acknowledgements_invalid",
+        },
+        400,
+      );
+    const current = await options.sandboxes.getVersion(
+      owner,
+      c.req.param("vid"),
+    );
+    if (current === null) return c.json({ error: "Not found." }, 404);
+    const refusal = await versionHeld(owner, current.version.sandboxId);
+    if (refusal !== null) return c.json(refusal, 409);
+    // Acknowledged at publication: neither the transform nor the evidence moves.
+    const atPublish = current.source.sliceRunId === null;
+    const at = now();
+    const actor = c.get("user").id;
+    const before = current.source.disclosureAcknowledgements ?? [];
+    const keyOf = (item: { kind: string; value: string }) =>
+      `${item.kind}\u0000${item.value}`;
+    const kept = new Map(before.map((item) => [keyOf(item), item]));
+    const acknowledgements = body.data.acknowledgements.map((item) => {
+      const note =
+        item.note === undefined || item.note === "" ? null : item.note;
+      const earlier = kept.get(keyOf(item));
+      return earlier !== undefined && (earlier.note ?? null) === note
+        ? earlier
+        : {
+            kind: item.kind,
+            value: item.value,
+            note,
+            by: actor,
+            at: at.toISOString(),
+          };
+    });
+    // The same list again changes nothing, and clears no evidence.
+    if (canonicalJson(acknowledgements) === canonicalJson(before))
+      return c.json(versionResponse(current, true, !inWebSession(c)));
+    const result = await options.sandboxes.updateDraft(
+      owner,
+      current.version.id,
+      atPublish
+        ? { disclosureAcknowledgements: acknowledgements }
+        : {
+            expectedTransformConfigSha256: current.source.transformConfigSha256,
+            disclosureAcknowledgements: acknowledgements,
+            transformConfigSha256: transformConfigHash({
+              aliasRules: current.source.aliasRules,
+              dependencyChoices: current.source.dependencyChoices,
+              acceptanceTests: current.source.acceptanceTests,
+              fixtures: current.source.fixtures,
+              disclosureAcknowledgements: acknowledgements,
+            }),
+          },
+      at,
     );
     if (!result.ok) return refused(c, result.reason);
     return c.json(versionResponse(result, true, !inWebSession(c)));

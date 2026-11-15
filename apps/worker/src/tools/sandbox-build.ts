@@ -13,6 +13,14 @@
  * commands plus every hidden test in a job the provider creates and
  * destroys. Logs stay fixed lines; the job's output is not stored.
  *
+ * Disclosure beyond the vocabulary (`scanDisclosure`): what the build
+ * writes from the bounty (title, summary, spec, decisions) and the
+ * comments of the stubs and walkthrough are redacted of addresses, links,
+ * ticket keys and names; copied source is never rewritten beyond its
+ * specifiers, so what it still says goes to the pseudonyms agent as hints,
+ * and what the table leaves and no owner acknowledged on the draft blocks
+ * the build (`disclosure_findings`), recorded in the disclosure gate.
+ *
  * Nothing a model writes stands between the cut and the first baseline. A
  * draft with no fixtures is built with the sandbox's preparation's when it
  * has finished, else with none: every mock still answers, and the default
@@ -29,7 +37,7 @@
 import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { isBuiltin } from "node:module";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import {
   isNodeBuiltin,
   nearestCompilerOptions,
@@ -40,6 +48,8 @@ import {
 } from "carveout/extract";
 export { nearestCompilerOptions } from "carveout/extract";
 import {
+  CARRIED_TEST_LIMITS,
+  CARRIED_TEST_TIMEOUT_MS,
   ENV_FILE,
   EVALUATION_LIMITS,
   HIDDEN_COMMITMENT_VERSION,
@@ -57,8 +67,15 @@ import {
   withJsonLeaves,
   buildSummary,
   canonicalJson,
+  carryHazards,
+  carriedTestCandidates,
+  carriedTestFile,
+  carriedTestPaths,
   disclosableDecisions,
+  disclosureBlockers,
   disclosureGate,
+  disclosureHints,
+  disclosureRecords,
   draftPseudonyms,
   generateProject,
   noChangeRoundTrip,
@@ -67,6 +84,11 @@ import {
   packageNameOf,
   privatePackageNames,
   privateTestArgv,
+  redactDisclosure,
+  redactStubComments,
+  scanDisclosure,
+  scanSecrets,
+  unacknowledgedFindings,
   hiddenArtifactPath,
   hiddenTestFiles,
   hiddenTestRun,
@@ -85,6 +107,12 @@ import type {
   BaselineStep,
   BoundaryContract,
   BuildFileRecord,
+  CarriedTestCandidate,
+  CarriedTestDrop,
+  CarriedTestsRecord,
+  DisclosureFinding,
+  DroppedTest,
+  EvaluationExecResult,
   EvaluationEnvironment,
   EvaluationProvider,
   GeneratedFile,
@@ -97,6 +125,7 @@ import type {
   ProjectStub,
   PublicationGates,
   SandboxBuildManifest,
+  SliceManifest,
   SpecDraft,
   StageExecution,
   VersionFixtures,
@@ -623,6 +652,343 @@ async function runBaseline(
   };
 }
 
+/** A repository test as the project carries it, with where it came from. */
+interface CarriedTestFile {
+  readonly path: string;
+  readonly text: string;
+  /** Its repository path. */
+  readonly from: string;
+}
+
+/** How one carried test fared on the untouched project. */
+type CarriedOutcome =
+  | { readonly ok: true }
+  | {
+      readonly ok: false;
+      readonly reason: Extract<
+        CarriedTestDrop,
+        "compile_failed" | "baseline_failed" | "timed_out" | "flaky"
+      >;
+      readonly detail: string;
+    };
+
+/** tsc's diagnostics with `--pretty false`: `path(line,col): error TSnnnn: message`. */
+const TSC_ERROR = /^(.+?)\((\d+),(\d+)\): error (TS\d+): (.*)$/gm;
+
+/**
+ * What one run of a carried test says. Unlike a hidden test's rule
+ * (`privateTestOutcome`), a skipped or todo test is no failure here: the
+ * contributor's `npm test` exits 0 on it. A pass still needs the runner's
+ * closing counts, at least one test passed and none failed or cancelled,
+ * and no point made for the file as a whole (a throw while loading).
+ */
+function carriedTestOutcome(
+  result: Pick<EvaluationExecResult, "exitCode" | "timedOut" | "stdout">,
+): CarriedOutcome {
+  if (result.timedOut)
+    return {
+      ok: false,
+      reason: "timed_out",
+      detail: `It ran past ${CARRIED_TEST_TIMEOUT_MS / 1000} s on the baseline.`,
+    };
+  const summary = tapSummary(result.stdout);
+  const count = (name: string) => summary?.get(name) ?? 0;
+  if (
+    result.exitCode === 0 &&
+    summary !== null &&
+    !WHOLE_FILE_POINT.test(result.stdout) &&
+    count("pass") >= 1 &&
+    count("fail") === 0 &&
+    count("cancelled") === 0
+  )
+    return { ok: true };
+  return {
+    ok: false,
+    reason: "baseline_failed",
+    detail:
+      summary === null || WHOLE_FILE_POINT.test(result.stdout)
+        ? `It did not run its tests on the baseline (exit ${result.exitCode ?? "none"}).`
+        : `${count("fail")} of its ${count("tests")} test(s) fail on the baseline.`,
+  };
+}
+
+/**
+ * Tries the carried tests on the untouched project, in a job of their own
+ * before the baseline's: the project as the build would hand it out with
+ * every candidate and no hidden test, installed as the baseline installs
+ * it and compiled with `noEmitOnError` off, so one test that does not
+ * compile names itself (tsc's diagnostics, by file) without keeping the
+ * others from running. Each that compiled runs twice on its own with a
+ * TAP report and `CARRIED_TEST_TIMEOUT_MS`, and must pass both times
+ * (`carriedTestOutcome`). A project that does not install keeps none.
+ *
+ * Cost: one more job, with an install, only for a build with candidates.
+ */
+async function trialCarriedTests(
+  provider: EvaluationProvider,
+  input: {
+    readonly label: string;
+    readonly files: readonly GeneratedFile[];
+    readonly tests: readonly string[];
+    readonly signal: AbortSignal;
+    readonly log: (line: string) => void;
+  },
+): Promise<Map<string, CarriedOutcome>> {
+  const outcomes = new Map<string, CarriedOutcome>();
+  let job;
+  try {
+    job = await provider.create({ label: input.label, signal: input.signal });
+  } catch (error) {
+    if (input.signal.aborted) throw error;
+    throw new AnalysisError("evaluation_failed");
+  }
+  let state = "failed";
+  try {
+    await job.stage(input.files.map(({ path, text }) => ({ path, text })));
+    const exec = (argv: readonly string[], timeoutMs?: number) => {
+      input.signal.throwIfAborted();
+      return job.exec({
+        argv,
+        env: {},
+        limits:
+          timeoutMs === undefined
+            ? EVALUATION_LIMITS
+            : { ...EVALUATION_LIMITS, timeoutMs },
+      });
+    };
+    const ok = (result: EvaluationExecResult) =>
+      !result.timedOut && result.exitCode === 0;
+    const prepared = await exec([
+      "npm",
+      "install",
+      "--package-lock-only",
+      "--ignore-scripts",
+      "--no-audit",
+      "--no-fund",
+    ]);
+    const installed = ok(prepared)
+      ? await exec(["npm", "ci", "--ignore-scripts", "--no-audit", "--no-fund"])
+      : prepared;
+    if (!ok(installed)) {
+      for (const path of input.tests)
+        outcomes.set(path, {
+          ok: false,
+          reason: "baseline_failed",
+          detail: "The project did not install to try it.",
+        });
+      state = "succeeded";
+      return outcomes;
+    }
+    const compiled = await exec([
+      "node",
+      "node_modules/typescript/bin/tsc",
+      "-p",
+      "tsconfig.json",
+      "--noEmitOnError",
+      "false",
+      "--pretty",
+      "false",
+    ]);
+    const errors = new Map<string, string>();
+    for (const match of `${compiled.stdout}\n${compiled.stderr}`.matchAll(
+      TSC_ERROR,
+    )) {
+      const path = match[1] ?? "";
+      if (input.tests.includes(path) && !errors.has(path))
+        errors.set(path, `${match[4] ?? ""}: ${match[5] ?? ""}`);
+    }
+    const runnable: string[] = [];
+    for (const path of input.tests) {
+      const error = errors.get(path);
+      if (error === undefined) runnable.push(path);
+      else
+        outcomes.set(path, {
+          ok: false,
+          reason: "compile_failed",
+          detail: `It does not compile against the project: ${error}`,
+        });
+    }
+    // Two rounds, the second after the first has finished, as hidden
+    // tests run: a test that passes by timing or leftover state is flaky.
+    const once = async (path: string) => {
+      const result = await exec(privateTestArgv(path), CARRIED_TEST_TIMEOUT_MS);
+      return {
+        outcome: carriedTestOutcome(result),
+        points: tapPoints(result.stdout).join("\n"),
+      };
+    };
+    const first = new Map<string, Awaited<ReturnType<typeof once>>>();
+    for (const path of runnable) first.set(path, await once(path));
+    for (const path of runnable) {
+      const before = first.get(path);
+      if (before === undefined || !before.outcome.ok) {
+        if (before !== undefined) outcomes.set(path, before.outcome);
+        continue;
+      }
+      const again = await once(path);
+      outcomes.set(
+        path,
+        !again.outcome.ok
+          ? again.outcome
+          : again.points === before.points
+            ? { ok: true }
+            : {
+                ok: false,
+                reason: "flaky",
+                detail: "Two runs of it on the baseline disagreed.",
+              },
+      );
+    }
+    state = "succeeded";
+    return outcomes;
+  } catch (error) {
+    state = input.signal.aborted ? "cancelled" : "failed";
+    if (input.signal.aborted) throw error;
+    throw new AnalysisError("evaluation_failed");
+  } finally {
+    let teardown = "destroyed";
+    try {
+      await job.destroy();
+    } catch {
+      teardown = "failed";
+    }
+    input.log(
+      `Evaluation job ${job.id} for the carried tests ${state}, teardown ${teardown}.`,
+    );
+  }
+}
+
+/**
+ * The repository's own tests a build carries (`carried-tests.ts`): read
+ * at the slice's commit, checked by `carriedTestCandidates`, renamed by
+ * the version's table (`carry`, the build's `prepare`), screened as public
+ * files (`screen`: the workspace's names, credentials, disclosure
+ * findings), and tried in a job of their own (`trialCarriedTests`) on the
+ * project `trialProject` gives, which is null when the build would be
+ * blocked before its baseline anyway, so nothing is tried. Only the tests
+ * that passed are kept; every other is recorded with why.
+ */
+async function carryRepositoryTests(input: {
+  readonly provider: EvaluationProvider;
+  readonly label: string;
+  readonly sourceDir: string;
+  readonly manifest: SliceManifest;
+  readonly contract: BoundaryContract;
+  readonly installs: (specifier: string) => boolean;
+  readonly carry:
+    | ((candidates: readonly CarriedTestCandidate[]) => {
+        files: CarriedTestFile[];
+        dropped: DroppedTest[];
+      })
+    | null;
+  readonly trialProject: (
+    carried: readonly CarriedTestFile[],
+  ) => readonly GeneratedFile[] | null;
+  readonly screen: (file: GeneratedFile) => string | null;
+  readonly signal: AbortSignal;
+  readonly log: (line: string) => void;
+}): Promise<{ files: CarriedTestFile[]; record: CarriedTestsRecord }> {
+  const limits = input.manifest.params.carriedTestLimits ?? CARRIED_TEST_LIMITS;
+  const texts = new Map<string, string>();
+  for (const path of carriedTestPaths(input.manifest)) {
+    const absolute = resolve(input.sourceDir, path);
+    const rel = relative(input.sourceDir, absolute);
+    if (rel === "" || rel.startsWith("..") || isAbsolute(rel)) continue;
+    const bytes = await readFile(absolute).catch(() => null);
+    if (bytes !== null) texts.set(path, bytes.toString("utf8"));
+  }
+  const { candidates, dropped } = carriedTestCandidates({
+    manifest: input.manifest,
+    contract: input.contract,
+    texts,
+    installs: input.installs,
+    limits,
+  });
+  const untried = (from: string, detail: string): DroppedTest => ({
+    from,
+    reason: "untried",
+    detail,
+  });
+  let screened: CarriedTestFile[] = [];
+  if (input.carry === null)
+    dropped.push(
+      ...candidates.map((candidate) =>
+        untried(
+          candidate.from,
+          "The name table did not apply, so nothing was carried.",
+        ),
+      ),
+    );
+  else {
+    const made = input.carry(candidates);
+    dropped.push(...made.dropped);
+    for (const file of made.files) {
+      const problem = input.screen({
+        path: file.path,
+        text: file.text,
+        class: "test-public",
+        public: true,
+      });
+      if (problem === null) screened.push(file);
+      else
+        dropped.push({
+          from: file.from,
+          reason: "disclosure",
+          detail: problem,
+        });
+    }
+  }
+  const kept: CarriedTestFile[] = [];
+  const project = screened.length === 0 ? null : input.trialProject(screened);
+  if (screened.length > 0 && project === null) {
+    dropped.push(
+      ...screened.map((file) =>
+        untried(
+          file.from,
+          "The build is blocked before its baseline, so no test was tried.",
+        ),
+      ),
+    );
+    screened = [];
+  }
+  if (project !== null) {
+    const outcomes = await trialCarriedTests(input.provider, {
+      label: input.label,
+      files: project,
+      tests: screened.map((file) => file.path),
+      signal: input.signal,
+      log: input.log,
+    });
+    for (const file of screened) {
+      const outcome = outcomes.get(file.path) ?? {
+        ok: false as const,
+        reason: "baseline_failed" as const,
+        detail: "It was not run.",
+      };
+      if (outcome.ok) kept.push(file);
+      else
+        dropped.push({
+          from: file.from,
+          reason: outcome.reason,
+          detail: outcome.detail,
+        });
+    }
+  }
+  input.log(
+    `Carried ${kept.length} of the repository's own test(s) as public tests; ${dropped.length} left out.`,
+  );
+  return {
+    files: kept,
+    record: {
+      limits: { ...limits, timeoutMs: CARRIED_TEST_TIMEOUT_MS },
+      kept: kept
+        .map(({ path, from }) => ({ path, from }))
+        .sort((a, b) => compare(a.path, b.path)),
+      dropped: dropped.sort((a, b) => compare(a.from, b.from)),
+    },
+  };
+}
+
 /**
  * The baseline on a layout other than the platform's (an uploaded carveout
  * folder's), in two jobs. Its public suite is the folder's own runner,
@@ -905,6 +1271,8 @@ export async function writeBuildOutputs(input: {
   readonly upload?: SandboxBuildManifest["upload"];
   /** The publication gates the build ran (`PublicationGates`). */
   readonly gates: PublicationGates;
+  /** The repository's tests the build carried and dropped, when asked to. */
+  readonly carriedTests?: CarriedTestsRecord;
 }): Promise<{ manifest: SandboxBuildManifest; written: ArtifactFile[] }> {
   const { baseline, blockers } = input;
   const layout = input.layout ?? PLATFORM_LAYOUT;
@@ -955,6 +1323,9 @@ export async function writeBuildOutputs(input: {
             record.path,
       ),
     ),
+    ...(input.carriedTests === undefined
+      ? {}
+      : { carriedTests: input.carriedTests }),
   };
   await mkdir(input.outDir, { recursive: true });
   const outputs: {
@@ -1261,6 +1632,7 @@ export function createSandboxBuildAdapter(
             acceptanceTests: source.acceptanceTests,
             fixtures: source.fixtures,
             starterSha256: source.starterSha256,
+            disclosureAcknowledgements: source.disclosureAcknowledgements,
           }),
         ),
       );
@@ -1337,6 +1709,15 @@ export function createSandboxBuildAdapter(
         );
       const versionFixtures: VersionFixtures | null =
         preparedFixtures ?? source.fixtures;
+      // What an owner said may be public, and the scan's context under a
+      // table: the workspace's Jira keys, and the names the table wrote,
+      // which are the sanctioned public ones (`scanDisclosure`).
+      const acknowledgements = source.disclosureAcknowledgements ?? [];
+      const disclosureContext = (rules: readonly AliasRule[]) => ({
+        ticketKeys: params.ticketKeys ?? [],
+        publicNames: rules.map((rule) => rule.after),
+        acknowledgements,
+      });
       // Aliasing, with the inverse proof. The spec rides along unscoped.
       const symbols = symbolsOf(contract);
       const symbolLeaves = jsonLeaves(CONTRACT_PSEUDO_PATH, symbols);
@@ -1399,6 +1780,10 @@ export function createSandboxBuildAdapter(
         ...nameLeaves,
         ...(scenario === null ? [] : [{ path: RUN_PATH, text: scenario }]),
       ];
+      // The repository's tests the build carries, set once its own job has
+      // tried them on the untouched project: the table's checks see the
+      // project without them, and everything after with them.
+      let carriedKept: readonly { path: string; text: string }[] = [];
       const prepare = (rules: readonly AliasRule[]) => {
         const aliased = applyAliases(aliasInputs, rules);
         if (!aliased.ok)
@@ -1411,6 +1796,7 @@ export function createSandboxBuildAdapter(
             })),
             renames: [],
             generate: null,
+            carry: null,
             publicSpec: null,
             publicDecisions: [] as readonly string[],
             guideDecisions: [] as readonly string[],
@@ -1421,12 +1807,18 @@ export function createSandboxBuildAdapter(
           path: aliased.files[index]?.path ?? file.path,
           text: aliased.files[index]?.text ?? file.text,
         }));
+        // What the build writes from the bounty and the stubs carries no
+        // address, link, ticket or name the table left (`redactDisclosure`):
+        // generated text is never carried back, copied source is.
+        const scrubbing = disclosureContext(rules);
+        const scrub = (text: string) => redactDisclosure(text, scrubbing);
         const stubs: ProjectStub[] = stubTexts.map((stub, index) => {
           const file = aliased.files[included.length + index];
+          const path = file?.path ?? stub.module;
           return {
             module: stub.module,
-            path: file?.path ?? stub.module,
-            text: file?.text ?? stub.text,
+            path,
+            text: redactStubComments(path, file?.text ?? stub.text, scrubbing),
           };
         });
         // The leaves back, in the order they went in.
@@ -1442,7 +1834,7 @@ export function createSandboxBuildAdapter(
           contract,
           withJsonLeaves(symbols, textsOf(symbolLeaves.length)),
         );
-        const aliasedSpec =
+        const renamedSpec =
           spec === null
             ? null
             : withJsonLeaves(spec, textsOf(specLeaves.length));
@@ -1450,7 +1842,7 @@ export function createSandboxBuildAdapter(
           fixtures,
           textsOf(fixtureLeaves.length),
         );
-        const aliasedListing = withJsonLeaves(
+        const renamedListing = withJsonLeaves(
           listing,
           textsOf(listingLeaves.length),
         );
@@ -1465,8 +1857,16 @@ export function createSandboxBuildAdapter(
           (name, index) =>
             [name, publicNames.environment[index] ?? name] as const,
         );
+        // The walkthrough is code the build writes: its comments are
+        // scrubbed as a stub's are, its code left to the table.
         const aliasedScenario =
-          scenario === null ? null : (aliased.files[at]?.text ?? scenario);
+          scenario === null
+            ? null
+            : redactStubComments(
+                RUN_PATH,
+                aliased.files[at]?.text ?? scenario,
+                scrubbing,
+              );
         /*
             A rule can still rename a value the shape depends on, such as a
             symbol's kind or a scenario's. What was valid before renaming must
@@ -1477,7 +1877,7 @@ export function createSandboxBuildAdapter(
           stillReads(boundaryContractSchema, contract, aliasedContract)
             ? null
             : "contract",
-          stillReads(specDraftSchema, spec, aliasedSpec) ? null : "spec",
+          stillReads(specDraftSchema, spec, renamedSpec) ? null : "spec",
           stillReads(fixtureListSchema, fixtures, aliasedFixtures)
             ? null
             : "fixtures",
@@ -1510,11 +1910,28 @@ export function createSandboxBuildAdapter(
             blockers,
             renames: aliased.renames,
             generate: null,
+            carry: null,
             publicSpec: null,
             publicDecisions: [] as readonly string[],
             guideDecisions: [] as readonly string[],
-            publicListing: aliasedListing,
+            publicListing: renamedListing,
           };
+        // The bounty's words as the project carries them: renamed, then
+        // redacted of what still says where it came from.
+        const aliasedSpec =
+          renamedSpec === null
+            ? null
+            : withJsonLeaves(
+                renamedSpec,
+                jsonLeaves(SPEC_PSEUDO_PATH, renamedSpec).map((leaf) =>
+                  scrub(leaf.text),
+                ),
+              );
+        const aliasedListing = {
+          title: scrub(renamedListing.title),
+          specSummary: scrub(renamedListing.specSummary),
+          tags: renamedListing.tags.map(scrub),
+        };
         const uses = packageUses(
           new Map([...sources, ...stubs].map((file) => [file.path, file.text])),
           (specifier) =>
@@ -1534,7 +1951,10 @@ export function createSandboxBuildAdapter(
           publicDecisions,
           vocabulary,
         );
-        const generate = (tests: readonly AcceptanceTest[]) => {
+        const generate = (
+          tests: readonly AcceptanceTest[],
+          carried: readonly { path: string; text: string }[] = carriedKept,
+        ) => {
           const project = generateProject({
             version: {
               sandboxId: version.sandboxId,
@@ -1562,6 +1982,7 @@ export function createSandboxBuildAdapter(
               environment: Object.fromEntries(environmentPairs),
             },
             ...(compilerOptions === undefined ? {} : { compilerOptions }),
+            ...(carried.length === 0 ? {} : { carriedTests: carried }),
           });
           return {
             files: [...project.files],
@@ -1569,11 +1990,59 @@ export function createSandboxBuildAdapter(
             importRewrites: project.importRewrites,
           };
         };
+        // The repository's tests as the project carries them: each renamed
+        // by the table at its own path, as a source there is, and its
+        // imports pointed at where the project put their targets.
+        const projectPathOf = new Map<string, string>([
+          ...sources.map((file) => [file.originalPath, file.path] as const),
+          ...stubs.map((stub) => [stub.module, stub.path] as const),
+        ]);
+        const publicPackages = new Map(
+          packagePairs.filter(([from, to]) => from !== to),
+        );
+        const carry = (candidates: readonly CarriedTestCandidate[]) => {
+          const files: CarriedTestFile[] = [];
+          const dropped: DroppedTest[] = [];
+          for (const candidate of candidates) {
+            const renamed = applyAliases(
+              [{ path: candidate.from, text: candidate.text }],
+              rules,
+            );
+            const file = renamed.ok ? renamed.files[0] : undefined;
+            if (file === undefined) {
+              dropped.push({
+                from: candidate.from,
+                reason: "alias_failed",
+                detail: "The name table could not rename it.",
+              });
+              continue;
+            }
+            const made = carriedTestFile({
+              candidate,
+              renamed: file,
+              projectPathOf: (path) => projectPathOf.get(path) ?? null,
+              packageName: (specifier) => {
+                const name = packageNameOf(specifier);
+                const to = publicPackages.get(name);
+                return to === undefined
+                  ? specifier
+                  : `${to}${specifier.slice(name.length)}`;
+              },
+              environment: new Map(
+                environmentPairs.filter(([from, to]) => from !== to),
+              ),
+            });
+            if ("reason" in made) dropped.push(made);
+            else files.push({ ...made, from: candidate.from });
+          }
+          return { files, dropped };
+        };
         return {
           aliased,
           blockers,
           renames: aliased.renames,
           generate,
+          carry,
           publicSpec: aliasedSpec,
           publicDecisions,
           guideDecisions,
@@ -1592,6 +2061,23 @@ export function createSandboxBuildAdapter(
           generated.filter((file) => file.public),
           vocabulary,
         );
+      // Text beyond the vocabulary that says whose code it is, in the
+      // public files a table makes, and what no owner acknowledged.
+      const disclosureOf = (
+        generated: readonly GeneratedFile[],
+        rules: readonly AliasRule[],
+      ) => {
+        const found = scanDisclosure(
+          generated.filter((file) => file.public),
+          disclosureContext(rules),
+        );
+        return {
+          found,
+          open: unacknowledgedFindings(found, acknowledgements),
+        };
+      };
+      const findingLine = (finding: DisclosureFinding) =>
+        `${finding.file}:${finding.line} ${finding.kind} ${finding.value}`;
       // The build's own check of a name table, as the agent is shown it.
       const checkTable = (rules: readonly AliasRule[]) => {
         const candidate = prepare(rules);
@@ -1604,10 +2090,15 @@ export function createSandboxBuildAdapter(
               ? []
               : unresolvedImportRules(rules, candidate.renames, project.files)),
             ...vocabularyBlockers(leaksOf(project?.files ?? [])),
-          ].map(
-            (blocker) => `${blocker.file ?? blocker.code}: ${blocker.detail}`,
-          ),
+          ]
+            .map(
+              (blocker) => `${blocker.file ?? blocker.code}: ${blocker.detail}`,
+            )
+            .concat(carryHazards(rules).map((hazard) => hazard.detail)),
           applied: candidate.aliased.applied,
+          findings: disclosureOf(project?.files ?? [], rules).open.map(
+            findingLine,
+          ),
         };
       };
       // Pseudonyms, for a draft with none: the preparation's table when it
@@ -1655,6 +2146,16 @@ export function createSandboxBuildAdapter(
               },
               files: [...included, ...stubFiles],
               vocabulary,
+              // What the scan finds in the slice as written: candidates
+              // for text rules, the acknowledged left out.
+              hints: disclosureHints(
+                unacknowledgedFindings(
+                  scanDisclosure([...included, ...stubFiles], {
+                    ticketKeys: params.ticketKeys ?? [],
+                  }),
+                  acknowledgements,
+                ),
+              ),
               check: checkTable,
               drafted,
               signal: input.signal,
@@ -1674,6 +2175,53 @@ export function createSandboxBuildAdapter(
         input.log(
           `TASK.md leaves out the ${publicDecisions.length} confirmed decision(s): the disclosure scans find a workspace name or a credential in them.`,
         );
+      // The repository's own tests of the slice, when it asked for them
+      // and this build was not asked to leave them out.
+      const carriedTests =
+        manifest.params.carryTests === true && params.carryTests !== false
+          ? await carryRepositoryTests({
+              provider,
+              label: `${version.id}-carried`,
+              sourceDir: input.sourceDir,
+              manifest,
+              contract,
+              installs: (specifier) =>
+                packageNames.has(packageNameOf(specifier)) ||
+                isNodeBuiltin(specifier),
+              carry: prepared.carry,
+              // The project without hidden tests, clean of every check the
+              // build makes before its baseline, or nothing is tried.
+              trialProject: (carried) => {
+                if (
+                  generate === null ||
+                  prepared.blockers.length > 0 ||
+                  source.scope.blockers.length > 0
+                )
+                  return null;
+                const project = generate([], carried);
+                return project.blockers.length === 0 &&
+                  leaksOf(project.files).length === 0 &&
+                  disclosureOf(project.files, aliasRules).open.length === 0
+                  ? project.files
+                  : null;
+              },
+              screen: (file) => {
+                const leaks = leaksOf([file]);
+                if (leaks.length > 0)
+                  return `It names the workspace (${leaks.map((leak) => leak.term).join(", ")}).`;
+                const secrets = scanSecrets([file]);
+                if (secrets.length > 0)
+                  return `It holds a credential (${secrets[0]?.rule ?? "secret"}, line ${secrets[0]?.line ?? 0}).`;
+                const open = disclosureOf([file], aliasRules).open;
+                return open.length === 0
+                  ? null
+                  : `The disclosure scan finds ${open.map((finding) => finding.kind).join(", ")} in it.`;
+              },
+              signal: input.signal,
+              log: input.log,
+            })
+          : null;
+      if (carriedTests !== null) carriedKept = carriedTests.files;
       const blockers: ProjectBlocker[] = [...prepared.blockers];
       let files: GeneratedFile[] = [];
       let importRewrites: SandboxBuildManifest["importRewrites"] = [];
@@ -1704,6 +2252,15 @@ export function createSandboxBuildAdapter(
             leaks.length === 0
               ? `No public file names the workspace (${vocabulary.length} name(s) checked).`
               : `Public files still name the workspace: ${leaks.map((leak) => leak.term).join(", ")}.`,
+          );
+          // Beyond the vocabulary: what the table left and no owner
+          // acknowledged blocks, as a name would.
+          const disclosure = disclosureOf(files, aliasRules);
+          blockers.push(...disclosureBlockers(disclosure.open));
+          input.log(
+            disclosure.found.length === 0
+              ? "The disclosure scan finds no address, host, author, ticket key or chat link in a public file."
+              : `The disclosure scan finds ${disclosure.found.length} item(s) in public files, ${disclosure.open.length} not acknowledged.`,
           );
         }
       }
@@ -1874,6 +2431,7 @@ export function createSandboxBuildAdapter(
                 acceptanceTests: hidden?.tests ?? source.acceptanceTests,
                 fixtures: versionFixtures,
                 starterSha256: source.starterSha256,
+                disclosureAcknowledgements: acknowledgements,
               }),
             ),
           );
@@ -1897,6 +2455,14 @@ export function createSandboxBuildAdapter(
         }),
         rules: aliasRules,
       });
+      // The disclosure scan over the project as written, every finding
+      // recorded with whether an owner acknowledged it.
+      const scanned = disclosureOf(files, aliasRules);
+      if (
+        scanned.open.length > 0 &&
+        !blockers.some((blocker) => blocker.code === "disclosure_findings")
+      )
+        blockers.push(...disclosureBlockers(scanned.open));
       input.log(
         roundTrip.ok
           ? `The unchanged project carries back to the source (${roundTrip.files} file(s)).`
@@ -1911,7 +2477,11 @@ export function createSandboxBuildAdapter(
             files: roundTrip.files,
             problems: roundTrip.problems,
           },
-          disclosure: disclosureGate(blockers, vocabulary.length),
+          disclosure: disclosureGate(blockers, vocabulary.length, "build", {
+            findings: disclosureRecords(scanned.found, acknowledgements),
+            total: scanned.found.length,
+            unacknowledged: scanned.open.length,
+          }),
         },
         sandboxVersionId: version.id,
         aliasRules,
@@ -1931,6 +2501,7 @@ export function createSandboxBuildAdapter(
         baseline,
         evaluator,
         blockers,
+        ...(carriedTests === null ? {} : { carriedTests: carriedTests.record }),
       });
       if (wrote) {
         const absolutePath = join(input.outDir, BUILD_TRANSFORM_PATH);

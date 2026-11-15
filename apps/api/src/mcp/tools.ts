@@ -355,7 +355,7 @@ export const TOOLS = [
     name: "get_usage",
     scope: "workspace:read",
     description:
-      "Count the workspace's sizing and analysis runs by kind and state over recent days, and show the model tokens its runs spent this calendar month (UTC) against its monthly limit and when that resets. Runs that call a model are refused with quota_exceeded once the limit is reached.",
+      "Count the workspace's sizing and analysis runs by kind and state over recent days, and show the model tokens and evaluator seconds its runs spent this calendar month (UTC), each against its monthly limit and when that resets, with the month's grading attempts and uploads. Runs are refused with quota_exceeded (and the kind that ran out) once a limit is reached.",
     input: {
       days: z
         .number()
@@ -644,7 +644,7 @@ export const TOOLS = [
     name: "plan_slice",
     scope: "sandboxes:write",
     description:
-      "Slice a connected repository from entry points: which files a sandbox copies, which modules it cuts to stubs, its public surface and what blocks it. It runs in the background; read it with get_run. Nothing is cut or published.",
+      "Slice a connected repository from entry points: which files a sandbox copies, which modules it cuts to stubs, its public surface and what blocks it. With carryTests (the default), a version built from it carries the repository's own node:test tests of those files as read-only public tests, those that pass on the untouched project, at most 20 by default; the build records the rest with why. It runs in the background; read it with get_run. Nothing is cut or published.",
     input: {
       repositoryId: id("repository"),
       entryPoints: z
@@ -654,16 +654,23 @@ export const TOOLS = [
         .describe("Repository paths the slice starts from."),
       maxFiles: z.number().int().min(1).max(200).optional(),
       maxDepth: z.number().int().min(0).max(10).optional(),
+      carryTests: z
+        .boolean()
+        .optional()
+        .describe(
+          "Carry the repository's own tests of the slice into its versions (default true).",
+        ),
     },
     scoped: true,
     method: "POST",
     path: ({ repositoryId }, workspace) =>
       `${org(workspace)}/github/repositories/${enc(repositoryId)}/slices`,
-    body: ({ entryPoints, maxFiles, maxDepth }) => ({
+    body: ({ entryPoints, maxFiles, maxDepth, carryTests }) => ({
       entryPoints: [...new Set(entryPoints)].sort(),
       ...(maxFiles === undefined && maxDepth === undefined
         ? {}
         : { budget: { maxFiles: maxFiles ?? 40, maxDepth: maxDepth ?? 3 } }),
+      ...(carryTests === undefined ? {} : { carryTests }),
     }),
   }),
   tool({
@@ -681,7 +688,7 @@ export const TOOLS = [
     name: "cut_slice",
     scope: "sandboxes:write",
     description:
-      "Cut a draft version of a sandbox from a succeeded slice run (plan_slice), priced from the bounty's approved proposal. A wide slice still waits for a person's approval in the web app.",
+      "Cut a draft version of a sandbox from a succeeded slice run (plan_slice), priced from the bounty's approved proposal. Its build carries the repository's own tests when the slice was planned with carryTests (plan_slice's default). A wide slice still waits for a person's approval in the web app.",
     input: {
       sandboxId: id("sandbox"),
       sliceRunId: id("slice run"),

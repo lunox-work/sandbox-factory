@@ -11,6 +11,12 @@
  * depends on a provider SDK.
  */
 
+import {
+  DISCLOSURE_FINDINGS_EVALUATED,
+  DISCLOSURE_FINDINGS_RECORDED,
+  type DisclosureFindingRecord,
+} from "./disclosure.js";
+import type { CarriedTestsRecord } from "./carried-tests.js";
 import type { GradingLayout } from "./layout.js";
 import type { ImportRewrite, ProjectBlocker } from "./project.js";
 import type { PathClass, ResolvedDependency } from "./provenance.js";
@@ -326,6 +332,12 @@ export interface SandboxBuildManifest {
    * handout keeps the hash it always showed (version 1).
    */
   readonly hiddenCommitment?: HiddenCommitment;
+  /**
+   * The repository's tests the build carried and dropped, with why, when
+   * its slice asked for them (`carried-tests.ts`). Owners' only. Absent
+   * otherwise: no test was carried.
+   */
+  readonly carriedTests?: CarriedTestsRecord;
 }
 
 /**
@@ -370,34 +382,101 @@ export interface PublicationGates {
   };
   /**
    * The disclosure scan over every public file: the workspace's names
-   * (`publicVocabularyLeaks`) and credentials (`scanSecrets`). An uploaded
-   * folder is scanned by the upload route before it is stored.
+   * (`publicVocabularyLeaks`), credentials (`scanSecrets`) and the text
+   * beyond the vocabulary that says whose code it is (`scanDisclosure`:
+   * addresses, hosts, copyright and author lines, ticket keys, chat links,
+   * `TODO(name)`): in a sliced build since `sandbox_build@13`, a starter
+   * since `sandbox_starter@6` and an upload since `sandbox_import@2`. An
+   * uploaded folder's names and credentials are scanned by the upload
+   * route before it is stored.
    */
   readonly disclosure: {
-    readonly status: "passed" | "failed";
+    /**
+     * `pending_acknowledgement`: names and credentials clean, and findings
+     * beyond them that publication checks against the draft's
+     * acknowledgements (`acknowledgedAt: "publish"`); not a blocker, so
+     * the build stays ready.
+     */
+    readonly status: "passed" | "failed" | "pending_acknowledgement";
     readonly scannedBy: "build" | "upload";
     /** Workspace names checked; 0 when the upload route scanned. */
     readonly names: number;
-    /** Blocking findings: workspace names and credentials in public files. */
+    /**
+     * Blocking findings: workspace names and credentials in public files,
+     * and, where the build read the acknowledgements, the `scanDisclosure`
+     * findings no owner acknowledged.
+     */
     readonly blocking: number;
+    /**
+     * Where the `scanDisclosure` findings are acknowledged. `build` (or
+     * absent): a sliced build read the draft's acknowledgements, which are
+     * part of its transform, and blocked on the rest. `publish`: an
+     * uploaded or generated version's build read none, so its files never
+     * depend on them, and publication checks the draft's list against
+     * `findings` (`openDisclosureFindings`) with no build again.
+     */
+    readonly acknowledgedAt?: "build" | "publish";
+    /**
+     * The `scanDisclosure` findings, acknowledged or not: the first
+     * `DISCLOSURE_FINDINGS_RECORDED`, or, acknowledged at publication,
+     * the first `DISCLOSURE_FINDINGS_EVALUATED`; absent from a build made
+     * before them.
+     */
+    readonly findings?: readonly DisclosureFindingRecord[];
+    /** How many findings there were in all, and how many acknowledged. */
+    readonly total?: number;
+    readonly acknowledged?: number;
   };
 }
 
-/** The disclosure gate, from a build's blockers and the names it checked. */
+/**
+ * The disclosure gate, from a build's blockers and the names it checked,
+ * and, from a build that ran `scanDisclosure`, its findings marked
+ * acknowledged or not (`disclosureRecords`) with their full count. A scan
+ * acknowledged at publication (`acknowledgedAt: "publish"`) blocks on
+ * nothing here: its findings, all of them recorded, leave the gate
+ * `pending_acknowledgement` for publication to settle.
+ */
 export function disclosureGate(
   blockers: readonly ProjectBlocker[],
   names: number,
   scannedBy: "build" | "upload" = "build",
+  scan?: {
+    readonly findings: readonly DisclosureFindingRecord[];
+    readonly total: number;
+    readonly unacknowledged: number;
+    readonly acknowledgedAt?: "build" | "publish";
+  },
 ): PublicationGates["disclosure"] {
-  const blocking = blockers.filter(
+  const atPublish = scan?.acknowledgedAt === "publish";
+  const scans = blockers.filter(
     (blocker) =>
       blocker.code === "vocabulary_leaked" || blocker.code === "secret_found",
   ).length;
+  const blocking = scans + (atPublish ? 0 : (scan?.unacknowledged ?? 0));
   return {
-    status: blocking === 0 ? "passed" : "failed",
+    status:
+      blocking > 0
+        ? "failed"
+        : atPublish && (scan?.total ?? 0) > 0
+          ? "pending_acknowledgement"
+          : "passed",
     scannedBy,
     names,
     blocking,
+    ...(scan === undefined
+      ? {}
+      : {
+          ...(atPublish ? { acknowledgedAt: "publish" as const } : {}),
+          findings: scan.findings.slice(
+            0,
+            atPublish
+              ? DISCLOSURE_FINDINGS_EVALUATED
+              : DISCLOSURE_FINDINGS_RECORDED,
+          ),
+          total: scan.total,
+          acknowledged: atPublish ? 0 : scan.total - scan.unacknowledged,
+        }),
   };
 }
 
@@ -420,6 +499,13 @@ export interface BuildSummary {
     readonly steps: readonly { name: string; ok: boolean }[];
   } | null;
   readonly blockers: readonly ProjectBlocker[];
+  /**
+   * The disclosure gate as the build recorded it, its findings for an
+   * owner to rename or acknowledge; absent from a build made before gates.
+   */
+  readonly disclosure?: PublicationGates["disclosure"];
+  /** How many of the repository's tests were carried and dropped; absent when none were asked for. */
+  readonly carriedTests?: { readonly kept: number; readonly dropped: number };
 }
 
 export function buildSummary(manifest: SandboxBuildManifest): BuildSummary {
@@ -450,5 +536,16 @@ export function buildSummary(manifest: SandboxBuildManifest): BuildSummary {
             })),
           },
     blockers: manifest.blockers.slice(0, 50),
+    ...(manifest.gates === undefined
+      ? {}
+      : { disclosure: manifest.gates.disclosure }),
+    ...(manifest.carriedTests === undefined
+      ? {}
+      : {
+          carriedTests: {
+            kept: manifest.carriedTests.kept.length,
+            dropped: manifest.carriedTests.dropped.length,
+          },
+        }),
   };
 }

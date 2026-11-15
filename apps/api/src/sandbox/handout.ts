@@ -94,12 +94,17 @@ function refuseProject(
   return c.json({ error, code: refusal.code }, status);
 }
 
-/** `GET …/handout`: the public files, and the hidden suite's count and hash. */
+/**
+ * `GET …/handout`: the public files, and the hidden suite's count and hash.
+ * `audience: "contributor"` leaves out the build run: its id is the
+ * workspace's, not the handout's.
+ */
 export async function handoutResponse(
   c: Context,
   options: Stores,
   owner: string,
   versionId: string,
+  audience: "workspace" | "contributor" = "workspace",
 ): Promise<Response> {
   const project = await publicProject(options, owner, versionId);
   if (project === null) return c.json({ error: "Not found." }, 404);
@@ -119,7 +124,13 @@ export async function handoutResponse(
   if (manifestFile !== undefined) {
     const bytes = await options.objects.get(manifestFile.objectKey);
     if (bytes === undefined) return unavailable();
-    manifest = JSON.parse(Buffer.from(bytes).toString("utf8")) as Recorded;
+    try {
+      manifest = JSON.parse(Buffer.from(bytes).toString("utf8")) as Recorded;
+    } catch {
+      // A stored manifest that is not JSON is the operator's to see.
+      console.error("handout_manifest_unreadable", versionId);
+      return unavailable();
+    }
   }
   const layout = layoutOf(manifest ?? {});
   const hiddenTests = project.artifacts.filter(
@@ -152,7 +163,7 @@ export async function handoutResponse(
   return c.json(
     sandboxHandoutSchema.parse({
       versionId: project.versionId,
-      run: project.run,
+      ...(audience === "contributor" ? {} : { run: project.run }),
       files: project.files.map(({ path, sizeBytes, sha256 }) => ({
         path,
         sizeBytes,

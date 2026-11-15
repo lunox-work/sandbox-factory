@@ -1,9 +1,10 @@
 /**
  * `GET /api/v1/orgs/:orgId/usage?days=30`: the runs the workspace started
  * in the last `days` days (1 to 90), counted by family, kind and state from
- * the run tables, and the model tokens its runs spent this calendar month
- * (UTC) from the ledger, against the monthly limit new model runs are
- * refused at (`quota.ts`). Any member reads it; a token needs
+ * the run tables; the model tokens and evaluator seconds its runs spent
+ * this calendar month (UTC) from the two ledgers, each against the monthly
+ * limit new runs are refused at (`quota.ts`); and the month's grading
+ * attempts and uploads. Any member reads it; a token needs
  * `workspace:read`.
  */
 
@@ -19,6 +20,8 @@ export interface UsageRouteOptions {
   readonly usage: UsageStore;
   /** `MONTHLY_MODEL_TOKENS_PER_ORG`: what `modelTokens.limit` reports. */
   readonly monthlyTokenLimit: number;
+  /** `MONTHLY_EVALUATOR_SECONDS_PER_ORG`: what `evaluatorSeconds.limit` reports. */
+  readonly monthlyEvaluatorSeconds: number;
   readonly now?: (() => Date) | undefined;
 }
 
@@ -38,11 +41,17 @@ export function mountUsageRoutes(
     const to = options.now?.() ?? new Date();
     const from = new Date(to.getTime() - query.data.days * DAY_MS);
     const month = quotaMonth(to);
-    const [runs, tokens] = await Promise.all([
+    const [runs, tokens, evaluator, counts] = await Promise.all([
       options.usage.runCounts(owner, from),
       options.usage.modelTokens(owner, month.from),
+      options.usage.evaluator(owner, month.from),
+      options.usage.submissionsAndUploads(owner, month.from),
     ]);
     const used = totalTokens(tokens);
+    const monthWindow = {
+      from: month.from.toISOString(),
+      resetsAt: month.resetsAt.toISOString(),
+    };
     return c.json(
       usageResponseSchema.parse({
         window: {
@@ -52,12 +61,27 @@ export function mountUsageRoutes(
         },
         runs,
         modelTokens: {
-          from: month.from.toISOString(),
-          resetsAt: month.resetsAt.toISOString(),
+          ...monthWindow,
           used,
           limit: options.monthlyTokenLimit,
           remaining: Math.max(0, options.monthlyTokenLimit - used),
           ...tokens,
+        },
+        evaluatorSeconds: {
+          ...monthWindow,
+          used: evaluator.seconds,
+          limit: options.monthlyEvaluatorSeconds,
+          remaining: Math.max(
+            0,
+            options.monthlyEvaluatorSeconds - evaluator.seconds,
+          ),
+          jobs: evaluator.jobs,
+          byKind: evaluator.byKind,
+        },
+        thisMonth: {
+          gradingAttempts: counts.gradingAttempts,
+          contributorGradingAttempts: counts.contributorGradingAttempts,
+          uploads: counts.uploads,
         },
       }),
     );

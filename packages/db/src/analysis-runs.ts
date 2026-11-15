@@ -55,6 +55,18 @@ import {
   type QuotaExceeded,
   type TokenQuota,
 } from "./model-usage.js";
+import {
+  EVALUATOR_TOOLS,
+  evaluatorQuotaExceeded,
+  type EvaluatorQuota,
+} from "./evaluator-usage.js";
+import {
+  assignmentOfSubmission,
+  gradingBrakeRefusal,
+  recordGradingAttempt,
+  type GradingBrakes,
+  type GradingRateLimited,
+} from "./grading-attempts.js";
 import { announceChange, notifyChange } from "./run-events.js";
 import {
   analysisRun,
@@ -266,7 +278,8 @@ export type EnqueueAnalysisResult =
       ok: false;
       reason: "not-found" | "run_limit" | "graph_mismatch" | "slice_mismatch";
     }
-  | QuotaExceeded;
+  | QuotaExceeded
+  | GradingRateLimited;
 export interface AnalysisRunStore {
   /**
    * One run per `(snapshot, tool, version, params)`: an existing run that
@@ -283,7 +296,12 @@ export interface AnalysisRunStore {
    * tool's slot (`slotOf`): agent runs and builds are counted apart, as a
    * worker runs them apart. A store made with a `TokenQuota` also refuses
    * a new run of a `MODEL_TOOLS` tool once the organization's month is
-   * spent (`quota_exceeded`); a cached run is still answered.
+   * spent (`quota_exceeded`, kind `model_tokens`), one made with an
+   * `EvaluatorQuota` a new run of an `EVALUATOR_TOOLS` tool once its
+   * evaluator seconds are (kind `evaluator_seconds`), and one made with
+   * `GradingBrakes` an invited contributor's grading run past a brake
+   * (`rate_limited`, `grading-attempts.ts`); a cached run is still
+   * answered. Every grading run queued writes a grading attempt with it.
    */
   enqueue(
     organizationId: string,
@@ -529,7 +547,11 @@ function sharedClaims(tools: Map<AnalysisTool, number>): number {
 
 export function createAnalysisRunStore(
   db: Database,
-  options: { readonly tokenQuota?: TokenQuota } = {},
+  options: {
+    readonly tokenQuota?: TokenQuota;
+    readonly evaluatorQuota?: EvaluatorQuota;
+    readonly gradingBrakes?: GradingBrakes;
+  } = {},
 ): AnalysisRunStore {
   // Left: a run with no snapshot has no repository either.
   const joined = (tx = db) =>
@@ -729,6 +751,14 @@ export function createAnalysisRunStore(
           const refused = await quotaExceeded(tx, owner, options.tokenQuota);
           if (refused !== null) return refused;
         }
+        if (options.evaluatorQuota !== undefined && EVALUATOR_TOOLS.has(tool)) {
+          const refused = await evaluatorQuotaExceeded(
+            tx,
+            owner,
+            options.evaluatorQuota,
+          );
+          if (refused !== null) return refused;
+        }
         const maxActive = input.maxActive ?? 3;
         const active = await tx
           .select({ id: analysisRun.id })
@@ -746,6 +776,22 @@ export function createAnalysisRunStore(
           .limit(maxActive);
         if (active.length >= maxActive)
           return { ok: false, reason: "run_limit" } as const;
+        // A grading run is an attempt: an invited contributor's is braked,
+        // and every one is counted.
+        const graded = gradedSubmissionOf({ tool, params: input.params });
+        const assignmentId =
+          graded === null
+            ? null
+            : await assignmentOfSubmission(tx, owner, graded);
+        if (assignmentId !== null && options.gradingBrakes !== undefined) {
+          const braked = await gradingBrakeRefusal(
+            tx,
+            owner,
+            assignmentId,
+            options.gradingBrakes,
+          );
+          if (braked !== null) return braked;
+        }
         const rows =
           existing === undefined
             ? await tx
@@ -776,10 +822,15 @@ export function createAnalysisRunStore(
         const row = rows[0] as AnalysisRunRow | undefined;
         if (row === undefined)
           throw new Error("Analysis enqueue did not return a row.");
-        // A grading run queued again: its errored submission waits with it.
-        const graded = gradedSubmissionOf(row);
-        if (graded !== null)
+        if (graded !== null) {
+          await recordGradingAttempt(tx, owner, {
+            submissionId: graded,
+            assignmentId,
+            runId: row.id,
+          });
+          // A grading run queued again: its errored submission waits with it.
           await reopenSubmission(tx, owner, graded, new Date());
+        }
         await announce(tx, RUN_QUEUED_CHANNEL, owner, row.id);
         return {
           ok: true,

@@ -16,7 +16,14 @@ import type {
   StoredSandboxVersion,
   StoredVersionSource,
 } from "@sandbox-factory/db";
-import { OPERATION_POLICY, SLICE_PUBLISHED_REASON } from "sandbox-factory";
+import {
+  DISCLOSURE_FINDINGS_EVALUATED,
+  disclosureGate,
+  disclosureRecords,
+  OPERATION_POLICY,
+  scanDisclosure,
+  SLICE_PUBLISHED_REASON,
+} from "sandbox-factory";
 import type {
   ApprovedTaskSnapshot,
   BoundaryContract,
@@ -964,6 +971,8 @@ function fixture(
     repos: { list: async () => workspaceRepos },
     organizationNames: async (owner: string) =>
       owner === "org_1" ? ["Acme Corp", "acme"] : [],
+    ticketKeys: async (owner: string) =>
+      owner === "org_1" ? ["PAY", "OPS", "PAY"] : [],
     bounties: {
       get: async (owner: string, id: string) =>
         (overrides.held === undefined && overrides.bounty !== true) ||
@@ -1388,11 +1397,66 @@ test("publishing is refused, naming the gate, when a build's round trip or discl
         scannedBy: "build",
         names: 3,
         blocking: 2,
+        total: 3,
+        acknowledged: 1,
+        findings: [
+          {
+            kind: "url",
+            file: "src/app.ts",
+            line: 2,
+            value: "https://wiki.acme.internal/a",
+            term: "wiki.acme.internal",
+            acknowledged: false,
+          },
+          {
+            kind: "url",
+            file: "src/app.ts",
+            line: 3,
+            value: "https://docs.stripe.com/api",
+            term: "docs.stripe.com",
+            acknowledged: true,
+          },
+          {
+            kind: "email",
+            file: "src/app.ts",
+            line: 4,
+            value: "jo@acme.io",
+            term: "acme.io",
+            acknowledged: false,
+          },
+        ],
       },
     }),
   });
   assert.equal(disclosure.status, 409);
   assert.equal(disclosure.body["code"], "disclosure_failed");
+  assert.equal(disclosure.body["gate"], "disclosure");
+  assert.equal(disclosure.body["blocking"], 2);
+  // What no owner acknowledged, by file, line, kind and value.
+  assert.deepEqual(disclosure.body["findings"], [
+    {
+      kind: "url",
+      file: "src/app.ts",
+      line: 2,
+      value: "https://wiki.acme.internal/a",
+    },
+    { kind: "email", file: "src/app.ts", line: 4, value: "jo@acme.io" },
+  ]);
+  assert.deepEqual(disclosure.f.published, []);
+  // A build from before the scan beyond the vocabulary lists none.
+  const vocabularyOnly = await publishOf({
+    buildManifest: gatedManifest({
+      ...passingGates,
+      disclosure: {
+        status: "failed",
+        scannedBy: "build",
+        names: 3,
+        blocking: 1,
+      },
+    }),
+  });
+  assert.equal(vocabularyOnly.body["code"], "disclosure_failed");
+  assert.deepEqual(vocabularyOnly.body["findings"], []);
   // Evidence of another build's inputs is stale, whatever its gates say.
   const stale = await publishOf({
     buildManifest: {
@@ -1406,6 +1470,194 @@ test("publishing is refused, naming the gate, when a build's round trip or discl
   const unreadable = await publishOf({});
   assert.equal(unreadable.status, 502);
   assert.equal(unreadable.body["code"], "artifacts_unavailable");
+});
+
+/*
+  An uploaded or generated draft's findings wait for publication: its build
+  read no acknowledgement, recorded every finding, and stayed ready.
+*/
+
+/** A hand-off folder whose code links a public SaaS docs page. */
+const docsFolder = [
+  {
+    path: "src/billing.ts",
+    text: "// Charges follow https://docs.stripe.com/api/charges\nexport const charge = (cents: number) => cents;\n",
+  },
+  { path: "src/cart.ts", text: "export const cart = 1;\n" },
+];
+/** The disclosure gate an import or starter build records for `files`. */
+const pendingGate = (files: { path: string; text: string }[]) => {
+  const found = scanDisclosure(files);
+  return disclosureGate([], 0, "upload", {
+    findings: disclosureRecords(found, [], DISCLOSURE_FINDINGS_EVALUATED),
+    total: found.length,
+    unacknowledged: found.length,
+    acknowledgedAt: "publish",
+  });
+};
+const pendingSource = (
+  origin: "upload" | "starter",
+): Partial<StoredVersionSource> => ({
+  ...builtSource,
+  origin,
+  sliceRunId: null,
+  manifestSha256: null,
+  starterRunId: "arn_build",
+});
+const pendingManifest = (gate: unknown) => ({
+  ...gatedManifest({
+    roundTrip: { status: "not_applicable", files: 0, problems: [] },
+    disclosure: gate,
+  }),
+  manifestSha256: null,
+  ready: true,
+  blockers: [],
+});
+
+for (const origin of ["upload", "starter"] as const)
+  test(`${origin === "upload" ? "an uploaded" : "a generated"} draft's findings are acknowledged at publication, with no build again`, async () => {
+    const gate = pendingGate(docsFolder);
+    assert.equal(gate.status, "pending_acknowledgement");
+    const refused = await publishOf({
+      sourcePatch: pendingSource(origin),
+      buildManifest: pendingManifest(gate),
+    });
+    assert.equal(refused.status, 409, JSON.stringify(refused.body));
+    assert.equal(refused.body["code"], "disclosure_failed");
+    assert.equal(refused.body["pendingAcknowledgement"], true);
+    assert.equal(refused.body["blocking"], 1);
+    assert.equal(refused.body["unrecorded"], 0);
+    assert.deepEqual(refused.body["findings"], [
+      {
+        kind: "url",
+        file: "src/billing.ts",
+        line: 1,
+        value: "https://docs.stripe.com/api/charges",
+      },
+    ]);
+    assert.deepEqual(refused.f.published, []);
+    // The owner acknowledges it: stored with who and when, the transform
+    // and the build's evidence untouched, nothing queued.
+    const f = fixture("owner", { sourcePatch: pendingSource(origin) });
+    const path = "/versions/sbv_1/disclosure-acknowledgements";
+    const acknowledgements = [
+      { kind: "host", value: "docs.stripe.com", note: "Public API docs." },
+    ];
+    const put = await f.request("PUT", path, { acknowledgements });
+    assert.equal(put.status, 200, await put.clone().text());
+    assert.deepEqual([f.builds, f.enqueued], [[], []]);
+    const [patch] = f.patches as {
+      disclosureAcknowledgements: { by: string; at: string }[];
+    }[];
+    assert.deepEqual(Object.keys(patch ?? {}), ["disclosureAcknowledgements"]);
+    assert.equal(patch?.disclosureAcknowledgements[0]?.by, "user_1");
+    assert.ok(patch?.disclosureAcknowledgements[0]?.at);
+    // Published as it stands, the list read at publication.
+    const published = await publishOf({
+      sourcePatch: {
+        ...pendingSource(origin),
+        disclosureAcknowledgements: patch?.disclosureAcknowledgements as never,
+      },
+      buildManifest: pendingManifest(gate),
+    });
+    assert.equal(published.status, 200, JSON.stringify(published.body));
+    assert.deepEqual(published.f.published[0]?.evidence, {
+      buildRunId: "arn_build",
+      roundTripRunId: "arn_build",
+      disclosureRunId: "arn_build",
+    });
+    // A list that misses one still holds it; so do findings past the record.
+    const partial = await publishOf({
+      sourcePatch: {
+        ...pendingSource(origin),
+        disclosureAcknowledgements: [
+          { kind: "host", value: "stripe.com", by: "user_1", at: stamp },
+        ],
+      },
+      buildManifest: pendingManifest(
+        pendingGate([
+          ...docsFolder,
+          { path: "src/ops.ts", text: "// Ask ops@halcyon.io first.\n" },
+        ]),
+      ),
+    });
+    assert.equal(partial.body["code"], "disclosure_failed");
+    assert.deepEqual(
+      (partial.body["findings"] as { value: string }[]).map(
+        (item) => item.value,
+      ),
+      ["ops@halcyon.io"],
+    );
+    const overflow = await publishOf({
+      sourcePatch: {
+        ...pendingSource(origin),
+        disclosureAcknowledgements: [
+          { kind: "host", value: "stripe.com", by: "user_1", at: stamp },
+        ],
+      },
+      buildManifest: pendingManifest({ ...gate, total: 4 }),
+    });
+    assert.equal(overflow.body["code"], "disclosure_failed");
+    assert.deepEqual(overflow.body["findings"], []);
+    assert.equal(overflow.body["unrecorded"], 3);
+  });
+
+test("a blocked build answers what blocked it before its stale transform", async () => {
+  // The transform a blocked build wrote never settles on the draft, so its
+  // evidence names a different transform than the draft's.
+  const blockedManifest = (gates: unknown, blockers: unknown[]) => ({
+    ...gatedManifest(gates),
+    transformConfigSha256: "8".repeat(64),
+    ready: false,
+    blockers,
+  });
+  const disclosure = await publishOf({
+    buildManifest: blockedManifest(
+      {
+        ...passingGates,
+        disclosure: {
+          status: "failed",
+          scannedBy: "build",
+          names: 3,
+          blocking: 1,
+          findings: [
+            {
+              kind: "email",
+              file: "src/app.ts",
+              line: 4,
+              value: "jo@acme.io",
+              term: "acme.io",
+              acknowledged: false,
+            },
+          ],
+        },
+      },
+      [
+        {
+          code: "disclosure_findings",
+          file: "src/app.ts",
+          detail: "An address.",
+        },
+      ],
+    ),
+  });
+  assert.equal(disclosure.status, 409);
+  assert.equal(disclosure.body["code"], "disclosure_failed");
+  assert.deepEqual(disclosure.body["findings"], [
+    { kind: "email", file: "src/app.ts", line: 4, value: "jo@acme.io" },
+  ]);
+  // Blocked by something no gate names: not ready, with its blockers.
+  const blocked = await publishOf({
+    buildManifest: blockedManifest(passingGates, [
+      { code: "baseline_failed", file: null, detail: "Tests did not run." },
+    ]),
+  });
+  assert.equal(blocked.status, 409);
+  assert.equal(blocked.body["code"], "not_ready");
+  assert.deepEqual(blocked.body["blockers"], [
+    { code: "baseline_failed", file: null, detail: "Tests did not run." },
+  ]);
+  assert.deepEqual(blocked.f.published, []);
 });
 
 test("a draft built before the gates is built again; a version published before them stands", async () => {
@@ -2049,6 +2301,149 @@ test("a version's files are for admins, and empty until it is built", async () =
   );
 });
 
+test("owners acknowledge a sliced draft's disclosure findings: the list rehashes the transform and keeps who and when", async () => {
+  const f = fixture();
+  const path = "/versions/sbv_1/disclosure-acknowledgements";
+  const list = [
+    { kind: "host", value: "stripe.com", note: "Public API docs." },
+    { kind: "email", value: "jo@acme.io" },
+  ];
+  const response = await f.request("PUT", path, { acknowledgements: list });
+  assert.equal(response.status, 200);
+  const patch = f.patches[0] as {
+    disclosureAcknowledgements: {
+      kind: string;
+      value: string;
+      note: string | null;
+      by: string;
+      at: string;
+    }[];
+    expectedTransformConfigSha256: string;
+    transformConfigSha256: string;
+  };
+  assert.deepEqual(
+    patch.disclosureAcknowledgements.map(({ kind, value, note, by }) => ({
+      kind,
+      value,
+      note,
+      by,
+    })),
+    [
+      {
+        kind: "host",
+        value: "stripe.com",
+        note: "Public API docs.",
+        by: "user_1",
+      },
+      { kind: "email", value: "jo@acme.io", note: null, by: "user_1" },
+    ],
+  );
+  assert.ok(patch.disclosureAcknowledgements.every((item) => item.at !== ""));
+  assert.equal(patch.expectedTransformConfigSha256, "1".repeat(64));
+  // Part of the transform: a changed list is a different build.
+  assert.equal(
+    patch.transformConfigSha256,
+    transformConfigHash({
+      aliasRules: [],
+      dependencyChoices: {},
+      acceptanceTests: [],
+      disclosureAcknowledgements: patch.disclosureAcknowledgements as never,
+    }),
+  );
+  assert.notEqual(
+    patch.transformConfigSha256,
+    transformConfigHash({
+      aliasRules: [],
+      dependencyChoices: {},
+      acceptanceTests: [],
+    }),
+  );
+  // An entry already held keeps who made it and when; the same list again
+  // changes nothing.
+  const held = {
+    kind: "host" as const,
+    value: "stripe.com",
+    note: "Public API docs.",
+    by: "user_2",
+    at: "2026-10-01T00:00:00.000Z",
+  };
+  const again = fixture("owner", {
+    sourcePatch: { disclosureAcknowledgements: [held] },
+  });
+  const same = await again.request("PUT", path, {
+    acknowledgements: [
+      { kind: "host", value: "stripe.com", note: "Public API docs." },
+    ],
+  });
+  assert.equal(same.status, 200);
+  assert.deepEqual(again.patches, []);
+  const added = await again.request("PUT", path, { acknowledgements: list });
+  assert.equal(added.status, 200);
+  assert.deepEqual(
+    (again.patches[0] as unknown as { disclosureAcknowledgements: unknown[] })
+      .disclosureAcknowledgements[0],
+    held,
+  );
+  // An empty list takes them all back.
+  const cleared = await again.request("PUT", path, { acknowledgements: [] });
+  assert.equal(cleared.status, 200);
+  assert.deepEqual(
+    (again.patches[1] as unknown as { disclosureAcknowledgements: unknown[] })
+      .disclosureAcknowledgements,
+    [],
+  );
+  // Owners and admins only; a valid, unrepeated list; this workspace's draft.
+  assert.equal(
+    (await fixture("member").request("PUT", path, { acknowledgements: list }))
+      .status,
+    403,
+  );
+  for (const body of [
+    null,
+    { acknowledgements: [{ kind: "name", value: "x" }] },
+    { acknowledgements: [list[1], list[1]] },
+  ]) {
+    const invalid = await f.request("PUT", path, body);
+    assert.equal(invalid.status, 400);
+    assert.equal(
+      ((await invalid.json()) as { code: string }).code,
+      "acknowledgements_invalid",
+    );
+  }
+  assert.equal(
+    (
+      await f.request("PUT", "/versions/sbv_x/disclosure-acknowledgements", {
+        acknowledgements: list,
+      })
+    ).status,
+    404,
+  );
+  assert.equal(
+    (await f.request("PUT", path, { acknowledgements: list }, "org_2")).status,
+    404,
+  );
+  const frozen = await fixture("owner", { frozen: true }).request("PUT", path, {
+    acknowledgements: list,
+  });
+  assert.equal(frozen.status, 409);
+  assert.equal(((await frozen.json()) as { code: string }).code, "frozen");
+  // A draft change keeps the list in the transform it rehashes.
+  const changed = await again.request("PATCH", "/versions/sbv_1", {
+    dependencyChoices: { pg: "approved-package" },
+  });
+  assert.equal(changed.status, 200);
+  assert.equal(
+    (again.patches[2] as unknown as { transformConfigSha256: string })
+      .transformConfigSha256,
+    transformConfigHash({
+      aliasRules: [],
+      dependencyChoices: { pg: "approved-package" },
+      acceptanceTests: [],
+      disclosureAcknowledgements: [held],
+    }),
+  );
+});
+
 test("draft changes rehash the transform and recompute the scope; frozen versions refuse", async () => {
   const f = fixture();
   const titled = await f.request("PATCH", "/versions/sbv_1", {
@@ -2158,6 +2553,8 @@ test("a build queues a run carrying every hash and records it on the draft", asy
       approvedTaskSha256: "2".repeat(64),
       // The organization's names, then its repository's, once each.
       vocabulary: ["acme-corp", "acme", "ghr-1"],
+      // Its Jira projects' keys, once each and sorted.
+      ticketKeys: ["OPS", "PAY"],
     },
     requestedBy: "user_1",
     maxActive: 3,
@@ -3575,6 +3972,44 @@ test("a ready slice is cut into a draft from the bounty and built", async () => 
   );
 });
 
+test("a version may be sliced without the repository's own tests, and its later builds keep that until asked again", async () => {
+  const carryOf = (f: ReturnType<typeof fixture>) =>
+    (f.enqueued.at(-1) as { params: { carryTests?: boolean } }).params
+      .carryTests;
+  // Asked: the build leaves them out; no body, or `true`: it carries what
+  // its slice offers.
+  const off = fixture("owner", { profile: {}, bounty: true });
+  assert.equal(
+    (await off.request("POST", "/sbx_1/slice", { carryTests: false })).status,
+    201,
+  );
+  assert.equal(carryOf(off), false);
+  const on = fixture("owner", { profile: {}, bounty: true });
+  assert.equal((await on.request("POST", "/sbx_1/slice")).status, 201);
+  assert.equal(carryOf(on), undefined);
+  for (const body of [{ carryTests: "no" }, { carry: false }]) {
+    const bad = fixture("owner", { profile: {}, bounty: true });
+    assert.equal((await bad.request("POST", "/sbx_1/slice", body)).status, 400);
+    assert.equal(bad.enqueued.length, 0);
+  }
+  // Unasked, a draft whose last build left them out leaves them out again.
+  const params = buildRun.params as unknown as Record<string, unknown>;
+  params["carryTests"] = false;
+  try {
+    const kept = fixture("owner", { profile: {}, bounty: true, built: true });
+    assert.equal((await kept.request("POST", "/sbx_1/slice")).status, 201);
+    assert.equal(carryOf(kept), false);
+    const back = fixture("owner", { profile: {}, bounty: true, built: true });
+    assert.equal(
+      (await back.request("POST", "/sbx_1/slice", { carryTests: true })).status,
+      201,
+    );
+    assert.equal(carryOf(back), undefined);
+  } finally {
+    delete params["carryTests"];
+  }
+});
+
 test("two cuts of one slice at once make one draft and one build", async () => {
   // Both read the sandbox's versions before either cut: the cutter's pass
   // and a person's slice, racing.
@@ -3899,6 +4334,25 @@ const nameTable = {
   body: '{"rules":[],"schemaVersion":1}',
 };
 const hiddenText = "test('hidden', () => {});\n";
+
+test("a build manifest that is not JSON answers artifacts_unavailable, not a 500", async () => {
+  const errors: unknown[][] = [];
+  const original = console.error;
+  console.error = (...args: unknown[]) => errors.push(args);
+  try {
+    const { status, body } = await handoutOf(
+      fixture("admin", {
+        built: true,
+        extraBuilt: [{ path: "build-manifest.json", body: "{not json" }],
+      }),
+    );
+    assert.equal(status, 502);
+    assert.equal(body.code, "artifacts_unavailable");
+  } finally {
+    console.error = original;
+  }
+  assert.deepEqual(errors, [["handout_manifest_unreadable", "sbv_1"]]);
+});
 
 test("a build made before commitments keeps its handout hash, the name table in it, but counts its tests alone", async () => {
   // A sliced build of then: its name table under private/ was hashed as a

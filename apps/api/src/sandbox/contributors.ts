@@ -60,7 +60,7 @@ import {
   type ContributionSubmissionDto,
 } from "@sandbox-factory/shared";
 import type { Context, Hono } from "hono";
-import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
+import { randomBytes, timingSafeEqual } from "node:crypto";
 import { isPublicationLive, TASK_DESCRIPTOR_PATH } from "sandbox-factory";
 
 import { isAtLeastAdmin } from "../access.js";
@@ -74,7 +74,7 @@ import {
   handoutResponse,
 } from "./handout.js";
 import type { SandboxRouteOptions } from "./options.js";
-import { publicProject, rootOf } from "./project.js";
+import { projectFileText, publicProject, rootOf } from "./project.js";
 import { folderBodyLimit, receiveFolder } from "./folder-upload.js";
 import {
   gradeSubmission,
@@ -392,19 +392,14 @@ export function mountContributorRoutes(
       nodeRange: null,
     };
     const project = await publicProject(options, owner, versionId);
-    const file = project?.files.find(
-      (entry) => entry.path === TASK_DESCRIPTOR_PATH,
+    const text = await projectFileText(
+      options.objects,
+      project?.files.find((entry) => entry.path === TASK_DESCRIPTOR_PATH),
     );
-    if (file === undefined) return none;
-    const bytes = await options.objects.get(file.objectKey);
-    if (
-      bytes === undefined ||
-      createHash("sha256").update(bytes).digest("hex") !== file.sha256
-    )
-      return none;
+    if (text === null) return none;
     let json: unknown;
     try {
-      json = JSON.parse(Buffer.from(bytes).toString("utf8"));
+      json = JSON.parse(text);
     } catch {
       return none;
     }
@@ -484,6 +479,7 @@ export function mountContributorRoutes(
       options,
       assignment.organizationId,
       assignment.sandboxVersionId,
+      "contributor",
     );
   });
 

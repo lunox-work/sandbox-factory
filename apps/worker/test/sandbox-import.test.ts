@@ -318,8 +318,9 @@ test("the folder is the version's public project verbatim, its acceptance test t
     true,
     `${JSON.stringify(manifest.baseline?.reasons)}\n${importLog.join("\n")}`,
   );
-  assert.equal(manifest.toolVersion, "sandbox_import@1");
-  // The upload route scanned it; there is nothing here to carry back to.
+  assert.equal(manifest.toolVersion, "sandbox_import@2");
+  // The upload route scanned its names, this run the rest; there is
+  // nothing here to carry back to.
   assert.deepEqual(manifest.gates, {
     roundTrip: { status: "not_applicable", files: 0, problems: [] },
     disclosure: {
@@ -327,6 +328,10 @@ test("the folder is the version's public project verbatim, its acceptance test t
       scannedBy: "upload",
       names: 0,
       blocking: 0,
+      acknowledgedAt: "publish",
+      findings: [],
+      total: 0,
+      acknowledged: 0,
     },
   });
   assert.deepEqual(manifest.upload, {
@@ -397,6 +402,108 @@ test("the folder is the version's public project verbatim, its acceptance test t
     hiddenTests: 1,
     hiddenSha256: sha256(`${line}${kept}`),
   });
+});
+
+test("what the disclosure scan finds in an uploaded folder waits for an owner's acknowledgement at publication, never read by the build; the descriptor's listing is redacted", async () => {
+  // The same folder with an address in a comment, and a bounty title that
+  // links its tracker.
+  const stored = JSON.parse(upload.text) as {
+    files: { path: string; text: string }[];
+    acceptanceTests: unknown[];
+  };
+  const files = stored.files.map((file) =>
+    file.path === "src/price.ts"
+      ? { ...file, text: `// Ask jo@acme-shop.io.\n${file.text}` }
+      : file,
+  );
+  const text = JSON.stringify({ ...stored, files });
+  const run = async (acknowledgements: unknown[]) => {
+    const outDir = mkdtempSync(join(scratch, "import-found-"));
+    const log: string[] = [];
+    const inputs = {
+      getVersion: async () => ({
+        version: {
+          ...version.version,
+          title: "A tenth off (wiki.acme-shop.io/PRICE)",
+        },
+        source: {
+          ...version.source,
+          disclosureAcknowledgements: acknowledgements,
+        },
+      }),
+      readUpload: async () => text,
+      recordStarterOutput: async () => true,
+    } as unknown as ToolInputs;
+    await createSandboxImportAdapter({
+      provider: localProvider().provider,
+    }).run({
+      runId: "arn_import",
+      sourceDir: join(scratch, "empty"),
+      outDir,
+      params: {
+        deadlineMinutes: 60,
+        importer: "upload",
+        sandboxVersionId: "sbv_up",
+        uploadSha256: sha256(text),
+        recordSha256: upload.recordSha256,
+        carveoutVersion: "0.4.0",
+      },
+      run: null,
+      inputs,
+      signal: new AbortController().signal,
+      log: (line) => log.push(line),
+    });
+    const manifest = JSON.parse(
+      readFileSync(join(outDir, "build-manifest.json"), "utf8"),
+    ) as SandboxBuildManifest;
+    const descriptor = JSON.parse(
+      readFileSync(join(outDir, "project/sandbox-task.json"), "utf8"),
+    ) as { title: string };
+    return { manifest, descriptor, log };
+  };
+  const found = await run([]);
+  // Recorded as pending, not a blocker: the baseline's verdict stands.
+  assert.equal(
+    found.manifest.ready,
+    true,
+    JSON.stringify(found.manifest.baseline?.reasons),
+  );
+  assert.deepEqual(found.manifest.blockers, []);
+  const gate = found.manifest.gates?.disclosure;
+  assert.equal(gate?.status, "pending_acknowledgement");
+  assert.equal(gate?.acknowledgedAt, "publish");
+  assert.equal(gate?.blocking, 0);
+  assert.equal(gate?.total, 1);
+  assert.deepEqual(
+    gate?.findings?.map(({ kind, file, line, value, acknowledged }) => [
+      kind,
+      `${file}:${line}`,
+      value,
+      acknowledged,
+    ]),
+    [["email", "src/price.ts:1", "jo@acme-shop.io", false]],
+  );
+  assert.ok(
+    found.log.some((line) => /1 item\(s\).*acknowledges each/.test(line)),
+    found.log.join("\n"),
+  );
+  // The bounty's words are redacted in the descriptor contributors read.
+  assert.equal(found.descriptor.title, "A tenth off ([host removed]/PRICE)");
+  // The build reads no acknowledgement: the draft's list changes nothing
+  // it writes, so publication checks it and the upload is never rebuilt.
+  const acknowledged = await run([
+    { kind: "email", value: "jo@acme-shop.io" },
+    { kind: "host", value: "wiki.acme-shop.io" },
+  ]);
+  for (const key of [
+    "files",
+    "gates",
+    "transformConfigSha256",
+    "publicProjectSha256",
+    "blockers",
+  ] as const)
+    assert.deepEqual(acknowledged.manifest[key], found.manifest[key], key);
+  assert.equal(acknowledged.descriptor.title, found.descriptor.title);
 });
 
 test("the judge stages every hidden test in the version's layout, never the name table", async () => {

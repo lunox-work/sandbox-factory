@@ -4283,6 +4283,177 @@ test("a build at work offers the files it has written, and says what it usually 
   );
 });
 
+test("a sliced build held by its disclosure scan says so, and lists the findings for an owner to acknowledge", async () => {
+  vi.stubGlobal(
+    "fetch",
+    slicingServer({
+      versions: () => [generatedVersion],
+      slice: () => sliceOf(),
+      routes: [
+        [
+          "GET",
+          "/github/runs/arn_build/artifacts",
+          () =>
+            json({
+              artifacts: [
+                {
+                  ...artifactOf("build_manifest", {
+                    ready: false,
+                    baseline: null,
+                    blockers: [
+                      {
+                        code: "disclosure_findings",
+                        file: "src/app.ts",
+                        detail:
+                          "Text that may say whose code this is appears at src/app.ts:2.",
+                      },
+                    ],
+                    disclosure: {
+                      status: "failed",
+                      scannedBy: "build",
+                      names: 2,
+                      blocking: 1,
+                      total: 1,
+                      acknowledged: 0,
+                      findings: [
+                        {
+                          kind: "email",
+                          file: "src/app.ts",
+                          line: 2,
+                          value: "jo.doe@halcyon.io",
+                          term: "halcyon.io",
+                          acknowledged: false,
+                        },
+                      ],
+                    },
+                  }),
+                  runId: "arn_build",
+                },
+              ],
+            }),
+        ],
+        [
+          "GET",
+          "/github/runs/arn_build",
+          () =>
+            json({
+              run: buildRun({
+                status: "succeeded",
+                finishedAt: stamp,
+                toolVersion: SANDBOX_BUILD_RUN_VERSION,
+              }),
+            }),
+        ],
+      ],
+    }).fetchMock,
+  );
+  const part = await sandboxPart();
+  expect(await within(part).findByText("Blocked")).toBeDefined();
+  const panel = await within(part).findByTestId("disclosure-findings");
+  expect(within(panel).getByText("jo.doe@halcyon.io")).toBeDefined();
+  expect(
+    within(panel).getByRole("checkbox", {
+      name: "Address at src/app.ts:2 may be public",
+    }),
+  ).toBeDefined();
+  // Not a failing baseline: no baseline ran.
+  expect(within(part).queryByText("Baseline fails")).toBeNull();
+});
+
+for (const origin of ["upload", "starter"] as const)
+  test(`${origin === "upload" ? "an uploaded" : "a generated"} draft's findings are acknowledged for publication, with no build again`, async () => {
+    const state = generatingServer({
+      versions: () => [generatedVersion],
+      run: () => ({ status: "succeeded", finishedAt: stamp }),
+      source: () => ({ ...generatedSource, origin }),
+      artifacts: [
+        artifactOf("build_manifest", {
+          ready: true,
+          baseline: { ok: true, reasons: [], steps: [] },
+          blockers: [],
+          disclosure: {
+            status: "pending_acknowledgement",
+            scannedBy: origin === "upload" ? "upload" : "build",
+            names: 0,
+            blocking: 0,
+            acknowledgedAt: "publish",
+            total: 1,
+            acknowledged: 0,
+            findings: [
+              {
+                kind: "url",
+                file: "src/billing.ts",
+                line: 1,
+                value: "https://docs.stripe.com/api/charges",
+                term: "docs.stripe.com",
+                acknowledged: false,
+              },
+            ],
+          },
+        }),
+      ],
+      routes: [
+        [
+          "PUT",
+          "/sandboxes/versions/sbv_1/disclosure-acknowledgements",
+          () =>
+            json({
+              version: generatedVersion,
+              source: { ...generatedSource, origin },
+            }),
+        ],
+      ],
+    });
+    vi.stubGlobal("fetch", state.fetchMock);
+    const part = await sandboxPart();
+    // Ready: the finding holds publication, not the build.
+    expect(await within(part).findByText("Baseline passes")).toBeDefined();
+    const panel = await within(part).findByTestId("disclosure-findings");
+    expect(
+      within(panel).getByText("https://docs.stripe.com/api/charges"),
+    ).toBeDefined();
+    expect(within(panel).getByText(/with no build again/)).toBeDefined();
+    expect(within(panel).getByRole("status").textContent).toBe(
+      "1 of 1 to acknowledge before publishing.",
+    );
+    expect(
+      within(panel).queryByRole("button", {
+        name: "Acknowledge and build again",
+      }),
+    ).toBeNull();
+    await userEvent.click(
+      within(panel).getByRole("checkbox", {
+        name: "Link at src/billing.ts:1 may be public",
+      }),
+    );
+    await userEvent.click(
+      within(panel).getByRole("button", { name: "Acknowledge" }),
+    );
+    await waitFor(() =>
+      expect(
+        state.calls.some(
+          ({ method, url }) =>
+            method === "PUT" && url.endsWith("/disclosure-acknowledgements"),
+        ),
+      ).toBe(true),
+    );
+    expect(state.calls.find(({ method }) => method === "PUT")?.body).toEqual({
+      acknowledgements: [
+        {
+          kind: "url",
+          value: "https://docs.stripe.com/api/charges",
+          note: null,
+        },
+      ],
+    });
+    // Nothing is built again.
+    expect(
+      state.calls.some(
+        ({ method, url }) => method === "POST" && url.endsWith("/build"),
+      ),
+    ).toBe(false);
+  });
+
 test("a built draft holds Slice again, and says a new price cuts a new slice", async () => {
   vi.stubGlobal(
     "fetch",
@@ -4319,6 +4490,71 @@ test("a built draft holds Slice again, and says a new price cuts a new slice", a
       )
     ).length,
   ).toBeGreaterThan(0);
+});
+
+test("the slice section counts the repository's tests a build carried, and a changed choice slices again with it", async () => {
+  const state = slicingServer({
+    versions: () => [generatedVersion],
+    slice: () => sliceOf(),
+    routes: [
+      [
+        "GET",
+        "/github/runs/arn_build/artifacts",
+        () =>
+          json({
+            artifacts: [
+              {
+                ...artifactOf("build_manifest", {
+                  ready: true,
+                  baseline: { ok: true, reasons: [], steps: [] },
+                  blockers: [],
+                  carriedTests: { kept: 1, dropped: 2 },
+                }),
+                runId: "arn_build",
+              },
+            ],
+          }),
+      ],
+      // After its artifacts, which the run's path would match first.
+      [
+        "GET",
+        "/github/runs/arn_build",
+        () =>
+          json({
+            run: buildRun({
+              status: "succeeded",
+              finishedAt: stamp,
+              toolVersion: SANDBOX_BUILD_RUN_VERSION,
+            }),
+          }),
+      ],
+    ],
+  });
+  vi.stubGlobal("fetch", state.fetchMock);
+  const part = await sandboxPart();
+  expect(await within(part).findByText("1 carried, 2 left out")).toBeDefined();
+  const carry = within(part).getByRole("checkbox", {
+    name: /Carry the repository's own tests/,
+  }) as HTMLInputElement;
+  // The build carried them, and the draft is already this slice's.
+  expect(carry.checked).toBe(true);
+  const again = within(part).getByRole("button", {
+    name: "Slice again",
+  }) as HTMLButtonElement;
+  expect(again.disabled).toBe(true);
+  // Leaving them out builds the draft again without them.
+  await userEvent.click(carry);
+  expect(carry.checked).toBe(false);
+  await waitFor(() => expect(again.disabled).toBe(false));
+  await userEvent.click(again);
+  await waitFor(() =>
+    expect(
+      state.calls.find(
+        ({ method, url }) =>
+          method === "POST" && url.endsWith("/sandboxes/sbx_1/slice"),
+      )?.body,
+    ).toEqual({ carryTests: false }),
+  );
 });
 
 test("a sandbox whose publication is live holds Slice again until it is unpublished", async () => {
@@ -6226,6 +6462,65 @@ test("a sandbox waits on an approved price: its notice says why, and nothing is 
   );
   // Its price is not held: the scope is approved.
   expect(within(page).queryByTestId("price-held")).toBeNull();
+});
+
+test("an approved price with unconfirmed decisions says so on the Sandbox step, with the way to them", async () => {
+  const decisionsOf = (confirmed: boolean) =>
+    [
+      "GET",
+      "/proposals/bpr_7/decisions",
+      () =>
+        json({
+          specRevision: 2,
+          decisions: [{ key: "d1", text: "Half a cent rounds up." }],
+          decisionsSha256: "d".repeat(64),
+          confirmation: confirmed
+            ? { confirmedBy: "user_1", confirmedAt: stamp }
+            : null,
+          confirmUrl: "/bounties/acme/bty_7?tab=price#decisions",
+        }),
+    ] as [string, string, () => Promise<Response>];
+  const approved: [string, string, () => Promise<Response>] = [
+    "GET",
+    "/bounties/bty_7",
+    () => json({ bounty: detail({ ...SCOPED, proposal: approvedSummary }) }),
+  ];
+  const held = server([approved, decisionsOf(false)]);
+  vi.stubGlobal("fetch", held.fetchMock);
+  window.history.replaceState(null, "", "/bounties/acme/bty_7?tab=sandbox");
+  render(<Shell {...inAcme("member")} />);
+  const page = await screen.findByTestId("bounty-detail");
+  // Before any click: what holds it, and the way to the decisions card.
+  const notice = await within(page).findByTestId("sandbox-decisions-held");
+  expect(notice.getAttribute("role")).toBe("status");
+  expect(notice.textContent).toContain(
+    "Confirm the spec's decisions to continue.",
+  );
+  expect(within(page).queryByTestId("sandbox-held")).toBeNull();
+  const link = within(notice).getByRole("link", {
+    name: "Open the decisions",
+  });
+  expect(link.getAttribute("href")).toBe("?tab=price#decisions");
+  await userEvent.click(link);
+  await waitFor(() =>
+    expect(new URLSearchParams(window.location.search).get("tab")).toBe(
+      "price",
+    ),
+  );
+  cleanup();
+
+  // Confirmed: nothing is said.
+  const confirmed = server([approved, decisionsOf(true)]);
+  vi.stubGlobal("fetch", confirmed.fetchMock);
+  window.history.replaceState(null, "", "/bounties/acme/bty_7?tab=sandbox");
+  render(<Shell {...inAcme("member")} />);
+  const again = await screen.findByTestId("bounty-detail");
+  await waitFor(() =>
+    expect(confirmed.calls.some(({ url }) => url.includes("/decisions"))).toBe(
+      true,
+    ),
+  );
+  expect(within(again).queryByTestId("sandbox-decisions-held")).toBeNull();
 });
 
 test("a held step's notice opens the step that holds it, and is an owner's or admin's alone", async () => {

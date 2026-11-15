@@ -10,7 +10,13 @@ import { test } from "node:test";
 import { Hono } from "hono";
 import type { StoredVersionSource } from "@sandbox-factory/db";
 import { UPLOAD_LIMITS } from "@sandbox-factory/shared";
-import { submittedFilesText, uploadObjectKey } from "sandbox-factory";
+import {
+  disclosureGate,
+  disclosureRecords,
+  scanDisclosure,
+  submittedFilesText,
+  uploadObjectKey,
+} from "sandbox-factory";
 import { admit } from "../src/credentials.js";
 import type { AuthVariables } from "../src/routes.js";
 import {
@@ -522,6 +528,48 @@ test("an admin's upload is stored by its hash, imported by a sandbox_import run,
   const twice = await raced.request("POST", "/uploads", body);
   assert.equal(twice.status, 409);
   assert.equal(await codeOf(twice), "bounty_has_sandbox");
+});
+
+test("a folder linking a public docs page is stored and imported, its link left for an owner to acknowledge at publication", async () => {
+  const docs = {
+    path: "src/billing.ts",
+    text: "// Charges follow https://docs.stripe.com/api/charges\nexport const charge = (cents: number) => cents;\n",
+  };
+  const f = fixture();
+  const response = await f.request(
+    "POST",
+    "/uploads",
+    uploadBody({ extra: [docs] }),
+  );
+  // Only names and credentials refuse an upload: the link is no refusal.
+  assert.equal(response.status, 202, await response.clone().text());
+  const params = f.enqueued[0]?.input.params ?? {};
+  const stored = f.objects.get(
+    uploadObjectKey(
+      "org_1",
+      String(params["sandboxVersionId"]),
+      String(params["uploadSha256"]),
+    ),
+  );
+  assert.ok(stored !== undefined);
+  const folder = JSON.parse(Buffer.from(stored).toString("utf8")) as {
+    files: { path: string; text: string }[];
+  };
+  assert.ok(folder.files.some((file) => file.text === docs.text));
+  // What its import's disclosure scan records: pending, not a blocker.
+  const found = scanDisclosure(folder.files);
+  assert.deepEqual(
+    found.map(({ kind, file, value }) => [kind, file, value]),
+    [["url", "src/billing.ts", "https://docs.stripe.com/api/charges"]],
+  );
+  const gate = disclosureGate([], 0, "upload", {
+    findings: disclosureRecords(found, []),
+    total: found.length,
+    unacknowledged: found.length,
+    acknowledgedAt: "publish",
+  });
+  assert.equal(gate.status, "pending_acknowledgement");
+  assert.equal(gate.blocking, 0);
 });
 
 test("an upload is for owners and admins of the bounty's own workspace, on an approved scope and price, with no repository", async () => {

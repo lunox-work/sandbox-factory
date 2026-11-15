@@ -5,29 +5,47 @@
  * smoke in CI (`npm run worker:smoke`).
  *
  * 1. Slice `fixtures/roundtrip` (a repository whose code names its
- *    workspace, `Orvanta`) and build a version with a fixed name table and
- *    scripted hidden tests, on the local-process provider.
+ *    workspace, `Orvanta`, and whose comment links its internal wiki and
+ *    its author's address) and build a version with a fixed name table
+ *    (text rules rename the link and the address) and scripted hidden
+ *    tests, on the local-process provider. The repository's own tests of
+ *    the fee module are carried as read-only public tests when they pass
+ *    on the baseline: `test/credit.test.ts` is; `test/fees.test.ts` reads
+ *    a ledger function the slice's stub does not declare, so it does not
+ *    compile there and is dropped, recorded with why.
  * 2. Act as the contributor: unpack the public `project/` alone and run
  *    `npm ci`, `npm run build`, `npm test` and `npm run dev` with no platform
- *    variable. No hidden test and no workspace name may be in it. Its
+ *    variable. No hidden test, no workspace name and nothing the
+ *    disclosure scan finds (the wiki host, the address) may be in it. Its
  *    guide (`TASK.md` with the renamed spec, `AGENTS.md`, `.vscode/`) is in
- *    place, and a stack from the build's output maps to the `.ts`.
+ *    place, a stack from the build's output maps to the `.ts`, and
+ *    `npm test` runs the carried test.
  * 3. Grade submissions through the real `submission_grade` adapter: a
  *    correct one passes, a partial one is overfit and told the failing
- *    scenario's key, and cheats (a weakened public test, an edited
- *    `package.json`, code that tells a test run from a real one, code that
- *    names `tests/private`) are refused before anything runs; code that
+ *    scenario's key (the carried test, of what the fee already does,
+ *    still passes), and cheats (a weakened public test, an edited carried
+ *    test, an edited `package.json`, code that tells a test run from a
+ *    real one, code that names `tests/private`) are refused before
+ *    anything runs; code that
  *    walks the tree for the hidden tests finds none on disk and is overfit.
  *    A pass is built and tested again in the repository's names before
- *    its merge patch is kept (the reversed check): the solution's holds.
+ *    its merge patch is kept (the reversed check, the carried test back
+ *    at `tests/public/carried/test/credit.test.ts` in the repository's
+ *    names): the solution's holds.
  *    One that adds a file naming the flat charge by its public name, which
  *    the charge's rename (scoped to the fee module) does not carry back,
  *    still passes, but is marked `carryBack: "failed"` with no merge patch;
- *    the carry it would have opened breaks the repository's own test.
+ *    the carry it would have opened breaks the repository's own test. So
+ *    is one that names a constant `each`, a word of a multi-word text
+ *    rule's public name (`every debit -> each withdrawal`), which the
+ *    pinned carry would read back as `every`: a carry that builds and
+ *    passes, in code the contributor did not write (`carriedWordHazards`).
  * 4. Write the passing submission's `private/merge-patch.json` onto a copy
  *    of the repository at the version's commit and run the repository's
  *    own test there: it fails before the patch and passes after, and the
- *    patched file is in the repository's names, not the pseudonyms.
+ *    patched file is in the repository's names, not the pseudonyms: the
+ *    wiki link on the comment line the solution changed and the author's
+ *    address come back as the repository has them.
  *
  * Graphify is not needed: the slice reads the graph run only for its
  * provenance, so a two-file graph stands in; the worker smoke runs the
@@ -54,6 +72,7 @@ import {
   canonicalJson,
   decisionsText,
   resolveScope,
+  scanDisclosure,
   specDecisions,
   transformConfigOf,
 } from "sandbox-factory";
@@ -84,7 +103,11 @@ const say = (line) => console.log(`roundtrip: ${line}`);
 /** Every spelling of the workspace's name that must not reach a contributor. */
 const VOCABULARY = /orvanta/i;
 /** The public names the table gives, which must not reach the repository. */
-const PSEUDONYMS = /northwind|entryFee|LedgerEntry|ledgerBalance|flatCharge/;
+const PSEUDONYMS =
+  /northwind|entryFee|LedgerEntry|ledgerBalance|flatCharge|wiki\.example\b|maintainer@example\.com|each withdrawal/;
+/** The workspace's wiki host and its author's address, in a comment. */
+const WIKI = "https://wiki.orvanta.internal/payments/fees";
+const AUTHOR = "ada.lovelace@orvanta.io";
 
 /** A finished run's files as stored artifacts, read back by object key. */
 async function served(runId, files) {
@@ -209,6 +232,7 @@ try {
     entryPoints: ["src/orvanta/fees.ts"],
     budget: { maxFiles: 2, maxDepth: 3 },
     includeInferred: false,
+    carryTests: true,
   };
   const sliceFiles = await createSliceAdapter().run({
     sourceDir: source,
@@ -248,8 +272,26 @@ try {
   // (as an owner or the hidden-tests agent writes them), one scenario each.
   // The flat charge's rename is scoped to the fee module, the one file
   // that names it, as an owner scopes a term to where it is.
+  // The comment's internal link and address are renamed by text rules
+  // whose public names have another number of words than the private ones,
+  // so merge-back learns no word of them (`carryHazards`). A plain
+  // multi-word rule (`every debit`) has as many words on each side, which
+  // `carryHazards` does not judge: grading withholds what its words would
+  // misread (`carriedWordHazards`).
   const aliasRules = [
     { before: "orvanta", after: "northwind", kind: "path", paths: [] },
+    {
+      before: "wiki.orvanta.internal",
+      after: "wiki.example",
+      kind: "text",
+      paths: [],
+    },
+    {
+      before: AUTHOR,
+      after: "maintainer@example.com",
+      kind: "text",
+      paths: [],
+    },
     {
       before: "OrvantaEntry",
       after: "LedgerEntry",
@@ -270,6 +312,12 @@ try {
       paths: [],
     },
     { before: "Orvanta", after: "Northwind", kind: "text", paths: [] },
+    {
+      before: "every debit",
+      after: "each withdrawal",
+      kind: "text",
+      paths: [],
+    },
   ];
   const hidden = (name, body, expectedBaseline) => ({
     path: `tests/private/${name}.test.ts`,
@@ -431,6 +479,9 @@ try {
   assert.ok(buildManifest.gates.roundTrip.files > 0);
   assert.equal(buildManifest.gates.disclosure.status, "passed");
   assert.equal(buildManifest.gates.disclosure.blocking, 0);
+  // The comment's wiki host and address left with the table: the scan
+  // beyond the vocabulary finds nothing to acknowledge.
+  assert.equal(buildManifest.gates.disclosure.total, 0);
   assert.ok(
     await builtText("project/src/northwind/fees.ts"),
     "the fee module is renamed",
@@ -439,8 +490,38 @@ try {
     await builtText("private/pseudonym.lunox"),
     "the name table is kept privately",
   );
+  // The repository's own tests: the one of what the fee already does is
+  // carried, renamed and pointed at the project's files; the other reads
+  // the ledger's balance, which the ledger's stub does not declare, and is
+  // dropped, with why, for owners.
+  const CARRIED = "tests/public/carried/test/credit.test.ts";
+  assert.deepEqual(
+    buildManifest.carriedTests?.kept,
+    [{ path: CARRIED, from: "test/credit.test.ts" }],
+    JSON.stringify(buildManifest.carriedTests, null, 2),
+  );
+  assert.deepEqual(
+    buildManifest.carriedTests.dropped.map(({ from, reason }) => [
+      from,
+      reason,
+    ]),
+    [["test/fees.test.ts", "compile_failed"]],
+    JSON.stringify(buildManifest.carriedTests, null, 2),
+  );
+  const carriedText = await builtText(`project/${CARRIED}`);
+  assert.match(
+    carriedText,
+    /import \{ entryFee \} from "\.\.\/\.\.\/\.\.\/\.\.\/src\/northwind\/fees\.js";/,
+    carriedText,
+  );
+  assert.ok(
+    buildManifest.files.some(
+      (f) => f.path === CARRIED && f.class === "test-public" && f.public,
+    ),
+    "the carried test is a public test of the version",
+  );
   say(
-    `built a ready version: ${build.artifacts.filter((a) => a.path.startsWith("project/")).length} public files, ${acceptanceTests.length} hidden tests, baseline as expected, round trip and disclosure gates passed`,
+    `built a ready version: ${build.artifacts.filter((a) => a.path.startsWith("project/")).length} public files, ${acceptanceTests.length} hidden tests, the repository's own test carried (the other dropped: it does not compile against the stub), baseline as expected, round trip and disclosure gates passed`,
   );
 
   // 2. The contributor's machine: the public project alone.
@@ -460,6 +541,7 @@ try {
     "package-lock.json",
     "tsconfig.json",
     "src/northwind/fees.ts",
+    CARRIED,
     "TASK.md",
     "AGENTS.md",
     "CLAUDE.md",
@@ -514,6 +596,30 @@ try {
     }
   };
   await assertClean("as handed out");
+  // Nothing beyond the vocabulary says whose code it is either: the wiki
+  // host and the address went with the table, which wrote public names.
+  const handedFiles = [];
+  for (const path of handed)
+    handedFiles.push({
+      path,
+      text: await readFile(join(contributor, path), "utf8"),
+    });
+  assert.deepEqual(
+    scanDisclosure(handedFiles, {
+      publicNames: aliasRules.map((rule) => rule.after),
+    }),
+    [],
+  );
+  for (const { path, text } of handedFiles)
+    assert.doesNotMatch(
+      text,
+      /orvanta\.internal|@orvanta\.io/,
+      `${path} carries the workspace's host or address`,
+    );
+  assert.match(
+    await readFile(join(contributor, "src/northwind/fees.ts"), "utf8"),
+    /Fee rules: https:\/\/wiki\.example\/payments\/fees\n \* @author maintainer@example\.com\n/,
+  );
   // The guide: the spec in public names, and no hidden test's name in it.
   const taskGuide = await readFile(join(contributor, "TASK.md"), "utf8");
   const agentsGuide = await readFile(join(contributor, "AGENTS.md"), "utf8");
@@ -580,6 +686,13 @@ try {
   ]) {
     const result = await sh(argv, contributor, env);
     assert.ok(result.ok, result.output);
+    // The contributor's local CI runs the repository's carried test.
+    if (argv[1] === "test")
+      assert.match(
+        result.stdout,
+        /a credit pays nothing, whatever its amount/,
+        result.output,
+      );
   }
   await assertClean("after npm ci, build, test and dev");
   // Source maps beside the build's output, which bind a failure to the .ts.
@@ -605,7 +718,7 @@ try {
     "a stack maps to the .ts",
   );
   say(
-    "contributor: npm ci, npm run build, npm test and npm run dev pass on project/ alone; no hidden test or workspace name in it; TASK.md (with the confirmed decision, renamed), AGENTS.md and .vscode/ in place, stacks map to .ts",
+    "contributor: npm ci, npm run build, npm test (the carried test among them) and npm run dev pass on project/ alone; no hidden test or workspace name in it; TASK.md (with the confirmed decision, renamed), AGENTS.md and .vscode/ in place, stacks map to .ts",
   );
 
   // 3. Grading, through the adapter a submission_grade run calls.
@@ -618,6 +731,14 @@ try {
   const withBody = (text, body) => text.replace(BODY, body);
   const SOLUTION =
     '  if (entry.kind === "credit") return 0;\n  return Math.max(25, Math.round(entry.amountCents / 100));\n';
+  // The solution also notes the new rule on the comment line that holds
+  // the wiki link, in public names: merge-back reads it back through the
+  // table's inverse.
+  const NOTED = (wiki) =>
+    ` * Fee rules (one percent, 25 cents at least): ${wiki}\n`;
+  const PUBLIC_WIKI = "https://wiki.example/payments/fees";
+  const withNote = (text) =>
+    text.replace(` * Fee rules: ${PUBLIC_WIKI}\n`, NOTED(PUBLIC_WIKI));
   const grade = async (label, files) => {
     const outDir = join(directory, `grade-${label}`);
     await mkdir(outDir, { recursive: true });
@@ -675,7 +796,12 @@ try {
     { path: "src/northwind/fees.ts", text: withBody(projectFee, body) },
   ];
 
-  const passing = await grade("solution", fee(SOLUTION));
+  const passing = await grade("solution", [
+    {
+      path: "src/northwind/fees.ts",
+      text: withNote(withBody(projectFee, SOLUTION)),
+    },
+  ]);
   assert.deepEqual(
     passing.result,
     {
@@ -687,7 +813,8 @@ try {
     passing.log.join("\n"),
   );
   assert.ok(passing.patch, "a pass on a sliced version is carried back");
-  // The product's own reversed check ran and held before the patch was kept.
+  // The product's own reversed check ran and held before the patch was
+  // kept, the carried test back at its repository path and in its names.
   assert.ok(
     passing.log.some((line) =>
       /^Reversed check in the repository's names: passed, public 1\/1, hidden 3\/3\.$/.test(
@@ -696,8 +823,14 @@ try {
     ),
     passing.log.join("\n"),
   );
+  assert.ok(
+    passing.log.includes(
+      "Reversed check: 1 carried test(s) back in the repository's names: tests/public/carried/test/credit.test.ts.",
+    ),
+    passing.log.join("\n"),
+  );
   say(
-    "grade: the solution passed, 3/3 hidden, and passed again in the repository's names",
+    "grade: the solution passed, 3/3 hidden, and passed again in the repository's names, the carried test back at its repository path",
   );
 
   // The solution, with the flat charge exported and a helper beside the
@@ -753,6 +886,42 @@ try {
     "grade: a pass whose carry names the flat charge by its public name keeps its verdict, is marked carryBack failed, and has no merge patch",
   );
 
+  // The solution with its divisor named `each`, a word of the public name
+  // `each withdrawal`. The pinned carry learns `each -> every` from the
+  // fee's comment and would carry the constant back as `every`; that
+  // builds and passes in the repository's names, so only the word check
+  // withholds it, before the second job.
+  const EACH =
+    '  if (entry.kind === "credit") return 0;\n  const each = 100;\n  return Math.max(25, Math.round(entry.amountCents / each));\n';
+  const misread = await grade("misread", fee(EACH));
+  assert.deepEqual(
+    misread.result,
+    {
+      public: { passed: 1, total: 1 },
+      hidden: { passed: 3, total: 3 },
+      verdict: "passed",
+      failedScenarios: [],
+      carryBack: "failed",
+    },
+    misread.log.join("\n"),
+  );
+  assert.equal(misread.patch, null, "no merge patch when a word is misread");
+  assert.ok(
+    misread.log.some((line) =>
+      /merge-back is withheld\. src\/northwind\/fees\.ts:\d+, src\/northwind\/fees\.ts:\d+$/.test(
+        line,
+      ),
+    ),
+    misread.log.join("\n"),
+  );
+  assert.ok(
+    !misread.log.some((line) => /^Reversed check/.test(line)),
+    misread.log.join("\n"),
+  );
+  say(
+    "grade: a pass that names a constant by a word of a multi-word public name keeps its verdict, is marked carryBack failed before the reversed check, and has no merge patch",
+  );
+
   // One percent, but no minimum: s3 fails, and only its key is told.
   const partial = await grade(
     "partial",
@@ -761,6 +930,9 @@ try {
     ),
   );
   assert.equal(partial.result.verdict, "overfit", partial.log.join("\n"));
+  // The carried test checks what the fee already did, which the partial
+  // one keeps: the public suite, carried test and all, passes.
+  assert.deepEqual(partial.result.public, { passed: 1, total: 1 });
   assert.deepEqual(partial.result.hidden, { passed: 2, total: 3 });
   assert.deepEqual(partial.result.failedScenarios, ["s3"]);
   assert.equal(partial.patch, null);
@@ -771,21 +943,30 @@ try {
   );
   say("grade: the partial one is overfit, told only scenario s3");
 
-  const publicTests = handed.filter(
-    (p) => p.startsWith("tests/public/") && p.endsWith(".test.ts"),
-  );
-  assert.ok(publicTests.length > 0, "the project has public tests");
+  const INTERFACE = "tests/public/interface.test.ts";
+  assert.ok(handed.includes(INTERFACE), "the project has public tests");
   const cheats = [
     [
       "weakened-public-test",
       [
         ...fee(SOLUTION),
         {
-          path: publicTests[0],
+          path: INTERFACE,
           text: 'import { test } from "node:test";\ntest("nothing", () => {});\n',
         },
       ],
-      publicTests[0],
+      INTERFACE,
+    ],
+    [
+      "edited-carried-test",
+      [
+        ...fee(SOLUTION),
+        {
+          path: CARRIED,
+          text: carriedText.replace("[1, 4_250, 10_000]", "[]"),
+        },
+      ],
+      CARRIED,
     ],
     [
       "edited-config",
@@ -894,18 +1075,22 @@ try {
   const repo = join(directory, "repository");
   await cp(fixture, repo, { recursive: true });
   const original = await readFile(join(fixture, "src/orvanta/fees.ts"), "utf8");
-  const expected = original.replace(
-    '  return entry.kind === "debit" ? orvantaCharge : 0;\n',
-    SOLUTION,
-  );
+  const expected = original
+    .replace('  return entry.kind === "debit" ? orvantaCharge : 0;\n', SOLUTION)
+    .replace(` * Fee rules: ${WIKI}\n`, NOTED(WIKI));
   assert.notEqual(expected, original);
   assert.equal(passing.patch.commitSha, COMMIT);
   assert.deepEqual(passing.patch.files, [
     { path: "src/orvanta/fees.ts", text: expected },
   ]);
+  assert.ok(expected.includes(NOTED(WIKI)), "the noted line is expected");
   for (const { text } of passing.patch.files) {
     assert.match(text, /orvantaFee/);
     assert.match(text, /OrvantaEntry/);
+    // The link on the line the solution changed, and the address on the
+    // line it kept, as the repository has them.
+    assert.ok(text.includes(NOTED(WIKI)), text);
+    assert.ok(text.includes(` * @author ${AUTHOR}\n`), text);
     assert.doesNotMatch(text, PSEUDONYMS);
   }
   // The repository's own test, with its own command; its `tsc` is the
@@ -927,9 +1112,9 @@ try {
     await writeFile(join(repo, path), text);
   const after = await sh(["npm", "test"], repo, repoEnv);
   assert.ok(after.ok, after.output);
-  assert.match(after.stdout, /# pass 3|ℹ pass 3/, after.output);
+  assert.match(after.stdout, /# pass 4|ℹ pass 4/, after.output);
   say(
-    "carry-back: merge-patch.json is in the repository's names; its own test fails before and passes after",
+    "carry-back: merge-patch.json is in the repository's names, the wiki link and author's address restored; its own test fails before and passes after",
   );
 
   // The gate was right to withhold the other pass: what its carry would
@@ -971,8 +1156,32 @@ try {
     "carry-back: the withheld carry would have broken the repository's own build (flatCharge is not its name)",
   );
 
+  // And the word check was right to withhold the misread pass: the carry
+  // it would have opened renames the contributor's constant into the
+  // repository's words, and the repository's own test still passes on it.
+  const misreadFiles = fee(EACH);
+  const wouldMisread = await carriedBack(
+    buildInput,
+    buildRunId,
+    await versionFilesOf(buildInput, buildRunId),
+    misreadFiles,
+  );
+  assert.deepEqual(wouldMisread.refused, []);
+  assert.match(wouldMisread.files[0].text, /const every = 100;/);
+  assert.match(wouldMisread.files[0].text, /entry\.amountCents \/ every\)/);
+  assert.doesNotMatch(wouldMisread.files[0].text, /\beach\b/);
+  const misreadRepo = join(directory, "repository-misread");
+  await cp(fixture, misreadRepo, { recursive: true });
+  for (const { path, text } of wouldMisread.files)
+    await writeFile(join(misreadRepo, path), text);
+  const misreadTest = await sh(["npm", "test"], misreadRepo, repoEnv);
+  assert.ok(misreadTest.ok, misreadTest.output);
+  say(
+    "carry-back: the withheld misread carry renames the contributor's `each` to `every` and still passes the repository's own test",
+  );
+
   console.log(
-    "Worker round trip passed: slice with pseudonyms, build with scripted hidden tests, contributor commands on project/ alone, grading (passed, overfit, four refusals, hidden tests unreadable at run time), the reversed check in the repository's names (held, and withheld a carry that breaks the repository), carry-back onto the repository and its own test.",
+    "Worker round trip passed: slice with pseudonyms, build with scripted hidden tests, contributor commands on project/ alone, the repository's own test carried (and one dropped), grading (passed, overfit, five refusals, hidden tests unreadable at run time), the reversed check in the repository's names (held, and withheld a carry that breaks the repository), a carry that misreads a contributor's word withheld, carry-back onto the repository and its own test.",
   );
 } finally {
   await provider?.dispose();

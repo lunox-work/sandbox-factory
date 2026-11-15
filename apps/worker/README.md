@@ -223,8 +223,13 @@ cannot be, under the renaming the build was made with (`src/tools/engines.ts`:
 carveout's when its manifest has `engines.carveout`, else `ALIASES_V1`).
 The patch is kept only once `repositoryTree` (the version in the
 repository's names with the carried files in place) passes the same
-baseline in a second job; otherwise the result is `carryBack: "failed"`
-with no patch. A submission is `running` from the claim of its run.
+baseline in a second job, and only when the carry renamed no word the
+contributor wrote by a pair learned from part of a text rule
+(`carriedWordHazards`, checked first); otherwise the result is
+`carryBack: "failed"` with no patch. A carry refused for the carry's own
+limit (`carryLimitOf`: a new file at a path the repository holds outside
+the slice, carveout's stranded name after 0.3.1) is `carryBack: "failed"`
+too, not `refused`. A submission is `running` from the claim of its run.
 
 A version's build manifest may record a `layout` (`GradingLayout`,
 `packages/core/src/sandbox/layout.ts`); none is the platform's own
@@ -240,7 +245,7 @@ counts and commits to.
 
 ### Import
 
-A `sandbox_import` run (`src/tools/sandbox-import.ts`, `sandbox_import@1`)
+A `sandbox_import` run (`src/tools/sandbox-import.ts`, `sandbox_import@2`)
 makes an uploaded carveout hand-off folder the draft its params name. It
 reads the stored upload (`uploadObjectKey`, under the run's own workspace),
 checks its hash and the record's (`carveout.json`), and writes the folder
@@ -250,7 +255,13 @@ included files that are not tests) and a `build-manifest.json` with the
 file classes, the folder's layout (`carveout/api` `folderLayout`, plus the
 descriptor), `engines.carveout` (the worker's release, which read the
 layout) and `upload: { recordSha256, carveoutVersion }`. Its baseline runs
-on that layout and every acceptance test must fail on it. It calls no
+on that layout and every acceptance test must fail on it. After it, the
+folder's public files are scanned beyond the names (`scanDisclosure`, with
+`params.ticketKeys`): every finding is recorded in a `pending_acknowledgement`
+gate (`acknowledgedAt: "publish"`), not a blocker, and no acknowledgement is
+read, so publication checks the draft's list and the upload is never rebuilt;
+the descriptor's title, summary and tags are redacted of every finding
+(`redactDisclosure`). It calls no
 model, reads no source, and records its build as a starter's
 (`recordStarterOutput`): the import run is the version's starter and build.
 
@@ -358,6 +369,24 @@ by file, line and rule, never the value. Starters are scanned the same way.
 `.gitignore` names only public files' output, and `*.map`. A starter's
 project carries the same guide.
 
+A slice requested with `carryTests` (new slices; `SliceParams`) has the
+repository's own tests of it carried as read-only public tests under
+`tests/public/carried/<renamed repository path>`
+(`packages/core/src/sandbox/carried-tests.ts`): the walk's tests importing
+the slice (`manifest.cuts.inbound`), `.test.ts(x)` on `node:test` whose
+imports are Node modules, installed or mocked packages, slice files or
+stubbed modules, at most `carriedTestLimits` (default 20 files, 256 KiB);
+renamed by the table at their repository path, screened as public files,
+then tried in a job of their own before the baseline (`trialCarriedTests`:
+compiled with `noEmitOnError` off, each run twice with a 60 s limit). Only
+those passing both runs are kept; the build manifest's `carriedTests`
+records kept and dropped with the reason (`CARRIED_TEST_DROPS`), owners
+only, and `buildSummary` its counts. A build with `carryTests: false` (an
+owner's `POST …/sandboxes/:id/slice`, kept by the draft's later builds)
+carries none, as does a slice without it. The reversed check puts each
+back at `tests/public/carried/<repository path>` in the repository's names
+(`repositoryTree`).
+
 A sliced draft with no fixtures, hidden tests or pseudonyms has each written
 by an agent during the build (`fixtures.ts` via `writeFixtures`,
 `hidden-tests.ts`, `pseudonyms.ts`), kept only once its own check passes,
@@ -435,8 +464,14 @@ environment; import rewrites, renames, dependencies, blockers and the
 baseline report; `gates`, the publication gates: `roundTrip`, the unchanged
 project read back through the table at each file's repository path equal to
 the slice's source but for the generator's specifier and `process.env`
-edits (`noChangeRoundTrip`, `not_applicable` for a starter or upload), and
-`disclosure`, the vocabulary and credential findings; `hiddenCommitment`,
+edits, and no host or address text rule merge-back would learn words from
+(`noChangeRoundTrip`, `carryHazards`; `not_applicable` for a starter or
+upload), and
+`disclosure`, the vocabulary and credential findings and the
+`scanDisclosure` `findings` (each marked `acknowledged` as the build read
+it), `total` and `acknowledged`; a starter's or upload's has
+`acknowledgedAt: "publish"`, all findings and status
+`pending_acknowledgement` when any, settled at publication; `hiddenCommitment`,
 the handout's `hiddenSha256` version 2 over the hidden tests at their staged
 paths, `hiddenCommitmentOf`), `baseline.json`, `project/<path>` for
 every public file including the lockfile, `private/<path>` for hidden
@@ -461,6 +496,9 @@ token the provider reports; default 4,000,000) or `AGENT_MAX_TURNS` turns
 80 % of either. No answer is `agent_incomplete`. Every turn's tokens are
 written to the `model_usage` ledger against the run (`src/agent/metered.ts`),
 which the API's monthly quota counts; nothing here stops a run for it.
+Likewise every evaluation job a run creates writes its seconds to the
+`evaluator_usage` ledger when torn down (`src/evaluation/metered.ts`),
+which the API's monthly evaluator cap counts.
 
 The agents read only through tools: `list_files`, `read_file` (numbered
 lines, capped) and `search` (a literal, case-insensitive match, never a
@@ -528,11 +566,25 @@ fresh job and shows the agent the failing steps' output, and
 `submit_starter` is accepted when the baseline passes. A public file, the
 listing in the README and descriptor included, that still carries a
 workspace name (`params.vocabulary`) fails the check as `vocabulary_leaked`
-does a build. Once the runs are spent, the last answer is kept as a build
-that is not ready. Outputs:
+does a build, and so does any `scanDisclosure` finding (`params.ticketKeys`;
+no acknowledgement is read, so the agent's files never depend on the
+draft's list, and the final scan records what is left as pending, for
+publication: `starterDisclosureGate`); the listing, spec and decisions are redacted
+first, so the bounty's own links never fail it. Once the runs are spent, the last answer is kept as a build
+that is not ready. An accepted answer's hidden tests are then calibrated
+as a sliced build's are (`calibrateHiddenTests` with `hiddenTests:
+"withheld"`): the reference agent reads the renamed project without them,
+the spec and the confirmed decisions, its runs build the project and run
+the walkthrough and public tests, and the hidden tests run once on the
+reference it submits. Tests it fails are dropped (the set, project and
+baseline keep the rest); none expected to fail left holds the build (not
+ready, the baseline's reasons saying so, the agent's set kept as
+diagnostic). Outputs:
 `starter-set.json` (the answer, its pseudonyms, the stack and the usage;
-its hash is the version's `starterSha256`) and the same `build-manifest.json`,
-`baseline.json`, `project/` and `private/` files a build writes. After the
+its hash is the version's `starterSha256`), `build-transform.json` (the
+hidden tests and `hiddenTests.calibration`, as a build's) and the same
+`build-manifest.json`, `baseline.json`, `project/` and `private/` files a
+build writes. After the
 run commits, the pseudonyms become the version's `aliasRules` and the
 starter, its hidden tests, scope and transform are recorded on the draft
 while it still points at the run.

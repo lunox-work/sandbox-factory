@@ -642,6 +642,7 @@ test("a sizing run is refused at the monthly token limit, and admitted under it"
     {
       ok: false,
       reason: "quota_exceeded",
+      kind: "model_tokens",
       used: 10,
       limit: 10,
       resetsAt: new Date("2026-12-01T00:00:00.000Z"),

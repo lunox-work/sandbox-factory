@@ -113,6 +113,12 @@ export interface SandboxRouteOptions {
     organizationId: string,
   ) => Promise<readonly string[]>;
   /**
+   * The project keys of the organization's Jira boards (`PAY`), whose
+   * issue keys a build's disclosure scan finds in public files. Absent,
+   * none are looked for.
+   */
+  readonly ticketKeys?: (organizationId: string) => Promise<readonly string[]>;
+  /**
    * The context a bounty holds from its sources (`heldContext`), frozen
    * into each version's task. Absent, a version is taken with none.
    */

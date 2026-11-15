@@ -124,6 +124,20 @@ test("usage asks for the window it is given", async () => {
       cacheReadTokens: 250,
       cacheWriteTokens: 50,
     },
+    evaluatorSeconds: {
+      from: at,
+      resetsAt: "2026-12-01T00:00:00.000Z",
+      used: 120,
+      limit: 360_000,
+      remaining: 359_880,
+      jobs: 2,
+      byKind: [{ kind: "sandbox_build", seconds: 120, jobs: 2 }],
+    },
+    thisMonth: {
+      gradingAttempts: 1,
+      contributorGradingAttempts: 0,
+      uploads: 0,
+    },
   };
   const { client, asked } = fake(() => usage);
   assert.deepEqual(await client.usage("org_1", 7), usage);

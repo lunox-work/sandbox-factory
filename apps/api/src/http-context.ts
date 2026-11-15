@@ -22,4 +22,6 @@ export interface AuthVariables {
    * entry: a contributor route's assignment's (`sandbox/contributors.ts`).
    */
   auditOrganizationId: string;
+  /** The app's clock (`AppOptions.now`), set on every request by `createApp`. */
+  clock: () => Date;
 }

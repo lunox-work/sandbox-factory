@@ -3,7 +3,9 @@ import { test } from "node:test";
 
 import {
   DEFAULT_WORKSPACE_SETTINGS,
+  NO_EVALUATOR_USE,
   NO_MODEL_TOKENS,
+  type EvaluatorUse,
   type ModelTokens,
   type RunCount,
   type WorkspaceSettingsStore,
@@ -54,6 +56,9 @@ function setup(
     /** Ledger rows, as the usage store sums them since a date. */
     ledger?: Array<{ organizationId: string; at: Date; tokens: ModelTokens }>;
     monthlyModelTokens?: number;
+    /** The evaluator ledger's sums, as the usage store reads them. */
+    evaluator?: EvaluatorUse;
+    monthlyEvaluatorSeconds?: number;
   } = {},
 ) {
   const roles = options.roles ?? {
@@ -64,6 +69,7 @@ function setup(
   const signOuts: Headers[] = [];
   const usageCalls: Array<{ organizationId: string; since: Date }> = [];
   const tokenCalls: Array<{ organizationId: string; since: Date }> = [];
+  const evaluatorCalls: Array<{ organizationId: string; since: Date }> = [];
   const server = createApp({
     corsOrigins: ["http://localhost:5173"],
     auth: fakeAuth(signOuts),
@@ -94,8 +100,19 @@ function setup(
             ),
         );
       },
+      evaluator: (organizationId, since) => {
+        evaluatorCalls.push({ organizationId, since });
+        return Promise.resolve(options.evaluator ?? NO_EVALUATOR_USE);
+      },
+      submissionsAndUploads: () =>
+        Promise.resolve({
+          gradingAttempts: 5,
+          contributorGradingAttempts: 3,
+          uploads: 1,
+        }),
     },
     monthlyModelTokens: options.monthlyModelTokens,
+    monthlyEvaluatorSeconds: options.monthlyEvaluatorSeconds,
     now: options.now,
   });
   const request = (path: string, init: RequestInit = {}) =>
@@ -123,6 +140,7 @@ function setup(
     signOuts,
     usageCalls,
     tokenCalls,
+    evaluatorCalls,
   };
 }
 
@@ -702,8 +720,52 @@ test("usage reports the default monthly limit when none is configured", async ()
     headers: signedIn,
   });
   const usage = usageResponseSchema.parse(await res.json());
-  assert.equal(usage.modelTokens.limit, 10_000_000);
-  assert.equal(usage.modelTokens.remaining, 10_000_000);
+  assert.equal(usage.modelTokens.limit, 60_000_000);
+  assert.equal(usage.modelTokens.remaining, 60_000_000);
+  assert.equal(usage.evaluatorSeconds.limit, 360_000);
+  assert.equal(usage.evaluatorSeconds.remaining, 360_000);
+});
+
+test("usage reports this month's evaluator seconds by kind, and its grading attempts and uploads", async () => {
+  const { request, evaluatorCalls } = setup({
+    now: () => new Date("2026-11-12T08:30:00.000Z"),
+    evaluator: {
+      seconds: 1_250,
+      jobs: 9,
+      byKind: [
+        { kind: "sandbox_build", seconds: 1_100, jobs: 6 },
+        { kind: "submission_grade", seconds: 150, jobs: 3 },
+      ],
+    },
+    monthlyEvaluatorSeconds: 1_000,
+  });
+  const res = await request(`/api/v1/orgs/${ORG}/usage?days=7`, {
+    headers: signedIn,
+  });
+  const usage = usageResponseSchema.parse(await res.json());
+  // Over the cap, nothing is left; it is not negative.
+  assert.deepEqual(usage.evaluatorSeconds, {
+    from: "2026-11-01T00:00:00.000Z",
+    resetsAt: "2026-12-01T00:00:00.000Z",
+    used: 1_250,
+    limit: 1_000,
+    remaining: 0,
+    jobs: 9,
+    byKind: [
+      { kind: "sandbox_build", seconds: 1_100, jobs: 6 },
+      { kind: "submission_grade", seconds: 150, jobs: 3 },
+    ],
+  });
+  assert.deepEqual(usage.thisMonth, {
+    gradingAttempts: 5,
+    contributorGradingAttempts: 3,
+    uploads: 1,
+  });
+  // The month's, whatever window the runs are counted over.
+  assert.deepEqual(evaluatorCalls[0], {
+    organizationId: ORG,
+    since: new Date("2026-11-01T00:00:00.000Z"),
+  });
 });
 
 test("a failed use record and a failed sign-out are logged, not fatal", async () => {

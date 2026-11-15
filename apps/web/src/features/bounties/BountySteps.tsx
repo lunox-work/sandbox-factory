@@ -342,6 +342,67 @@ export function StepHeld({
 }
 
 /**
+ * The way to the Price step's decisions card (`#decisions`): the step is
+ * opened, then the card scrolled to once its spec has rendered it.
+ */
+export function openDecisions(onOpen: (step: Step) => void) {
+  onOpen("price");
+  let tries = 0;
+  const seek = () => {
+    const card = document.getElementById("decisions");
+    if (card !== null) card.scrollIntoView?.({ block: "center" });
+    else if (tries++ < 40) setTimeout(seek, 50);
+  };
+  setTimeout(seek, 0);
+}
+
+/**
+ * At the top of the Sandbox step while the price is approved but its
+ * spec's decisions wait for a person (`useDecisionsHeld`): the preparer
+ * holds the sandbox and a build is refused until they are confirmed, so it
+ * says so before anything is clicked, with the way to the decisions card.
+ */
+export function DecisionsHeld({
+  held,
+  onOpen,
+}: {
+  held: boolean;
+  /** Opens a step: here, Price. */
+  onOpen: (step: Step) => void;
+}) {
+  if (!held) return null;
+  return (
+    <div
+      role="status"
+      data-testid="sandbox-decisions-held"
+      className="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2.5 text-sm text-amber-900 dark:text-amber-200"
+    >
+      <Lock
+        aria-hidden
+        className={cn(
+          "size-4 shrink-0 text-amber-600 dark:text-amber-400",
+          LOCK_FILLED,
+        )}
+      />
+      <p className="min-w-0 flex-1">
+        Confirm the spec's decisions to continue. Hidden tests are written to
+        them, so the sandbox is built only once a person confirms them.
+      </p>
+      <a
+        href="?tab=price#decisions"
+        className="focus-visible:ring-ring/50 rounded-sm text-sm font-medium underline-offset-2 hover:underline focus-visible:ring-[3px] focus-visible:outline-none"
+        onClick={(event) => {
+          event.preventDefault();
+          openDecisions(onOpen);
+        }}
+      >
+        Open the decisions
+      </a>
+    </div>
+  );
+}
+
+/**
  * A warning at the top of a step's page once the step before has moved
  * ahead of what it was built on, with what to do. While it has not, the
  * step's own version line names what it stands on, and this is nothing.

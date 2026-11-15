@@ -50,8 +50,18 @@ test("slice requests take repository paths and a bounded budget", () => {
     entryPoints: ["src/main.ts"],
     budget: { maxFiles: 40, maxDepth: 3 },
     includeInferred: false,
+    // New slices carry the repository's own tests of them.
+    carryTests: true,
     deadlineMinutes: 30,
   });
+  assert.deepEqual(
+    enqueueSliceSchema.parse({
+      entryPoints: ["a"],
+      carryTests: false,
+      carriedTestLimits: { maxFiles: 3, maxBytes: 1_000 },
+    }).carriedTestLimits,
+    { maxFiles: 3, maxBytes: 1_000 },
+  );
   assert.equal(
     enqueueSliceSchema.parse({ entryPoints: ["src"], budget: { maxFiles: 5 } })
       .budget.maxDepth,
@@ -68,6 +78,9 @@ test("slice requests take repository paths and a bounded budget", () => {
     { entryPoints: ["a"], budget: { maxFiles: 0 } },
     { entryPoints: ["a"], budget: { maxFiles: 201 } },
     { entryPoints: ["a"], graphRunId: "chosen-by-client" },
+    { entryPoints: ["a"], carryTests: "yes" },
+    { entryPoints: ["a"], carriedTestLimits: { maxFiles: 0, maxBytes: 1 } },
+    { entryPoints: ["a"], carriedTestLimits: { maxFiles: 1 } },
   ])
     assert.equal(
       enqueueSliceSchema.safeParse(body).success,
@@ -82,6 +95,15 @@ test("slice requests take repository paths and a bounded budget", () => {
     includeInferred: false,
   };
   assert.equal(sliceParamsSchema.safeParse(stored).success, true);
+  // Stored before tests were carried, or with them asked for.
+  assert.equal(
+    sliceParamsSchema.safeParse({
+      ...stored,
+      carryTests: true,
+      carriedTestLimits: { maxFiles: 20, maxBytes: 262_144 },
+    }).success,
+    true,
+  );
   assert.equal(
     sliceParamsSchema.safeParse({ ...stored, entryPoints: ["b.ts", "a.ts"] })
       .success,
@@ -150,6 +172,32 @@ test("run DTOs discriminate parameters by tool", () => {
       ...common,
       tool: "future_tool",
       params: {},
+    }).success,
+    false,
+  );
+  // A build's parameters as the API queues them: the workspace's Jira
+  // keys, and an owner's leaving the carried tests out.
+  const sha = "a".repeat(64);
+  const build = {
+    ...common,
+    tool: "sandbox_build",
+    params: {
+      deadlineMinutes: 30,
+      sliceRunId: "arn_s",
+      sandboxVersionId: "sbv_1",
+      manifestSha256: sha,
+      contractSha256: sha,
+      transformConfigSha256: sha,
+      approvedTaskSha256: sha,
+      ticketKeys: ["PAY"],
+      carryTests: false,
+    },
+  };
+  assert.equal(analysisRunDtoSchema.safeParse(build).success, true);
+  assert.equal(
+    analysisRunDtoSchema.safeParse({
+      ...build,
+      params: { ...build.params, carryTests: true },
     }).success,
     false,
   );

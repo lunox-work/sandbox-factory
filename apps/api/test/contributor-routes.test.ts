@@ -166,6 +166,8 @@ function world(extra: Record<string, string> = {}) {
     submissionId: string;
     requestedBy: string | null;
   }[] = [];
+  /** Refusals the run store answers next, in order: a brake, a quota. */
+  const refusals: unknown[] = [];
   const options = {
     sandboxes: {
       get: async (owner: string, id: string) =>
@@ -193,6 +195,7 @@ function world(extra: Record<string, string> = {}) {
         snapshotId: string | null,
         input: { params: { submissionId: string }; requestedBy: string | null },
       ) => {
+        if (refusals.length > 0) return refusals.shift();
         const key = input.params.submissionId;
         const existing = [...runs.values()].find(
           (run) =>
@@ -349,6 +352,7 @@ function world(extra: Record<string, string> = {}) {
     submissions,
     contributors,
     enqueued,
+    refusals,
     tokens,
     audited,
     contributorBearer,
@@ -473,6 +477,9 @@ test("owner invites, the contributor claims, downloads, submits and reads only t
   );
   assert.equal(handout.body["hiddenTests"], 1);
   assert.doesNotMatch(handout.text, /fee-minimum|private\//);
+  // The build run is the workspace's: a contributor's handout names none.
+  assert.equal("run" in handout.body, false);
+  assert.doesNotMatch(handout.text, /arn_/);
   const archive = await w.request("grace", "GET", `${C}/archive`);
   assert.equal(archive.status, 200);
   assert.equal(archive.headers.get("content-type"), "application/zip");
@@ -649,6 +656,28 @@ test("owner invites, the contributor claims, downloads, submits and reads only t
   );
 });
 
+test("the listing reads the descriptor only as the build recorded it; altered bytes list nothing", async () => {
+  const w = world();
+  const { token } = await invited(w);
+  assert.equal(
+    (await w.json("grace", "POST", "/api/v1/invites/claim", { token })).status,
+    201,
+  );
+  // Same length, other bytes: the size check passes, the hash does not.
+  const key = "runs/arn_build/project/sandbox-task.json";
+  w.objects.set(key, Buffer.from(descriptor.replace("Statement", "Stolen us")));
+  const listed = await w.json("grace", "GET", C);
+  assert.equal(listed.status, 200);
+  assert.equal(listed.body["contribution"].title, null);
+  assert.deepEqual(listed.body["contribution"].editablePaths, []);
+  // Truncated: the size check alone refuses it.
+  w.objects.set(key, Buffer.from(descriptor.slice(0, 10)));
+  assert.equal(
+    (await w.json("grace", "GET", C)).body["contribution"].title,
+    null,
+  );
+});
+
 test("a contributor reaches nothing of the workspace: logs, private files, merge-back, members, other versions", async () => {
   const w = world();
   const { token } = await invited(w);
@@ -718,6 +747,72 @@ test("a contributor reaches nothing of the workspace: logs, private files, merge
   }
   // Signed out: nothing.
   assert.equal((await w.json({}, "GET", C)).status, 401);
+});
+
+test("a contributor never sees the disclosure findings or the acknowledgements", async () => {
+  // The build recorded findings an owner has yet to acknowledge.
+  const w = world({
+    "build-manifest.json": JSON.stringify({
+      gates: {
+        roundTrip: { status: "not_applicable", files: 0, problems: [] },
+        disclosure: {
+          status: "pending_acknowledgement",
+          scannedBy: "upload",
+          names: 0,
+          blocking: 0,
+          acknowledgedAt: "publish",
+          findings: [
+            {
+              kind: "url",
+              file: "src/fees.ts",
+              line: 1,
+              value: "https://wiki.halcyon.internal/fees",
+              term: "wiki.halcyon.internal",
+              acknowledged: false,
+            },
+          ],
+          total: 1,
+          acknowledged: 0,
+        },
+      },
+    }),
+  });
+  const { token } = await invited(w);
+  await w.json("grace", "POST", "/api/v1/invites/claim", { token });
+  for (const path of [
+    "/api/v1/contributions",
+    C,
+    `${C}/handout`,
+    `${C}/handout/files`,
+  ]) {
+    const read = await w.json("grace", "GET", path);
+    assert.equal(read.status, 200, `${path}: ${read.text}`);
+    assert.doesNotMatch(read.text, /halcyon|disclosure|acknowledg/i, path);
+  }
+  // The workspace's routes that hold them answer as if nothing were there.
+  for (const [method, path] of [
+    ["GET", "/api/v1/orgs/:org/sandboxes/versions/sbv_1"],
+    ["GET", "/api/v1/orgs/:org/github/runs/arn_build/artifacts"],
+    [
+      "PUT",
+      "/api/v1/orgs/:org/sandboxes/versions/sbv_1/disclosure-acknowledgements",
+    ],
+  ] as const) {
+    const answered = await w.json(
+      "grace",
+      method,
+      path,
+      method === "PUT"
+        ? {
+            acknowledgements: [
+              { kind: "host", value: "wiki.halcyon.internal" },
+            ],
+          }
+        : undefined,
+    );
+    assert.equal(answered.status, 404, `${method} ${path}: ${answered.text}`);
+    assert.doesNotMatch(answered.text, /halcyon/);
+  }
 });
 
 test("revoking the contributor ends their access at once; a revoked or expired invite admits no one", async () => {
@@ -980,6 +1075,61 @@ test("an errored submission of theirs is graded again without spending the retry
     files: [],
   });
   assert.equal(invalid.status, 400);
+});
+
+test("a braked or over-quota grading attempt is a 429 with Retry-After, the submission kept for later", async () => {
+  const w = world();
+  const { token } = await invited(w);
+  await w.json("grace", "POST", "/api/v1/invites/claim", { token });
+  // A dry run never reaches the run store, so no brake counts it.
+  const preview = await w.json("grace", "POST", `${C}/submissions?dryRun=1`, {
+    files: partial,
+  });
+  assert.equal(preview.status, 200, preview.text);
+  assert.equal(w.enqueued.length, 0);
+  w.refusals.push({
+    ok: false,
+    reason: "rate_limited",
+    scope: "assignment",
+    limit: 10,
+    retryAt: new Date(w.clock.at.getTime() + 3_600_000),
+  });
+  const braked = await w.json("grace", "POST", `${C}/submissions`, {
+    files: partial,
+  });
+  assert.equal(braked.status, 429, braked.text);
+  // Until the rolling day's oldest attempt leaves it, in whole seconds of
+  // the app's clock, not the wall clock.
+  assert.equal(braked.headers.get("retry-after"), "3600");
+  assert.equal(braked.body["code"], "rate_limited");
+  assert.equal(braked.body["scope"], "assignment");
+  assert.equal(braked.body["retryable"], true);
+  assert.match(braked.body["error"], /The submission is kept/);
+  // The month's evaluator time spent: refused until the reset, by kind.
+  w.refusals.push({
+    ok: false,
+    reason: "quota_exceeded",
+    kind: "evaluator_seconds",
+    used: 360_000,
+    limit: 360_000,
+    resetsAt: new Date("2026-12-01T00:00:00.000Z"),
+  });
+  const spent = await w.json("grace", "POST", `${C}/submissions`, {
+    files: partial,
+  });
+  assert.equal(spent.status, 429, spent.text);
+  assert.equal(spent.body["code"], "quota_exceeded");
+  assert.equal(spent.body["kind"], "evaluator_seconds");
+  // From 2026-11-15T00:00Z, the app's now, to the month's reset: 16 days.
+  assert.equal(spent.headers.get("retry-after"), String(16 * 86_400));
+  // Sent again once admitted, the same files queue the kept submission.
+  const listed = await w.json("grace", "GET", `${C}/submissions`);
+  assert.equal(listed.body["submissions"].length, 1);
+  const queued = await w.json("grace", "POST", `${C}/submissions`, {
+    files: partial,
+  });
+  assert.equal(queued.status, 202, queued.text);
+  assert.equal(w.enqueued.length, 1);
 });
 
 test("a contributor token works the contributor routes as its person, and nothing of the workspace", async () => {

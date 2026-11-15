@@ -25,6 +25,7 @@ import {
 } from "../../apps/api/dist/pricing/rubric.js";
 import { BUILD_TRANSFORM_PATH } from "../../apps/worker/dist/tools/sandbox-build.js";
 import { BOUNTY, FIXTURE, SIZING } from "./fakes.mjs";
+import { PERSON } from "./seed.mjs";
 
 export const RATE_CARD = {
   currency: "USD",
@@ -463,25 +464,84 @@ export const PUBLISH_STEPS = [
         `/api/v1/orgs/:org/sandboxes/${sandbox.id}/versions`,
       );
       assert.equal(versions.length, 1);
-      const stored = await api(
-        flow,
-        "GET",
-        `/api/v1/orgs/:org/sandboxes/versions/${versions[0].id}`,
-      );
-      const buildRunId = stored.source?.buildRunId;
+      const versionPath = `/api/v1/orgs/:org/sandboxes/versions/${versions[0].id}`;
+      const held = await api(flow, "GET", versionPath);
       assert.ok(
-        buildRunId,
-        `the version records its build: ${JSON.stringify(stored.source)}`,
+        held.source?.buildRunId,
+        `the version records its build: ${JSON.stringify(held.source)}`,
       );
       assert.equal(
-        stored.source.sliceRunId,
+        held.source.sliceRunId,
         flow.profile.sliceRunId,
         "cut from the profile's slice",
       );
+      // The fee module's comment links the workspace's wiki and gives its
+      // author's address, which no table rule renames: the disclosure scan
+      // holds the build before its baseline, and publishing says why.
+      const blocked = JSON.parse(
+        await artifactText(flow, held.source.buildRunId, "build-manifest.json"),
+      );
+      assert.deepEqual(
+        blocked.blockers.map((blocker) => blocker.code),
+        ["disclosure_findings"],
+        JSON.stringify(blocked.blockers),
+      );
+      const findings = blocked.gates.disclosure.findings;
+      assert.deepEqual(
+        findings.map((finding) => finding.kind),
+        ["url", "email", "author"],
+      );
+      const refused = await api(flow, "POST", `${versionPath}/publish`, {
+        body: {
+          expiresAt: new Date(Date.now() + 86_400_000).toISOString(),
+        },
+        expected: [409],
+      });
+      // A blocked build settles nothing it wrote, so its evidence is stale
+      // too; the disclosure scan's findings are named whatever comes first.
+      assert.ok(
+        refused.reasons.includes("The disclosure scan has blocking findings."),
+        JSON.stringify(refused),
+      );
+      assert.deepEqual(
+        refused.findings.map((finding) => finding.value),
+        findings.map((finding) => finding.value),
+      );
+      // An API token cannot acknowledge them; the owner, signed in, does,
+      // and the draft is built again with them.
+      const acknowledgements = findings.map(({ kind, value }) => ({
+        kind,
+        value,
+        note: "The fixture's own wiki and author, public here.",
+      }));
+      await api(flow, "PUT", `${versionPath}/disclosure-acknowledgements`, {
+        as: flow.token,
+        body: { acknowledgements },
+        expected: [401, 403, 404],
+      });
+      const acknowledged = await api(
+        flow,
+        "PUT",
+        `${versionPath}/disclosure-acknowledgements`,
+        { body: { acknowledgements } },
+      );
+      assert.equal(acknowledged.source.buildRunId, null, "evidence cleared");
+      assert.deepEqual(
+        acknowledged.source.disclosureAcknowledgements.map((item) => item.by),
+        [PERSON.id, PERSON.id, PERSON.id],
+      );
+      await api(flow, "POST", `${versionPath}/build`, { expected: [202] });
+      await flow.platform.settle();
+      const stored = await api(flow, "GET", versionPath);
+      const buildRunId = stored.source?.buildRunId;
+      assert.ok(buildRunId, "the version records its new build");
+      assert.notEqual(buildRunId, held.source.buildRunId);
       const manifest = JSON.parse(
         await artifactText(flow, buildRunId, "build-manifest.json"),
       );
       assert.deepEqual(manifest.blockers, []);
+      assert.equal(manifest.gates.disclosure.status, "passed");
+      assert.equal(manifest.gates.disclosure.acknowledged, 3);
       assert.equal(
         manifest.ready,
         true,
@@ -596,16 +656,107 @@ export const PUBLISH_STEPS = [
         !paths.some((path) => VOCABULARY.test(path)),
         "no path names the workspace",
       );
+      const manifest = JSON.parse(
+        await artifactText(flow, flow.buildRunId, "build-manifest.json"),
+      );
+      // The repository's own test of the fee module, carried as a
+      // read-only public test and handed out; its other test names the
+      // ledger's balance, which the table drafted for the slice leaves in
+      // the workspace's name, so the scan drops it, with why, for owners
+      // alone (the worker round trip's table renames it, and it is
+      // dropped there for not compiling against the ledger's stub).
+      assert.deepEqual(
+        manifest.carriedTests?.kept,
+        [
+          {
+            path: "tests/public/carried/test/credit.test.ts",
+            from: "test/credit.test.ts",
+          },
+        ],
+        JSON.stringify(manifest.carriedTests),
+      );
+      assert.deepEqual(
+        manifest.carriedTests.dropped.map(({ from, reason }) => [from, reason]),
+        [["test/fees.test.ts", "disclosure"]],
+      );
+      assert.ok(
+        paths.includes("tests/public/carried/test/credit.test.ts"),
+        `the handout lists the carried test: ${paths.join(", ")}`,
+      );
       // The three hidden tests, not the name table beside them, and the
       // commitment the build recorded over them.
-      const recorded = JSON.parse(
-        await artifactText(flow, flow.buildRunId, "build-manifest.json"),
-      ).hiddenCommitment;
+      const recorded = manifest.hiddenCommitment;
       assert.equal(handout.hiddenTests, 3, "three hidden tests are counted");
       assert.equal(handout.hiddenSha256Version, 2);
       assert.equal(recorded?.hiddenTests, 3);
       assert.equal(handout.hiddenSha256, recorded.hiddenSha256);
       flow.handout = handout;
+      noFaults(flow);
+    },
+  ],
+];
+
+/** After the whole flow: what it spent, as the Usage page reads it. */
+export const USAGE_STEPS = [
+  [
+    "usage meters the flow's model tokens, evaluator seconds and gradings",
+    async (flow) => {
+      const usage = await api(flow, "GET", "/api/v1/orgs/:org/usage");
+      assert.ok(usage.modelTokens.used > 0, JSON.stringify(usage.modelTokens));
+      // Every evaluation job the build and the gradings ran is on the ledger.
+      const evaluator = usage.evaluatorSeconds;
+      assert.ok(evaluator.used > 0, JSON.stringify(evaluator));
+      assert.ok(evaluator.jobs > 0);
+      assert.equal(evaluator.remaining, evaluator.limit - evaluator.used);
+      const kinds = evaluator.byKind.map((row) => row.kind);
+      for (const kind of ["sandbox_build", "submission_grade"])
+        assert.ok(kinds.includes(kind), `${kind} is metered: ${kinds}`);
+      assert.equal(
+        evaluator.byKind.reduce((sum, row) => sum + row.jobs, 0),
+        evaluator.jobs,
+      );
+      // Each grading run the round trip queued is an attempt.
+      assert.ok(
+        usage.thisMonth.gradingAttempts > 0,
+        JSON.stringify(usage.thisMonth),
+      );
+      say(
+        `usage: ${usage.modelTokens.used} model tokens, ${evaluator.used} evaluator seconds over ${evaluator.jobs} jobs, ${usage.thisMonth.gradingAttempts} grading attempts`,
+      );
+      noFaults(flow);
+    },
+  ],
+  [
+    "a spent evaluator month refuses the next grading with 429 and Retry-After",
+    async (flow) => {
+      // Lowered under what the flow spent, as server.ts's store reads it.
+      const { evaluatorQuota } = flow.platform.limits;
+      const generous = evaluatorQuota.monthlySeconds;
+      evaluatorQuota.monthlySeconds = 1;
+      try {
+        const response = await flow.platform.app.request(
+          `/api/v1/orgs/${flow.organizationId}/sandboxes/versions/${flow.version.version.id}/submissions`,
+          {
+            method: "POST",
+            headers: { ...flow.session, "content-type": "application/json" },
+            body: JSON.stringify({
+              files: [
+                {
+                  path: flow.agents.learned.feesPath,
+                  text: "// over the month's evaluator time\n",
+                },
+              ],
+            }),
+          },
+        );
+        const body = await response.json();
+        assert.equal(response.status, 429, JSON.stringify(body));
+        assert.equal(body.code, "quota_exceeded");
+        assert.equal(body.kind, "evaluator_seconds");
+        assert.ok(Number(response.headers.get("retry-after")) >= 1);
+      } finally {
+        evaluatorQuota.monthlySeconds = generous;
+      }
       noFaults(flow);
     },
   ],

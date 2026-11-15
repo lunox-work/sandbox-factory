@@ -52,6 +52,13 @@ import { sandboxFilesPath } from "../../routes";
 import { usually, useTypicalWaits } from "../../data/typical";
 import { LunoxMark } from "@/components/LunoxMark";
 
+import {
+  DisclosureFindings,
+  disclosureAcknowledgedAtOf,
+  disclosureFindingsOf,
+  type DisclosureAcknowledgedAt,
+  type DisclosureFindingView,
+} from "../sandbox/DisclosureFindings";
 import { SandboxContributors } from "../sandbox/SandboxContributors";
 import { SandboxSubmissions } from "../sandbox/SandboxSubmissions";
 import { PublishMenu } from "./PublishMenu";
@@ -108,6 +115,14 @@ function outcomeOf(artifacts: readonly ArtifactDto[]): {
   reasons: string[];
   hiddenTests: number | null;
   files: number | null;
+  /** What held it before its baseline ran, as the build said each. */
+  blockers: string[];
+  /** What its disclosure scan found beyond the workspace's names. */
+  disclosure: DisclosureFindingView[];
+  /** Where those are acknowledged: a sliced build, or publication. */
+  acknowledgedAt: DisclosureAcknowledgedAt;
+  /** The repository's tests a sliced build carried and left out; null when it carried none by request. */
+  carriedTests: { kept: number; dropped: number } | null;
 } {
   const build = artifacts.find((item) => item.kind === "build_manifest")?.meta;
   const set = artifacts.find((item) => item.kind === "starter_set")?.meta;
@@ -118,11 +133,28 @@ function outcomeOf(artifacts: readonly ArtifactDto[]): {
       )
     : [];
   const count = (value: unknown) => (typeof value === "number" ? value : null);
+  const carried = build?.["carriedTests"] as
+    { kept?: unknown; dropped?: unknown } | undefined;
+  const kept = count(carried?.kept);
+  const dropped = count(carried?.dropped);
+  const blockers = Array.isArray(build?.["blockers"])
+    ? build["blockers"].flatMap((item: unknown) =>
+        typeof item === "object" &&
+        item !== null &&
+        typeof (item as { detail?: unknown }).detail === "string"
+          ? [(item as { detail: string }).detail]
+          : [],
+      )
+    : [];
   return {
     ready: build?.["ready"] === true,
     reasons,
     hiddenTests: count(set?.["hiddenTests"]) ?? count(build?.["privateTests"]),
     files: count(set?.["files"]) ?? count(build?.["files"]),
+    blockers,
+    disclosure: disclosureFindingsOf(build),
+    acknowledgedAt: disclosureAcknowledgedAtOf(build),
+    carriedTests: kept === null || dropped === null ? null : { kept, dropped },
   };
 }
 
@@ -328,6 +360,12 @@ export function SandboxGeneration({
   // Asking whether to take the sandbox from contributors.
   const [unpublishing, setUnpublishing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /*
+    Whether the next slice's build carries the repository's own tests: the
+    owner's choice once made, else what the selected draft's build did
+    (new slices carry them).
+  */
+  const [carryChoice, setCarryChoice] = useState<boolean | null>(null);
   // The version being looked at; the latest until another is chosen.
   const [chosenId, setChosenId] = useState<string | null>(null);
   const versionsKey = queryKeys.resource(
@@ -494,6 +532,7 @@ export function SandboxGeneration({
       const answer = await clients.sandbox.sliceSandboxVersion(
         organizationId,
         sandboxId,
+        carryChoice === null ? undefined : { carryTests: carryChoice },
       );
       queryClient.setQueryData(sliceKey, answer.slice);
       if (answer.version !== null) {
@@ -703,6 +742,11 @@ export function SandboxGeneration({
   let standing: Standing | null = null;
   let files: number | null = null;
   let hiddenTests: number | null = null;
+  let disclosure: DisclosureFindingView[] = [];
+  let acknowledgedAt: DisclosureAcknowledgedAt = "build";
+  let carried: { kept: number; dropped: number } | null = null;
+  // Whether the selected draft's finished build carried tests; null before one.
+  let builtCarrying: boolean | null = null;
   if (selected !== null && canManage) {
     if (pending) standing = { label: "Starting…", tone: "busy", note: null };
     else if (source.isPending)
@@ -738,10 +782,24 @@ export function SandboxGeneration({
       const outcome = outcomeOf(artifacts.data ?? []);
       files = outcome.files;
       hiddenTests = outcome.hiddenTests;
+      disclosure = outcome.disclosure;
+      acknowledgedAt = outcome.acknowledgedAt;
+      carried = outcome.carriedTests;
+      if (!artifacts.isPending) builtCarrying = carried !== null;
       if (artifacts.isPending)
         standing = { label: "Generated", tone: "muted", note: null };
       else if (outcome.ready)
         standing = { label: "Baseline passes", tone: "ok", note: null };
+      // Held before its baseline ran: what held it, not a baseline.
+      else if (outcome.reasons.length === 0 && outcome.blockers.length > 0)
+        standing = {
+          label: "Blocked",
+          tone: "bad",
+          note:
+            outcome.disclosure.length > 0
+              ? null
+              : outcome.blockers.slice(0, 3).join(" "),
+        };
       else
         standing = {
           label: "Baseline fails",
@@ -814,6 +872,12 @@ export function SandboxGeneration({
     if (canManage) {
       facts.push({ term: "Source files", value: files ?? "—" });
       facts.push({ term: "Hidden tests", value: hiddenTests ?? "—" });
+      // The repository's own tests the build carried as public tests.
+      if (carried !== null)
+        facts.push({
+          term: "Repository tests",
+          value: `${carried.kept} carried, ${carried.dropped} left out`,
+        });
     }
     facts.push({ term: "Created", value: createdOn(selected.createdAt) });
 
@@ -897,6 +961,32 @@ export function SandboxGeneration({
           >
             {standing.note}
           </p>
+        )}
+        {canManage && disclosure.length > 0 && (
+          <DisclosureFindings
+            // A new build's findings start the marks afresh.
+            key={runId ?? ""}
+            organizationId={organizationId}
+            versionId={selected.id}
+            findings={disclosure}
+            acknowledgements={
+              source.data?.source?.disclosureAcknowledgements ?? []
+            }
+            acknowledgedAt={acknowledgedAt}
+            canAcknowledge={!readOnly && selected.frozenAt === null}
+            onSaved={() => {
+              void queryClient.invalidateQueries({
+                queryKey: queryKeys.resource(
+                  userId,
+                  organizationId,
+                  "sandbox-version",
+                  selected.id,
+                ),
+              });
+              void queryClient.invalidateQueries({ queryKey: versionsKey });
+              onChanged?.();
+            }}
+          />
         )}
       </div>
     );
@@ -1064,7 +1154,9 @@ export function SandboxGeneration({
     (run.data === undefined ||
       run.data.toolVersion === SANDBOX_BUILD_RUN_VERSION) &&
     (source.data.source.buildRunId !== null ||
-      source.data.source.scope.blockers.length > 0);
+      source.data.source.scope.blockers.length > 0) &&
+    // A changed choice of the carried tests builds the draft again.
+    (carryChoice === null || carryChoice === builtCarrying);
   const sliceHeld =
     generationBlocked ??
     // Contributors work in what it publishes.
@@ -1099,6 +1191,30 @@ export function SandboxGeneration({
     </DisabledReason>
   );
   const makeButton = canGenerate ? generateButton : sliceButton;
+  // Whether the next slice's build carries the repository's own tests.
+  const carryTests = carryChoice ?? builtCarrying ?? true;
+  const carryToggle = slices &&
+    canManage &&
+    !readOnly &&
+    !versions.isPending &&
+    !versions.isError && (
+      <label className="flex w-fit cursor-pointer items-start gap-2.5 text-sm">
+        <input
+          type="checkbox"
+          className="accent-foreground mt-0.5 size-3.5 shrink-0"
+          checked={carryTests}
+          disabled={sliceBusy}
+          onChange={(event) => setCarryChoice(event.target.checked)}
+        />
+        <span className="min-w-0">
+          Carry the repository&apos;s own tests
+          <span className="text-muted-foreground block text-xs">
+            Its node:test tests of the sliced files that pass before any change,
+            as read-only public tests.
+          </span>
+        </span>
+      </label>
+    );
 
   // A slice its sizing is still cutting, with the scope agent's steps.
   const sliceProgress = sliceState !== undefined &&
@@ -1136,6 +1252,7 @@ export function SandboxGeneration({
       {body}
       {sliceProgress}
       {sliceApproval}
+      {carryToggle}
       {(openButton || rowGenerate) && (
         <div className="flex flex-wrap items-center gap-2">
           {openButton}

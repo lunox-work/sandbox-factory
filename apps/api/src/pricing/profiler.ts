@@ -330,6 +330,9 @@ export class BountyProfiler {
         deadlineMinutes: GRAPH_DEADLINE_MINUTES,
         graphRunId: scope.graphRunId,
         ...sliceRequestOf(scope),
+        // Its builds carry the repository's own tests of it that pass on
+        // the baseline; an owner can build without them (`carryTests`).
+        carryTests: true,
       },
     });
     if (slice === "full") return full("build");

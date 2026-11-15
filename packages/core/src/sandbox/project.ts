@@ -64,6 +64,10 @@ export const HARNESS_DIR = "sandbox";
 export const MOCKS_DIR = "mocks";
 export const PUBLIC_TESTS_DIR = "tests/public";
 export const PRIVATE_TESTS_DIR = "tests/private";
+/** The repository's own tests a build carries (`carried-tests.ts`), read-only public tests. */
+export const CARRIED_TESTS_DIR = `${PUBLIC_TESTS_DIR}/carried`;
+/** A test `npm test`'s glob runs once built (`*.test.js`): `.test.ts` or `.test.tsx`. */
+export const CARRIED_TEST_FILE = /\.test\.tsx?$/;
 export const MOCK_RUNTIME_PATH = `${HARNESS_DIR}/mock.js`;
 export const AMBIENT_PATH = `${HARNESS_DIR}/ambient.d.ts`;
 export const RUN_PATH = `${HARNESS_DIR}/run.ts`;
@@ -134,6 +138,13 @@ export interface ProjectInput {
    * keeps its own: the registry knows it by no other.
    */
   readonly publicNames?: PublicNames;
+  /**
+   * The repository's own tests the build carried (`carriedTestFile`): at
+   * their project paths under `tests/public/carried/`, renamed and with
+   * their imports pointed at the project's files, read-only public tests
+   * like the generated ones.
+   */
+  readonly carriedTests?: readonly { path: string; text: string }[];
 }
 
 export interface PublicNames {
@@ -167,7 +178,7 @@ const DESTRUCTURED_KEY =
  * the name changes, the read around it is kept as written. A destructured
  * shorthand keeps its binding: `{ A }` becomes `{ B: A }`.
  */
-function renameEnvironmentReads(
+export function renameEnvironmentReads(
   text: string,
   renamed: ReadonlyMap<string, string>,
 ): string {
@@ -242,6 +253,7 @@ export interface ProjectBlocker {
     | "starter_invalid"
     | "vocabulary_leaked"
     | "secret_found"
+    | "disclosure_findings"
     | "baseline_failed";
   readonly file: string | null;
   readonly detail: string;
@@ -305,6 +317,45 @@ const NAMED_IMPORT =
 function onCommentLine(text: string, offset: number): boolean {
   const start = text.lastIndexOf("\n", offset - 1) + 1;
   return /^\s*(\/\/|\/\*|\*)/.test(text.slice(start, offset));
+}
+
+/**
+ * The module specifiers a script names (`import`, `export … from`,
+ * `import()`, `require()`), in order, commented-out ones left out: the
+ * imports `replaceScriptImports` walks, one for one.
+ */
+export function scriptImports(text: string): string[] {
+  const found: string[] = [];
+  for (const match of text.matchAll(IMPORT_LITERAL))
+    if (!onCommentLine(text, match.index)) found.push(match[3] ?? "");
+  return found;
+}
+
+/**
+ * `text` with the specifier of each import `scriptImports` lists replaced
+ * by `to(index, specifier)`, everything around it kept as written.
+ */
+export function replaceScriptImports(
+  text: string,
+  to: (index: number, specifier: string) => string,
+): string {
+  let index = 0;
+  return text.replace(
+    IMPORT_LITERAL,
+    (
+      whole,
+      prefix: string,
+      quote: string,
+      specifier: string,
+      offset: number,
+      all: string,
+    ) => {
+      if (onCommentLine(all, offset)) return whole;
+      const replaced = to(index, specifier);
+      index += 1;
+      return `${prefix}${quote}${replaced}${quote}`;
+    },
+  );
 }
 
 export function dirnameOf(path: string): string {
@@ -387,7 +438,7 @@ export function declarationPath(path: string): string {
 }
 
 /** `../lib/x.js` from `sandbox` is `lib/x.js`; null when it leaves the root. */
-function joinRelative(dir: string, specifier: string): string | null {
+export function joinRelative(dir: string, specifier: string): string | null {
   const parts = dir.split("/").filter(Boolean);
   for (const part of specifier.split("/")) {
     if (part === "" || part === ".") continue;
@@ -400,7 +451,7 @@ function joinRelative(dir: string, specifier: string): string | null {
 }
 
 /** The sources a `.js`-style specifier names under NodeNext resolution. */
-function sourceCandidates(path: string): string[] {
+export function sourceCandidates(path: string): string[] {
   if (path.endsWith(".mjs")) return [`${path.slice(0, -4)}.mts`];
   if (path.endsWith(".cjs")) return [`${path.slice(0, -4)}.cts`];
   if (path.endsWith(".js")) {
@@ -1313,6 +1364,29 @@ export function generateProject(input: ProjectInput): GeneratedProject {
     class: "test-public",
     public: true,
   });
+  for (const test of [...(input.carriedTests ?? [])].sort((a, b) =>
+    compare(a.path, b.path),
+  )) {
+    if (
+      !test.path.startsWith(`${CARRIED_TESTS_DIR}/`) ||
+      !CARRIED_TEST_FILE.test(test.path) ||
+      test.path.split("/").some((part) => part === "" || part === "..")
+    ) {
+      blockers.push({
+        code: "test_path_invalid",
+        file: test.path,
+        detail: `Carried tests live under ${CARRIED_TESTS_DIR}/ and end in .test.ts or .test.tsx.`,
+      });
+      continue;
+    }
+    publicTests.push(test.path);
+    add({
+      path: test.path,
+      text: test.text,
+      class: "test-public",
+      public: true,
+    });
+  }
   for (const test of input.acceptanceTests) {
     if (
       !test.path.startsWith(`${PRIVATE_TESTS_DIR}/`) ||

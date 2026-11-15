@@ -73,6 +73,10 @@ export const ID_PREFIXES = [
   "whd",
   /** One model reply's tokens in the ledger the monthly quota counts. */
   "mtk",
+  /** One evaluation job's seconds in the ledger the evaluator cap counts. */
+  "evu",
+  /** One grading run admitted for a submission, which the brakes count. */
+  "gat",
 ] as const;
 
 export type IdPrefix = (typeof ID_PREFIXES)[number];

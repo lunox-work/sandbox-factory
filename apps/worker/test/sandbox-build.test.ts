@@ -19,6 +19,7 @@ import {
 } from "sandbox-factory";
 import type {
   AliasRule,
+  DisclosureAcknowledgement,
   EvaluationCommand,
   HiddenTestRun,
   GeneratedFile,
@@ -164,6 +165,10 @@ async function versionFor(
     slice: SliceOutput;
     /** What the spec decided where the ticket was silent. */
     assumptions: string[];
+    /** The bounty's title and summary, when not the widget's. */
+    listing: { title: string; summary: string };
+    /** Disclosure findings an owner said may be public. */
+    acknowledgements: DisclosureAcknowledgement[];
   }> = {},
 ): Promise<StoredVersionWithSource> {
   const { artifacts, manifest, contract } = overrides.slice ?? (await slice());
@@ -187,8 +192,8 @@ async function versionFor(
       id: "sbv_1",
       sandboxId: "sbx_1",
       version: 1,
-      title: "Fix the widget",
-      specSummary: "Make it work.",
+      title: overrides.listing?.title ?? "Fix the widget",
+      specSummary: overrides.listing?.summary ?? "Make it work.",
       complexity: "M",
       tags: ["typescript"],
       testSummary: [],
@@ -215,8 +220,8 @@ async function versionFor(
       contextVersions: { jira: null, github: null },
       approvedTask: {
         schemaVersion: 1,
-        title: "Fix the widget",
-        summary: "Make it work.",
+        title: overrides.listing?.title ?? "Fix the widget",
+        summary: overrides.listing?.summary ?? "Make it work.",
         spec: {
           proposalId: "bpr_1",
           specRevision: 1,
@@ -263,6 +268,9 @@ async function versionFor(
       buildRunId: null,
       roundTripRunId: null,
       disclosureRunId: null,
+      ...(overrides.acknowledgements === undefined
+        ? {}
+        : { disclosureAcknowledgements: overrides.acknowledgements }),
       approvedBy: null,
       approvedAt: null,
       createdAt: stamp,
@@ -282,6 +290,7 @@ async function versionFor(
             acceptanceTests: source.acceptanceTests,
             fixtures: source.fixtures,
             starterSha256: source.starterSha256,
+            disclosureAcknowledgements: source.disclosureAcknowledgements,
           }),
         ),
       ),
@@ -1208,6 +1217,272 @@ test("a credential in a public file blocks the build before any job runs, naming
     },
   ]);
   assert.equal(JSON.stringify(leaked.manifest).includes(key), false);
+});
+
+/**
+ * The fixture with one file's text changed, and its slice's manifest
+ * naming the new bytes, as a slice of that source would.
+ */
+async function sourceWith(
+  path: string,
+  edit: (text: string) => string,
+): Promise<{ sourceDir: string; slice: SliceOutput }> {
+  const sourceDir = await mkdtemp(join(tmpdir(), "build-source-"));
+  await cp(fixture, sourceDir, { recursive: true });
+  const text = edit(await readFile(join(sourceDir, path), "utf8"));
+  await writeFile(join(sourceDir, path), text);
+  const sliced = await slice();
+  const manifest = {
+    ...sliced.manifest,
+    included: sliced.manifest.included.map((file) =>
+      file.path === path ? { ...file, sha256: sha(text) } : file,
+    ),
+  };
+  const bytes = Buffer.from(JSON.stringify(manifest));
+  const objects = new Map(sliced.objects);
+  const artifacts = sliced.artifacts.map((artifact) => {
+    if (artifact.kind !== "slice_manifest") return artifact;
+    objects.set(artifact.objectKey, bytes);
+    return { ...artifact, sha256: sha(bytes), sizeBytes: bytes.byteLength };
+  });
+  return { sourceDir, slice: { ...sliced, artifacts, objects, manifest } };
+}
+
+/** A runbook link and an author's address in a copied file's comment. */
+const RUNBOOK_HEADER = [
+  "/**",
+  " * Runbook: https://wiki.halcyon.internal/runbooks/app",
+  " * @author jo.doe@halcyon.io",
+  " */",
+  "",
+].join("\n");
+/** A bounty whose title and summary say where it came from. */
+const TRACKED = {
+  title: "Fix the widget (PAY-7)",
+  summary:
+    "Reported by ops@halcyon.io; see https://status.halcyon.io/incidents/1.",
+};
+
+test("what the table leaves beyond the vocabulary blocks the build before any job runs, and the bounty's addresses never reach a generated file", async () => {
+  const { sourceDir, slice: sliced } = await sourceWith(
+    "src/app.ts",
+    (text) => RUNBOOK_HEADER + text,
+  );
+  const fake = fakeProvider();
+  const blocked = await runBuild(fake.provider, {
+    sourceDir,
+    slice: sliced,
+    version: await versionFor({
+      slice: sliced,
+      aliasRules: named,
+      listing: TRACKED,
+    }),
+    params: { ticketKeys: ["PAY"] },
+  });
+  assert.equal(blocked.manifest.ready, false);
+  assert.equal(blocked.manifest.baseline, null);
+  assert.equal(fake.calls.length, 0);
+  assert.deepEqual(blocked.manifest.blockers, [
+    {
+      code: "disclosure_findings",
+      file: "src/app.ts",
+      detail:
+        "Text that may say whose code this is appears at src/app.ts:2 (url https://wiki.halcyon.internal/runbooks/app), src/app.ts:3 (email jo.doe@halcyon.io), src/app.ts:3 (author jo.doe@halcyon.io). Rename it with a pseudonym text rule, or acknowledge it on the version if it may be public.",
+    },
+  ]);
+  const gate = blocked.manifest.gates?.disclosure;
+  assert.equal(gate?.status, "failed");
+  assert.equal(gate?.blocking, 3);
+  assert.equal(gate?.total, 3);
+  assert.equal(gate?.acknowledged, 0);
+  assert.deepEqual(
+    gate?.findings?.map((finding) => [finding.kind, finding.term]),
+    [
+      ["url", "wiki.halcyon.internal"],
+      ["email", "halcyon.io"],
+      ["author", "jo.doe@halcyon.io"],
+    ],
+  );
+  assert.ok(
+    blocked.messages.includes(
+      "The disclosure scan finds 3 item(s) in public files, 3 not acknowledged.",
+    ),
+    blocked.messages.join("\n"),
+  );
+  // The bounty's ticket, address and link are redacted from every file the
+  // build writes from it, wherever they would have gone.
+  const readme = await blocked.read("project/README.md");
+  const task = await blocked.read("project/TASK.md");
+  const descriptor = await blocked.read("project/sandbox-task.json");
+  assert.match(readme, /# Fix the widget \(\[ticket\]\)/);
+  assert.match(readme, /Reported by \[email removed\]; see \[link removed\]\./);
+  for (const text of [readme, task, descriptor]) {
+    assert.doesNotMatch(text, /halcyon|PAY-7/);
+  }
+  // The build's summary carries the findings for the owner to act on.
+  const summary = blocked.files.find(
+    (file) => file.path === "build-manifest.json",
+  )?.meta as { disclosure?: { findings?: unknown[] } } | null;
+  assert.equal(summary?.disclosure?.findings?.length, 3);
+});
+
+test("a text rule that renames them, or an owner's acknowledgement, lets the build through, recorded in the gate", async () => {
+  const { sourceDir, slice: sliced } = await sourceWith(
+    "src/app.ts",
+    (text) => RUNBOOK_HEADER + text,
+  );
+  const script = (argv: readonly string[]) =>
+    runsHiddenTest(argv) ? TAP_FAILED : {};
+  // Renamed by text rules whose public names carry back.
+  const renamed = await runBuild(fakeProvider(script).provider, {
+    sourceDir,
+    slice: sliced,
+    version: await versionFor({
+      slice: sliced,
+      aliasRules: [
+        ...named,
+        {
+          before: "wiki.halcyon.internal",
+          after: "wiki.example",
+          kind: "text",
+          paths: [],
+        },
+        {
+          before: "jo.doe@halcyon.io",
+          after: "dev@example.com",
+          kind: "text",
+          paths: [],
+        },
+      ],
+    }),
+  });
+  assert.deepEqual(renamed.manifest.blockers, []);
+  assert.equal(renamed.manifest.ready, true);
+  assert.equal(renamed.manifest.gates?.disclosure.status, "passed");
+  assert.equal(renamed.manifest.gates?.disclosure.total, 0);
+  assert.equal(renamed.manifest.gates?.roundTrip.status, "passed");
+  const app = await renamed.read("project/src/app.ts");
+  assert.match(app, /https:\/\/wiki\.example\/runbooks\/app/);
+  assert.match(app, /@author dev@example\.com/);
+  // A host renamed word for word would carry a contributor's added line
+  // back wrongly: the round trip says so, and holds publication.
+  const wordForWord = await runBuild(fakeProvider(script).provider, {
+    sourceDir,
+    slice: sliced,
+    version: await versionFor({
+      slice: sliced,
+      aliasRules: [
+        ...named,
+        {
+          before: "wiki.halcyon.internal",
+          after: "docs.example.com",
+          kind: "text",
+          paths: [],
+        },
+        {
+          before: "jo.doe@halcyon.io",
+          after: "dev@example.com",
+          kind: "text",
+          paths: [],
+        },
+      ],
+    }),
+  });
+  assert.equal(wordForWord.manifest.gates?.disclosure.status, "passed");
+  assert.equal(wordForWord.manifest.gates?.roundTrip.status, "failed");
+  assert.match(
+    wordForWord.manifest.gates?.roundTrip.problems[0]?.reason ?? "",
+    /docs -> wiki, example -> halcyon, com -> internal/,
+  );
+  // Left as they are, and acknowledged by an owner.
+  const acknowledged = await runBuild(fakeProvider(script).provider, {
+    sourceDir,
+    slice: sliced,
+    version: await versionFor({
+      slice: sliced,
+      aliasRules: named,
+      acknowledgements: [
+        { kind: "host", value: "halcyon.internal", note: "a public wiki" },
+        { kind: "email", value: "jo.doe@halcyon.io" },
+        { kind: "author", value: "jo.doe@halcyon.io" },
+      ],
+    }),
+  });
+  assert.deepEqual(acknowledged.manifest.blockers, []);
+  const gate = acknowledged.manifest.gates?.disclosure;
+  assert.equal(gate?.status, "passed");
+  assert.equal(gate?.blocking, 0);
+  assert.equal(gate?.acknowledged, 3);
+  assert.deepEqual(
+    gate?.findings?.map((finding) => finding.acknowledged),
+    [true, true, true],
+  );
+});
+
+test("the pseudonyms agent is given what the scan finds in the slice as hints, and the check shows what is left", async () => {
+  const { sourceDir, slice: sliced } = await sourceWith(
+    "src/app.ts",
+    (text) => RUNBOOK_HEADER + text,
+  );
+  const model = scripted([
+    turn([
+      call("check_pseudonyms", {
+        aliases: [
+          { before: "Widget", after: "Gadget", kind: "identifier" },
+          { before: "widget", after: "gadget", kind: "text" },
+        ],
+      }),
+    ]),
+    turn([
+      call("submit_pseudonyms", {
+        aliases: [
+          { before: "Widget", after: "Gadget", kind: "identifier" },
+          { before: "widget", after: "gadget", kind: "text" },
+          {
+            before: "wiki.halcyon.internal",
+            after: "wiki.example",
+            kind: "text",
+          },
+          {
+            before: "jo.doe@halcyon.io",
+            after: "dev@example.com",
+            kind: "text",
+          },
+        ],
+        summary: "Renames the product, the wiki and the author.",
+      }),
+    ]),
+  ]);
+  const version = await versionFor({
+    slice: sliced,
+    fixtures: {
+      ...given,
+      scenario: `console.log("demo");\n// The widget walkthrough, for ${PSEUDONYM_PLACEHOLDERS.join(", ")}.\n`,
+    },
+  });
+  const built = await runBuild(
+    fakeProvider((argv) => (runsHiddenTest(argv) ? TAP_FAILED : {})).provider,
+    {
+      sourceDir,
+      slice: sliced,
+      version,
+      params: { vocabulary: ["Widget"] },
+      agent: { model, limits },
+    },
+  );
+  const prompt = model.prompts[0] ?? "";
+  assert.match(prompt, /The disclosure scan finds these in the slice/);
+  assert.match(prompt, /wiki\.halcyon\.internal \(url; at src\/app\.ts:2\)/);
+  assert.match(prompt, /halcyon\.io \(email; at src\/app\.ts:3\)/);
+  // The check lists what is still there without refusing the table for it.
+  const checked = model.results[0]?.[0];
+  assert.match(checked?.content ?? "", /Still in the public files/);
+  assert.match(
+    checked?.content ?? "",
+    /src\/app\.ts:2 url https:\/\/wiki\.halcyon\.internal\/runbooks\/app/,
+  );
+  assert.deepEqual(built.manifest.blockers, []);
+  assert.equal(built.manifest.gates?.disclosure.status, "passed");
 });
 
 test("a mocked package and an environment variable go by the names the table gives them", async () => {
@@ -3144,4 +3419,289 @@ test("with no reference, no hidden test stands, and the build stays diagnostic",
       line.startsWith("Calibration kept no hidden test that should fail"),
     ),
   );
+});
+
+/**
+ * The fixture's slice with its request's `params` (asking for its tests by
+ * default), and test files beside its source that the walk saw import
+ * `src/app.ts`.
+ */
+async function sliceCarrying(
+  tests: Record<string, string>,
+  params: Record<string, unknown> = { carryTests: true },
+): Promise<{ sourceDir: string; slice: SliceOutput }> {
+  const sourceDir = await mkdtemp(join(tmpdir(), "build-carried-"));
+  await cp(fixture, sourceDir, { recursive: true });
+  for (const [path, text] of Object.entries(tests)) {
+    await mkdir(join(sourceDir, path, ".."), { recursive: true });
+    await writeFile(join(sourceDir, path), text);
+  }
+  const sliced = await slice();
+  const manifest = {
+    ...sliced.manifest,
+    params: { ...sliced.manifest.params, ...params },
+    cuts: {
+      ...sliced.manifest.cuts,
+      inbound: [
+        ...sliced.manifest.cuts.inbound,
+        ...Object.keys(tests).map((from) => ({
+          from,
+          to: "src/app.ts",
+          relation: "imports",
+          specifier: "../src/app.js",
+          location: "L2",
+          targetSymbol: null,
+        })),
+      ],
+    },
+  };
+  const bytes = Buffer.from(JSON.stringify(manifest));
+  const objects = new Map(sliced.objects);
+  const artifacts = sliced.artifacts.map((artifact) => {
+    if (artifact.kind !== "slice_manifest") return artifact;
+    objects.set(artifact.objectKey, bytes);
+    return { ...artifact, sha256: sha(bytes), sizeBytes: bytes.byteLength };
+  });
+  return {
+    sourceDir,
+    slice: { ...sliced, artifacts, objects, manifest: manifest as never },
+  };
+}
+
+const NODE_TEST = 'import { test } from "node:test";\n';
+const appTest = (name: string, more = "") =>
+  `${NODE_TEST}import { run } from "../src/app.js";\n${more}test(${JSON.stringify(name)}, () => void run);\n`;
+const CARRIED_TESTS = {
+  "test/app.test.ts": appTest(
+    "runs",
+    'import { createService } from "../lib/service.js";\n',
+  ),
+  "test/fails.test.ts": appTest("fails"),
+  "test/types.test.ts": appTest("types"),
+  "test/slow.test.ts": appTest("slow"),
+  "test/flaky.test.ts": appTest("flaky"),
+  "test/vitest.test.ts":
+    'import { it } from "vitest";\nimport { run } from "../src/app.js";\nit("runs", () => void run);\n',
+  "test/jest.test.ts":
+    'import { run } from "../src/app.js";\ndescribe("run", () => it("runs", () => expect(run).toBeDefined()));\n',
+  "test/outside.test.ts": appTest(
+    "outside",
+    'import { cli } from "../consumers/cli.js";\n',
+  ),
+};
+/** The trial's answers: tsc names one file, and each test runs as its name says. */
+function carriedScript() {
+  let flaky = 0;
+  return (argv: readonly string[]): Partial<EvaluationExecResult> => {
+    const file = argv.at(-1) ?? "";
+    if (argv.includes("--noEmitOnError"))
+      return {
+        exitCode: 2,
+        stdout:
+          "tests/public/carried/test/types.test.ts(2,10): error TS2305: Module '\"../../../../src/app.js\"' has no exported member 'gone'.\nsrc/elsewhere.ts(1,1): error TS1000: Not a carried test.\n",
+      };
+    if (!runsHiddenTest(argv)) return {};
+    if (!file.includes("tests/public/carried/")) return TAP_FAILED;
+    if (file.endsWith("/fails.test.js")) return TAP_FAILED;
+    if (file.endsWith("/slow.test.js"))
+      return { exitCode: null, timedOut: true };
+    if (file.endsWith("/flaky.test.js"))
+      return (flaky += 1) === 1
+        ? TAP_PASSED
+        : {
+            ...TAP_PASSED,
+            stdout: TAP_PASSED.stdout.replace(/passes/g, "other"),
+          };
+    return TAP_PASSED;
+  };
+}
+
+test("a slice asking for its tests carries those that pass twice on the untouched project, and records the rest with why", async () => {
+  const { sourceDir, slice: sliced } = await sliceCarrying(CARRIED_TESTS);
+  const fake = fakeProvider(carriedScript());
+  const { manifest, read, messages, files } = await runBuild(fake.provider, {
+    slice: sliced,
+    sourceDir,
+    version: await versionFor({ slice: sliced }),
+  });
+  assert.equal(manifest.ready, true, JSON.stringify(manifest.blockers));
+  assert.deepEqual(manifest.carriedTests?.kept, [
+    { path: "tests/public/carried/test/app.test.ts", from: "test/app.test.ts" },
+  ]);
+  assert.deepEqual(
+    manifest.carriedTests?.dropped.map(({ from, reason }) => [from, reason]),
+    [
+      ["test/fails.test.ts", "baseline_failed"],
+      ["test/flaky.test.ts", "flaky"],
+      ["test/jest.test.ts", "runner"],
+      ["test/outside.test.ts", "outside_slice"],
+      ["test/slow.test.ts", "timed_out"],
+      ["test/types.test.ts", "compile_failed"],
+      ["test/vitest.test.ts", "runner"],
+    ],
+  );
+  assert.match(
+    manifest.carriedTests?.dropped.find(
+      ({ reason }) => reason === "compile_failed",
+    )?.detail ?? "",
+    /TS2305/,
+  );
+  assert.deepEqual(manifest.carriedTests?.limits, {
+    maxFiles: 20,
+    maxBytes: 256 * 1024,
+    timeoutMs: 60_000,
+  });
+  // The kept test is a public test, its imports pointed at the project's
+  // files from where it now sits; the dropped ones are nowhere.
+  assert.ok(
+    manifest.files.some(
+      (file) =>
+        file.path === "tests/public/carried/test/app.test.ts" &&
+        file.class === "test-public" &&
+        file.public,
+    ),
+  );
+  assert.ok(
+    !files.some((file) =>
+      /carried\/test\/(?:fails|flaky|slow|types|vitest|jest|outside)/.test(
+        file.path,
+      ),
+    ),
+  );
+  const carried = await read("project/tests/public/carried/test/app.test.ts");
+  assert.match(carried, /from "\.\.\/\.\.\/\.\.\/\.\.\/src\/app\.js"/);
+  assert.match(carried, /from "\.\.\/\.\.\/\.\.\/\.\.\/lib\/service\.js"/);
+  const descriptor = JSON.parse(await read("project/sandbox-task.json")) as {
+    publicTests: string[];
+  };
+  assert.ok(
+    descriptor.publicTests.includes("tests/public/carried/test/app.test.ts"),
+  );
+  // Two jobs: the carried tests' own, then the baseline's. The trial
+  // compiles with noEmitOnError off and runs each test that compiled
+  // twice, the failing one once; the baseline runs the kept one with the
+  // public suite.
+  assert.equal(fake.destroyed(), 2);
+  const tried = fake.calls
+    .filter((argv) => (argv.at(-1) ?? "").includes("tests/public/carried/"))
+    .map((argv) =>
+      (argv.at(-1) ?? "").replace("tests/public/carried/test/", ""),
+    );
+  assert.deepEqual(tried, [
+    "app.test.js",
+    "fails.test.js",
+    "flaky.test.js",
+    "slow.test.js",
+    "app.test.js",
+    "flaky.test.js",
+  ]);
+  assert.ok(
+    messages.includes(
+      "Carried 1 of the repository's own test(s) as public tests; 7 left out.",
+    ),
+    messages.join("\n"),
+  );
+});
+
+test("the slice's limit leaves the rest out, and a test naming the workspace is dropped, not the build", async () => {
+  const { sourceDir, slice: sliced } = await sliceCarrying(
+    {
+      "test/app.test.ts": appTest("runs"),
+      "test/brand.test.ts": appTest("Widgetco runs"),
+      "test/zz.test.ts": appTest("last"),
+    },
+    { carryTests: true, carriedTestLimits: { maxFiles: 2, maxBytes: 100_000 } },
+  );
+  const fake = fakeProvider(carriedScript());
+  const { manifest } = await runBuild(fake.provider, {
+    slice: sliced,
+    sourceDir,
+    version: await versionFor({ slice: sliced }),
+    params: { vocabulary: ["Widgetco"] },
+  });
+  assert.equal(manifest.ready, true, JSON.stringify(manifest.blockers));
+  assert.deepEqual(
+    manifest.carriedTests?.kept.map(({ from }) => from),
+    ["test/app.test.ts"],
+  );
+  assert.deepEqual(
+    manifest.carriedTests?.dropped.map(({ from, reason }) => [from, reason]),
+    [
+      ["test/brand.test.ts", "disclosure"],
+      ["test/zz.test.ts", "limit"],
+    ],
+  );
+  assert.match(
+    manifest.carriedTests?.dropped[0]?.detail ?? "",
+    /names the workspace/,
+  );
+  assert.deepEqual(manifest.carriedTests?.limits, {
+    maxFiles: 2,
+    maxBytes: 100_000,
+    timeoutMs: 60_000,
+  });
+});
+
+test("an old slice, or a build asked to leave them out, carries no test and runs one job; a blocked build tries none", async () => {
+  for (const [params, buildParams] of [
+    [{}, {}],
+    [{ carryTests: false }, {}],
+    [{ carryTests: true }, { carryTests: false }],
+  ] as const) {
+    const { sourceDir, slice: sliced } = await sliceCarrying(
+      { "test/app.test.ts": appTest("runs") },
+      params,
+    );
+    const fake = fakeProvider(carriedScript());
+    const { manifest } = await runBuild(fake.provider, {
+      slice: sliced,
+      sourceDir,
+      version: await versionFor({ slice: sliced }),
+      params: buildParams,
+    });
+    assert.equal(manifest.carriedTests, undefined, JSON.stringify(params));
+    assert.equal(fake.destroyed(), 1);
+    assert.ok(!fake.calls.some((argv) => argv.includes("--noEmitOnError")));
+  }
+  const { sourceDir, slice: sliced } = await sliceCarrying({
+    "test/app.test.ts": appTest("runs"),
+  });
+  const fake = fakeProvider(carriedScript());
+  const { manifest } = await runBuild(fake.provider, {
+    slice: sliced,
+    sourceDir,
+    version: await versionFor({ slice: sliced, blocked: true }),
+  });
+  assert.deepEqual(manifest.carriedTests?.kept, []);
+  assert.deepEqual(
+    manifest.carriedTests?.dropped.map(({ reason }) => reason),
+    ["untried"],
+  );
+  assert.equal(fake.destroyed(), 0);
+});
+
+test("a project that does not install for the trial keeps no carried test", async () => {
+  const { sourceDir, slice: sliced } = await sliceCarrying({
+    "test/app.test.ts": appTest("runs"),
+  });
+  let prepares = 0;
+  const fake = fakeProvider((argv) =>
+    argv.includes("--package-lock-only") && (prepares += 1) === 1
+      ? { exitCode: 1 }
+      : carriedScript()(argv),
+  );
+  const { manifest } = await runBuild(fake.provider, {
+    slice: sliced,
+    sourceDir,
+    version: await versionFor({ slice: sliced }),
+  });
+  assert.deepEqual(manifest.carriedTests?.kept, []);
+  assert.deepEqual(manifest.carriedTests?.dropped, [
+    {
+      from: "test/app.test.ts",
+      reason: "baseline_failed",
+      detail: "The project did not install to try it.",
+    },
+  ]);
+  assert.equal(manifest.ready, true, JSON.stringify(manifest.blockers));
 });

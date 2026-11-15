@@ -5,6 +5,7 @@ import {
   ANALYSIS_PROGRESS_STEPS_MAX,
   ANALYSIS_PROGRESS_TEXT_MAX,
   ARTIFACT_KINDS,
+  CARRIED_TEST_LIMITS,
   CONTEXT_BUILDERS,
   DATA_MODEL_OMISSION_CODES,
   DATA_SOURCE_KINDS,
@@ -109,6 +110,18 @@ export const sliceBudgetSchema = z.strictObject({
     .max(SLICE_BUDGET_LIMITS.maxDepth.max)
     .default(SLICE_BUDGET_DEFAULTS.maxDepth),
 });
+/**
+ * At most how many of the repository's tests a slice's builds carry, and
+ * how many bytes of them (`CarriedTestLimits`).
+ */
+export const carriedTestLimitsSchema = z.strictObject({
+  maxFiles: z.number().int().min(1).max(100),
+  maxBytes: z
+    .number()
+    .int()
+    .min(1)
+    .max(4 * CARRIED_TEST_LIMITS.maxBytes),
+});
 /** Stored slice parameters: canonical, so equal inputs share one run. */
 export const sliceParamsSchema = z.strictObject({
   deadlineMinutes: z.number().int().min(1).max(120).default(30),
@@ -130,6 +143,9 @@ export const sliceParamsSchema = z.strictObject({
     ),
   budget: sliceBudgetSchema,
   includeInferred: z.boolean().default(false),
+  /** Absent on slices requested before tests were carried: none are. */
+  carryTests: z.boolean().optional(),
+  carriedTestLimits: carriedTestLimitsSchema.optional(),
 });
 /** `POST .../repositories/:id/slices`. The graph run is chosen by the API. */
 export const enqueueSliceSchema = z.strictObject({
@@ -137,6 +153,9 @@ export const enqueueSliceSchema = z.strictObject({
   entryPoints: z.array(entryPointSchema).min(1).max(SLICE_ENTRY_POINTS_MAX),
   budget: sliceBudgetSchema.default(SLICE_BUDGET_DEFAULTS),
   includeInferred: z.boolean().default(false),
+  /** Whether its builds carry the repository's own tests of it; new slices do. */
+  carryTests: z.boolean().default(true),
+  carriedTestLimits: carriedTestLimitsSchema.optional(),
   deadlineMinutes: z.number().int().min(1).max(120).default(30),
 });
 
@@ -266,6 +285,8 @@ export const sandboxBuildParamsSchema = z.strictObject({
   approvedTaskSha256: sha256Schema,
   /** The names the workspace goes by, which no public file may carry. */
   vocabulary: z.array(z.string().min(1)).optional(),
+  /** The workspace's Jira project keys the disclosure scan looks for. */
+  ticketKeys: z.array(z.string().min(1)).optional(),
   /** The data model the fixtures agent reads, when the build writes fixtures. */
   dataModelRunId: z.string().min(1).optional(),
   /** A preparation run whose fixtures and name table the build tries first. */
@@ -274,6 +295,8 @@ export const sandboxBuildParamsSchema = z.strictObject({
     .min(1)
     .optional() /** The confirmed decisions' hash, when the spec has decisions. */,
   decisionsSha256: sha256Schema.optional(),
+  /** `false`: built without the carried tests its slice offers. */
+  carryTests: z.literal(false).optional(),
 });
 /** Stored starter parameters: the version it writes, and the stack it follows. */
 export const starterParamsSchema = z.strictObject({

@@ -15,6 +15,18 @@
  * the last answer is kept as a build that is not ready, so a person can
  * see what went wrong. The set and the build land on the version only
  * after the run commits, and only while the draft still points at it.
+ *
+ * One agent writes the starter and its hidden tests, so nothing it does
+ * shows a correct implementation can pass them. An accepted answer is
+ * calibrated as a sliced build's hidden tests are (`calibration.ts`, on
+ * duediligence's `calibrate`), by a reference agent of its own with the
+ * hidden tests withheld: it reads the renamed project, the spec and the
+ * confirmed decisions, never a hidden test. A test the reference fails is
+ * dropped, the set and the build keep the rest, and the baseline is run
+ * again over them. When no test that should fail survives, the build is
+ * held (not ready, the baseline's reasons saying why) and the agent's set
+ * is kept as written, as diagnostic output. The calibration is recorded in
+ * `build-transform.json` as a sliced build records it.
  */
 
 import { mkdir, readFile, writeFile } from "node:fs/promises";
@@ -24,9 +36,13 @@ import {
   STARTER_SET_SCHEMA_VERSION,
   STARTER_TOOL_VERSION,
   aliasStarter,
+  baselineVerdict,
   canonicalJson,
+  DISCLOSURE_FINDINGS_EVALUATED,
   disclosureGate,
+  disclosureRecords,
   nameTableProblems,
+  scanDisclosure,
   isStarterParams,
   starterScope,
   transformConfigOf,
@@ -37,8 +53,10 @@ import type {
   EvaluationEnvironment,
   EvaluationProvider,
   GeneratedFile,
+  GeneratedProject,
   ProjectBlocker,
   ProjectVersion,
+  PublicationGates,
   SandboxBuildManifest,
   SpecDraft,
   StarterSet,
@@ -62,11 +80,15 @@ import {
 import { invalidInput } from "../agent/repo-tools.js";
 import type { ArtifactFile, ToolAdapter, ToolRunInput } from "./adapter.js";
 import {
+  BUILD_TRANSFORM_PATH,
+  buildArtifactKind,
   descriptorTestSummary,
   previewProject,
   reportedBaselineOf,
   writeBuildOutputs,
 } from "./sandbox-build.js";
+import { calibrateHiddenTests } from "./calibration.js";
+import type { HiddenTestsCalibration } from "./calibration.js";
 import { sha256 } from "carveout/extract";
 import { checkStarter } from "./starter-check.js";
 import { confirmedDecisions } from "./decisions.js";
@@ -253,6 +275,70 @@ interface StarterBuild {
   readonly hiddenTests: readonly AcceptanceTest[];
   /** What the agent is told: each step, and the output of those that failed. */
   readonly report: string;
+  /** The listing, spec and confirmed decisions in public names. */
+  readonly listing: { readonly title: string; readonly specSummary: string };
+  readonly spec: SpecDraft | null;
+  readonly decisions: readonly string[];
+  /** The same project with other hidden tests (`checkStarter`). */
+  readonly regenerate: (tests: readonly AcceptanceTest[]) => GeneratedProject;
+}
+
+/**
+ * A held starter's baseline: the run's own steps, judged again over the
+ * hidden tests calibration kept, none of which should fail, with why.
+ */
+function heldBaseline(
+  baseline: BaselineReport,
+  calibration: HiddenTestsCalibration,
+): BaselineReport {
+  const kept = new Set(calibration.kept);
+  const privateTests = baseline.privateTests.filter((outcome) =>
+    kept.has(outcome.path),
+  );
+  const verdict = baselineVerdict({
+    steps: baseline.steps,
+    privateTests,
+    declared: privateTests.map((outcome) => outcome.expected),
+  });
+  return {
+    ...baseline,
+    privateTests,
+    ok: false,
+    reasons: [
+      ...verdict.reasons,
+      `Calibration (${calibration.engine}) kept no hidden test that should fail: ${calibration.reason ?? "none survived"}`,
+    ],
+  };
+}
+
+/**
+ * A starter's disclosure gate: its public files as built, scanned again.
+ * The check refused any candidate with a finding, so this records none
+ * unless a later step added one, and such a finding waits for an owner's
+ * acknowledgement at publication (`pending_acknowledgement`) rather than
+ * holding the build: the build read no acknowledgement, so its files are
+ * the same whatever the draft's list says.
+ */
+export function starterDisclosureGate(input: {
+  readonly files: readonly GeneratedFile[];
+  readonly blockers: readonly ProjectBlocker[];
+  readonly names: number;
+  readonly ticketKeys: readonly string[];
+  readonly aliases: StarterSubmission["aliases"];
+}): PublicationGates["disclosure"] {
+  const scanned = scanDisclosure(
+    input.files.filter((file) => file.public),
+    {
+      ticketKeys: input.ticketKeys,
+      publicNames: input.aliases.map((rule) => rule.after),
+    },
+  );
+  return disclosureGate(input.blockers, input.names, "build", {
+    findings: disclosureRecords(scanned, [], DISCLOSURE_FINDINGS_EVALUATED),
+    total: scanned.length,
+    unacknowledged: scanned.length,
+    acknowledgedAt: "publish",
+  });
 }
 
 export function createStarterAdapter(options: {
@@ -260,6 +346,13 @@ export function createStarterAdapter(options: {
   /** `null` when the worker has none: generation fails before the agent starts. */
   readonly provider: EvaluationProvider | null;
   readonly now?: () => Date;
+  /**
+   * How the accepted hidden tests are calibrated: `reference` (the
+   * default) by a reference agent with them withheld, on duediligence's
+   * rule; `off` keeps the set as the starter agent wrote it (tests that
+   * are not about calibration).
+   */
+  readonly calibration?: "reference" | "off";
 }): ToolAdapter {
   const now = options.now ?? (() => new Date());
   return {
@@ -289,6 +382,9 @@ export function createStarterAdapter(options: {
         throw new AnalysisError("tool_failed");
       const { version } = stored;
       const task = stored.source.approvedTask;
+      // No disclosure acknowledgement is read: the agent renames every
+      // finding at its check, so what it writes never depends on the
+      // draft's list, which publication checks instead (`gatesOf`).
       const spec: SpecDraft | null = task.spec?.draft ?? null;
       // The decisions a person confirmed, as the run names them by hash.
       const decisions = confirmedDecisions(spec, params.decisionsSha256);
@@ -310,6 +406,7 @@ export function createStarterAdapter(options: {
           spec,
           decisions,
           vocabulary: params.vocabulary ?? [],
+          ticketKeys: params.ticketKeys ?? [],
         });
       let checks = 0;
       let runs = 0;
@@ -359,7 +456,21 @@ export function createStarterAdapter(options: {
             timing: input.timing,
           },
         );
-        return { files, blockers, baseline, evaluator, hiddenTests, report };
+        return {
+          files,
+          blockers,
+          baseline,
+          evaluator,
+          hiddenTests,
+          report,
+          listing: {
+            title: checked.project.descriptor.title,
+            specSummary: checked.project.descriptor.specSummary,
+          },
+          spec: checked.spec,
+          decisions: checked.decisions,
+          regenerate: checked.regenerate,
+        };
       };
       // The table the starter tools rename by, until it is set again.
       let pseudonyms: StarterSubmission["aliases"] = [];
@@ -518,6 +629,91 @@ export function createStarterAdapter(options: {
         readonly build: StarterBuild;
       } | null;
       if (answer === null) throw new AnalysisError("agent_incomplete");
+      // The accepted set, calibrated by a reference that never reads it. A
+      // diagnostic answer, whose baseline did not pass, is not.
+      let built: StarterBuild = answer.build;
+      let hiddenTests = answer.starter.hiddenTests;
+      let calibration: HiddenTestsCalibration | null = null;
+      if (
+        (options.calibration ?? "reference") === "reference" &&
+        built.baseline.ok
+      ) {
+        const accepted = built;
+        const calibrated = await calibrateHiddenTests({
+          model,
+          limits: options.agent.limits,
+          task: {
+            title: accepted.listing.title,
+            summary: accepted.listing.specSummary,
+            spec: accepted.spec,
+            decisions: accepted.decisions,
+          },
+          // The starter's source is its interface: the developer edits it.
+          entryPoints: answer.starter.files.map((file) => file.path),
+          hiddenTests: "withheld",
+          written: {
+            tests: accepted.hiddenTests,
+            summary: answer.starter.summary,
+            files: accepted.files,
+            blockers: accepted.blockers,
+            baseline: accepted.baseline,
+            evaluator: accepted.evaluator,
+            usage: outcome.usage,
+          },
+          generate: (tests) => {
+            const project = accepted.regenerate(tests);
+            return {
+              files: [...project.files],
+              blockers: [...project.blockers],
+            };
+          },
+          baseline: (candidateFiles, candidateBlockers, tests) =>
+            reportedBaselineOf(provider, {
+              label: version.id,
+              files: candidateFiles,
+              acceptanceTests: tests,
+              blockers: candidateBlockers,
+              signal: input.signal,
+              log: input.log,
+              now,
+              timing: input.timing,
+            }),
+          signal: input.signal,
+          log: input.log,
+          step: input.step,
+          timing: input.timing,
+        });
+        calibration = calibrated.calibration;
+        const kept = calibrated.written;
+        if (kept === null) {
+          // Held: no test that should fail stands. The set stays as the
+          // agent wrote it, and the build says why it is not ready.
+          const baseline = heldBaseline(accepted.baseline, calibration);
+          built = {
+            ...accepted,
+            baseline,
+            blockers: [
+              ...accepted.blockers,
+              {
+                code: "baseline_failed",
+                file: null,
+                detail: baseline.reasons.join(" "),
+              },
+            ],
+          };
+        } else if (kept.tests.length < hiddenTests.length) {
+          const paths = new Set(kept.tests.map((test) => test.path));
+          hiddenTests = hiddenTests.filter((test) => paths.has(test.path));
+          built = {
+            ...accepted,
+            files: kept.files,
+            blockers: kept.blockers,
+            baseline: kept.baseline,
+            evaluator: kept.evaluator,
+            hiddenTests: kept.tests,
+          };
+        }
+      }
       const set: StarterSet = {
         schemaVersion: STARTER_SET_SCHEMA_VERSION,
         toolVersion: STARTER_TOOL_VERSION,
@@ -525,6 +721,7 @@ export function createStarterAdapter(options: {
         approvedTaskSha256: params.approvedTaskSha256,
         stack: params.stack,
         ...answer.starter,
+        hiddenTests,
         usage: outcome.usage,
       };
       const setText = canonicalJson(set);
@@ -535,13 +732,17 @@ export function createStarterAdapter(options: {
       const { manifest, written } = await writeBuildOutputs({
         outDir: input.outDir,
         toolVersion: STARTER_TOOL_VERSION,
-        // No repository to carry back to; the check scanned every public file.
+        // No repository to carry back to; the check scanned every public
+        // file, and the scan is recorded as a sliced build records it.
         gates: {
           roundTrip: { status: "not_applicable", files: 0, problems: [] },
-          disclosure: disclosureGate(
-            answer.build.blockers,
-            (params.vocabulary ?? []).length,
-          ),
+          disclosure: starterDisclosureGate({
+            files: built.files,
+            blockers: built.blockers,
+            names: (params.vocabulary ?? []).length,
+            ticketKeys: params.ticketKeys ?? [],
+            aliases: set.aliases,
+          }),
         },
         sandboxVersionId: version.id,
         aliasRules: set.aliases,
@@ -558,27 +759,45 @@ export function createStarterAdapter(options: {
               transformConfigOf({
                 aliasRules: set.aliases,
                 dependencyChoices: {},
-                acceptanceTests: answer.build.hiddenTests,
+                acceptanceTests: built.hiddenTests,
                 starterSha256,
               }),
             ),
           ),
           approvedTaskSha256: params.approvedTaskSha256,
         },
-        files: answer.build.files,
+        files: built.files,
         importRewrites: [],
         renames: [],
         dependencies: starterScope(set).dependencies,
-        baseline: answer.build.baseline,
-        evaluator: answer.build.evaluator,
-        blockers: answer.build.blockers,
+        baseline: built.baseline,
+        evaluator: built.evaluator,
+        blockers: built.blockers,
       });
+      // The hidden tests and their calibration, as a sliced build records
+      // them: what readers of a build's transform find in the same place.
+      const transformPath = join(input.outDir, BUILD_TRANSFORM_PATH);
+      await writeFile(
+        transformPath,
+        canonicalJson({
+          fromTransformConfigSha256: stored.source.transformConfigSha256,
+          transformConfigSha256: manifest.transformConfigSha256,
+          acceptanceTests: built.hiddenTests,
+          aliasRules: set.aliases,
+          hiddenTests: {
+            summary: set.summary,
+            usage: outcome.usage,
+            ...(calibration === null ? {} : { calibration }),
+          },
+        }),
+        "utf8",
+      );
       input.log(
         manifest.ready
           ? `Starter recorded and built: ${set.files.length} source files, ${set.hiddenTests.length} hidden tests.`
           : `Starter recorded as diagnostic output (${manifest.blockers.length} blocker(s)).`,
       );
-      return [
+      const files: ArtifactFile[] = [
         {
           path: STARTER_SET_PATH,
           absolutePath: setPath,
@@ -592,10 +811,33 @@ export function createStarterAdapter(options: {
             packages: set.packages.length,
             summary: set.summary,
             usage: set.usage,
+            calibration:
+              calibration === null
+                ? null
+                : {
+                    status: calibration.status,
+                    kept: calibration.kept.length,
+                    dropped: calibration.dropped.length,
+                    usage: calibration.usage,
+                  },
+          },
+        },
+        {
+          path: BUILD_TRANSFORM_PATH,
+          absolutePath: transformPath,
+          kind: buildArtifactKind(BUILD_TRANSFORM_PATH),
+          contentType: "application/json",
+          meta: {
+            hiddenTests: built.hiddenTests.length,
+            pseudonyms: set.aliases.length,
+            fixtures: 0,
           },
         },
         ...written,
       ];
+      return files.sort((a, b) =>
+        a.path < b.path ? -1 : a.path > b.path ? 1 : 0,
+      );
     },
     /**
      * The starter, its hidden tests and scope, and a ready build's

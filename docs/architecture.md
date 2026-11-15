@@ -326,13 +326,33 @@ registry and scopes in [Auth](#auth):
   `apps/api/src/quota.ts`): every model reply the platform pays for (a
   worker agent's turn, `apps/worker/src/agent/metered.ts`; each sizing
   attempt, `BountyExecutor`) writes its input, output and cache tokens
-  against the workspace and run. Once a workspace's tokens this calendar
-  month (UTC) reach `MONTHLY_MODEL_TOKENS_PER_ORG` (default 10,000,000), a
+  against the workspace and run. Once fewer than `MODEL_TOKENS_START_FLOOR`
+  (250,000) of the workspace's `MONTHLY_MODEL_TOKENS_PER_ORG` (default
+  60,000,000; rationale in `quota.ts`) are left this calendar month (UTC), a
   new `scope`, `fixtures`, `sandbox_build` or `sandbox_starter` run, or any
   sizing run but a trim, is refused 429
-  `{ error, code: "quota_exceeded", used, limit, resetsAt }` with
-  `Retry-After`. Admission only: a run under way is never stopped.
-  `GET /orgs/:orgId/usage` reports the month as `modelTokens`.
+  `{ error, code: "quota_exceeded", kind: "model_tokens", used, limit, resetsAt }`
+  with `Retry-After`. Never refused on a run's declared budget. Admission
+  only: a run under way is never stopped.
+- **Evaluator cap** (`packages/db/src/evaluator-usage.ts`,
+  `evaluator_usage`): every evaluation job a run creates writes its seconds
+  (rounded up) when torn down (`apps/worker/src/evaluation/metered.ts`).
+  Once the month's seconds reach `MONTHLY_EVALUATOR_SECONDS_PER_ORG`
+  (default 360,000), a new `sandbox_build`, `sandbox_starter`,
+  `submission_grade` or `sandbox_import` run is refused 429
+  `quota_exceeded` with `kind: "evaluator_seconds"`.
+- **Contributor brakes** (`packages/db/src/grading-attempts.ts`,
+  `grading_attempt`): queueing a grading run writes an attempt. An invited
+  contributor's is refused 429 `rate_limited` (with `scope`, `limit`,
+  `retryAt`, `retryable` and `Retry-After`) past 10 attempts per assignment
+  (`GRADING_ATTEMPTS_PER_ASSIGNMENT_DAY`) or
+  `CONTRIBUTOR_GRADING_RUNS_PER_ORG_DAY` (default 200) per workspace in a
+  rolling day; the submission is kept. Dry runs never count. Every
+  `Retry-After` is measured by the app's clock (`AppOptions.now`, set on
+  the context as `clock`).
+- **Usage**: `GET /orgs/:orgId/usage` reports the month as `modelTokens`,
+  `evaluatorSeconds` (with jobs by kind) and `thisMonth` (grading attempts,
+  contributors' share, uploads); the web app's Usage page shows them.
 
 ### Webhooks
 
@@ -665,7 +685,15 @@ added import of the harness is refused. The result is the grading run's
 the repository's names in a second job, both suites (`repositoryTree` in
 `apps/worker/src/tools/submission-grade.ts`, `submission_grade@4`; passes
 only); a pass that fails there stays `passed` with `carryBack: "failed"`
-and no merge patch, and merge answers 409 `carry_failed`. Starter and
+and no merge patch, and merge answers 409 `carry_failed`. So does one whose
+carry renames a word the contributor wrote by a pair learned from part of a
+text rule (`carriedWordHazards`, `packages/core/src/sandbox/carried-words.ts`;
+checked before the second job), and one whose carry is refused for the
+carry's own limit, not the contributor's (`carryLimitOf`,
+`packages/core/src/sandbox/carry-limits.ts`: a new file at a path the
+repository holds outside the slice, carveout's stranded name after 0.3.1).
+A version's carried tests
+(below) go back to `tests/public/carried/<repository path>` there. Starter and
 upload versions skip it: the platform holds no repository names for them.
 The verdict is written in the run's fenced commit with its artifacts
 (`RunSettlement` in `packages/db/src/analysis-runs.ts`), so a pass never
@@ -731,7 +759,11 @@ request: sliced when it has a repository, generated when not.
 snapshots the task from the bounty and its approved proposal (`task_not_ready`
 otherwise) and queues a `sandbox_starter` run, whose agent writes a starter in
 the bounty's vocabulary with a name table applied under the inverse proof
-(`packages/core/src/sandbox/starter.ts`). The contract is Node and
+(`packages/core/src/sandbox/starter.ts`). The same agent writes its hidden
+tests, so an accepted set is calibrated by a reference agent that never
+sees them (`calibration.ts`, `hiddenTests: "withheld"`): tests the reference
+fails are dropped, none expected to fail left holds the build, recorded in
+`build-transform.json` as a sliced build's. The contract is Node and
 TypeScript; another runtime is `stack_unsupported`. A generated version's
 transform, build and replay are refused (`generated_version`); it changes by
 generating a new version. Such runs read no snapshot, so
@@ -768,7 +800,8 @@ and only a draft the build's check refuses goes to the pseudonyms agent
 also refuses an import rule whose relative path reaches no generated file
 (`unresolvedImportRules`), and a mock runtime is named by its public path, so
 a renamed cut module keeps its fixtures. Only the
-vocabulary is renamed by rule; other names that say whose code it is are not.
+vocabulary is renamed by rule; what else says whose code it is goes to the
+agent as hints (below).
 Hidden tests are written by an agent beside the first
 baseline (`hidden-tests.ts`), its first prompt quoting the project and a
 test file per scenario drafted by rule (`hiddenTestScaffold`: the path, the
@@ -776,7 +809,18 @@ imports that resolve from it, the steps as comments); it may
 submit the set its last passing run ran without writing it again. A
 reference agent then calibrates that set on duediligence's rule
 (`calibration.ts`, `duediligence/api` pinned exactly): only tests a
-reference implementation passes stand. The build
+reference implementation passes stand. The repository's own tests
+of the slice are carried as read-only public tests under
+`tests/public/carried/` when the slice asked for them
+(`SliceParams.carryTests`, set on new slices; `POST
+…/repositories/:id/slices` and MCP `plan_slice` take it, default true) and
+they pass twice on the untouched project in a job before the baseline
+(`packages/core/src/sandbox/carried-tests.ts`; `node:test` only, imports
+inside the slice or its stubs, `carriedTestLimits`); the rest are dropped
+with why in the build manifest's `carriedTests`, owners only. `POST
+…/sandboxes/:id/slice` `{ "carryTests": false }` builds the draft without
+them, and its later builds keep that (build param `carryTests: false`);
+the web's Slice section has the checkbox and the counts. The build
 reads the slice, the preparation and the repository's names at once, and
 shows its preview while the baseline runs. Agents run
 at the effort their work needs (`AgentEffort`): `medium` where a
@@ -788,7 +832,28 @@ passed as the build's and starter's `vocabulary`; the organization's name,
 handle and repository owner by their distinctive words too, and the scope, or
 multi-word name, of each workspace or private-registry package the slice imports) and blocks `vocabulary_leaked`,
 and for credentials (`packages/core/src/sandbox/secrets.ts`) and blocks
-`secret_found`, naming file, line and rule, never the value.
+`secret_found`, naming file, line and rule, never the value. Every build
+also scans beyond the vocabulary (`packages/core/src/sandbox/disclosure.ts`
+`scanDisclosure`: addresses, URLs and hosts outside a public allow-list, IPs,
+copyright and author lines, issue keys of the workspace's Jira boards
+(`ticketKeys` param), chat links, `TODO(name)`; text the table wrote is
+public). Generated text (title, summary, spec, decisions, stub and
+walkthrough comments) is redacted; copied source is not rewritten, so its
+findings are pseudonyms-agent hints. The draft's `disclosureAcknowledgements`
+(`PUT .../versions/:vid/disclosure-acknowledgements`, owners and admins,
+session only, each entry with `by`/`at`) settle the rest where the gate's
+`acknowledgedAt` says. Sliced (`build`): the list is in the transform (its
+build redacts and hints by it), what it leaves blocks `disclosure_findings`,
+and a change rebuilds. Starter and upload (`publish`): the build reads no
+list, so its files never depend on it, and records every finding (up to
+`DISCLOSURE_FINDINGS_EVALUATED`) in a `pending_acknowledgement` gate that
+keeps the build ready; the PUT moves neither transform nor evidence, and
+publication checks the list then (`gatesOf`, `openDisclosureFindings`). A
+starter's check still refuses any candidate with a finding (the agent
+renames it); an import records them after the baseline. The round trip also refuses a host or
+address text rule that changes words one for one (`carryHazards`):
+merge-back would learn those words; grading withholds the rest
+(`carriedWordHazards`).
 
 **Slice checks.** A slice (`apps/worker/src/tools/slice.ts`) stubs each cut
 module from its declarations, the repository's own packages included,
@@ -825,8 +890,12 @@ its task was taken from (`price_not_approved`) and on its spec's confirmed
 decisions (`decisions_unconfirmed`), and on the publication gates its build
 recorded (`build-manifest.json` `gates`, read by `gatesOf` into
 `freezeReadiness`): a failed no-change round trip is `round_trip_failed`
-(with `problems`), disclosure findings `disclosure_failed`, evidence of other
-inputs `build_evidence_stale`, a rebuild meanwhile `version_changed`. A first
+(with `problems`), disclosure findings `disclosure_failed` (with the
+unacknowledged `findings`; for a `pending_acknowledgement` gate, against the
+draft's list now, with `pendingAcknowledgement` and `unrecorded`), evidence of other
+inputs `build_evidence_stale`, a rebuild meanwhile `version_changed`. A
+blocked build (`ready: false`) answers its failing gate, else `not_ready`
+with its `blockers`, before `build_evidence_stale`. A first
 publication records the build run as `roundTripRunId` and `disclosureRunId`.
 A draft built before the gates is `gates_unrecorded` until built again; a
 version published before them republishes `grandfathered` (the response's
@@ -871,8 +940,9 @@ sit outside `requireMembership`, in the registry with the contributor
 audience (a session or a contributor credential, `contributions:write`):
 each reads the caller's live assignment to `:vid` (owner = the
 assignment's), else 404, so a revoke ends access at once. A contributor
-reads the version's listing from its `sandbox-task.json`, the handout and
-its own submissions (no run, carry-back, merge or contributor field); one
+reads the version's listing from its `sandbox-task.json` (title, summary
+and tags redacted by every build), the handout (no build run) and its own
+submissions (no run, carry-back, merge or contributor field); one
 first submission per assignment (`already_submitted`), its one retry theirs
 alone (an owner's retry is 409 `contributor_submission`), new work only
 while the version is live (`not_open`). Owners' submission views carry

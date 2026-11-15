@@ -1,4 +1,4 @@
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { clients, queryKeys, useUserId } from "./data/query";
 import { plural } from "./lib/format";
 export { plural } from "./lib/format";
@@ -215,6 +215,7 @@ export function useDecisions(
 ): DecisionsControl | undefined {
   const owner = decodeURIComponent(base.split("/").at(-1) ?? "");
   const userId = useUserId();
+  const client = useQueryClient();
   const [state, setState] = useState<"idle" | "pending" | "failed">("idle");
   const query = useQuery({
     queryKey: queryKeys.resource(
@@ -245,12 +246,56 @@ export function useDecisions(
           decisionsSha256,
         });
         await query.refetch();
+        // The Sandbox step's hold reads the same decisions under its own key.
+        void client.invalidateQueries({
+          queryKey: queryKeys.resource(
+            userId,
+            owner,
+            "proposal-decisions",
+            proposalId,
+          ),
+        });
         setState("idle");
       } catch {
         setState("failed");
       }
     },
   };
+}
+
+/**
+ * Whether an approved price's spec has decisions no person confirmed yet:
+ * the preparer holds the sandbox, and builds and publication are refused
+ * (`decisions_unconfirmed`), until one does on the Price step. False while
+ * it is read, and for a price not approved.
+ */
+export function useDecisionsHeld(
+  base: string,
+  proposalId: string | null,
+  approved: boolean,
+): boolean {
+  const owner = decodeURIComponent(base.split("/").at(-1) ?? "");
+  const userId = useUserId();
+  const query = useQuery({
+    queryKey: queryKeys.resource(
+      userId,
+      owner,
+      "proposal-decisions",
+      proposalId,
+      "held",
+    ),
+    enabled: approved && proposalId !== null,
+    queryFn: ({ signal }) =>
+      clients.pricing.decisions(owner, proposalId ?? "", signal),
+  });
+  const read = query.data;
+  return (
+    approved &&
+    read !== undefined &&
+    read.specRevision !== null &&
+    read.decisions.length > 0 &&
+    read.confirmation === null
+  );
 }
 
 /** What the Assumptions card offers about confirming them. */

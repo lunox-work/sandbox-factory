@@ -1,7 +1,7 @@
 # Roadmap
 
-Status: proposals, 2026-10-15. Nothing here is built. The index of what is
-built is [README.md](./README.md).
+Status: proposals, updated 2026-11-15. Only the "Exists" columns describe
+built code; the index of what is built is [README.md](./README.md).
 
 ## Sandbox quality
 
@@ -119,22 +119,22 @@ inside the platform.
 
 #### Gate 1: public
 
-| Exists                                               | Missing                                                                                                      |
-| ---------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
-| The extension runs a task locally (`apps/extension`) | Extension sign-in                                                                                            |
-| The descriptor names editable paths and public tests | A submit command and route: no route takes a submission (`packages/db/src/submissions.ts` is the shape only) |
+| Exists                                                                                                   | Missing                   |
+| -------------------------------------------------------------------------------------------------------- | ------------------------- |
+| The extension signs in with a contributor token, runs, previews and submits a contribution               | Device-flow sign-in       |
+| Submissions by `files[]` or zipped folder, from the web, API, MCP and extension, graded with both suites | A marketplace for invites |
 
 How well gate 1 predicts gates 2 and 3 is the sandbox's own quality, which
 [Sandbox quality](#sandbox-quality) works on.
 
 #### Gate 2: platform
 
-| Exists                                                                                                                                                                                                           | Missing                                                                                                                                                          |
-| ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `submissionVerdict` and the `submission` table                                                                                                                                                                   | An `e2b` evaluation provider. Only `local-process` exists, and `parseWorkerEnv` refuses `EVALUATION_PROVIDER=e2b`                                                |
-| `reverseSubmission`; a carried pass is built and tested in the repository's names before merge-back (`repositoryTree`)                                                                                           | Refusing at the carry a new file that names a scoped rule's public name outside the rule's scope; today the reversed check withholds it as `carryBack: "failed"` |
-| The no-change round trip (`noChangeRoundTrip`) and the disclosure scan run on every build; publishing enforces both (`freezeReadiness`) and records the build run as `round_trip_run_id` and `disclosure_run_id` | A disclosure scan wider than the workspace's configured names (comments, URLs)                                                                                   |
-| Hidden tests run on every build's baseline                                                                                                                                                                       | CodeQL, CodeRabbit and lint wired into the gate-2 job                                                                                                            |
+| Exists                                                                                                                                                                                                                                                                                                        | Missing                                                                                                                                                             |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `submissionVerdict` and the `submission` table                                                                                                                                                                                                                                                                | An `e2b` evaluation provider. Only `local-process` exists, and `parseWorkerEnv` refuses `EVALUATION_PROVIDER=e2b`                                                   |
+| `reverseSubmission`; a carried pass is built and tested in the repository's names before merge-back (`repositoryTree`)                                                                                                                                                                                        | Refusing at the carry a stranded scoped name (carveout after 0.3.1; `carryLimitOf` already maps it to `carryBack: "failed"`); today the reversed check withholds it |
+| The no-change round trip (`noChangeRoundTrip`) and the disclosure scan (names, credentials, `scanDisclosure`) run on every build; publishing enforces both (`freezeReadiness`; an upload's or starter's findings acknowledged there) and records the build run as `round_trip_run_id` and `disclosure_run_id` | Publishing with findings past `DISCLOSURE_FINDINGS_EVALUATED` without a re-cut                                                                                      |
+| Hidden tests run on every build's baseline                                                                                                                                                                                                                                                                    | CodeQL, CodeRabbit and lint wired into the gate-2 job                                                                                                               |
 
 #### Gate 3: upstream
 
@@ -188,7 +188,7 @@ How well gate 1 predicts gates 2 and 3 is the sandbox's own quality, which
 
 ### Order
 
-1. Submission intake, the reverse path and the round-trip run.
+1. Submission intake, the reverse path and the round-trip run (built).
 2. The `e2b` provider and the gate-2 checks; replaying merged pull requests.
-3. Write access, the pull request and the integration agent.
+3. Write access and the pull request (built); the integration agent.
 4. Hidden tests that run upstream, wider scope, drift.

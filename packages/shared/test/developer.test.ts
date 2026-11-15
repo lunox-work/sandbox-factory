@@ -13,6 +13,7 @@ import {
   oauthGrantListSchema,
   organizationResponseSchema,
   usageQuerySchema,
+  usageResponseSchema,
 } from "../src/index.js";
 
 const token = {
@@ -73,6 +74,50 @@ test("usage reads thirty days unless asked, at most ninety", () => {
   assert.deepEqual(usageQuerySchema.parse({}), { days: 30 });
   assert.deepEqual(usageQuerySchema.parse({ days: "7" }), { days: 7 });
   assert.equal(usageQuerySchema.safeParse({ days: "91" }).success, false);
+});
+
+test("usage carries the month's evaluator seconds and counts beside its model tokens", () => {
+  const month = {
+    from: "2026-11-01T00:00:00.000Z",
+    resetsAt: "2026-12-01T00:00:00.000Z",
+  };
+  const usage = {
+    window: { from: month.from, to: month.resetsAt, days: 30 },
+    runs: [],
+    modelTokens: {
+      ...month,
+      used: 0,
+      limit: 1,
+      remaining: 1,
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+    },
+    evaluatorSeconds: {
+      ...month,
+      used: 75,
+      limit: 360_000,
+      remaining: 359_925,
+      jobs: 3,
+      byKind: [{ kind: "submission_grade", seconds: 75, jobs: 3 }],
+    },
+    thisMonth: {
+      gradingAttempts: 2,
+      contributorGradingAttempts: 1,
+      uploads: 0,
+    },
+  };
+  assert.deepEqual(usageResponseSchema.parse(usage), usage);
+  assert.equal(
+    usageResponseSchema.safeParse({
+      ...usage,
+      evaluatorSeconds: { ...usage.evaluatorSeconds, used: -1 },
+    }).success,
+    false,
+  );
+  const { thisMonth: _, ...older } = usage;
+  assert.equal(usageResponseSchema.safeParse(older).success, false);
 });
 
 test("an organization read carries the caller's role", () => {

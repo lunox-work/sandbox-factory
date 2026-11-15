@@ -23,8 +23,20 @@ product proposals and historical explainers are optional design context.
 - Five context builders describe a repository snapshot: Graphify,
   abstractions, data model, documents and brief. Scope and fixtures agents
   propose; slice, build and baseline decide. Sandbox versions are sliced from
-  a repository or generated from the bounty's text, built, and published to
-  a date.
+  a repository (with the repository's own tests of the slice that pass on
+  it, as read-only public tests), generated from the bounty's text, or
+  uploaded as a carveout folder, built, and published to a date behind gates: confirmed decisions,
+  the no-change round trip and the disclosure scan (workspace names,
+  credentials, addresses, hosts, authors, ticket keys, chat links).
+- Submissions are graded with both suites, each hidden test in its own
+  sealed process; a sliced version's pass is carried back, checked again in
+  the repository's names, and merged back as a pull request that can merge
+  itself once the repository's CI passes. Projects download as a `.zip` or
+  in pages. See [Sandboxes](./architecture.md#sandboxes).
+- Model tokens and evaluator seconds are metered per workspace and month,
+  and contributors' gradings braked per day (429 `quota_exceeded` /
+  `rate_limited`; `GET /orgs/:orgId/usage`). See
+  [Public API conventions](./architecture.md#public-api-conventions).
 - The available evaluator is opt-in `local-process`, for development; it is
   not an isolation boundary. With the default provider `none`, builds fail
   closed.

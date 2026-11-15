@@ -1254,6 +1254,7 @@ test("proposing is refused with 429 once the month's model tokens are spent", as
     error:
       "This workspace has reached its monthly model-token limit (10,000,123 of 10,000,000 tokens). Runs that call a model are refused until it resets at 2099-12-01T00:00:00.000Z, the start of next month (UTC).",
     code: "quota_exceeded",
+    kind: "model_tokens",
     used: 10_000_123,
     limit: 10_000_000,
     resetsAt: "2099-12-01T00:00:00.000Z",

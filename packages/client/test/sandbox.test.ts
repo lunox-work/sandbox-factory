@@ -331,6 +331,90 @@ test("approving a slice posts the run and request shown, and reads the slice bac
   assert.deepEqual(JSON.parse(String(calls[0]?.init?.body)), request);
 });
 
+test("slicing a version posts no body unless asked to leave the repository's tests out", async () => {
+  const calls: { url: string; init: RequestInit | undefined }[] = [];
+  const fetch = (async (input: unknown, init?: RequestInit) => {
+    calls.push({ url: String(input), init });
+    return new Response(
+      JSON.stringify({
+        slice: {
+          status: "slicing",
+          code: null,
+          reason: null,
+          specRevision: 2,
+          scopeRunId: "arn_scope",
+          sliceRunId: "arn_slice",
+        },
+        version: null,
+        source: null,
+        run: null,
+      }),
+      { status: 202, headers: { "Content-Type": "application/json" } },
+    );
+  }) as typeof globalThis.fetch;
+  const client = new SandboxClient({
+    baseUrl: "https://api.test/",
+    fetch,
+    getToken: () => "token",
+  });
+  await client.sliceSandboxVersion("org 1", "sbx 1");
+  await client.sliceSandboxVersion("org 1", "sbx 1", { carryTests: false });
+  for (const call of calls) {
+    assert.equal(
+      call.url,
+      "https://api.test/api/v1/orgs/org%201/sandboxes/sbx%201/slice",
+    );
+    assert.equal(call.init?.method, "POST");
+  }
+  assert.equal(calls[0]?.init?.body, undefined);
+  assert.deepEqual(JSON.parse(String(calls[1]?.init?.body)), {
+    carryTests: false,
+  });
+});
+
+test("a draft's disclosure acknowledgements are put whole at their route, and the version read back", async () => {
+  const calls: { url: string; init: RequestInit | undefined }[] = [];
+  const held = {
+    kind: "host",
+    value: "stripe.com",
+    note: "Public API docs.",
+    by: "user_1",
+    at: stamp,
+  };
+  const fetch = (async (input: unknown, init?: RequestInit) => {
+    calls.push({ url: String(input), init });
+    return new Response(
+      JSON.stringify({
+        version,
+        source: { ...source, disclosureAcknowledgements: [held] },
+      }),
+      { status: 200, headers: { "Content-Type": "application/json" } },
+    );
+  }) as typeof globalThis.fetch;
+  const client = new SandboxClient({
+    baseUrl: "https://api.test/",
+    fetch,
+    getToken: () => "token",
+  });
+  const list = [
+    { kind: "host" as const, value: "stripe.com", note: "Public API docs." },
+  ];
+  const read = await client.setDisclosureAcknowledgements(
+    "org 1",
+    "sbv 1",
+    list,
+  );
+  assert.deepEqual(read.source?.disclosureAcknowledgements, [held]);
+  assert.equal(
+    calls[0]?.url,
+    "https://api.test/api/v1/orgs/org%201/sandboxes/versions/sbv%201/disclosure-acknowledgements",
+  );
+  assert.equal(calls[0]?.init?.method, "PUT");
+  assert.deepEqual(JSON.parse(String(calls[0]?.init?.body)), {
+    acknowledgements: list,
+  });
+});
+
 test("submissions: listed, read, submitted, retried, graded again, merged back and its readiness read, each at its route", async () => {
   const submission = {
     id: "sbm_1",

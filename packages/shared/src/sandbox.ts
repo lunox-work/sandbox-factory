@@ -11,6 +11,8 @@ import {
   ALIAS_RULES_MAX,
   APPROVED_TASK_SCHEMA_VERSION,
   DEPENDENCY_RESOLUTIONS,
+  DISCLOSURE_ACKNOWLEDGEMENTS_MAX,
+  DISCLOSURE_KINDS,
   FIXTURE_LIMITS,
   PRICED_BOUNTY_COMPLEXITIES,
   SANDBOX_COMMANDS,
@@ -73,6 +75,38 @@ export const acceptanceTestsSchema = z
     (tests) => new Set(tests.map((test) => test.path)).size === tests.length,
     "Hidden test paths must be unique.",
   );
+
+/**
+ * An owner's word that a disclosure finding may be public, as a request
+ * gives it: the finding's kind and value, and why. A `host` covers every
+ * link and address on that host.
+ */
+export const disclosureAcknowledgementInputSchema = z.strictObject({
+  kind: z.enum(DISCLOSURE_KINDS),
+  value: z.string().min(1).max(2_000),
+  note: z.string().trim().max(500).nullable().optional(),
+});
+/** As a draft keeps it, with who acknowledged it and when. */
+export const disclosureAcknowledgementSchema =
+  disclosureAcknowledgementInputSchema.extend({
+    by: z.string().nullable().optional(),
+    at: z.iso.datetime().nullable().optional(),
+  });
+/**
+ * `PUT .../versions/:vid/disclosure-acknowledgements`: the draft's whole
+ * list, replacing what it held. Each kind and value once.
+ */
+export const setDisclosureAcknowledgementsSchema = z.strictObject({
+  acknowledgements: z
+    .array(disclosureAcknowledgementInputSchema)
+    .max(DISCLOSURE_ACKNOWLEDGEMENTS_MAX)
+    .refine(
+      (list) =>
+        new Set(list.map((item) => `${item.kind}\u0000${item.value}`)).size ===
+        list.length,
+      "Acknowledge each finding once.",
+    ),
+});
 
 /** Fixtures written by hand, or replaced on a draft. */
 export const fixturesInputSchema = z.strictObject({
@@ -286,6 +320,13 @@ export const sandboxVersionSourceDtoSchema = z.strictObject({
   buildRunId: z.string().nullable(),
   roundTripRunId: z.string().nullable(),
   disclosureRunId: z.string().nullable(),
+  /**
+   * Disclosure findings an owner said may be public: in a sliced draft's
+   * transform; checked at publication for an uploaded or generated one.
+   */
+  disclosureAcknowledgements: z
+    .array(disclosureAcknowledgementSchema)
+    .default([]),
   approvedBy: z.string().nullable(),
   approvedAt: z.iso.datetime().nullable(),
   createdAt: z.iso.datetime(),
@@ -352,6 +393,16 @@ export const sandboxSliceDtoSchema = z.object({
     .default(null),
 });
 export type SandboxSliceDto = z.infer<typeof sandboxSliceDtoSchema>;
+/**
+ * `POST .../sandboxes/:id/slice`, every field optional (a body may be
+ * left out). `carryTests: false` builds the draft without the repository's
+ * own tests its slice offers, and the draft's later builds keep that until
+ * asked again with `true`.
+ */
+export const sliceSandboxSchema = z.strictObject({
+  carryTests: z.boolean().optional(),
+});
+export type SliceSandboxInput = z.input<typeof sliceSandboxSchema>;
 /**
  * `POST .../sandboxes/:id/slice/approve`: the slice awaiting approval,
  * named by its run and the request it was cut from, as the approver saw
@@ -461,9 +512,11 @@ export const sandboxFileDtoSchema = z.strictObject({
  */
 export const sandboxHandoutSchema = z.object({
   versionId: z.string(),
+  /** The build run; absent from a contributor's handout. */
   run: z
     .object({ id: z.string(), status: z.enum(ANALYSIS_STATUSES) })
-    .nullable(),
+    .nullable()
+    .optional(),
   /** The public project's files, at their paths in the project. */
   files: z.array(sandboxFileDtoSchema),
   hiddenTests: z.number().int().nonnegative(),
@@ -580,6 +633,12 @@ export type CreateSandboxVersionInput = z.input<
 >;
 export type UpdateSandboxVersionInput = z.input<
   typeof updateSandboxVersionSchema
+>;
+export type DisclosureAcknowledgementInput = z.input<
+  typeof disclosureAcknowledgementInputSchema
+>;
+export type DisclosureAcknowledgementDto = z.infer<
+  typeof disclosureAcknowledgementSchema
 >;
 export type SandboxDto = z.infer<typeof sandboxDtoSchema>;
 export type SandboxVersionDto = z.infer<typeof sandboxVersionDtoSchema>;
@@ -771,7 +830,8 @@ export const submissionDtoSchema = z.object({
   refused: z.array(z.object({ path: z.string(), reason: z.string() })),
   /**
    * `failed`: it passed, but carried back to the repository's names it did
-   * not build and pass there, so it is not merged back (`carry_failed`).
+   * not build and pass there, or the carry renamed a word the contributor
+   * wrote, so it is not merged back (`carry_failed`).
    * Null when it carried or nothing is carried back; absent from an API
    * older than the check.
    */

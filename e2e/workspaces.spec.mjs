@@ -144,6 +144,12 @@ test("every workspace's bounties list together, and only those", async ({
     "/api/v1/orgs/org_beta/bounties/bty_1",
   );
   expect(wrongOwner.status()).toBe(404);
+  // The category counts the bounty page reads answer, empty.
+  const categories = await page.request.get(
+    "/api/v1/orgs/org_alpha/proposal-categories",
+  );
+  expect(categories.status()).toBe(200);
+  expect((await categories.json()).total).toBe(0);
   // An address from before `?peek=`, rewritten, and a bounty's own page.
   for (const path of [
     "/bounties?workspace=hidden&bounty=bty_3",

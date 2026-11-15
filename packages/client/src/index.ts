@@ -56,6 +56,7 @@ import {
 import type {
   CreateContributorInviteInput,
   ApproveSliceInput,
+  SliceSandboxInput,
   BuildAllInput,
   CreateSandboxInput,
   CreateSandboxVersionInput,
@@ -66,6 +67,7 @@ import type {
   HandoutFilesQuery,
   MergeSubmissionInput,
   UpdateSandboxVersionInput,
+  DisclosureAcknowledgementInput,
 } from "@sandbox-factory/shared";
 
 /** Private repository analysis, available to both browser and extension clients. */
@@ -377,11 +379,17 @@ export class SandboxClient extends GithubAnalysisClient {
    * ready, a draft is cut from it and built; until then, the slice is
    * asked for and answered with where it stands.
    */
-  async sliceSandboxVersion(owner: string, sandboxId: string) {
+  async sliceSandboxVersion(
+    owner: string,
+    sandboxId: string,
+    input?: SliceSandboxInput,
+  ) {
     return sliceVersionResponseSchema.parse(
       await this.request(
         `${this.#sandboxes(owner)}/${encodeURIComponent(sandboxId)}/slice`,
-        { method: "POST" },
+        input === undefined
+          ? { method: "POST" }
+          : { method: "POST", body: JSON.stringify(input) },
       ),
     );
   }
@@ -432,6 +440,24 @@ export class SandboxClient extends GithubAnalysisClient {
       await this.request(
         `${this.#sandboxes(owner)}/versions/${encodeURIComponent(versionId)}`,
         { method: "PATCH", body: JSON.stringify(input) },
+      ),
+    );
+  }
+  /**
+   * Replaces a draft's disclosure acknowledgements: the findings an owner
+   * or admin says may be public. A sliced draft's are part of its
+   * transform, so it is built again after; an uploaded or generated
+   * draft's are checked at publication, with no build again.
+   */
+  async setDisclosureAcknowledgements(
+    owner: string,
+    versionId: string,
+    acknowledgements: readonly DisclosureAcknowledgementInput[],
+  ) {
+    return sandboxVersionResponseSchema.parse(
+      await this.request(
+        `${this.#sandboxes(owner)}/versions/${encodeURIComponent(versionId)}/disclosure-acknowledgements`,
+        { method: "PUT", body: JSON.stringify({ acknowledgements }) },
       ),
     );
   }

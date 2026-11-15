@@ -617,6 +617,20 @@
       "when": 1794694453873,
       "tag": "0087_contributor_tokens",
       "breakpoints": true
+    },
+    {
+      "idx": 88,
+      "version": "7",
+      "when": 1794698217866,
+      "tag": "0088_evaluator_usage",
+      "breakpoints": true
+    },
+    {
+      "idx": 89,
+      "version": "7",
+      "when": 1794700570917,
+      "tag": "0089_disclosure_acknowledgements",
+      "breakpoints": true
     }
   ]
 }

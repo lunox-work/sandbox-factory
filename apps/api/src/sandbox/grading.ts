@@ -18,6 +18,8 @@ import type {
 import type { Context } from "hono";
 import type { SubmissionGradeParams } from "sandbox-factory";
 
+import { quotaExceededResponse, rateLimitedResponse } from "../quota.js";
+
 /** How long a client refused at the active-run limit is told to wait. */
 export const RUN_LIMIT_RETRY_SECONDS = 60;
 
@@ -53,15 +55,20 @@ export function enqueueGrade(
 }
 
 /**
- * The 409 a refused grading enqueue answers. At the active-run limit the
- * submission is kept and the refusal is temporary: `retryable` and
- * `Retry-After` tell the client to send the same files again, which queues
- * it. Anything else (the version's snapshot is gone) is not.
+ * The answer to a refused grading enqueue. At the active-run limit (409)
+ * or past a contributor brake (429 `rate_limited`) the submission is kept
+ * and the refusal is temporary: `retryable` and `Retry-After` tell the
+ * client to send the same files again, which queues it. With the month's
+ * evaluator time spent it is 429 `quota_exceeded` until the reset. Anything
+ * else (the version's snapshot is gone) is not retryable.
  */
 export function gradeRefused(
   c: Context,
   refused: Exclude<EnqueueAnalysisResult, { ok: true }>,
 ) {
+  if (refused.reason === "quota_exceeded")
+    return quotaExceededResponse(c, refused);
+  if (refused.reason === "rate_limited") return rateLimitedResponse(c, refused);
   if (refused.reason === "run_limit") {
     c.header("Retry-After", String(RUN_LIMIT_RETRY_SECONDS));
     return c.json(

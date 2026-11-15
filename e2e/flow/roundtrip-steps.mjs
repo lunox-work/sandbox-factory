@@ -391,6 +391,13 @@ export const ROUND_TRIP_STEPS = [
         const at = performance.now();
         const result = await sh(argv, flow.contributor, env);
         assert.ok(result.ok, result.output);
+        // The contributor's local CI runs the repository's carried test.
+        if (argv[1] === "test")
+          assert.match(
+            result.stdout,
+            /a credit pays nothing, whatever its amount/,
+            result.output,
+          );
         say(`  ${argv.join(" ")} (${Math.round(performance.now() - at)} ms)`);
       }
       await assertClean(flow.contributor, "after npm ci, build, test, dev");
@@ -400,6 +407,7 @@ export const ROUND_TRIP_STEPS = [
       await writeFile(feesPath, answer(starter, SOLUTION));
       const solved = await sh(["npm", "test"], flow.contributor, env);
       assert.ok(solved.ok, solved.output);
+      assert.match(solved.stdout, /a credit pays nothing/, solved.output);
       await writeFile(feesPath, starter);
       flow.publicFees = starter;
     },
@@ -844,7 +852,7 @@ export const ROUND_TRIP_STEPS = [
         await writeFile(join(repository, path), text);
       const after = await sh(["npm", "test"], repository, env);
       assert.ok(after.ok, after.output);
-      assert.match(after.stdout, /# pass 3|ℹ pass 3/, after.output);
+      assert.match(after.stdout, /# pass 4|ℹ pass 4/, after.output);
     },
   ],
   [

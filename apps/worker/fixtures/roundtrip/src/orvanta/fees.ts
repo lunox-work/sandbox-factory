@@ -1,3 +1,7 @@
+/**
+ * Fee rules: https://wiki.orvanta.internal/payments/fees
+ * @author ada.lovelace@orvanta.io
+ */
 import type { OrvantaEntry } from "./ledger.js";
 
 /** The flat Orvanta charge on a debit, in cents. */

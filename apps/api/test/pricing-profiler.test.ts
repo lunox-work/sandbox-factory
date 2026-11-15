@@ -495,6 +495,8 @@ test("a requested profile is scoped, sliced and built from what was measured", a
     entryPoints: ["src/mailer/invite.ts", "src/scheduler/interview.ts"],
     budget: { maxFiles: 20, maxDepth: 2 },
     includeInferred: false,
+    // A new slice's builds carry the repository's own tests of it.
+    carryTests: true,
   });
   assert.equal(row.sliceRunId, h.runs.of("slice").id);
 
@@ -668,6 +670,7 @@ test("a workspace whose month's model tokens are spent holds its profiles at the
   h.runs.refuse.set("scope", {
     ok: false,
     reason: "quota_exceeded",
+    kind: "model_tokens",
     used: 10,
     limit: 10,
     resetsAt: new Date("2026-12-01T00:00:00.000Z"),

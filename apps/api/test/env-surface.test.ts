@@ -78,6 +78,11 @@ test("the API reads exactly the documented environment variables", () => {
       "MAX_ACTIVE_RUNS_PER_ORG",
       // Refuses new model runs past a workspace's monthly tokens; never widens.
       "MONTHLY_MODEL_TOKENS_PER_ORG",
+      // Refuses new build, import and grading runs past a workspace's
+      // monthly evaluator seconds, and contributors' gradings past a daily
+      // count; each only refuses, never widens.
+      "MONTHLY_EVALUATOR_SECONDS_PER_ORG",
+      "CONTRIBUTOR_GRADING_RUNS_PER_ORG_DAY",
       // The oldest command-line clients served; refuses, never widens.
       "MIN_CLIENT_VERSIONS",
       // Reporting only.
