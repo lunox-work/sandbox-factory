@@ -12,6 +12,7 @@ import {
   type RateCardStore,
   type BountyStore,
   type GithubRepoSummary,
+  type StoredBountyProfile,
 } from "@sandbox-factory/db";
 
 import type { GithubContextSource } from "../bounties/context.js";
@@ -46,8 +47,21 @@ export interface PricingRouteOptions {
   readonly githubContext?: GithubContextSource;
   /** Reads an issue a bounty is imported from; absent without GitHub. */
   readonly githubIssues?: GithubIssueSource;
-  /** Complexity profiles; absent, a proposal reads as never profiled. */
+  /**
+   * Complexity profiles; absent, a proposal reads as never profiled, and
+   * its approval waits on none.
+   */
   readonly profiles?: Pick<BountyProfileStore, "latest">;
+  /**
+   * Scores a proposal's spec with a settled profile's code, as the
+   * profiler's settle does (`RubricPricer.settled`; never throws). An
+   * approval runs it when every profile has settled and the stored rubric
+   * still waits on the code, so the price approved is the one that saw it.
+   */
+  readonly rescore?: (
+    organizationId: string,
+    profile: StoredBountyProfile,
+  ) => Promise<void>;
   readonly connections?: JiraConnectionStore;
   readonly writebacks?: BountyWritebackStore;
   readonly delivery?: BountyDelivery;
@@ -68,8 +82,10 @@ export interface PricingRouteOptions {
     connectionId: string,
   ) => Promise<RunClientResult>;
   /**
-   * Called once a proposal is approved, so its sandbox's preparation is
-   * queued without waiting for the preparer's timer. Must not throw.
+   * Called once a proposal is approved, or its spec's decisions are
+   * confirmed (which a sandbox's preparation waits for), so its sandbox's
+   * preparation is queued without waiting for the preparer's timer. Must
+   * not throw.
    */
   readonly onApproved?: () => void;
   readonly requestedModel?: string;

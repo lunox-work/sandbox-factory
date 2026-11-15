@@ -72,15 +72,16 @@ export interface LocalProcessOptions {
   readonly root?: string;
   /**
    * The npm cache every job shares when jobs run as the worker, outside
-   * any job's directory. A directory of this provider's own under the OS
-   * temp directory by default, made once and not at a name another user
-   * could guess. Isolated jobs use their identity's cache instead.
+   * any job's directory. By default a directory of this provider's own
+   * under `root` (or the OS temp directory), made once, not at a name
+   * another user could guess, and removed by `dispose`. Isolated jobs use
+   * their identity's cache instead.
    */
   readonly npmCache?: string;
   /**
    * The lockfiles kept for each dependency set (`lockfiles.ts`): the
-   * worker's alone, never inside a job's npm cache. A directory of this
-   * provider's own under the OS temp directory by default.
+   * worker's alone, never inside a job's npm cache. By default a directory
+   * of this provider's own beside the default cache, removed by `dispose`.
    */
   readonly lockfiles?: string;
   /** The uids jobs run as; null or absent runs them as the worker. */
@@ -304,9 +305,19 @@ async function readInside(
   }
 }
 
+export interface LocalProcessProvider extends EvaluationProvider {
+  /**
+   * Removes the npm cache and lockfile store this provider made for itself,
+   * never ones its options named, once its jobs are done; a later job makes
+   * them again. A one-off run (a script, a test) calls it on the way out,
+   * or its temporary directories outlive it.
+   */
+  dispose(): Promise<void>;
+}
+
 export function createLocalProcessProvider(
   options: LocalProcessOptions = {},
-): EvaluationProvider {
+): LocalProcessProvider {
   const isolation = options.isolation ?? null;
   if (isolation === null) options.warn?.(ISOLATION_WARNING);
   // The identities' npm caches outlive their sweeps; `jobCache` prunes them.
@@ -331,11 +342,18 @@ export function createLocalProcessProvider(
       `evaluation_job_identity_quarantined: uid ${identity.uid} may still run processes (${String(error)}); it is swept again before another job runs as it`,
     );
   };
+  /** The directories this provider made for itself, which `dispose` removes. */
+  const owned: string[] = [];
+  const ownDirectory = async (prefix: string) => {
+    const made = await mkdtemp(join(options.root ?? tmpdir(), prefix));
+    owned.push(made);
+    return made;
+  };
   let sharedCache: Promise<string> | undefined;
   const npmCacheOf = () =>
     (sharedCache ??= (async () => {
       if (options.npmCache === undefined)
-        return mkdtemp(join(tmpdir(), "sandbox-factory-npm-cache-"));
+        return ownDirectory("sandbox-factory-npm-cache-");
       // Where lockfiles were kept before the store moved out of the cache
       // jobs write; nothing reads it now.
       await rm(join(options.npmCache, "_lockfiles"), {
@@ -349,10 +367,21 @@ export function createLocalProcessProvider(
     (lockfileStore ??= (
       options.lockfiles !== undefined
         ? Promise.resolve(options.lockfiles)
-        : mkdtemp(join(tmpdir(), "sandbox-factory-lockfiles-"))
+        : ownDirectory("sandbox-factory-lockfiles-")
     ).then(createLockfileStore));
   return {
     name: "local-process",
+    async dispose() {
+      // Settled first, so a directory still being made is removed too.
+      await Promise.allSettled([sharedCache, lockfileStore]);
+      sharedCache = undefined;
+      lockfileStore = undefined;
+      await Promise.all(
+        owned
+          .splice(0)
+          .map((made) => rm(made, { recursive: true, force: true })),
+      );
+    },
     async create({ label, signal }) {
       signal.throwIfAborted();
       let held: JobIdentity | null = null;

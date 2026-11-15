@@ -269,7 +269,11 @@ export const sandboxBuildParamsSchema = z.strictObject({
   /** The data model the fixtures agent reads, when the build writes fixtures. */
   dataModelRunId: z.string().min(1).optional(),
   /** A preparation run whose fixtures and name table the build tries first. */
-  preparedRunId: z.string().min(1).optional(),
+  preparedRunId: z
+    .string()
+    .min(1)
+    .optional() /** The confirmed decisions' hash, when the spec has decisions. */,
+  decisionsSha256: sha256Schema.optional(),
 });
 /** Stored starter parameters: the version it writes, and the stack it follows. */
 export const starterParamsSchema = z.strictObject({
@@ -279,7 +283,10 @@ export const starterParamsSchema = z.strictObject({
   approvedTaskSha256: sha256Schema,
   stack: z.array(z.string().min(1)),
   /** The names the workspace goes by, which no public file may carry. */
-  vocabulary: z.array(z.string().min(1)).optional(),
+  vocabulary: z
+    .array(z.string().min(1))
+    .optional() /** The confirmed decisions' hash, when the spec has decisions. */,
+  decisionsSha256: sha256Schema.optional(),
 });
 export const submissionGradeParamsSchema = z.strictObject({
   deadlineMinutes: z.number().int().min(1).max(120).default(60),

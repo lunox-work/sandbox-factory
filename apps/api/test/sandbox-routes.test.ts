@@ -21,6 +21,7 @@ import type {
   ApprovedTaskSnapshot,
   BoundaryContract,
   SliceManifest,
+  SpecDraft,
 } from "sandbox-factory";
 import {
   approvedTaskHash,
@@ -33,6 +34,8 @@ import { unzip } from "./zip-reader.js";
 
 const stamp = "2026-10-02T00:00:00.000Z";
 const sha = (text: string) => createHash("sha256").update(text).digest("hex");
+/** The hash a confirmation of the one decision `decisions` adds is bound to. */
+const halfCentHash = sha("d1\tHalf a cent rounds up.\n");
 const manifest: SliceManifest = {
   schemaVersion: 1,
   toolVersion: "slice@1",
@@ -509,10 +512,25 @@ function fixture(
     approvalMoved: boolean;
     /** A built file's bytes in storage are not the ones the run recorded. */
     tampered: string;
+    /**
+     * The task's spec decided something (`assumptions`): `unconfirmed`, or
+     * `confirmed` by a person, as the decisions store answers.
+     */
+    decisions: "unconfirmed" | "confirmed";
+    /** `build-manifest.json` among what the build `arn_build` wrote. */
+    buildManifest: unknown;
+    /** More files the build `arn_build` wrote, beside `builtFiles`. */
+    extraBuilt: { path: string; body: string }[];
+    /** Fields the stored version's source has beside the rest. */
+    sourcePatch: Partial<StoredVersionSource>;
   }> = {},
 ) {
-  const published: { versionId: string; actor: string; expiresAt: string }[] =
-    [];
+  const published: {
+    versionId: string;
+    actor: string;
+    expiresAt: string;
+    evidence?: unknown;
+  }[] = [];
   const manifestText = JSON.stringify(overrides.manifest ?? manifest);
   const contractText = JSON.stringify(overrides.contract ?? contract);
   const created: unknown[] = [];
@@ -561,6 +579,39 @@ function fixture(
               ? { ...source, buildRunId: buildRun.id }
               : source,
   };
+  if (overrides.decisions !== undefined)
+    stored.source = {
+      ...stored.source,
+      approvedTask: {
+        ...stored.source.approvedTask,
+        spec: {
+          proposalId: "bpr_1",
+          specRevision: 2,
+          specHash: "s".repeat(64),
+          draft: {
+            ...(source.approvedTask.spec?.draft as SpecDraft),
+            assumptions: ["Half a cent rounds up."],
+          },
+        },
+      },
+    } as typeof stored.source;
+  if (overrides.sourcePatch !== undefined)
+    stored.source = {
+      ...stored.source,
+      ...overrides.sourcePatch,
+    } as typeof stored.source;
+  const built = [
+    ...builtFiles,
+    ...(overrides.extraBuilt ?? []),
+    ...(overrides.buildManifest === undefined
+      ? []
+      : [
+          {
+            path: "build-manifest.json",
+            body: JSON.stringify(overrides.buildManifest),
+          },
+        ]),
+  ];
   const objects = new Map<string, Buffer>([
     [
       "runs/arn_slice/lease/slice-manifest.json",
@@ -572,7 +623,7 @@ function fixture(
     ],
     ["runs/arn_fixtures/lease/fixture-set.json", Buffer.from(fixtureSetText)],
     ["runs/arn_fixtures_bad/lease/fixture-set.json", Buffer.from("not json")],
-    ...builtFiles.map(
+    ...built.map(
       ({ path, body }) =>
         [`runs/arn_build/lease/${path}`, Buffer.from(body)] as const,
     ),
@@ -741,6 +792,8 @@ function fixture(
         id: string,
         actor: string,
         expiresAt: Date,
+        _now?: Date,
+        evidence?: unknown,
       ) => {
         if (owner !== "org_1" || id !== "sbv_1")
           return { ok: false, reason: "not-found" };
@@ -752,6 +805,7 @@ function fixture(
           versionId: id,
           actor,
           expiresAt: expiresAt.toISOString(),
+          ...(evidence === undefined ? {} : { evidence }),
         });
         return {
           ok: true,
@@ -848,7 +902,7 @@ function fixture(
                 objectKey: `runs/arn_grade/${path}`,
               }))
             : runId === "arn_build" && overrides.previewing !== true
-              ? builtFiles.map(({ path, body }) => ({
+              ? built.map(({ path, body }) => ({
                   ...artifactOf("build_manifest", path, body),
                   runId,
                   objectKey: `runs/arn_build/lease/${path}`,
@@ -1041,6 +1095,34 @@ function fixture(
             },
           },
         }),
+    ...(overrides.decisions === undefined
+      ? {}
+      : {
+          decisions: {
+            get: async (
+              owner: string,
+              proposalId: string,
+              revision: number,
+              sha256: string,
+            ) =>
+              overrides.decisions === "confirmed" &&
+              owner === "org_1" &&
+              proposalId === "bpr_1" &&
+              revision === 2 &&
+              sha256 === halfCentHash
+                ? {
+                    id: "dcf_1",
+                    proposalId,
+                    specRevision: revision,
+                    decisionsSha256: sha256,
+                    confirmedBy: "user_1",
+                    confirmedAt: stamp,
+                  }
+                : null,
+          },
+          decisionsConfirmUrl: async (owner: string, bountyId: string) =>
+            `https://app.test/bounties/${owner}/${bountyId}?tab=price#decisions`,
+        }),
     ensureWorker: async () => {
       launches++;
     },
@@ -1221,6 +1303,161 @@ test("an admin publishes a version whose build passed, and unpublishes the sandb
     404,
   );
   assert.equal((await f.request("POST", "/sbx_9/unpublish")).status, 404);
+});
+
+/* The gates a version is published on, as its build recorded them. */
+
+const passingGates = {
+  roundTrip: { status: "passed", files: 1, problems: [] },
+  disclosure: { status: "passed", scannedBy: "build", names: 3, blocking: 0 },
+};
+const builtSource: Partial<StoredVersionSource> = {
+  buildRunId: "arn_build",
+  harnessSha256: "h".repeat(64),
+  toolchainDigest: "t".repeat(64),
+};
+const gatedManifest = (gates: unknown) => ({
+  manifestSha256: source.manifestSha256,
+  transformConfigSha256: source.transformConfigSha256,
+  approvedTaskSha256: source.approvedTaskSha256,
+  baseline: { ok: true },
+  ...(gates === undefined ? {} : { gates }),
+});
+const until = { expiresAt: "2026-10-09T00:00:00.000Z" };
+const publishOf = async (overrides: Parameters<typeof fixture>[1]) => {
+  const f = fixture("owner", { sourcePatch: builtSource, ...overrides });
+  const response = await f.request("POST", "/versions/sbv_1/publish", until);
+  return {
+    f,
+    status: response.status,
+    body: (await response.json()) as Record<string, unknown>,
+  };
+};
+
+test("publishing records the round trip and disclosure gates its build passed", async () => {
+  const { f, status, body } = await publishOf({
+    buildManifest: gatedManifest(passingGates),
+  });
+  assert.equal(status, 200, JSON.stringify(body));
+  assert.deepEqual(body["gates"], { status: "passed", reason: null });
+  // The build run proved both; the store records them as it freezes.
+  assert.deepEqual(f.published[0]?.evidence, {
+    buildRunId: "arn_build",
+    roundTripRunId: "arn_build",
+    disclosureRunId: "arn_build",
+  });
+  // A generated version has nothing to carry back to: not a failure.
+  const generated = await publishOf({
+    buildManifest: gatedManifest({
+      ...passingGates,
+      roundTrip: { status: "not_applicable", files: 0, problems: [] },
+    }),
+  });
+  assert.equal(generated.status, 200);
+});
+
+test("publishing is refused, naming the gate, when a build's round trip or disclosure scan failed", async () => {
+  const problems = [
+    { path: "src/app.ts", reason: "It has 3 lines and the repository's 4." },
+  ];
+  const roundTrip = await publishOf({
+    buildManifest: gatedManifest({
+      ...passingGates,
+      roundTrip: { status: "failed", files: 1, problems },
+    }),
+  });
+  assert.equal(roundTrip.status, 409);
+  assert.equal(roundTrip.body["code"], "round_trip_failed");
+  assert.equal(roundTrip.body["gate"], "round_trip");
+  assert.deepEqual(roundTrip.body["problems"], problems);
+  assert.deepEqual(roundTrip.f.published, []);
+  const disclosure = await publishOf({
+    buildManifest: gatedManifest({
+      ...passingGates,
+      disclosure: {
+        status: "failed",
+        scannedBy: "build",
+        names: 3,
+        blocking: 2,
+      },
+    }),
+  });
+  assert.equal(disclosure.status, 409);
+  assert.equal(disclosure.body["code"], "disclosure_failed");
+  // Evidence of another build's inputs is stale, whatever its gates say.
+  const stale = await publishOf({
+    buildManifest: {
+      ...gatedManifest(passingGates),
+      approvedTaskSha256: "9".repeat(64),
+    },
+  });
+  assert.equal(stale.status, 409);
+  assert.equal(stale.body["code"], "build_evidence_stale");
+  // A manifest that cannot be read publishes nothing.
+  const unreadable = await publishOf({});
+  assert.equal(unreadable.status, 502);
+  assert.equal(unreadable.body["code"], "artifacts_unavailable");
+});
+
+test("a draft built before the gates is built again; a version published before them stands", async () => {
+  const draft = await publishOf({ buildManifest: gatedManifest(undefined) });
+  assert.equal(draft.status, 409);
+  assert.equal(draft.body["code"], "gates_unrecorded");
+  assert.deepEqual(draft.f.published, []);
+  const frozen = await publishOf({
+    frozen: true,
+    buildManifest: gatedManifest(undefined),
+  });
+  assert.equal(frozen.status, 200);
+  assert.deepEqual(frozen.body["gates"], {
+    status: "grandfathered",
+    reason:
+      "First published before the publication gates; its build recorded none.",
+  });
+  assert.equal(frozen.f.published[0]?.evidence, undefined);
+});
+
+test("a spec's decisions gate its builds and its publication until a person confirms them", async () => {
+  const unconfirmed = fixture("owner", { decisions: "unconfirmed" });
+  const build = await unconfirmed.request("POST", "/versions/sbv_1/build");
+  assert.equal(build.status, 409);
+  const refusal = (await build.json()) as Record<string, unknown>;
+  assert.equal(refusal["code"], "decisions_unconfirmed");
+  assert.equal(
+    refusal["confirmUrl"],
+    "https://app.test/bounties/org_1/bty_1?tab=price#decisions",
+  );
+  assert.deepEqual(unconfirmed.enqueued, []);
+  const publish = await publishOf({
+    decisions: "unconfirmed",
+    buildManifest: gatedManifest(passingGates),
+  });
+  assert.equal(publish.status, 409);
+  assert.equal(publish.body["code"], "decisions_unconfirmed");
+  assert.deepEqual(publish.f.published, []);
+  // Confirmed, the build names the decisions it quotes by their hash.
+  const confirmed = fixture("owner", { decisions: "confirmed" });
+  assert.equal(
+    (await confirmed.request("POST", "/versions/sbv_1/build")).status,
+    202,
+  );
+  const queued = confirmed.enqueued[0] as { params: Record<string, unknown> };
+  assert.equal(queued.params["decisionsSha256"], halfCentHash);
+  assert.equal(
+    (
+      await publishOf({
+        decisions: "confirmed",
+        buildManifest: gatedManifest(passingGates),
+      })
+    ).status,
+    200,
+  );
+  // A spec with no decisions needs nothing, and names none.
+  const plain = fixture();
+  await plain.request("POST", "/versions/sbv_1/build");
+  const params = (plain.enqueued[0] as { params: Record<string, unknown> })
+    .params;
+  assert.equal("decisionsSha256" in params, false);
 });
 
 test("a bounty's sandbox is created by admins, cut from the repository its sizing touches, and listed for members", async () => {
@@ -2198,12 +2435,16 @@ function starterFixture(
     inFlight: boolean;
     /** What the bounty's sources hold, as `heldContext` reads it. */
     context: unknown;
+    /** The spec decided something; confirmed by a person, or not. */
+    decisions: "unconfirmed" | "confirmed";
   }> = {},
 ) {
   const enqueued: { snapshotId: string | null; input: unknown }[] = [];
   const created: { sandboxId: string; input: unknown }[] = [];
   const patches: unknown[] = [];
   const removed: string[] = [];
+  /** The bounties a sandbox was made for. */
+  const made: string[] = [];
   let launches = 0;
   const bare = { ...sandbox, sourceRepoId: null };
   const stored = {
@@ -2215,10 +2456,13 @@ function starterFixture(
       create: async (
         owner: string,
         input: { bountyId: string; sourceRepoId: string | null },
-      ) => ({
-        ok: true,
-        sandbox: { ...bare, organizationId: owner, ...input },
-      }),
+      ) => {
+        made.push(input.bountyId);
+        return {
+          ok: true,
+          sandbox: { ...bare, organizationId: owner, ...input },
+        };
+      },
       get: async (owner: string, id: string) =>
         owner === "org_1" && id === "sbx_1" && overrides.sandbox !== null
           ? { ...bare, ...overrides.sandbox }
@@ -2339,10 +2583,31 @@ function starterFixture(
           ? {
               revision,
               specHash: "s".repeat(64),
-              draft: source.approvedTask.spec?.draft,
+              draft:
+                overrides.decisions === undefined
+                  ? source.approvedTask.spec?.draft
+                  : {
+                      ...(source.approvedTask.spec?.draft as SpecDraft),
+                      assumptions: ["Half a cent rounds up."],
+                    },
             }
           : null,
     },
+    ...(overrides.decisions === undefined
+      ? {}
+      : {
+          decisions: {
+            get: async (
+              _owner: string,
+              _proposalId: string,
+              _revision: number,
+              sha256: string,
+            ) =>
+              overrides.decisions === "confirmed" && sha256 === halfCentHash
+                ? { id: "dcf_1" }
+                : null,
+          },
+        }),
     ensureWorker: async () => {
       launches++;
     },
@@ -2380,6 +2645,7 @@ function starterFixture(
     created,
     patches,
     removed,
+    made,
     launches: () => launches,
   };
 }
@@ -2468,6 +2734,46 @@ test("a sandbox with no repository has a version generated from its bounty, by a
   );
   assert.deepEqual(f.removed, ["logs/old.log"]);
   assert.equal(f.launches(), 1);
+});
+
+test("starting a sandbox on unconfirmed decisions is refused before anything is made", async () => {
+  // A proposal approved before decisions were asked for: no sandbox, no
+  // draft and no run, rather than a sandbox left with a refused version.
+  const unconfirmed = starterFixture("owner", { decisions: "unconfirmed" });
+  const refused = await unconfirmed.request("POST", "/start", {
+    bountyId: "bty_1",
+  });
+  assert.equal(refused.status, 409);
+  const body = (await refused.json()) as Record<string, unknown>;
+  assert.equal(body["code"], "decisions_unconfirmed");
+  assert.match(String(body["error"]), /before starting the sandbox/);
+  assert.match(String(body["confirmUrl"]), /\?tab=price#decisions$/);
+  assert.deepEqual(unconfirmed.made, []);
+  assert.deepEqual(unconfirmed.created, []);
+  assert.deepEqual(unconfirmed.enqueued, []);
+  const confirmed = starterFixture("owner", { decisions: "confirmed" });
+  const started = await confirmed.request("POST", "/start", {
+    bountyId: "bty_1",
+  });
+  assert.equal(started.status, 201);
+  assert.deepEqual(confirmed.made, ["bty_1"]);
+});
+
+test("a version is generated only once its spec's decisions are confirmed, and its run names them", async () => {
+  const unconfirmed = starterFixture("owner", { decisions: "unconfirmed" });
+  const refused = await unconfirmed.request("POST", "/sbx_1/starter");
+  assert.equal(refused.status, 409);
+  const body = (await refused.json()) as Record<string, unknown>;
+  assert.equal(body["code"], "decisions_unconfirmed");
+  // With no page configured, the bounty's own path still says where.
+  assert.match(String(body["confirmUrl"]), /\?tab=price#decisions$/);
+  assert.deepEqual(unconfirmed.enqueued, []);
+  const confirmed = starterFixture("owner", { decisions: "confirmed" });
+  assert.equal((await confirmed.request("POST", "/sbx_1/starter")).status, 202);
+  const queued = confirmed.enqueued[0]?.input as {
+    params: Record<string, unknown>;
+  };
+  assert.equal(queued.params["decisionsSha256"], halfCentHash);
 });
 
 test("a generated version follows the stack of the repositories its work touches, else of any", async () => {
@@ -3546,12 +3852,155 @@ test("a built version's handout lists its public files and commits to its hidden
       files: [],
       hiddenTests: 0,
       hiddenSha256: null,
+      hiddenSha256Version: 2,
     },
   );
   assert.equal(
     (await fixture().request("GET", "/versions/sbv_x/handout")).status,
     404,
   );
+});
+
+/** duediligence's commitment manifest over `[path, text]` pairs, hashed. */
+function commitmentOf(entries: readonly [string, string][]): string {
+  const hex = (text: string) => createHash("sha256").update(text).digest("hex");
+  const lines = [...entries]
+    .sort(([a], [b]) => Buffer.compare(Buffer.from(a), Buffer.from(b)))
+    .map(([path, text]) => `${hex(text)}  ${path}\n`);
+  const kept = entries.map(([path]) => path).sort();
+  return hex(
+    `${lines.join("")}${hex(JSON.stringify(kept))}  calibration.kept\n`,
+  );
+}
+
+const handoutOf = async (f: ReturnType<typeof fixture>) => {
+  const response = await f.request("GET", "/versions/sbv_1/handout");
+  return {
+    status: response.status,
+    body: (await response.json()) as {
+      hiddenTests: number;
+      hiddenSha256: string | null;
+      hiddenSha256Version: number;
+      code?: string;
+    },
+  };
+};
+const nameTable = {
+  path: "private/pseudonym.lunox",
+  body: '{"rules":[],"schemaVersion":1}',
+};
+const hiddenText = "test('hidden', () => {});\n";
+
+test("a build made before commitments keeps its handout hash, the name table in it, but counts its tests alone", async () => {
+  // A sliced build of then: its name table under private/ was hashed as a
+  // hidden test. The hash a contributor noted stays; the count is fixed.
+  const { status, body } = await handoutOf(
+    fixture("admin", {
+      built: true,
+      extraBuilt: [nameTable],
+      buildManifest: { files: [] },
+    }),
+  );
+  assert.equal(status, 200);
+  assert.equal(body.hiddenTests, 1);
+  assert.equal(body.hiddenSha256Version, 1);
+  assert.equal(
+    body.hiddenSha256,
+    commitmentOf([
+      ["tests/private/hidden.test.ts", hiddenText],
+      ["tests/private/pseudonym.lunox", nameTable.body],
+    ]),
+  );
+});
+
+test("a build's recorded commitment is the handout's hash, over its hidden tests alone, in its layout", async () => {
+  // The platform's layout: the recorded hash, the name table not counted.
+  const recorded = commitmentOf([["tests/private/hidden.test.ts", hiddenText]]);
+  const platform = await handoutOf(
+    fixture("admin", {
+      built: true,
+      extraBuilt: [nameTable],
+      buildManifest: {
+        files: [],
+        hiddenCommitment: {
+          version: 2,
+          hiddenTests: 1,
+          hiddenSha256: recorded,
+        },
+      },
+    }),
+  );
+  assert.equal(platform.status, 200);
+  assert.deepEqual(
+    [
+      platform.body.hiddenTests,
+      platform.body.hiddenSha256,
+      platform.body.hiddenSha256Version,
+    ],
+    [1, recorded, 2],
+  );
+  // An upload's layout stages tests at their folder paths: a `.spec.ts`
+  // beside the code counts too, and its hash is the recorded one.
+  const folderLayout = {
+    harnessDir: "carveout",
+    mocksDir: "carveout/mocks",
+    mockRuntimePath: "carveout/mock.js",
+    envFile: "carveout/sandbox.env",
+    harnessRoots: ["carveout", "node_modules"],
+    configFiles: {},
+    commands: [],
+    tests: {
+      publicDir: null,
+      privateDir: null,
+      files: [],
+      run: {
+        "node:test": { argv: ["node", "--test"], emitted: true },
+        vitest: null,
+      },
+    },
+  };
+  const uploaded = commitmentOf([
+    ["hidden.test.ts", hiddenText],
+    ["src/rounding.spec.ts", "it('rounds');\n"],
+  ]);
+  const upload = await handoutOf(
+    fixture("admin", {
+      built: true,
+      extraBuilt: [
+        nameTable,
+        { path: "private/src/rounding.spec.ts", body: "it('rounds');\n" },
+      ],
+      buildManifest: {
+        files: [],
+        layout: folderLayout,
+        hiddenCommitment: {
+          version: 2,
+          hiddenTests: 2,
+          hiddenSha256: uploaded,
+        },
+      },
+    }),
+  );
+  assert.deepEqual(
+    [upload.body.hiddenTests, upload.body.hiddenSha256],
+    [2, uploaded],
+  );
+  // Artifacts that no longer match what the build recorded are not vouched for.
+  const lost = await handoutOf(
+    fixture("admin", {
+      built: true,
+      buildManifest: {
+        files: [],
+        hiddenCommitment: {
+          version: 2,
+          hiddenTests: 2,
+          hiddenSha256: recorded,
+        },
+      },
+    }),
+  );
+  assert.equal(lost.status, 502);
+  assert.equal(lost.body.code, "artifacts_unavailable");
 });
 
 test("a built version's project downloads as one zip of the handout's files, never a hidden test", async () => {

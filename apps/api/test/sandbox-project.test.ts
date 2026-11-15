@@ -229,7 +229,8 @@ test("round trip: the archive unpacks to the handout's files, the tree npm ci an
     files: { path: string; sizeBytes: number; sha256: string }[];
     hiddenTests: number;
   };
-  assert.equal(handout.hiddenTests, 2);
+  // The hidden test alone: merge-patch.json beside it is not one.
+  assert.equal(handout.hiddenTests, 1);
   const response = await get("/archive");
   assert.equal(response.status, 200);
   const entries = unzip(new Uint8Array(await response.arrayBuffer()));

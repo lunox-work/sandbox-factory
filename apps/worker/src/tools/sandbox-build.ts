@@ -26,6 +26,7 @@
  * it hashes to.
  */
 
+import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { isBuiltin } from "node:module";
 import { dirname, join } from "node:path";
@@ -41,7 +42,7 @@ export { nearestCompilerOptions } from "carveout/extract";
 import {
   ENV_FILE,
   EVALUATION_LIMITS,
-  PRIVATE_TESTS_DIR,
+  HIDDEN_COMMITMENT_VERSION,
   PSEUDONYMS_FILE,
   PSEUDONYMS_SCHEMA_VERSION,
   RUN_PATH,
@@ -56,15 +57,21 @@ import {
   withJsonLeaves,
   buildSummary,
   canonicalJson,
+  disclosableDecisions,
+  disclosureGate,
   draftPseudonyms,
   generateProject,
+  noChangeRoundTrip,
+  specDecisions,
   isSandboxBuildParams,
   packageNameOf,
   privatePackageNames,
   privateTestArgv,
+  hiddenArtifactPath,
   hiddenTestFiles,
   hiddenTestRun,
   PLATFORM_LAYOUT,
+  stagedHiddenTest,
   runtimePath,
   testRunnerOf,
   transformConfigOf,
@@ -82,11 +89,13 @@ import type {
   EvaluationProvider,
   GeneratedFile,
   GradingLayout,
+  HiddenCommitment,
   HiddenTestRun,
   PrivateTestOutcome,
   ProjectBlocker,
   ProjectSource,
   ProjectStub,
+  PublicationGates,
   SandboxBuildManifest,
   SpecDraft,
   StageExecution,
@@ -102,6 +111,7 @@ import type { TaskDescriptorDto } from "@sandbox-factory/shared";
 import type { AgentSettings } from "../agent/loop.js";
 import { AnalysisError } from "../errors.js";
 import { snapshotOf } from "./adapter.js";
+import { confirmedDecisions } from "./decisions.js";
 import type { ArtifactFile, ToolAdapter, ToolRunInput } from "./adapter.js";
 import { writeHiddenTests } from "./hidden-tests.js";
 import { calibrateHiddenTests } from "./calibration.js";
@@ -893,8 +903,11 @@ export async function writeBuildOutputs(input: {
   readonly layout?: GradingLayout;
   /** An uploaded folder's record hash and carveout release. */
   readonly upload?: SandboxBuildManifest["upload"];
+  /** The publication gates the build ran (`PublicationGates`). */
+  readonly gates: PublicationGates;
 }): Promise<{ manifest: SandboxBuildManifest; written: ArtifactFile[] }> {
   const { baseline, blockers } = input;
+  const layout = input.layout ?? PLATFORM_LAYOUT;
   const files = [...input.files].sort((a, b) => compare(a.path, b.path));
   const records: BuildFileRecord[] = files.map((file) => ({
     path: file.path,
@@ -933,6 +946,15 @@ export async function writeBuildOutputs(input: {
     baseline,
     blockers,
     ready: blockers.length === 0 && baseline?.ok === true,
+    gates: input.gates,
+    hiddenCommitment: hiddenCommitmentOf(
+      records.filter(
+        (record) =>
+          !record.public &&
+          stagedHiddenTest(layout, hiddenArtifactPath(layout, record.path)) ===
+            record.path,
+      ),
+    ),
   };
   await mkdir(input.outDir, { recursive: true });
   const outputs: {
@@ -957,7 +979,7 @@ export async function writeBuildOutputs(input: {
       meta: { rules: input.aliasRules.length },
     },
     ...files.map((file) => ({
-      path: outputPath(file),
+      path: outputPath(file, layout),
       text: file.text,
       meta: null,
     })),
@@ -981,11 +1003,49 @@ export async function writeBuildOutputs(input: {
   return { manifest, written: written.sort((a, b) => compare(a.path, b.path)) };
 }
 
-/** Where a generated file is kept: `project/`, or `private/` for a hidden test. */
-function outputPath(file: GeneratedFile): string {
+/**
+ * Where a generated file is kept: `project/`, or `private/` for a hidden
+ * test, where grading stages it back from (`hiddenArtifactPath` is
+ * `stagedHiddenTest`'s inverse in either layout).
+ */
+function outputPath(
+  file: GeneratedFile,
+  layout: GradingLayout = PLATFORM_LAYOUT,
+): string {
   return file.public
     ? `project/${file.path}`
-    : `private/${file.path.replace(`${PRIVATE_TESTS_DIR}/`, "")}`;
+    : hiddenArtifactPath(layout, file.path);
+}
+
+/**
+ * The hidden suite's commitment (`HIDDEN_COMMITMENT_VERSION`), from each
+ * hidden test's path as the judge stages it and the sha256 of its bytes:
+ * duediligence's manifest, `<sha256>  <path>` lines sorted by the paths'
+ * UTF-8 bytes, then `<sha256 of the sorted paths' JSON>  calibration.kept`,
+ * hashed. In the platform's layout every path is `tests/private/<rel>`,
+ * and this is duediligence's `hiddenSha256` with the paths as kept ids.
+ */
+export function hiddenCommitmentOf(
+  tests: readonly { readonly path: string; readonly sha256: string }[],
+): HiddenCommitment {
+  const hash = (text: string) =>
+    createHash("sha256").update(text, "utf8").digest("hex");
+  if (tests.length === 0)
+    return {
+      version: HIDDEN_COMMITMENT_VERSION,
+      hiddenTests: 0,
+      hiddenSha256: null,
+    };
+  const lines = [...tests]
+    .sort((a, b) => Buffer.compare(Buffer.from(a.path), Buffer.from(b.path)))
+    .map((test) => `${test.sha256}  ${test.path}\n`);
+  const kept = tests.map((test) => test.path).sort();
+  lines.push(`${hash(JSON.stringify(kept))}  calibration.kept\n`);
+  return {
+    version: HIDDEN_COMMITMENT_VERSION,
+    hiddenTests: tests.length,
+    hiddenSha256: hash(lines.join("")),
+  };
 }
 
 /**
@@ -1260,6 +1320,8 @@ export function createSandboxBuildAdapter(
           ? undefined
           : nearestCompilerOptions(input.sourceDir, first);
       const spec: SpecDraft | null = source.approvedTask.spec?.draft ?? null;
+      // The decisions a person confirmed, as the run names them by hash.
+      const confirmed = confirmedDecisions(spec, params.decisionsSha256);
       const model = options.agent?.model ?? null;
       const agent =
         model === null || options.agent === undefined
@@ -1350,6 +1412,8 @@ export function createSandboxBuildAdapter(
             renames: [],
             generate: null,
             publicSpec: null,
+            publicDecisions: [] as readonly string[],
+            guideDecisions: [] as readonly string[],
             publicListing: listing,
           };
         const sources: ProjectSource[] = included.map((file, index) => ({
@@ -1447,6 +1511,8 @@ export function createSandboxBuildAdapter(
             renames: aliased.renames,
             generate: null,
             publicSpec: null,
+            publicDecisions: [] as readonly string[],
+            guideDecisions: [] as readonly string[],
             publicListing: aliasedListing,
           };
         const uses = packageUses(
@@ -1457,6 +1523,16 @@ export function createSandboxBuildAdapter(
             (packageNames.has(packageNameOf(specifier)) ||
               packagePairs.some(([, to]) => to === packageNameOf(specifier)) ||
               isNodeBuiltin(specifier)),
+        );
+        // The confirmed decisions in public names, renamed with the spec;
+        // `TASK.md` carries them only when the disclosure scans pass them.
+        const publicDecisions =
+          confirmed.length === 0 || aliasedSpec === null
+            ? []
+            : specDecisions(aliasedSpec).map(({ text }) => text);
+        const guideDecisions = disclosableDecisions(
+          publicDecisions,
+          vocabulary,
         );
         const generate = (tests: readonly AcceptanceTest[]) => {
           const project = generateProject({
@@ -1472,6 +1548,7 @@ export function createSandboxBuildAdapter(
             sources,
             stubs,
             spec: aliasedSpec,
+            decisions: guideDecisions,
             dependencies: source.scope.dependencies,
             acceptanceTests: tests,
             fixtures: aliasedFixtures,
@@ -1498,6 +1575,8 @@ export function createSandboxBuildAdapter(
           renames: aliased.renames,
           generate,
           publicSpec: aliasedSpec,
+          publicDecisions,
+          guideDecisions,
           publicListing: aliasedListing,
         };
       };
@@ -1589,7 +1668,12 @@ export function createSandboxBuildAdapter(
         );
       const aliasRules = pseudonyms?.rules ?? source.aliasRules;
       const prepared = prepare(aliasRules);
-      const { generate, publicSpec, publicListing, renames } = prepared;
+      const { generate, publicSpec, publicDecisions, publicListing, renames } =
+        prepared;
+      if (publicDecisions.length > 0 && prepared.guideDecisions.length === 0)
+        input.log(
+          `TASK.md leaves out the ${publicDecisions.length} confirmed decision(s): the disclosure scans find a workspace name or a credential in them.`,
+        );
       const blockers: ProjectBlocker[] = [...prepared.blockers];
       let files: GeneratedFile[] = [];
       let importRewrites: SandboxBuildManifest["importRewrites"] = [];
@@ -1688,6 +1772,7 @@ export function createSandboxBuildAdapter(
                 title: publicListing.title,
                 summary: publicListing.specSummary,
                 spec: publicSpec,
+                decisions: publicDecisions,
               },
               entryPoints,
               generate,
@@ -1743,6 +1828,7 @@ export function createSandboxBuildAdapter(
                 title: publicListing.title,
                 summary: publicListing.specSummary,
                 spec: publicSpec,
+                decisions: publicDecisions,
               },
               entryPoints,
               written: hidden,
@@ -1791,9 +1877,42 @@ export function createSandboxBuildAdapter(
               }),
             ),
           );
+      // The publication gates, over the project as written: the unchanged
+      // project carried back to the source it was cut from, and the
+      // disclosure scans' findings among the blockers.
+      const publicText = new Map(
+        files
+          .filter((file) => file.public)
+          .map((file) => [file.path, file.text]),
+      );
+      const roundTrip = noChangeRoundTrip({
+        sources: included.map((file) => {
+          const projectPath = renamedPath.get(file.path) ?? file.path;
+          return {
+            projectPath,
+            repositoryPath: file.path,
+            publicText: publicText.get(projectPath) ?? null,
+            repositoryText: file.text,
+          };
+        }),
+        rules: aliasRules,
+      });
+      input.log(
+        roundTrip.ok
+          ? `The unchanged project carries back to the source (${roundTrip.files} file(s)).`
+          : `The unchanged project does not carry back to the source: ${roundTrip.problems.map((problem) => `${problem.path}: ${problem.reason}`).join("; ")}`,
+      );
       const { manifest: buildManifest, written } = await writeBuildOutputs({
         outDir: input.outDir,
         toolVersion: SANDBOX_BUILD_RUN_VERSION,
+        gates: {
+          roundTrip: {
+            status: roundTrip.ok ? "passed" : "failed",
+            files: roundTrip.files,
+            problems: roundTrip.problems,
+          },
+          disclosure: disclosureGate(blockers, vocabulary.length),
+        },
         sandboxVersionId: version.id,
         aliasRules,
         bindings: {

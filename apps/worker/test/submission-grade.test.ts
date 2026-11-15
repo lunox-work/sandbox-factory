@@ -138,10 +138,13 @@ async function grade(
   /** The build's artifacts; `built` by default. */
   build: Record<string, string> = built,
 ) {
-  const outDir = await mkdtemp(join(tmpdir(), "grade-"));
+  const root = await mkdtemp(join(tmpdir(), "grade-"));
+  // As `executeRun` hands it: a folder that does not exist yet, which the
+  // adapter makes whatever the verdict.
+  const outDir = join(root, "out");
   for (const [path, text] of Object.entries(source ?? {})) {
-    await mkdir(join(outDir, "source", path, ".."), { recursive: true });
-    await writeFile(join(outDir, "source", path), text);
+    await mkdir(join(root, "source", path, ".."), { recursive: true });
+    await writeFile(join(root, "source", path), text);
   }
   const finished: { id: string; outcome: unknown }[] = [];
   const fake = provider(outcome);
@@ -189,7 +192,7 @@ async function grade(
   const logged: string[] = [];
   const input: ToolRunInput = {
     runId: "arn_grade",
-    sourceDir: join(outDir, "source"),
+    sourceDir: join(root, "source"),
     outDir,
     params: {
       deadlineMinutes: 60,
@@ -221,7 +224,7 @@ async function grade(
       : null;
     return { written, result, finished, fake, logged, patch };
   } finally {
-    await rm(outDir, { recursive: true, force: true });
+    await rm(root, { recursive: true, force: true });
   }
 }
 

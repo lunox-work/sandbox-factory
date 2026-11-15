@@ -1,7 +1,8 @@
 /**
  * What a contributor, or the coding agent they work with, reads and opens
  * first in a generated project: `TASK.md` (the bounty in prose, with its
- * approved scenarios, how it is accepted and how to submit), `AGENTS.md`
+ * approved scenarios, its confirmed decisions when the disclosure scans
+ * pass them, how it is accepted and how to submit), `AGENTS.md`
  * (commands and rules, which agents load without asking), `CLAUDE.md`
  * (carveout's one-line import of `AGENTS.md`) and `.vscode/` (build output
  * hidden beside its source, the workspace's TypeScript, build/test/dev
@@ -27,6 +28,8 @@ import type { SpecDraft } from "../pricing/spec.js";
 import { SANDBOX_COMMANDS } from "./build.js";
 import { TASK_DESCRIPTOR_PATH } from "./descriptor.js";
 import type { GeneratedFile, ProjectVersion } from "./project.js";
+import { scanSecrets } from "./secrets.js";
+import { publicVocabularyLeaks } from "./vocabulary.js";
 
 export const TASK_GUIDE_PATH = "TASK.md";
 export const AGENTS_GUIDE_PATH = "AGENTS.md";
@@ -53,6 +56,12 @@ export interface ContributorGuideInput {
   >;
   /** The approved spec in public names; null when the bounty has none. */
   readonly spec: SpecDraft | null;
+  /**
+   * The spec's decisions in public names, only when a person confirmed
+   * them and the build's disclosure scans pass them
+   * (`disclosableDecisions`); absent or empty, `TASK.md` names none.
+   */
+  readonly decisions?: readonly string[];
   readonly editable: readonly string[];
   readonly publicTests: readonly string[];
   /** Whether modules and packages outside the task are recording mocks (a slice), or nothing is mocked (a starter). */
@@ -93,6 +102,30 @@ export function specGherkin(spec: SpecDraft): string {
   }
   return `${lines.join("\n")}\n`;
 }
+
+/**
+ * The confirmed decisions `TASK.md` may carry: all of them, already in
+ * public names, when neither disclosure scan (the workspace's vocabulary,
+ * credentials) finds anything in their text, else none. All or none, so a
+ * list with an item withheld never reads as complete; and none rather than
+ * a build blocked or a name leaked, since an older name table never had to
+ * cover text no public file carried. The hidden tests are held to them
+ * either way; the contributor reads them only when they are safe to show.
+ */
+export function disclosableDecisions(
+  decisions: readonly string[],
+  vocabulary: readonly string[],
+): readonly string[] {
+  if (decisions.length === 0) return [];
+  const file = { path: TASK_GUIDE_PATH, text: decisionList(decisions) };
+  return publicVocabularyLeaks([file], vocabulary).length === 0 &&
+    scanSecrets([file]).length === 0
+    ? decisions
+    : [];
+}
+
+const decisionList = (decisions: readonly string[]) =>
+  decisions.map((text) => `- ${text.replace(/\s+/g, " ").trim()}`).join("\n");
 
 /** The command that runs one public test file, as `npm test` runs them all. */
 function oneTestCommand(paths: GuidePaths): string {
@@ -141,6 +174,16 @@ export function taskGuide(input: ContributorGuideInput): string {
           `${fence}gherkin`,
           gherkin.trimEnd(),
           fence,
+        ]),
+    ...((input.decisions ?? []).length === 0
+      ? []
+      : [
+          "",
+          "## Decided",
+          "",
+          "Where the ticket was silent, the spec decided these, and the client confirmed each. They are part of the task: the hidden tests hold a submission to them as to the scenarios.",
+          "",
+          decisionList(input.decisions ?? []),
         ]),
     "",
     "## Accepted when",

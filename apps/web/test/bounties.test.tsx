@@ -5111,8 +5111,198 @@ test("a proposal whose code is being measured offers no re-analysis or approval 
     within(price).queryByRole("button", { name: "Re-analyze" }),
   ).toBeNull();
   // Nor is it approved while the price it would approve may still move.
-  const approve = within(page).getByRole("button", { name: "Approve" });
+  const approve = within(page).getByRole("button", {
+    name: "Profiling the code…",
+  });
   expect((approve as HTMLButtonElement).disabled).toBe(true);
+  expect(await reasonOn(approve)).toBe(
+    "The code is still being profiled, and the price may change. Approve once it settles.",
+  );
+  // The price so far is the spec's, but it is not said to be final.
+  expect(within(price).queryByTestId("priced-from-spec")).toBeNull();
+});
+
+test("an approval names the price on screen; one moved since is read again with both prices said", async () => {
+  let current = proposal({ specRevision: 1 });
+  const approvals: unknown[] = [];
+  const { fetchMock, calls } = server([
+    [
+      "GET",
+      "/bounties/bty_7",
+      () => json({ bounty: detail({ ...SCOPED, proposal: liveProposal() }) }),
+    ],
+    [
+      "POST",
+      "/proposals/bpr_9/approve",
+      (body) => {
+        approvals.push(body);
+        const previous = { complexity: "M", amountMinor: 200, currency: "USD" };
+        // The code landed while the page was open: M+ now.
+        current = proposal({
+          specRevision: 1,
+          revision: 2,
+          complexity: "M+",
+          amountMinor: 250,
+        });
+        return json(
+          {
+            code: "price_changed",
+            error:
+              "The price changed since it was loaded. Check the new price, then approve.",
+            previous,
+            current: { complexity: "M+", amountMinor: 250, currency: "USD" },
+            proposal: current,
+          },
+          409,
+        );
+      },
+    ],
+    [
+      "GET",
+      "/proposals/bpr_9",
+      () =>
+        json({
+          proposal: current,
+          freshness: { freshness: "current", checkedAt: stamp },
+          liveSpec: null,
+          writebackOperations: [],
+        }),
+    ],
+  ]);
+  vi.stubGlobal("fetch", fetchMock);
+  window.history.replaceState(null, "", "/bounties/acme/bty_7?tab=price");
+  render(<Shell {...inAcme("admin")} />);
+  const page = await screen.findByTestId("bounty-detail");
+  const approve = await within(page).findByRole("button", { name: "Approve" });
+  await waitFor(() =>
+    expect((approve as HTMLButtonElement).disabled).toBe(false),
+  );
+  await userEvent.click(approve);
+  expect(approvals).toEqual([
+    {
+      expectedRevision: 1,
+      expectedPrice: { complexity: "M", amountMinor: 200, currency: "USD" },
+    },
+  ]);
+  expect(
+    await within(page).findByText(
+      "The price changed from $2.00 (M) to $2.50 (M+) once the code was measured. Check it, then approve.",
+    ),
+  ).toBeDefined();
+  // Read again, so what is approved next is what is on screen.
+  const price = within(page).getByTestId("proposal-price");
+  await waitFor(() => expect(price.textContent).toContain("$2.50"));
+  const reads = calls.filter(
+    ({ method, url }) => method === "GET" && /\/proposals\/bpr_9$/.test(url),
+  );
+  expect(reads.length).toBeGreaterThanOrEqual(2);
+});
+
+test("a price whose code failed to measure is approvable, and says it is from the spec only", async () => {
+  const spec = {
+    feature: "Invitations",
+    background: [],
+    scenarios: [
+      {
+        id: "s1",
+        kind: "happy",
+        title: "One invitation",
+        steps: [{ keyword: "Then", text: "one email" }],
+        origin: "draft",
+        weight: "heavy",
+      },
+    ],
+    openQuestions: [],
+    assumptions: [],
+  } as const;
+  const failed = proposal({
+    specRevision: 1,
+    rubric: assessRubric({ spec, code: { status: "failed" } }),
+    pricedFrom: "spec",
+  });
+  const { fetchMock } = server([
+    [
+      "GET",
+      "/bounties/bty_7",
+      () => json({ bounty: detail({ ...SCOPED, proposal: liveProposal() }) }),
+    ],
+    [
+      "GET",
+      "/profile",
+      () =>
+        json({
+          profiles: [
+            {
+              id: "bpf_1",
+              proposalId: "bpr_9",
+              specRevision: 1,
+              repository: "acme/app",
+              status: "failed",
+              errorCode: "scope_failed",
+              runErrorCode: null,
+              snapshotId: "rsn_1",
+              scopeRunId: "arn_1",
+              sliceRunId: null,
+              profile: null,
+              createdAt: stamp,
+              updatedAt: stamp,
+            },
+          ],
+        }),
+    ],
+    ["GET", "/spec", () => json({ spec: null })],
+    [
+      "GET",
+      "/proposals/bpr_9",
+      () =>
+        json({
+          proposal: failed,
+          freshness: { freshness: "current", checkedAt: stamp },
+          liveSpec: null,
+          writebackOperations: [],
+        }),
+    ],
+  ]);
+  vi.stubGlobal("fetch", fetchMock);
+  window.history.replaceState(null, "", "/bounties/acme/bty_7?tab=price");
+  render(<Shell {...inAcme("admin")} />);
+  const page = await screen.findByTestId("bounty-detail");
+  const price = await within(page).findByTestId("proposal-price");
+  expect(
+    (await within(price).findByTestId("priced-from-spec")).textContent,
+  ).toBe("Priced from the spec only; the code was not measured.");
+  const approve = await within(page).findByRole("button", { name: "Approve" });
+  await waitFor(() =>
+    expect((approve as HTMLButtonElement).disabled).toBe(false),
+  );
+});
+
+test("a price that saw the code says nothing of the spec", async () => {
+  const { fetchMock } = server([
+    [
+      "GET",
+      "/bounties/bty_7",
+      () => json({ bounty: detail({ ...SCOPED, proposal: liveProposal() }) }),
+    ],
+    [
+      "GET",
+      "/proposals/bpr_9",
+      () =>
+        json({
+          proposal: proposal({ pricedFrom: "code" }),
+          freshness: { freshness: "current", checkedAt: stamp },
+          liveSpec: null,
+          writebackOperations: [],
+        }),
+    ],
+  ]);
+  vi.stubGlobal("fetch", fetchMock);
+  window.history.replaceState(null, "", "/bounties/acme/bty_7?tab=price");
+  render(<Shell {...inAcme("admin")} />);
+  const page = await screen.findByTestId("bounty-detail");
+  const price = await within(page).findByTestId("proposal-price");
+  await within(page).findByRole("button", { name: "Approve" });
+  expect(within(price).queryByTestId("priced-from-spec")).toBeNull();
 });
 
 /** The last Jira update on `bpr_9`'s approval, as its read names it. */

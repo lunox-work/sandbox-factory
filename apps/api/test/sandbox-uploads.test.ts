@@ -23,7 +23,7 @@ const stamp = "2026-11-12T00:00:00.000Z";
 const sha = (text: string) => createHash("sha256").update(text).digest("hex");
 
 const record = (overrides: object = {}) =>
-  `${JSON.stringify({ schemaVersion: 1, carveoutVersion: "0.4.0", publicScrubbed: true, lockfile: true, request: { public: true }, ...overrides }, null, 2)}\n`;
+  `${JSON.stringify({ schemaVersion: 1, carveoutVersion: "0.4.0", cutId: "c0ffee42-0000-4000-8000-000000000001", publicScrubbed: true, lockfile: true, request: { public: true }, ...overrides }, null, 2)}\n`;
 const ACCEPT = {
   path: "src/price.accept.test.ts",
   text: 'import { test } from "node:test";\ntest("a tenth off", () => {});\n',
@@ -36,6 +36,8 @@ function uploadBody(
     record?: string;
     acceptanceTests?: unknown[];
     recordSha256?: string;
+    /** The carveout release that uploads it; 0.4.0 unless said. */
+    version?: string;
   } = {},
 ) {
   const recordText = overrides.record ?? record();
@@ -53,7 +55,7 @@ function uploadBody(
   return {
     bountyId: "bty_1",
     carveout: {
-      version: "0.4.0",
+      version: overrides.version ?? "0.4.0",
       recordSha256: overrides.recordSha256 ?? sha(recordText),
     },
     files,
@@ -756,6 +758,63 @@ test("an upload that is not a public folder, names the workspace or holds a cred
     ["secret_file", [".npmrc"]],
   );
   assert.deepEqual(f.enqueued, []);
+});
+
+test("an upload from, or of a folder cut by, a carveout before 0.4.0 is refused 422 naming the minimum, before anything is stored", async () => {
+  const f = fixture();
+  const refusal = async (body: unknown) => {
+    const response = await f.request("POST", "/uploads", body);
+    return {
+      status: response.status,
+      body: (await response.json()) as {
+        code: string;
+        error: string;
+        files?: string[];
+        minimumVersion?: string;
+      },
+    };
+  };
+  // The uploading release: told to upgrade first, whatever else is wrong.
+  for (const version of ["0.3.1", "0.4.0-rc.1"]) {
+    const old = await refusal(
+      uploadBody({ version, record: record({ publicScrubbed: false }) }),
+    );
+    assert.deepEqual(
+      [old.status, old.body.code, old.body.minimumVersion, old.body.files],
+      [422, "carveout_too_old", "0.4.0", undefined],
+      version,
+    );
+    assert.match(old.body.error, /carveout 0\.4\.0 or later/);
+    assert.match(old.body.error, new RegExp(version.replace(/\./g, "\\.")));
+  }
+  // The release that cut the folder, or a record from before receipts.
+  for (const recordText of [
+    record({ carveoutVersion: "0.3.1" }),
+    record({ carveoutVersion: undefined }),
+    record({ carveoutVersion: "next" }),
+    record({ cutId: undefined }),
+  ]) {
+    const cut = await refusal(uploadBody({ record: recordText }));
+    assert.deepEqual(
+      [cut.status, cut.body.code, cut.body.minimumVersion, cut.body.files],
+      [422, "carveout_too_old", "0.4.0", ["carveout.json"]],
+      recordText,
+    );
+    assert.match(cut.body.error, /cut by an older carveout/);
+  }
+  // Newer releases are taken.
+  assert.ok(
+    "recordSha256" in
+      checkUpload(
+        uploadBody({
+          version: "0.10.0",
+          record: record({ carveoutVersion: "1.0.0" }),
+        }) as never,
+        [],
+      ),
+  );
+  assert.deepEqual(f.enqueued, []);
+  assert.equal(f.objects.size, 1 + Object.keys(BUILD).length);
 });
 
 test("an upload over the workspace's monthly tokens or its active runs is refused, and its stored files removed", async () => {

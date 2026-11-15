@@ -586,7 +586,8 @@ function reviewHarness(
       rateCards: { get: () => Promise.resolve(card) } as never,
       runs: { activeForProposal: () => Promise.resolve(null) } as never,
       proposals,
-      specs: {} as never,
+      // No spec to read: no decisions to confirm before approving.
+      specs: { get: () => Promise.resolve(null) } as never,
       issues: {
         markRemoved: () => Promise.resolve(true),
       } as never,
@@ -1709,11 +1710,11 @@ const rubricSpec: SpecDraft = {
   assumptions: [],
 };
 
-function rubricOf(status: "measured" | "pending") {
+function rubricOf(status: "measured" | "pending" | "failed") {
   return assessRubric({
     spec: rubricSpec,
     code:
-      status === "pending"
+      status !== "measured"
         ? { status }
         : {
             status,
@@ -1846,6 +1847,8 @@ function decisionsHarness(
   } = {},
 ) {
   const confirmed: unknown[] = [];
+  /** Preparer prompts: a confirmation may let a held sandbox start. */
+  let prompts = 0;
   let stored: { decisionsSha256: string; confirmedBy: string } | null = null;
   const proposal = reviewProposal({
     specRevision: options.specRevision === undefined ? 2 : options.specRevision,
@@ -1864,6 +1867,9 @@ function decisionsHarness(
       bounties: {} as never,
       appUrl: "https://app.test",
       organizationSlug: async () => "acme",
+      onApproved: () => {
+        prompts += 1;
+      },
       proposals: {
         get: (organizationId: string, id: string) =>
           Promise.resolve(
@@ -1913,7 +1919,7 @@ function decisionsHarness(
           }),
     },
   });
-  return { app, confirmed };
+  return { app, confirmed, prompts: () => prompts };
 }
 
 test("a spec's decisions are its assumptions, hashed, unconfirmed until a person confirms them in the web app", async () => {
@@ -1953,6 +1959,7 @@ test("a spec's decisions are its assumptions, hashed, unconfirmed until a person
     400,
   );
   assert.deepEqual(state.confirmed, []);
+  assert.equal(state.prompts(), 0);
   const confirm = await state.app.request(`${decisionsPath}/confirm`, {
     method: "POST",
     headers,
@@ -1964,6 +1971,8 @@ test("a spec's decisions are its assumptions, hashed, unconfirmed until a person
   };
   assert.ok(body.confirmation !== null);
   assert.equal(state.confirmed.length, 1);
+  // The preparer is prompted: a sandbox held on these decisions can start.
+  assert.equal(state.prompts(), 1);
 });
 
 test("decisions are confirmed by owners and admins only, where the deployment stores them", async () => {
@@ -2028,5 +2037,332 @@ test("the spec as duediligence reads it: Gherkin, then the Decided: list", async
       await unspecced.app.request(`${specPath}/gherkin`, { headers })
     ).json(),
     { specRevision: null, document: null },
+  );
+});
+
+/* An approval waits on the code, and names the price it approves. */
+
+const approvePath = "/api/v1/orgs/org_1/proposals/bpr_1/approve";
+
+function approvalProfile(status: string) {
+  return {
+    ...storedProfile,
+    status,
+    profile: null,
+  };
+}
+
+/**
+ * A proposal sized beside a repository, priced XS from its spec while the
+ * code is profiled (`rubric` pending), with its newest profiles.
+ */
+function approvalHarness(
+  profiles: readonly unknown[],
+  overrides: Partial<StoredBountyProposal> = {},
+  extra: Partial<PricingRouteOptions> = {},
+) {
+  return reviewHarness(
+    undefined,
+    {
+      specRevision: 2,
+      complexity: "XS",
+      amountMinor: 50,
+      rubric: rubricOf("pending"),
+      repositories: [{ repoId: "ghr_1", snapshotId: "rsn_1" }],
+      ...overrides,
+    },
+    jiraBounty(),
+    {
+      profiles: { latest: () => Promise.resolve(profiles) } as never,
+      ...extra,
+    },
+  );
+}
+
+const approve = (
+  state: ReturnType<typeof reviewHarness>,
+  body: object = { expectedRevision: 1 },
+) =>
+  state.app.request(approvePath, {
+    method: "POST",
+    headers,
+    body: JSON.stringify(body),
+  });
+
+test("an approval waits while the code is profiled", async () => {
+  for (const status of ["queued", "scoping", "slicing"]) {
+    const state = approvalHarness([
+      approvalProfile(status),
+      { ...approvalProfile("ready"), id: "bpf_2", repository: "acme/web" },
+    ]);
+    const response = await approve(state, {
+      expectedRevision: 1,
+      expectedPrice: { complexity: "XS", amountMinor: 50, currency: "USD" },
+    });
+    assert.equal(response.status, 409, status);
+    assert.deepEqual(await response.json(), {
+      code: "profile_pending",
+      error:
+        "The code is still being profiled, and the price may change. Approve once it settles.",
+      profiles: [
+        { repository: "acme/app", status },
+        { repository: "acme/web", status: "ready" },
+      ],
+    });
+    assert.equal(state.current().status, "proposed");
+    assert.equal(state.approvals(), 0);
+  }
+});
+
+test("an approval names the price it saw: one that moved is price_changed", async () => {
+  // The profile landed while the page was open: the rubric re-scored the
+  // proposal to XS+ at a new revision.
+  const moved = approvalHarness([approvalProfile("ready")], {
+    revision: 2,
+    complexity: "XS+",
+    amountMinor: 75,
+    rubric: rubricOf("measured"),
+  });
+  const response = await approve(moved, {
+    expectedRevision: 1,
+    expectedPrice: { complexity: "XS", amountMinor: 50, currency: "USD" },
+  });
+  assert.equal(response.status, 409);
+  const body = (await response.json()) as {
+    code: string;
+    previous: unknown;
+    current: unknown;
+    proposal: { revision: number };
+  };
+  assert.equal(body.code, "price_changed");
+  assert.deepEqual(body.previous, {
+    complexity: "XS",
+    amountMinor: 50,
+    currency: "USD",
+  });
+  assert.deepEqual(body.current, {
+    complexity: "XS+",
+    amountMinor: 75,
+    currency: "USD",
+  });
+  assert.equal(body.proposal.revision, 2);
+  assert.equal(moved.current().status, "proposed");
+
+  // At the same revision, a price that is not the proposal's is not it.
+  const wrong = approvalHarness([approvalProfile("ready")], {
+    rubric: rubricOf("measured"),
+  });
+  const mismatch = await approve(wrong, {
+    expectedRevision: 1,
+    expectedPrice: { complexity: "M", amountMinor: 200, currency: "USD" },
+  });
+  assert.equal(mismatch.status, 409);
+  assert.equal(
+    ((await mismatch.json()) as { code: string }).code,
+    "price_changed",
+  );
+
+  // A revision moved with the price unchanged only says it changed; so
+  // does one moved for a caller that named no price.
+  for (const body of [
+    {
+      expectedRevision: 1,
+      expectedPrice: { complexity: "XS", amountMinor: 50, currency: "USD" },
+    },
+    { expectedRevision: 1 },
+  ]) {
+    const same = approvalHarness([approvalProfile("ready")], {
+      revision: 2,
+      rubric: rubricOf("measured"),
+    });
+    const response = await approve(same, body);
+    assert.equal(response.status, 409);
+    assert.equal(
+      ((await response.json()) as { code: string }).code,
+      "proposal_changed",
+    );
+  }
+});
+
+test("an approval waits for the spec's decisions to be confirmed, and links where", async () => {
+  let confirmed: string | null = null;
+  const reads: unknown[] = [];
+  const decided = (store: boolean) =>
+    approvalHarness(
+      [approvalProfile("ready")],
+      {
+        complexity: "XS+",
+        amountMinor: 75,
+        sizedBy: "rubric",
+        rubric: rubricOf("measured"),
+      },
+      {
+        appUrl: "https://app.test",
+        organizationSlug: async () => "acme",
+        specs: {
+          get: (_org: string, _id: string, revision: number) =>
+            Promise.resolve({ ...decidedSpec, revision }),
+        } as never,
+        ...(store
+          ? {
+              decisions: {
+                get: async (...args: [string, string, number, string]) => {
+                  reads.push(args);
+                  return confirmed === args[3]
+                    ? {
+                        id: "dcf_1",
+                        proposalId: "bpr_1",
+                        specRevision: 2,
+                        decisionsSha256: args[3],
+                        confirmedBy: "user_1",
+                        confirmedAt: "2026-11-12T00:00:00.000Z",
+                      }
+                    : null;
+                },
+                confirm: async () => null,
+              },
+            }
+          : {}),
+      },
+    );
+  const body = {
+    expectedRevision: 1,
+    expectedPrice: { complexity: "XS+", amountMinor: 75, currency: "USD" },
+  };
+  // Unconfirmed, and where nothing can confirm them: refused, unapproved.
+  for (const store of [true, false]) {
+    const state = decided(store);
+    const response = await approve(state, body);
+    assert.equal(response.status, 409);
+    const refusal = (await response.json()) as Record<string, unknown>;
+    assert.equal(refusal["code"], "decisions_unconfirmed");
+    assert.equal(refusal["specRevision"], 2);
+    assert.equal(refusal["decisions"], 2);
+    assert.equal(
+      refusal["confirmUrl"],
+      `https://app.test/bounties/acme/${reviewProposal({}).bountyId}?tab=price#decisions`,
+    );
+    assert.equal(state.current().status, "proposed");
+    assert.equal(state.approvals(), 0);
+  }
+  // Read for exactly this revision and these decisions.
+  assert.deepEqual(reads[0], ["org_1", "bpr_1", 2, decidedHash]);
+  // A confirmation of other decisions is none.
+  confirmed = "0".repeat(64);
+  assert.equal((await approve(decided(true), body)).status, 409);
+  confirmed = decidedHash;
+  const state = decided(true);
+  const response = await approve(state, body);
+  assert.equal(response.status, 200);
+  assert.equal(state.current().status, "approved");
+});
+
+test("a price that saw the code is approved, and says so", async () => {
+  for (const body of [
+    {
+      expectedRevision: 1,
+      expectedPrice: { complexity: "XS+", amountMinor: 75, currency: "USD" },
+    },
+    // A caller that names no price approves the current one.
+    { expectedRevision: 1 },
+  ]) {
+    const state = approvalHarness(
+      [approvalProfile("ready"), { ...approvalProfile("awaiting_approval") }],
+      {
+        complexity: "XS+",
+        amountMinor: 75,
+        sizedBy: "rubric",
+        rubric: rubricOf("measured"),
+      },
+    );
+    const response = await approve(state, body);
+    assert.equal(response.status, 200);
+    const result = (await response.json()) as {
+      pricedFrom: string;
+      proposal: { status: string; amountMinor: number };
+    };
+    assert.equal(result.pricedFrom, "code");
+    assert.equal(result.proposal.status, "approved");
+    assert.equal(result.proposal.amountMinor, 75);
+    assert.equal(state.approvals(), 1);
+  }
+});
+
+test("a failed profile, or none at all, approves the spec's price and says it never saw the code", async () => {
+  for (const [profiles, rubric] of [
+    [[approvalProfile("failed")], rubricOf("failed")],
+    // Sized beside no repository: nothing was asked of the code.
+    [[], { ...rubricOf("failed"), code: { status: "unavailable" } }],
+  ] as const) {
+    const state = approvalHarness(profiles, {
+      rubric: rubric as StoredBountyProposal["rubric"],
+    });
+    const response = await approve(state, {
+      expectedRevision: 1,
+      expectedPrice: { complexity: "XS", amountMinor: 50, currency: "USD" },
+    });
+    assert.equal(response.status, 200);
+    assert.equal(
+      ((await response.json()) as { pricedFrom: string }).pricedFrom,
+      "spec",
+    );
+    assert.equal(state.current().status, "approved");
+  }
+});
+
+test("a settled code whose re-score has not landed is scored before the approval", async () => {
+  // Every profile settled, the rubric still pending: the settle's re-score
+  // is run, and what it wrote is what the person is shown next.
+  const rescored: string[] = [];
+  let state: ReturnType<typeof approvalHarness> | undefined;
+  state = approvalHarness(
+    [approvalProfile("ready")],
+    {},
+    {
+      rescore: async (_owner, profile) => {
+        rescored.push(profile.id);
+        await state?.proposals.applyRubric("org_1", "bpr_1", 1, {
+          rubric: rubricOf("measured"),
+          price: { complexity: "XS+", amountMinor: 75, currency: "USD" },
+        });
+      },
+    },
+  );
+  const response = await approve(state, {
+    expectedRevision: 1,
+    expectedPrice: { complexity: "XS", amountMinor: 50, currency: "USD" },
+  });
+  assert.equal(response.status, 409);
+  const body = (await response.json()) as {
+    code: string;
+    current: { amountMinor: number };
+  };
+  assert.equal(body.code, "price_changed");
+  assert.equal(body.current.amountMinor, 75);
+  assert.deepEqual(rescored, ["bpf_1"]);
+  assert.equal(state.current().status, "proposed");
+
+  // Approved again at what it now says.
+  const again = await approve(state, {
+    expectedRevision: 2,
+    expectedPrice: { complexity: "XS+", amountMinor: 75, currency: "USD" },
+  });
+  assert.equal(again.status, 200);
+  assert.equal(
+    ((await again.json()) as { pricedFrom: string }).pricedFrom,
+    "code",
+  );
+
+  // A re-score that writes nothing leaves the spec's price to approve.
+  const idle = approvalHarness(
+    [approvalProfile("ready")],
+    {},
+    { rescore: () => Promise.resolve() },
+  );
+  const spec = await approve(idle);
+  assert.equal(spec.status, 200);
+  assert.equal(
+    ((await spec.json()) as { pricedFrom: string }).pricedFrom,
+    "spec",
   );
 });

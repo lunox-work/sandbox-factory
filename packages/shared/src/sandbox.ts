@@ -416,6 +416,18 @@ export const publishVersionResponseSchema = z.object({
   sandbox: sandboxDtoSchema,
   version: sandboxVersionDtoSchema,
   source: sandboxVersionSourceDtoSchema,
+  /**
+   * The publication gates it stood on: `passed` (the build's round trip and
+   * disclosure scan, recorded on the source as `roundTripRunId` and
+   * `disclosureRunId`), or `grandfathered` for a version first published
+   * before the gates existed, with the reason.
+   */
+  gates: z
+    .object({
+      status: z.enum(["passed", "grandfathered"]),
+      reason: z.string().nullable(),
+    })
+    .optional(),
 });
 export type PublishVersionResponseDto = z.infer<
   typeof publishVersionResponseSchema
@@ -457,6 +469,12 @@ export const sandboxHandoutSchema = z.object({
   hiddenTests: z.number().int().nonnegative(),
   /** Null until a build has committed hidden tests. */
   hiddenSha256: z.string().length(64).nullable(),
+  /**
+   * How `hiddenSha256` is computed (core's `HIDDEN_COMMITMENT_VERSION`): 2
+   * for a build that recorded its commitment, 1 for one made before, which
+   * keeps the hash it always showed.
+   */
+  hiddenSha256Version: z.literal([1, 2]),
 });
 export type SandboxHandout = z.infer<typeof sandboxHandoutSchema>;
 
@@ -732,6 +750,14 @@ export const UPLOAD_LIMITS = {
 } as const;
 /** The request body limit for an upload: the files, the tests and JSON's overhead. */
 export const UPLOAD_BODY_MAX_BYTES = 12_000_000;
+/**
+ * The oldest carveout an upload is taken from, both the release that
+ * uploads it (`carveout.version`) and the one that cut the folder (its
+ * record's `carveoutVersion`): 0.4.0 shipped `handoff --platform`, with the
+ * record's `cutId` (the receipt `patch --from` reads) and the layout the
+ * import grades by. An older one is refused 422 `carveout_too_old`.
+ */
+export const UPLOAD_CARVEOUT_MIN_VERSION = "0.4.0";
 
 /**
  * One of the maintainer's acceptance tests, at its path in the folder

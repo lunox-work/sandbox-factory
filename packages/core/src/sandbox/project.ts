@@ -113,6 +113,8 @@ export interface ProjectInput {
   readonly sources: readonly ProjectSource[];
   readonly stubs: readonly ProjectStub[];
   readonly spec: SpecDraft | null;
+  /** The confirmed decisions `TASK.md` carries (`disclosableDecisions`). */
+  readonly decisions?: readonly string[];
   readonly dependencies: readonly ResolvedDependency[];
   readonly acceptanceTests: readonly AcceptanceTest[];
   /** Bare specifiers that need no rewrite: Node's modules and packages. */
@@ -1426,6 +1428,7 @@ export function generateProject(input: ProjectInput): GeneratedProject {
   for (const file of contributorGuideFiles({
     version: input.version,
     spec: input.spec,
+    ...(input.decisions === undefined ? {} : { decisions: input.decisions }),
     editable,
     publicTests,
     mocks: true,

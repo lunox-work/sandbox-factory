@@ -55,6 +55,7 @@ import { buildBanner } from "@sandbox-factory/shared";
 
 import { createAuth } from "./auth.js";
 import { createAvatarService } from "./avatars/service.js";
+import { decisionsConfirmUrl } from "./pricing/decisions.js";
 import { BountyExecutor } from "./pricing/executor.js";
 import { BountyProfiler } from "./pricing/profiler.js";
 import { RubricPricer } from "./pricing/rubric.js";
@@ -139,6 +140,7 @@ const modelUsage = createModelUsageStore(connection.db);
 const bountyRuns = createBountyRunStore(connection.db, { tokenQuota });
 const bountyProposals = createBountyProposalStore(connection.db);
 const bountySpecs = createBountySpecStore(connection.db);
+const decisionConfirmations = createDecisionConfirmationStore(connection.db);
 const bountyProfiles = createBountyProfileStore(connection.db);
 const jiraIssues = createJiraIssueStore(connection.db);
 /** The organization's bounties: what every proposal prices, from any source. */
@@ -560,6 +562,15 @@ const sandbox =
         previews: analysisRuns,
         proposals: bountyProposals,
         specs: bountySpecs,
+        // Builds and publication check the frozen spec's decisions too.
+        decisions: decisionConfirmations,
+        decisionsConfirmUrl: async (organizationId: string, bountyId: string) =>
+          decisionsConfirmUrl(
+            appUrl(env),
+            (await organizations.get(organizationId))?.slug,
+            organizationId,
+            bountyId,
+          ),
         bounties,
         repos: githubRepos,
         organizationNames: async (organizationId: string) => {
@@ -668,6 +679,13 @@ const sandboxPreparer =
         sandboxes: sandboxStore,
         touchedSource: (owner, bountyId) =>
           touchedSource(sandbox, owner, bountyId),
+        decisionsRefusal: (owner, bountyId, proposal) =>
+          versionService(sandbox).decisionsRefusal(
+            owner,
+            bountyId,
+            proposal,
+            "preparing the sandbox",
+          ),
         slice: versionService(sandbox).slice,
         onError: (code, error) =>
           console.error(
@@ -786,7 +804,7 @@ const app = createApp({
     boards: jiraBoards,
     proposals: bountyProposals,
     specs: bountySpecs,
-    decisions: createDecisionConfirmationStore(connection.db),
+    decisions: decisionConfirmations,
     issues: jiraIssues,
     bounties,
     contexts: bountyContexts,
@@ -835,7 +853,9 @@ const app = createApp({
           requestedModel: caller?.model,
           promptVersion: JIRA_SIZE_PROMPT_VERSION,
         }),
+    // An approval, or decisions confirmed, may let a sandbox start.
     onApproved: () => sandboxPreparer?.kick(),
+    rescore: (owner, profile) => rubricPricer.settled(owner, profile),
   },
   settings: {
     settings: createWorkspaceSettingsStore(connection.db),

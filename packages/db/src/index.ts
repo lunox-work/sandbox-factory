@@ -341,6 +341,7 @@ export type {
   StoredVersionSource,
   StoredVersionWithSource,
   PublishVersionResult,
+  PublicationEvidence,
   UpdateVersionResult,
 } from "./sandboxes.js";
 export { createSubmissionStore } from "./submissions.js";

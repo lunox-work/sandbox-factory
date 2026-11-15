@@ -35,17 +35,16 @@ import type { SuiteResult } from "duediligence/api";
 import type { AliasImplementation } from "carveout/pseudonyms";
 import {
   PLATFORM_LAYOUT,
-  PRIVATE_TESTS_DIR,
   PSEUDONYMS_FILE,
   SUBMISSION_GRADE_TOOL_VERSION,
   TASK_DESCRIPTOR_PATH,
   forwardChange,
   gradingTree,
-  hiddenTestPath,
   isSubmissionGradeParams,
   layoutOf,
   projectPathOf,
   reverseSubmission,
+  stagedHiddenTest,
 } from "sandbox-factory";
 import type {
   AcceptanceTest,
@@ -94,10 +93,10 @@ export async function versionFilesOf(
   const files: GeneratedFile[] = [];
   for (const artifact of await input.inputs.listArtifacts(buildRunId)) {
     const isProject = artifact.path.startsWith("project/");
-    const isHidden =
-      artifact.path.startsWith("private/") &&
-      artifact.path.endsWith(".test.ts");
-    if (!isProject && !isHidden) continue;
+    // Every hidden test the build kept, by `stagedHiddenTest`, which the
+    // handout counts and commits to: an upload's `.spec.ts` too.
+    const staged = isProject ? null : stagedHiddenTest(layout, artifact.path);
+    if (!isProject && staged === null) continue;
     const bytes = await input.inputs.readArtifact(artifact.objectKey);
     if (bytes === undefined) throw new AnalysisError("tool_failed");
     const text = Buffer.from(bytes).toString("utf8");
@@ -110,13 +109,7 @@ export async function versionFilesOf(
             public: true,
           }
         : {
-            path:
-              layout === PLATFORM_LAYOUT
-                ? `${PRIVATE_TESTS_DIR}/${artifact.path.slice("private/".length)}`
-                : hiddenTestPath(
-                    layout,
-                    artifact.path.slice("private/".length),
-                  ),
+            path: staged ?? artifact.path,
             text,
             class: "test-private",
             public: false,
@@ -711,6 +704,9 @@ export function createSubmissionGradeAdapter(options: {
         `Submission ${params.submissionId}: ${result.verdict ?? ""}, public ${result.public.passed}/${result.public.total}, hidden ${result.hidden.passed}/${result.hidden.total}.`,
       );
       input.inputs.settleSubmission?.(params.submissionId, result);
+      // `executeRun` names the folder but does not make it; only a carried
+      // pass has made it by now (for the merge patch).
+      await mkdir(input.outDir, { recursive: true });
       const absolutePath = join(input.outDir, SUBMISSION_RESULT_PATH);
       await writeFile(absolutePath, JSON.stringify(result), "utf8");
       return [

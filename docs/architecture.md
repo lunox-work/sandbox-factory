@@ -202,12 +202,20 @@ error says to sign in again.
 `get_decisions` reads a spec's decisions (its assumptions, keyed `d1…`,
 hashed) and `confirm_link` returns the web page where a person confirms
 them (`POST …/decisions/confirm`, a web session only; one
-`decision_confirmation` per spec revision and hash). `plan_slice`
+`decision_confirmation` per spec revision and hash). Until then, approving
+the price, building or generating a version and publishing are 409
+`decisions_unconfirmed`, checked against the spec the version's task froze;
+a build's run names the confirmed decisions by hash (`decisionsSha256`) and
+quotes them to its agents. `plan_slice`
 (`POST …/repositories/:id/slices`), `start_sandbox`, `cut_slice` (a draft
 version from a slice run) and `prepare` (its build, which writes and
 calibrates hidden tests) post work; `get_handout`
-(`GET …/versions/:vid/handout`) reads the public files and duediligence's
-`hiddenSha256` over the hidden suite, never a hidden test's name or body;
+(`GET …/versions/:vid/handout`) reads the public files, the count of hidden
+tests the judge stages (`stagedHiddenTest`) and their commitment
+`hiddenSha256` with `hiddenSha256Version` (2: recorded by the build as
+`hiddenCommitment`, each test at its staged path; 1: a build without one
+keeps its old hash, every `private/` file as `tests/private/…`), never a
+hidden test's name or body;
 `get_project_files` (`…/handout/files`) pages those files' contents so an
 agent can write the project out.
 `submit_patch`/`judge` (`POST …/versions/:vid/submissions`, a published
@@ -225,8 +233,10 @@ in place, within the run's attempts, without spending the retry. A workspace
 that will not connect its repository uploads a public, pseudonymised
 carveout hand-off folder instead (`carveout handoff --platform`,
 `POST …/sandboxes/uploads`, `sandboxes:write`, owners and admins, no MCP
-tool: the body is too large and the receipt stays local): checked for the
-workspace's names, credentials and plain paths, stored by hash, and
+tool: the body is too large and the receipt stays local): refused 422
+`carveout_too_old` (`minimumVersion`) below `UPLOAD_CARVEOUT_MIN_VERSION`
+for `carveout.version` or the record's `carveoutVersion`/`cutId`, checked
+for the workspace's names, credentials and plain paths, stored by hash, and
 imported by a `sandbox_import` run (origin `upload`). A passing
 submission on such a version comes back to the maintainer's machine as
 its changed files (`GET …/sandboxes/submissions/:sid/files`,
@@ -248,7 +258,8 @@ registry and scopes in [Auth](#auth):
 
 - **Client floor** (`client-version.ts`): `Lunox-Client-Version:
 <client>/<semver>` below its floor in `MIN_CLIENT_VERSIONS`
-  (`duediligence=0.4.0,carveout=0.2.0`; empty, none) is 426
+  (`duediligence=0.4.0,carveout=0.2.0`; empty, none; production's in
+  `infra/ecs.tf`) is 426
   `{ error, code: "client_too_old", minimumVersion }`, before any
   credential is read, on `/api` and `/mcp*`. No header, another client or
   an unparsable version is served.
@@ -726,7 +737,9 @@ sandbox as a Sandbox click would, as the price's approver: made, cut and
 built, hidden tests included, so a later click finds it there
 (`bounty_has_sandbox`, which the page reads as done). What the cut would
 refuse is refused before the sandbox is made (`cutRefusal`), so none is left
-without a version. A held step, a bounty
+without a version; so are unconfirmed decisions (`decisionsRefusal`, also on
+`POST …/sandboxes/start`), held with nothing made until a person confirms,
+which prompts a pass. A held step, a bounty
 touching no single repository, and a wide slice nobody approved are left for
 a person, and not read again by a timer pass until a prompt or a change; a
 build refused at the cap becomes a pending cut. Organizations are worked on
@@ -737,12 +750,19 @@ table a build still takes. `workspace_setting.prepare_sandboxes` turns it off (`
 
 **Publishing.** `POST .../sandboxes/versions/:vid/publish` (owners and
 admins) freezes the version and makes it `current_version_id` with status
-`published`. It needs a passing build (`not_ready`) and stands on the approval
-its task was taken from (`price_not_approved`). The body names `expiresAt`
-(`expiry_past`); an expired publication no longer holds the approval.
-`POST .../sandboxes/:id/unpublish` returns to `draft`. No public repository
-is pushed and the round-trip and disclosure gates `freezeReadiness` names are
-not run.
+`published`. It needs a passing build (`not_ready`), stands on the approval
+its task was taken from (`price_not_approved`) and on its spec's confirmed
+decisions (`decisions_unconfirmed`), and on the publication gates its build
+recorded (`build-manifest.json` `gates`, read by `gatesOf` into
+`freezeReadiness`): a failed no-change round trip is `round_trip_failed`
+(with `problems`), disclosure findings `disclosure_failed`, evidence of other
+inputs `build_evidence_stale`, a rebuild meanwhile `version_changed`. A first
+publication records the build run as `roundTripRunId` and `disclosureRunId`.
+A draft built before the gates is `gates_unrecorded` until built again; a
+version published before them republishes `grandfathered` (the response's
+`gates`). The body names `expiresAt` (`expiry_past`); an expired publication
+no longer holds the approval. `POST .../sandboxes/:id/unpublish` returns to
+`draft`. No public repository is pushed.
 
 **Files.** `GET .../sandboxes/versions/:vid/files` lists what the build run
 wrote (`project/`, hidden tests under `private/`, the build's records) and
@@ -797,10 +817,26 @@ touches, all of them or none (`unavailable`). Sizing
 stores the assessment (`bounty_proposal.rubric`); when the profiler settles,
 `RubricPricer` (`apps/api/src/pricing/rubric.ts`) re-scores and sets
 `sized_by = 'rubric'` on a proposed proposal, unless a reviewer sized it or
-the rubric is two whole sizes away (`rubricNeedsReview`). An approved proposal
-is not touched. `POST .../proposals/:id/rubric` restores the rubric's size over
+the rubric is two whole sizes away (`rubricNeedsReview`).
+`POST .../proposals/:id/rubric` restores the rubric's size over
 a reviewer's resize. Contention is retried once per profile, then
 `bounty_rubric_contended`.
+
+**An approval is of the price that saw the code**
+(`apps/api/src/pricing/approve-proposal.ts`). `POST .../proposals/:id/approve`
+names `expectedRevision` and, from the web, `expectedPrice`: a price moved
+since is 409 `price_changed` (`previous`, `current`); a moved revision at the
+same price, or with no price named, is `proposal_changed`. While any of the
+proposal's newest profiles is in flight it is 409 `profile_pending` (each
+profile's repository and status); profiles settled under a still-pending
+rubric are re-scored first (`rescore`). A spec with decisions (its
+assumptions) is approved only once a person confirmed exactly those: else 409
+`decisions_unconfirmed` with `confirmUrl` (`apps/api/src/pricing/decisions.ts`,
+no waiver). A failed or absent profile approves the
+spec's price, and the proposal and the response say `pricedFrom: "spec"`
+(`pricedFromOf`). An approved price is frozen: nothing re-scores it (the
+`RubricPricer` and respec skip it, a profile settled later for a sandbox's
+slice included); a re-price unapproves it, and publishing needs a new approval.
 
 ## Jira
 

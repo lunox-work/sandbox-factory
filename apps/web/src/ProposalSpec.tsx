@@ -1250,7 +1250,7 @@ function DecisionsConfirm({
         <>
           <p className="text-muted-foreground">
             {canConfirm
-              ? "Hidden tests are written to these decisions. Confirm them once you have read them."
+              ? "Hidden tests are written to these decisions, so the price is approved, and the sandbox built, only once they are confirmed. Confirm them once you have read them."
               : "Waiting for an owner or admin to confirm these decisions."}
             {decisions.state === "failed" && (
               <span role="alert" className="text-destructive block">

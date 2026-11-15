@@ -1,4 +1,8 @@
 import { approveProposal } from "./approve-proposal.js";
+import {
+  decisionsConfirmUrl,
+  decisionsSha256 as decisionsHash,
+} from "./decisions.js";
 import type { PricingRouteOptions } from "./options.js";
 import { reviewOptions, siteOf, writebackBusy } from "./review-deps.js";
 import {
@@ -15,7 +19,6 @@ import {
   JiraAuthError,
   type JiraIssueSpec,
 } from "@sandbox-factory/jira";
-import { createHash } from "node:crypto";
 import type {
   JiraIssueDto,
   ProposalCategoriesDto,
@@ -24,6 +27,7 @@ import type {
 } from "@sandbox-factory/shared";
 import {
   addIssueSchema,
+  approveProposalSchema,
   boardSelectionSchema,
   confirmDecisionsSchema,
   createRunSchema,
@@ -39,7 +43,6 @@ import type { Context, Hono } from "hono";
 import {
   CATEGORIES,
   checkRespec,
-  decisionsText,
   renderSpecDocument,
   specDecisions,
   priceFor,
@@ -811,8 +814,12 @@ export function mountPricingRoutes<Env extends PricingAppEnv>(
     organizationId: string,
     proposal: { id: string; bountyId: string; specRevision: number | null },
   ): Promise<ProposalDecisionsResponse> => {
-    const slug = await options.organizationSlug?.(organizationId);
-    const confirmUrl = `${options.appUrl ?? ""}/bounties/${encodeURIComponent(slug ?? organizationId)}/${encodeURIComponent(proposal.bountyId)}?tab=price#decisions`;
+    const confirmUrl = decisionsConfirmUrl(
+      options.appUrl,
+      await options.organizationSlug?.(organizationId),
+      organizationId,
+      proposal.bountyId,
+    );
     const spec =
       proposal.specRevision === null
         ? null
@@ -830,9 +837,7 @@ export function mountPricingRoutes<Env extends PricingAppEnv>(
         confirmUrl,
       };
     const decisions = specDecisions(spec.draft);
-    const decisionsSha256 = createHash("sha256")
-      .update(decisionsText(decisions), "utf8")
-      .digest("hex");
+    const decisionsSha256 = decisionsHash(spec.draft);
     const confirmed =
       (await options.decisions?.get(
         organizationId,
@@ -927,6 +932,8 @@ export function mountPricingRoutes<Env extends PricingAppEnv>(
         },
         409,
       );
+    // An approved proposal held on these decisions can be prepared now.
+    options.onApproved?.();
     return c.json(await decisionsOf(organizationId, proposal));
   });
 
@@ -957,7 +964,7 @@ export function mountPricingRoutes<Env extends PricingAppEnv>(
   });
 
   app.post("/api/v1/orgs/:orgId/proposals/:id/approve", async (c) => {
-    const parsed = proposalMutationSchema.safeParse(
+    const parsed = approveProposalSchema.safeParse(
       await c.req.json().catch(() => null),
     );
     if (!parsed.success)
@@ -978,6 +985,7 @@ export function mountPricingRoutes<Env extends PricingAppEnv>(
       proposalId: c.req.param("id"),
       actorId: c.get("user").id,
       expectedRevision: parsed.data.expectedRevision,
+      expectedPrice: parsed.data.expectedPrice,
     });
     if (result.kind === "success") options.onApproved?.();
     return c.json(

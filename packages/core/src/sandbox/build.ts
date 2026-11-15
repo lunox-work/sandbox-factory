@@ -313,6 +313,92 @@ export interface SandboxBuildManifest {
   readonly baseline: BaselineReport | null;
   readonly blockers: readonly ProjectBlocker[];
   readonly ready: boolean;
+  /**
+   * The publication gates the build ran (`freezeReadiness`). Absent from a
+   * build made before them: such a draft is built again before it is
+   * published, and a version already published stands on its first
+   * publication (`gatesOf`).
+   */
+  readonly gates?: PublicationGates;
+  /**
+   * The hidden suite's commitment, as the handout publishes it, fixed when
+   * the build wrote the suite. Absent from a build made before it, whose
+   * handout keeps the hash it always showed (version 1).
+   */
+  readonly hiddenCommitment?: HiddenCommitment;
+}
+
+/**
+ * The version of the handout's `hiddenSha256` a build records. Version 1,
+ * computed by the API for a build that recorded none, is duediligence's
+ * `hiddenSha256` over every file under `private/` keyed
+ * `tests/private/<rel>`, the name table and an upload's folder paths
+ * included. Version 2 is the same manifest (`<sha256>  <path>` lines in
+ * byte order, then `calibration.kept`, the sorted paths' JSON) over the
+ * hidden tests alone (`stagedHiddenTest`), each at the path the judge
+ * stages it at: `tests/private/<rel>` in the platform's layout, which is
+ * exactly duediligence's hash, and the folder path in an upload's.
+ */
+export const HIDDEN_COMMITMENT_VERSION = 2;
+
+export interface HiddenCommitment {
+  readonly version: typeof HIDDEN_COMMITMENT_VERSION;
+  /** How many hidden tests it covers. */
+  readonly hiddenTests: number;
+  /** Null for a build with no hidden test. */
+  readonly hiddenSha256: string | null;
+}
+
+/**
+ * What a build proves of the two gates a version is published on. A
+ * failed round trip leaves the build ready, its baseline being sound, but
+ * holds publication: contributors' work on it could not be merged back.
+ */
+export interface PublicationGates {
+  /**
+   * The unchanged project carried back to the repository's names
+   * (`noChangeRoundTrip`); `not_applicable` for a version with no
+   * repository (generated, or uploaded), which has nothing to carry to.
+   */
+  readonly roundTrip: {
+    readonly status: "passed" | "failed" | "not_applicable";
+    readonly files: number;
+    readonly problems: readonly {
+      readonly path: string;
+      readonly reason: string;
+    }[];
+  };
+  /**
+   * The disclosure scan over every public file: the workspace's names
+   * (`publicVocabularyLeaks`) and credentials (`scanSecrets`). An uploaded
+   * folder is scanned by the upload route before it is stored.
+   */
+  readonly disclosure: {
+    readonly status: "passed" | "failed";
+    readonly scannedBy: "build" | "upload";
+    /** Workspace names checked; 0 when the upload route scanned. */
+    readonly names: number;
+    /** Blocking findings: workspace names and credentials in public files. */
+    readonly blocking: number;
+  };
+}
+
+/** The disclosure gate, from a build's blockers and the names it checked. */
+export function disclosureGate(
+  blockers: readonly ProjectBlocker[],
+  names: number,
+  scannedBy: "build" | "upload" = "build",
+): PublicationGates["disclosure"] {
+  const blocking = blockers.filter(
+    (blocker) =>
+      blocker.code === "vocabulary_leaked" || blocker.code === "secret_found",
+  ).length;
+  return {
+    status: blocking === 0 ? "passed" : "failed",
+    scannedBy,
+    names,
+    blocking,
+  };
 }
 
 /** The bounded view of a build the console renders. */

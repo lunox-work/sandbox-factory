@@ -24,6 +24,8 @@ const fixture = fileURLToPath(
   new URL("../fixtures/repository/", import.meta.url),
 );
 const python = process.env.SMOKE_PYTHON || "python3";
+/** The local build provider, whose own npm cache goes on the way out. */
+let localProvider;
 try {
   const graphs = [];
   let graphFiles = [];
@@ -355,7 +357,7 @@ try {
               ? { template: process.env.E2B_TEMPLATE }
               : {}),
           })
-        : createLocalProcessProvider(),
+        : (localProvider = createLocalProcessProvider()),
   });
   const built = await builder.run({
     sourceDir: join(directory, "checkout-a"),
@@ -656,5 +658,6 @@ try {
     `Worker smoke passed: deterministic graph, import resolution, omissions, slice stubs and blockers, a sandbox build with a ${evaluation} baseline, deterministic abstractions and data model, archive validation, and artifact lifecycle.`,
   );
 } finally {
+  await localProvider?.dispose();
   await rm(directory, { recursive: true, force: true });
 }

@@ -25,6 +25,7 @@ import {
   STARTER_TOOL_VERSION,
   aliasStarter,
   canonicalJson,
+  disclosureGate,
   nameTableProblems,
   isStarterParams,
   starterScope,
@@ -68,6 +69,7 @@ import {
 } from "./sandbox-build.js";
 import { sha256 } from "carveout/extract";
 import { checkStarter } from "./starter-check.js";
+import { confirmedDecisions } from "./decisions.js";
 import type { StarterCheckStage } from "./starter-check.js";
 
 /** Candidates one run may type-check, and run for real, before it must submit. */
@@ -288,6 +290,8 @@ export function createStarterAdapter(options: {
       const { version } = stored;
       const task = stored.source.approvedTask;
       const spec: SpecDraft | null = task.spec?.draft ?? null;
+      // The decisions a person confirmed, as the run names them by hash.
+      const decisions = confirmedDecisions(spec, params.decisionsSha256);
       const projectVersion: ProjectVersion = {
         sandboxId: version.sandboxId,
         versionId: version.id,
@@ -304,6 +308,7 @@ export function createStarterAdapter(options: {
           version: projectVersion,
           starter,
           spec,
+          decisions,
           vocabulary: params.vocabulary ?? [],
         });
       let checks = 0;
@@ -500,6 +505,7 @@ export function createStarterAdapter(options: {
           spec,
           context: "context" in task ? task.context : undefined,
           vocabulary: params.vocabulary ?? [],
+          decisions,
         }),
         tools: [pseudonymsTool, checkTool, runTool, submitTool],
         submitTool: "submit_starter",
@@ -529,6 +535,14 @@ export function createStarterAdapter(options: {
       const { manifest, written } = await writeBuildOutputs({
         outDir: input.outDir,
         toolVersion: STARTER_TOOL_VERSION,
+        // No repository to carry back to; the check scanned every public file.
+        gates: {
+          roundTrip: { status: "not_applicable", files: 0, problems: [] },
+          disclosure: disclosureGate(
+            answer.build.blockers,
+            (params.vocabulary ?? []).length,
+          ),
+        },
         sandboxVersionId: version.id,
         aliasRules: set.aliases,
         bindings: {

@@ -761,7 +761,7 @@ test("an owner confirms the spec's decisions under its assumptions, with the rev
   render(<WithDecisions canConfirm />);
   const bar = await screen.findByRole("region", { name: "Decisions" });
   expect(bar.textContent).toMatch(
-    /Hidden tests are written to these decisions/,
+    /Hidden tests are written to these decisions, so the price is approved, and the sandbox built, only once they are confirmed/,
   );
   await userEvent.click(
     within(bar).getByRole("button", { name: "Confirm decisions" }),

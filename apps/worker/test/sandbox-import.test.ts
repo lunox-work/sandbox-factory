@@ -51,7 +51,9 @@ import {
 import {
   SUBMISSION_RESULT_PATH,
   createSubmissionGradeAdapter,
+  versionFilesOf,
 } from "../src/tools/submission-grade.js";
+import { PLATFORM_LAYOUT } from "sandbox-factory";
 
 const sha256 = (text: string) =>
   createHash("sha256").update(text).digest("hex");
@@ -317,6 +319,16 @@ test("the folder is the version's public project verbatim, its acceptance test t
     `${JSON.stringify(manifest.baseline?.reasons)}\n${importLog.join("\n")}`,
   );
   assert.equal(manifest.toolVersion, "sandbox_import@1");
+  // The upload route scanned it; there is nothing here to carry back to.
+  assert.deepEqual(manifest.gates, {
+    roundTrip: { status: "not_applicable", files: 0, problems: [] },
+    disclosure: {
+      status: "passed",
+      scannedBy: "upload",
+      names: 0,
+      blocking: 0,
+    },
+  });
   assert.deepEqual(manifest.upload, {
     recordSha256: upload.recordSha256,
     carveoutVersion: "0.4.0",
@@ -374,6 +386,50 @@ test("the folder is the version's public project verbatim, its acceptance test t
         file.path === `private/${ACCEPT}` && file.kind === "private_test",
     ),
   );
+  // The handout's commitment, recorded: duediligence's manifest over the
+  // acceptance test at its folder path, where the judge stages it, and not
+  // over the name table written beside it under private/.
+  assert.ok(written.some((file) => file.path === "private/pseudonym.lunox"));
+  const line = `${sha256(ACCEPT_TEXT)}  ${ACCEPT}\n`;
+  const kept = `${sha256(JSON.stringify([ACCEPT]))}  calibration.kept\n`;
+  assert.deepEqual(manifest.hiddenCommitment, {
+    version: 2,
+    hiddenTests: 1,
+    hiddenSha256: sha256(`${line}${kept}`),
+  });
+});
+
+test("the judge stages every hidden test in the version's layout, never the name table", async () => {
+  const artifacts = [
+    "project/src/price.ts",
+    "private/pseudonym.lunox",
+    "private/src/price.spec.ts",
+    "private/tests/private/held.test.ts",
+    "private/notes.md",
+  ];
+  const inputs = {
+    listArtifacts: async () =>
+      artifacts.map((path) => ({ path, objectKey: path })),
+    readArtifact: async (key: string) => Buffer.from(key),
+  } as unknown as ToolInputs;
+  const staged = async (layout: GradingLayout) =>
+    (await versionFilesOf({ inputs }, "arn_build", layout)).map((file) => [
+      file.path,
+      file.class,
+    ]);
+  // An upload's layout: each at its own path, a `.spec.ts` too, and a
+  // folder path that holds tests/private/ kept whole.
+  assert.deepEqual(await staged(manifestOf().layout), [
+    ["src/price.ts", "source"],
+    ["src/price.spec.ts", "test-private"],
+    ["tests/private/held.test.ts", "test-private"],
+  ]);
+  // The platform's: under tests/private/.
+  assert.deepEqual(await staged(PLATFORM_LAYOUT), [
+    ["src/price.ts", "source"],
+    ["tests/private/src/price.spec.ts", "test-private"],
+    ["tests/private/tests/private/held.test.ts", "test-private"],
+  ]);
 });
 
 test("the stored upload reads back, and anything else does not", () => {

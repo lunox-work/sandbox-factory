@@ -81,10 +81,12 @@ import { setRetryAfter } from "../quota.js";
 import { hiddenSha256 } from "duediligence/api";
 import { createHash } from "node:crypto";
 import {
+  HIDDEN_COMMITMENT_VERSION,
   isSubmissionGradeParams,
   layoutOf,
   organizationNames,
   parseSubmittedFiles,
+  stagedHiddenTest,
   submittedFilesText,
   uploadObjectKey,
   workspaceVocabulary,
@@ -426,6 +428,21 @@ export function mountSandboxRoutes(
     const owner = c.get("member").organizationId;
     const refusal = await held(owner, body.data.bountyId);
     if (refusal !== null) return c.json(refusal, 409);
+    // Its first version would be refused on unconfirmed decisions: refused
+    // here, before the sandbox is made, so nothing is left half made.
+    const proposalId = await options.proposals.liveForBounty(
+      owner,
+      body.data.bountyId,
+    );
+    const undecided = await service.decisionsRefusal(
+      owner,
+      body.data.bountyId,
+      proposalId === null
+        ? null
+        : await options.proposals.get(owner, proposalId),
+      "starting the sandbox",
+    );
+    if (undecided !== null) return failed(c, undecided);
     const made = await options.sandboxes.create(owner, {
       bountyId: body.data.bountyId,
       sourceRepoId: await touchedSource(options, owner, body.data.bountyId),
@@ -814,8 +831,10 @@ export function mountSandboxRoutes(
    * Publishes a version: approves and freezes it, and makes it the
    * sandbox's published version until the date given, which must be
    * ahead. Only a version whose build passed, of a bounty whose proposal is
-   * approved. No public repository is pushed yet; publication marks the
-   * version contributors are to get.
+   * approved, whose spec's decisions are confirmed and whose build's
+   * publication gates passed (`service.publication`), which a first
+   * publication records on its source. No public repository is pushed
+   * yet; publication marks the version contributors are to get.
    */
   app.post(`${base}/versions/:vid/publish`, async (c) => {
     if (!isAtLeastAdmin(c.get("member").role))
@@ -848,32 +867,48 @@ export function mountSandboxRoutes(
         ? null
         : await versionHeld(owner, publishing.version.sandboxId);
     if (refusal !== null) return c.json(refusal, 409);
+    // Its spec's decisions confirmed, and the gates its build recorded.
+    const gated =
+      publishing === null
+        ? null
+        : await service.publication(owner, c.get("user").id, publishing, at);
+    if (gated !== null && !gated.ok) return failed(c, gated);
     const result = await options.sandboxes.publishVersion(
       owner,
       c.req.param("vid"),
       c.get("user").id,
       expiresAt,
       at,
+      gated?.evidence,
     );
     if (!result.ok)
-      return result.reason === "not_ready"
+      return result.reason === "build_changed"
         ? c.json(
             {
-              error: "Only a version whose build passed can be published.",
-              code: "not_ready",
+              error:
+                "The version was built again while it was being published. Reload it and publish again.",
+              code: "version_changed",
             },
             409,
           )
-        : result.reason === "price_not_approved"
+        : result.reason === "not_ready"
           ? c.json(
               {
-                error:
-                  "This version was not built from an approved price, so it cannot be published.",
-                code: "price_not_approved",
+                error: "Only a version whose build passed can be published.",
+                code: "not_ready",
               },
               409,
             )
-          : c.json({ error: "Not found." }, 404);
+          : result.reason === "price_not_approved"
+            ? c.json(
+                {
+                  error:
+                    "This version was not built from an approved price, so it cannot be published.",
+                  code: "price_not_approved",
+                },
+                409,
+              )
+            : c.json({ error: "Not found." }, 404);
     options.onPublished?.(owner, {
       sandboxId: result.sandbox.id,
       versionId: result.version.version.id,
@@ -886,6 +921,7 @@ export function mountSandboxRoutes(
         sandbox: sandboxDto(result.sandbox),
         version: result.version.version,
         source: sourceDto(result.version.source, !inWebSession(c)),
+        ...(gated?.gates === undefined ? {} : { gates: gated.gates }),
       }),
     );
   });
@@ -1049,9 +1085,14 @@ export function mountSandboxRoutes(
   /*
     The handout: the public project a developer clones, as the build
     committed it (`project/…`, at its project path), and of the hidden
-    tests only their count and duediligence's commitment hash over them
-    (each file at `tests/private/…`, every file a kept test). No hidden
-    test's path or body leaves here, so an agent may read it.
+    tests only their count and commitment hash. The count is the tests the
+    judge stages (`stagedHiddenTest`: never the name table beside them).
+    The hash is the one the build recorded (`hiddenCommitment`, version 2:
+    each test at the path the judge stages it at in the version's layout);
+    a build made before recorded none and keeps the hash it always showed
+    (version 1: every file under `private/` keyed `tests/private/…`), so a
+    hash a contributor noted never changes under them. No hidden test's
+    path or body leaves here, so an agent may read it.
   */
   app.get(`${base}/versions/:vid/handout`, async (c) => {
     if (!isAtLeastAdmin(c.get("member").role))
@@ -1062,25 +1103,50 @@ export function mountSandboxRoutes(
     const owner = c.get("member").organizationId;
     const project = await publicProject(options, owner, c.req.param("vid"));
     if (project === null) return c.json({ error: "Not found." }, 404);
-    const hidden = project.artifacts.filter((file) =>
-      file.path.startsWith("private/"),
+    const unavailable = () =>
+      c.json(
+        {
+          error: "The hidden tests could not be read.",
+          code: "artifacts_unavailable",
+        },
+        502,
+      );
+    const manifestFile = project.artifacts.find(
+      (file) => file.path === "build-manifest.json",
     );
+    type Recorded = Pick<SandboxBuildManifest, "layout" | "hiddenCommitment">;
+    let manifest: Recorded | null = null;
+    if (manifestFile !== undefined) {
+      const bytes = await options.objects.get(manifestFile.objectKey);
+      if (bytes === undefined) return unavailable();
+      manifest = JSON.parse(Buffer.from(bytes).toString("utf8")) as Recorded;
+    }
+    const layout = layoutOf(manifest ?? {});
+    const hiddenTests = project.artifacts.filter(
+      (file) => stagedHiddenTest(layout, file.path) !== null,
+    ).length;
+    const recorded = manifest?.hiddenCommitment;
     let hash: string | null = null;
-    if (hidden.length > 0) {
-      const map: Record<string, Uint8Array> = {};
-      for (const file of hidden) {
-        const bytes = await options.objects.get(file.objectKey);
-        if (bytes === undefined)
-          return c.json(
-            {
-              error: "The hidden tests could not be read.",
-              code: "artifacts_unavailable",
-            },
-            502,
-          );
-        map[`tests/private/${file.path.slice("private/".length)}`] = bytes;
+    let hashVersion: 1 | 2 = HIDDEN_COMMITMENT_VERSION;
+    if (recorded?.version === HIDDEN_COMMITMENT_VERSION) {
+      // Recorded over what the build wrote; the artifacts must still be it.
+      if (recorded.hiddenTests !== hiddenTests) return unavailable();
+      hash = recorded.hiddenSha256;
+    } else {
+      const legacy = project.artifacts.filter((file) =>
+        file.path.startsWith("private/"),
+      );
+      // Unbuilt, it has nothing to hash yet; built, the old rule's hash.
+      if (manifest !== null || legacy.length > 0) hashVersion = 1;
+      if (legacy.length > 0) {
+        const map: Record<string, Uint8Array> = {};
+        for (const file of legacy) {
+          const bytes = await options.objects.get(file.objectKey);
+          if (bytes === undefined) return unavailable();
+          map[`tests/private/${file.path.slice("private/".length)}`] = bytes;
+        }
+        hash = hiddenSha256(map, Object.keys(map).sort());
       }
-      hash = hiddenSha256(map, Object.keys(map).sort());
     }
     c.header("Cache-Control", "no-store");
     return c.json(
@@ -1092,8 +1158,9 @@ export function mountSandboxRoutes(
           sizeBytes,
           sha256,
         })),
-        hiddenTests: hidden.length,
+        hiddenTests,
         hiddenSha256: hash,
+        hiddenSha256Version: hashVersion,
       }),
     );
   });

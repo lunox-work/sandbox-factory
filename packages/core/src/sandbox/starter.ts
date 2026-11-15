@@ -614,6 +614,8 @@ export interface StarterProjectInput {
   readonly acceptanceTests: readonly AcceptanceTest[];
   /** The proposal's spec, when the bounty has one; its scenarios become todo tests. */
   readonly spec: SpecDraft | null;
+  /** The confirmed decisions `TASK.md` carries (`disclosableDecisions`). */
+  readonly decisions?: readonly string[];
   readonly toolchain?: Toolchain;
 }
 
@@ -767,6 +769,7 @@ export function generateStarterProject(
   for (const file of contributorGuideFiles({
     version: input.version,
     spec: input.spec,
+    ...(input.decisions === undefined ? {} : { decisions: input.decisions }),
     editable,
     publicTests,
     mocks: false,

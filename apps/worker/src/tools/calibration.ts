@@ -327,6 +327,8 @@ export async function calibrateHiddenTests(input: {
     readonly title: string;
     readonly summary: string;
     readonly spec: SpecDraft | null;
+    /** The spec's confirmed decisions, in the project's names; none when unconfirmed. */
+    readonly decisions?: readonly string[] | undefined;
   };
   /** The slice's entry points at the project's paths: the interface. */
   readonly entryPoints: readonly string[];
@@ -362,11 +364,16 @@ export async function calibrateHiddenTests(input: {
       await mkdir(dirname(path), { recursive: true });
       await writeFile(path, file.text, "utf8");
     }
+    // The confirmed decisions under duediligence's own heading, as its
+    // spec documents carry them (`renderSpecDocument`).
+    const decided = input.task.decisions ?? [];
     await writeFile(
       join(root, "spec.md"),
-      input.task.spec === null
-        ? `# ${input.task.title}\n\n${input.task.summary}\n`
-        : `# ${input.task.title}\n\n${input.task.summary}\n\n${renderGherkin(input.task.spec)}\n`,
+      `${
+        input.task.spec === null
+          ? `# ${input.task.title}\n\n${input.task.summary}\n`
+          : `# ${input.task.title}\n\n${input.task.summary}\n\n${renderGherkin(input.task.spec)}\n`
+      }${decided.length === 0 ? "" : `\nDecided, confirmed by the client:\n\n${decided.map((text) => `- ${text}`).join("\n")}\n`}`,
       "utf8",
     );
     const index = await indexRepository(root, input.signal);
@@ -511,6 +518,7 @@ export async function calibrateHiddenTests(input: {
         title: input.task.title,
         summary: input.task.summary,
         spec: input.task.spec,
+        decisions: input.task.decisions,
         overview: repositoryOverview(index),
         runTool: RUN_TOOL,
         runsMax: REFERENCE_RUNS_MAX,

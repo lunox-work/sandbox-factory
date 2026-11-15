@@ -81,6 +81,12 @@ resource "aws_ecs_task_definition" "api" {
       { name = "WORKER_SUBNETS", value = join(",", aws_subnet.public[*].id) },
       { name = "WORKER_SECURITY_GROUP", value = aws_security_group.worker.id },
       { name = "MAX_ACTIVE_RUNS_PER_ORG", value = "3" },
+      # The oldest command-line clients served (apps/api/src/client-version.ts):
+      # older ones are answered 426 with the minimum. duediligence 0.5.0 and
+      # carveout 0.4.0 are the releases the hosted routes were built against
+      # (carveout's handoff --platform and patch --from first shipped in
+      # 0.4.0). The extension and web app send no version and are not floored.
+      { name = "MIN_CLIENT_VERSIONS", value = "duediligence=0.5.0,carveout=0.4.0" },
       # BUILD_SHA is deliberately absent, do not add it: CD sets the real sha
       # on every deploy, and a copy here would revert to "bootstrap" on any
       # apply that did not pass -var api_image_tag=<sha>.

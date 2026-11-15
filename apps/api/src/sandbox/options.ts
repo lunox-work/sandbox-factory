@@ -14,6 +14,7 @@
  */
 
 import type {
+  DecisionConfirmationStore,
   SubmissionMergeStore,
   SubmissionStore,
 } from "@sandbox-factory/db";
@@ -64,6 +65,17 @@ export interface SandboxRouteOptions {
   readonly previews?: Pick<AnalysisRunStore, "preview">;
   readonly proposals: Pick<BountyProposalStore, "get" | "liveForBounty">;
   readonly specs: Pick<BountySpecStore, "get">;
+  /**
+   * Confirmations of specs' decisions, which builds and publication check
+   * against the spec a version's task froze (`pricing/decisions.ts`).
+   * Absent, a spec with decisions is refused `decisions_unconfirmed`.
+   */
+  readonly decisions?: Pick<DecisionConfirmationStore, "get">;
+  /** The page where a person confirms a bounty's decisions; absent, its path alone. */
+  readonly decisionsConfirmUrl?: (
+    organizationId: string,
+    bountyId: string,
+  ) => Promise<string>;
   /** The bounty a generated version is written from: its text and stack. */
   readonly bounties: Pick<BountyStore, "get">;
   /**

@@ -83,6 +83,33 @@ required check.
 Extend the doubles in `e2e/server.mjs` when a new flow needs a store; never add
 a reset endpoint or auth bypass to the product for the suite.
 
+## Flow test
+
+`npm run test:flow` builds the API and worker, then runs
+[`e2e/flow/flow.mjs`](../e2e/flow/flow.mjs): an empty database to a published
+sandbox version, its archive built and tested as a contributor would, a partial
+then a passing submission, the merge-back pull request and the repository's own
+test on it, and a Jira-imported bounty sized; through the API's HTTP routes and
+in-process worker runs (local-process provider, npm from the public registry,
+cache kept in `$TMPDIR/sandbox-factory-flow-npm-cache`). It needs a local
+Postgres, `DATABASE_URL` naming only the server (default
+`postgres://postgres:postgres@localhost:5432/postgres`; `make db-up`), and
+refuses a non-local host. It creates and drops its own
+`sandbox_factory_flow_<pid>` database and never writes the one the URL names.
+
+- The API is composed in `compose.mjs` as `apps/api/src/server.ts` composes it;
+  a dependency added there must be added there too.
+- Fakes only at the edges (`fakes.mjs`): in-memory objects, GitHub's REST API
+  (reads, installation probe, merge-back's Git data and pull requests) via the
+  existing `fetch` options, Jira's client via `clientFor`, graphify's Python
+  run, a sizing caller that
+  answers through each tool's `parse`, and one scripted agent model whose
+  agents call the real tools. Seeds (`seed.mjs`) are test-only rows Better Auth
+  writes at sign-in; never add a product bypass for the harness.
+- Steps are `[name, fn]` lists (`steps.mjs`, `roundtrip-steps.mjs`); append a
+  list for later stages.
+  Outside `npm run verify`; CI runs it after the bounty concurrency suite.
+
 ## Maintenance tools for agents
 
 Three optional agent skills live in `.agents/skills/`; `.claude/skills` is a

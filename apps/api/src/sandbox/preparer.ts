@@ -20,7 +20,11 @@
  * What `slice` would refuse without a sandbox, a price that is not priced
  * or a title that cannot name a version (`cutRefusal`), is checked before
  * the sandbox is made: made and then refused, it would stay with no
- * version, and `unprepared` never lists a bounty with a sandbox again.
+ * version, and `unprepared` never lists a bounty with a sandbox again. So
+ * is the decisions gate (`decisionsRefusal`): a proposal approved before
+ * decisions were asked for, its spec's decisions still unconfirmed, is
+ * held with nothing made, the bounty showing no sandbox and its Price step
+ * the decisions to confirm, and confirming them prompts a pass.
  *
  * A profile left for a person stays listed, pass after pass, and reading
  * its proposal, bounty and repositories again finds the same answer. A
@@ -43,6 +47,7 @@ import type {
   BountyStore,
   SandboxStore,
   StoredBountyProfile,
+  StoredBountyProposal,
   StoredSandbox,
 } from "@sandbox-factory/db";
 import { stepHeldBy } from "sandbox-factory";
@@ -80,6 +85,16 @@ export interface SandboxPreparerOptions {
     owner: string,
     bountyId: string,
   ) => Promise<string | null>;
+  /**
+   * The refusal the build would meet while the proposal's spec has
+   * decisions no person confirmed (`versionService.decisionsRefusal`), or
+   * null when they stand.
+   */
+  readonly decisionsRefusal: (
+    owner: string,
+    bountyId: string,
+    proposal: StoredBountyProposal,
+  ) => Promise<object | null>;
   readonly slice: (
     owner: string,
     actor: string,
@@ -253,6 +268,12 @@ export class SandboxPreparer {
     if (sourceRepoId === null) return "skipped";
     // What the cut would refuse is refused before there is a sandbox.
     if (cutRefusal(bounty, proposal) !== null) return "skipped";
+    // Held for a person to confirm the spec's decisions; nothing is made.
+    if (
+      (await this.#options.decisionsRefusal(owner, bounty.id, proposal)) !==
+      null
+    )
+      return "skipped";
     const made = await this.#options.sandboxes.create(owner, {
       bountyId: bounty.id,
       sourceRepoId,

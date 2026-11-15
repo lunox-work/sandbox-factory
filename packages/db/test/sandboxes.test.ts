@@ -1221,6 +1221,65 @@ test("replay context says whether the original source and slice are still there"
   );
 });
 
+test("publishing records the gates' run ids as it freezes, and only on the build they were read from", async () => {
+  const expiresAt = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
+  const ready = generatedRow({
+    harnessSha256: "h".repeat(64),
+    toolchainDigest: "d".repeat(64),
+    buildRunId: "arn_build",
+  });
+  const evidence = {
+    buildRunId: "arn_build",
+    roundTripRunId: "arn_build",
+    disclosureRunId: "arn_build",
+  };
+  const fake = createSequencedFakeDb([
+    [{ version: versionRow(), source: ready, commitSha: null }],
+    [versionRow({ frozenAt: now })],
+    [{ ...ready, approvedBy: "user_1", approvedAt: now, ...evidence }],
+    [sandboxRow({ status: "published", currentVersionId: "sbv_1" })],
+    [{ sourceRepoId: null }],
+  ]);
+  const result = await createSandboxStore(fake.db).publishVersion(
+    "owner",
+    "sbv_1",
+    "user_1",
+    expiresAt,
+    now,
+    evidence,
+  );
+  assert.equal(result.ok, true);
+  assert.deepEqual(fake.calls[2]?.values, {
+    approvedBy: "user_1",
+    approvedAt: now,
+    roundTripRunId: "arn_build",
+    disclosureRunId: "arn_build",
+    updatedAt: now,
+  });
+  // Built again since the route read the gates: nothing is published.
+  const moved = createSequencedFakeDb([
+    [
+      {
+        version: versionRow(),
+        source: { ...ready, buildRunId: "arn_rebuilt" },
+        commitSha: null,
+      },
+    ],
+  ]);
+  assert.deepEqual(
+    await createSandboxStore(moved.db).publishVersion(
+      "owner",
+      "sbv_1",
+      "user_1",
+      expiresAt,
+      now,
+      evidence,
+    ),
+    { ok: false, reason: "build_changed" },
+  );
+  assert.equal(moved.calls.length, 1);
+});
+
 test("publishing freezes and approves a version with a passing build, and points its sandbox at it", async () => {
   const expiresAt = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
   const ready = generatedRow({

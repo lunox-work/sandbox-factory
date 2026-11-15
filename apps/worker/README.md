@@ -232,6 +232,9 @@ keeps its harness roots and configuration files, and the baseline runs in
 two jobs (`runLayoutBaseline` in `src/tools/sandbox-build.ts`): the public
 files with the layout's commands, then the public files with the hidden
 tests, sealed after the build, each hidden test twice by `hiddenTestRun`.
+Grading stages every `private/` artifact `stagedHiddenTest` names (a
+TypeScript test file, never `pseudonym.lunox`), which is what the handout
+counts and commits to.
 
 ### Import
 
@@ -334,7 +337,8 @@ packages, `tsconfig.json`, `.nvmrc`, `.npmrc`, `sandbox.env` with fixture
 values for every environment variable the slice reads, `README.md`,
 `sandbox-task.json` and the contributor guide
 (`packages/core/src/sandbox/guide.ts`: `TASK.md` with the renamed spec as
-Gherkin, `AGENTS.md`, `CLAUDE.md`, `.vscode/`); it compiles with source maps
+Gherkin and its confirmed decisions when both scans pass them
+(`disclosableDecisions`), `AGENTS.md`, `CLAUDE.md`, `.vscode/`); it compiles with source maps
 beside the emitted `.js`. The local contract is `npm ci`, `npm run dev`,
 `npm run build`, `npm test` on Node 22+, fixed in `packages/core`. Only
 registry versions are installed: a dependency pinned to a URL, a path or an
@@ -366,6 +370,11 @@ A smaller set is run through its baseline again; none expected to fail left
 is no set. The reference is never part of the version; the transform's
 `hiddenTests.calibration` records the engine, kept, dropped with reasons,
 the reference's paths and summary, and its usage.
+The run's `decisionsSha256` names the spec's decisions a person confirmed
+(`src/tools/decisions.ts` checks it against the frozen spec, else
+`tool_failed`); both agents are then told them, renamed with the spec, as
+"Decided, confirmed by the client" (the reference also in `spec.md`), and
+the starter agent likewise. A run without it quotes none as confirmed.
 A set an agent could not settle leaves the draft without, and the build
 goes on. An older preparation run's set and table (`preparedRunId`, below)
 are taken first.
@@ -420,7 +429,13 @@ Outputs: `build-manifest.json` (every generated file hashed and classified
 public or private; harness, test and project hashes; the toolchain and its
 digest; `engines.carveout`, the release that renamed it; the evaluator
 environment; import rewrites, renames, dependencies, blockers and the
-baseline report), `baseline.json`, `project/<path>` for
+baseline report; `gates`, the publication gates: `roundTrip`, the unchanged
+project read back through the table at each file's repository path equal to
+the slice's source but for the generator's specifier and `process.env`
+edits (`noChangeRoundTrip`, `not_applicable` for a starter or upload), and
+`disclosure`, the vocabulary and credential findings; `hiddenCommitment`,
+the handout's `hiddenSha256` version 2 over the hidden tests at their staged
+paths, `hiddenCommitmentOf`), `baseline.json`, `project/<path>` for
 every public file including the lockfile, `private/<path>` for hidden
 tests, and `private/pseudonym.lunox` (kind `pseudonyms`), the alias rules
 the public files were renamed by; the private sandbox is `project/` read

@@ -434,6 +434,12 @@ export const bountyProposalDtoSchema = z.object({
    * proposal with no spec, and on one sized before the rubric.
    */
   rubric: rubricAssessmentSchema.nullable().default(null),
+  /**
+   * What the price saw (`pricedFromOf`): `code` once the rubric beside it
+   * measured every repository the work touches, `spec` otherwise. An
+   * approval of a `spec` price never saw the code.
+   */
+  pricedFrom: z.enum(["spec", "code"]).optional(),
   decidedAt: z.iso.datetime().nullable(),
   decidedBy: z.string().nullable(),
   decisionDeliveryPolicy: z.enum(["off", "requested"]).nullable(),
@@ -445,6 +451,20 @@ export const bountyProposalDtoSchema = z.object({
 
 export const proposalMutationSchema = z.object({
   expectedRevision: z.number().int().positive(),
+});
+/** A size and what it prices to: what a person agrees to. */
+export const proposalPriceSchema = z.object({
+  complexity: pricedComplexitySchema,
+  amountMinor: minorAmountSchema,
+  currency: z.string().length(3),
+});
+/**
+ * An approval names the revision the person saw and, from the web, the
+ * price on screen: a different price now is `price_changed`. Without a
+ * price the current one is approved, at that revision.
+ */
+export const approveProposalSchema = proposalMutationSchema.extend({
+  expectedPrice: proposalPriceSchema.optional(),
 });
 /**
  * A reviewer's size. Whole sizes only: it sets the base, and the step
@@ -533,4 +553,5 @@ export type BountyProposalDto = z.infer<typeof bountyProposalDtoSchema>;
 export type RubricAssessmentDto = z.infer<typeof rubricAssessmentSchema>;
 export type ProposalFreshnessDto = z.infer<typeof proposalFreshnessDtoSchema>;
 export type ProposalLiveSpecDto = z.infer<typeof proposalLiveSpecSchema>;
+export type ProposalPriceDto = z.infer<typeof proposalPriceSchema>;
 export type BountyWritebackDto = z.infer<typeof bountyWritebackDtoSchema>;

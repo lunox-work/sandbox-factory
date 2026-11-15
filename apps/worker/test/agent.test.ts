@@ -15,6 +15,8 @@ import {
   HIDDEN_TESTS_SYSTEM_PROMPT,
   SCOPE_SYSTEM_PROMPT,
   bountySection,
+  hiddenTestsSection,
+  referenceSection,
   STARTER_SYSTEM_PROMPT,
   starterBountySection,
 } from "../src/agent/prompts.js";
@@ -29,6 +31,7 @@ import {
 import { parseWorkerEnv } from "../src/env.js";
 import { AnalysisError } from "../src/errors.js";
 import { createTaskReader } from "../src/tasks.js";
+import { confirmedDecisions } from "../src/tools/decisions.js";
 
 const signal = new AbortController().signal;
 const usage = {
@@ -1084,4 +1087,78 @@ test("reading calls that finish out of order answer in the turn's order, by id",
       ["t3", "check"],
     ],
   );
+});
+
+test("confirmed decisions are quoted to the agents that write and judge hidden tests, and to the starter", () => {
+  const decisions = ["Half a cent rounds up.", "Refunds are free."];
+  const quoted =
+    /Decided, confirmed by the client:\n- Half a cent rounds up\.\n- Refunds are free\.\n\nWhere the bounty was silent, the spec decided these, and the client confirmed each\. They bind as the scenarios do: /;
+  const project = {
+    title: "Fees",
+    summary: "Charge fees.",
+    spec: null,
+    overview: "src/",
+  };
+  const hidden = (decided?: readonly string[]) =>
+    hiddenTestsSection({
+      ...project,
+      decisions: decided,
+      quoted: [],
+      unquoted: [],
+      scaffold: [],
+    });
+  assert.match(hidden(decisions), quoted);
+  assert.match(hidden(decisions), /assert nothing that contradicts one\./);
+  const reference = (decided?: readonly string[]) =>
+    referenceSection({
+      ...project,
+      decisions: decided,
+      runTool: "run_reference",
+      runsMax: 3,
+    });
+  assert.match(reference(decisions), quoted);
+  assert.match(reference(decisions), /implement each/);
+  const starter = (decided?: readonly string[]) =>
+    starterBountySection({
+      title: "Fees",
+      description: "Charge fees.",
+      stack: ["TypeScript"],
+      spec: null,
+      decisions: decided,
+    });
+  assert.match(starter(decisions), quoted);
+  // None confirmed: nothing is said of them.
+  for (const text of [
+    hidden(),
+    hidden([]),
+    reference(),
+    reference([]),
+    starter(),
+    starter([]),
+  ])
+    assert.doesNotMatch(text, /confirmed by the client/);
+});
+
+test("a run quotes its spec's decisions only under the hash a person confirmed", () => {
+  const spec: SpecDraft = {
+    feature: "Fees",
+    background: [],
+    scenarios: [],
+    openQuestions: [],
+    assumptions: ["Half a cent  rounds up."],
+  };
+  // sha256("d1\tHalf a cent rounds up.\n")
+  const hash =
+    "0593f816e4709ed623be9a2d3ac6067e3a9fe76a5b6492299c8d40bf1b27d326";
+  assert.deepEqual(confirmedDecisions(spec, hash), ["Half a cent rounds up."]);
+  assert.deepEqual(confirmedDecisions(spec, undefined), []);
+  assert.deepEqual(confirmedDecisions(null, hash), []);
+  for (const named of ["0".repeat(64)])
+    assert.throws(
+      () => confirmedDecisions(spec, named),
+      (error: unknown) =>
+        error instanceof AnalysisError && error.code === "tool_failed",
+    );
+  // A hash for a spec that decided nothing is not these either.
+  assert.throws(() => confirmedDecisions({ ...spec, assumptions: [] }, hash));
 });

@@ -284,7 +284,7 @@ export const TOOLS = [
     name: "get_decisions",
     scope: "workspace:read",
     description:
-      "Read what a proposal's spec decided where the bounty was silent: its decisions (d1, d2…), whether a person confirmed them, and the spec as Gherkin with its Decided: list. Hidden tests are written to confirmed decisions.",
+      "Read what a proposal's spec decided where the bounty was silent: its decisions (d1, d2…), whether a person confirmed them, and the spec as Gherkin with its Decided: list. Hidden tests are written to confirmed decisions: until a person confirms them (confirm_link), approving the price, prepare and publishing are refused with decisions_unconfirmed. A spec with no decisions needs nothing.",
     input: { proposalId: id("proposal") },
     scoped: true,
     path: ({ proposalId }, workspace) =>
@@ -575,7 +575,7 @@ export const TOOLS = [
     name: "prepare",
     scope: "sandboxes:write",
     description:
-      "Build a draft version: the standalone project, its baseline, and, when it has none, hidden tests written from the approved spec and calibrated by a reference implementation (duediligence's rule). It runs in the background; read it with get_run, then get_handout. Publishing stays a person's act in the web app.",
+      "Build a draft version: the standalone project, its baseline, and, when it has none, hidden tests written from the approved spec and its confirmed decisions, and calibrated by a reference implementation (duediligence's rule). Refused with decisions_unconfirmed while the spec's decisions wait for a person (confirm_link). It runs in the background; read it with get_run, then get_handout. Publishing stays a person's act in the web app.",
     input: { versionId: id("version") },
     scoped: true,
     method: "POST",

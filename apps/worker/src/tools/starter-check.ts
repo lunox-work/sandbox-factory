@@ -18,7 +18,9 @@
 import ts from "typescript-compiler";
 import {
   aliasStarter,
+  disclosableDecisions,
   generateStarterProject,
+  specDecisions,
   starterProblems,
   vocabularyBlockers,
 } from "sandbox-factory";
@@ -60,6 +62,8 @@ export function checkStarter(input: {
   readonly version: ProjectVersion;
   readonly starter: StarterSubmission;
   readonly spec: SpecDraft | null;
+  /** The spec's confirmed decisions, in the bounty's names; none when unconfirmed. */
+  readonly decisions?: readonly string[];
   /** The workspace's names (`workspaceVocabulary`), which no public file may carry. */
   readonly vocabulary: readonly string[];
 }): StarterCheck {
@@ -84,11 +88,17 @@ export function checkStarter(input: {
       problems: aliased.problems.slice(0, PROBLEMS_MAX),
     };
   const starter = aliased.starter;
+  // Renamed with the spec, and in `TASK.md` only when the scans pass them.
+  const decisions =
+    (input.decisions ?? []).length === 0 || aliased.spec === null
+      ? []
+      : specDecisions(aliased.spec).map(({ text }) => text);
   const project = generateStarterProject({
     version: { ...input.version, ...aliased.listing },
     starter,
     acceptanceTests: starter.hiddenTests,
     spec: aliased.spec,
+    decisions: disclosableDecisions(decisions, input.vocabulary),
   });
   const blockers = project.blockers.filter(
     (blocker) => blocker.code !== "starter_invalid",

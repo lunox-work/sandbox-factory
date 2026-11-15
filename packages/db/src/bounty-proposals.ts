@@ -1,17 +1,19 @@
 import { repositoriesForWrite } from "./snapshot-write.js";
 export { snapshotForWrite } from "./snapshot-write.js";
 import { insertProfileIntents } from "./profile-intent.js";
-import type {
-  BountyComplexity,
-  BountySizingResult,
-  CategoryMatch,
-  ContextVersions,
-  ModelComplexity,
-  RateCardSnapshot,
-  PricedComplexity,
-  RubricAssessment,
-  SizingConfidence,
-  StepResult,
+import {
+  pricedFromOf,
+  type BountyComplexity,
+  type BountySizingResult,
+  type CategoryMatch,
+  type ContextVersions,
+  type ModelComplexity,
+  type PricedFrom,
+  type RateCardSnapshot,
+  type PricedComplexity,
+  type RubricAssessment,
+  type SizingConfidence,
+  type StepResult,
 } from "sandbox-factory";
 import { and, desc, eq, gt, inArray, or, sql } from "drizzle-orm";
 
@@ -392,6 +394,8 @@ export interface StoredBountyProposal {
   readonly step: StepResult | null;
   /** The pricing rubric's assessment, or null without a spec. */
   readonly rubric: RubricAssessment | null;
+  /** What the price saw (`pricedFromOf(rubric)`); every read sets it. */
+  readonly pricedFrom?: PricedFrom;
   /**
    * The repositories the work touches, each at the snapshot the spec was
    * drafted beside; empty when it touches none.
@@ -463,6 +467,7 @@ function toDto(row: BountyProposalRow, name: BountyName): StoredBountyProposal {
     specRevision: row.specRevision,
     step: row.step ?? null,
     rubric: row.rubric ?? null,
+    pricedFrom: pricedFromOf(row.rubric ?? null),
     repositories: row.repositories ?? [],
     contextVersions: {
       jira: row.jiraContextVersion ?? null,

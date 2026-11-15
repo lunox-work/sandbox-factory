@@ -18,6 +18,7 @@ import {
   publicVocabularyLeaks,
   readsSource,
   slotOf,
+  stagedHiddenTest,
   snapshotFits,
   taskCodeProblems,
   testRunnerOf,
@@ -355,4 +356,42 @@ test("publicVocabularyLeaks blocks on either scan's leaks", () => {
     publicVocabularyLeaks([{ path: "src/a.ts", text: "x\n" }], ["acme"]),
     [],
   );
+});
+
+test("stagedHiddenTest: the hidden tests a judge stages and a handout counts, in either layout", () => {
+  // The platform's: under tests/private/, the name table beside them not one.
+  assert.equal(
+    stagedHiddenTest(PLATFORM_LAYOUT, "private/s1-a.test.ts"),
+    "tests/private/s1-a.test.ts",
+  );
+  assert.equal(
+    stagedHiddenTest(PLATFORM_LAYOUT, "private/pseudonym.lunox"),
+    null,
+  );
+  // An upload's: each at its folder path, any TypeScript test file.
+  for (const path of [
+    "src/a.spec.ts",
+    "src/a.test.mts",
+    "lib/b.spec.tsx",
+    "tests/private/c.test.ts",
+  ])
+    assert.equal(stagedHiddenTest(CARVEOUT, `private/${path}`), path);
+  // Not a test, not private, or the grading run's patch: none.
+  for (const path of [
+    "private/merge-patch.json",
+    "private/notes.md",
+    "private/src/a.test.js",
+    "project/src/a.test.ts",
+    "build-manifest.json",
+  ])
+    assert.equal(stagedHiddenTest(CARVEOUT, path), null, path);
+  // The inverse of where a build keeps one.
+  for (const [layout, path] of [
+    [PLATFORM_LAYOUT, "tests/private/s1-a.test.ts"],
+    [CARVEOUT, "tests/private/c.test.ts"],
+  ] as const)
+    assert.equal(
+      stagedHiddenTest(layout, hiddenArtifactPath(layout, path)),
+      path,
+    );
 });

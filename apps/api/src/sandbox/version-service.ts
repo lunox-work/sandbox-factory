@@ -26,6 +26,7 @@ import type {
   StoredBounty,
   StoredBountyProfile,
   StoredBountyProposal,
+  PublicationEvidence,
   StoredSandbox,
   StoredVersionWithSource,
 } from "@sandbox-factory/db";
@@ -46,8 +47,10 @@ import type {
   ApprovedTaskSnapshot,
   BoundaryContract,
   DependencyChoice,
+  SandboxBuildManifest,
   SandboxFixture,
   SliceManifest,
+  StoredApprovedTaskSnapshot,
   VersionFixtures,
 } from "sandbox-factory";
 import {
@@ -55,7 +58,10 @@ import {
   approvedTaskReadiness,
   canonicalJson,
   fixtureProblems,
+  freezeReadiness,
+  gatesOf,
   isFixturesParams,
+  PUBLICATION_GATE_CODES,
   isPublicationLive,
   isSliceParams,
   sliceApprovalReasons,
@@ -73,6 +79,10 @@ import {
 } from "sandbox-factory";
 
 import type { z } from "zod";
+import {
+  decisionsConfirmUrl,
+  decisionsStanding,
+} from "../pricing/decisions.js";
 import { quotaExceededBody } from "../quota.js";
 import type { SandboxRouteOptions } from "./options.js";
 const sha256 = (text: string | Uint8Array) =>
@@ -391,6 +401,191 @@ export function versionService(options: SandboxRouteOptions) {
    * word by word too, and the name of the repository the sandbox is sliced
    * from, whole.
    */
+  /**
+   * Whether the spec a version's task froze has its decisions confirmed
+   * (`decisionsStanding`): a build that may write hidden tests, and
+   * publication, stand on it as the price's approval did. The spec is the
+   * frozen one, so a spec revised since approval is confirmed again.
+   */
+  const decisionsGate = {
+    store: options.decisions,
+    confirmUrl:
+      options.decisionsConfirmUrl ??
+      (async (organizationId: string, bountyId: string) =>
+        decisionsConfirmUrl(undefined, undefined, organizationId, bountyId)),
+  };
+  async function decisionsOf(
+    owner: string,
+    task: StoredApprovedTaskSnapshot,
+    sandboxId: string,
+    action: string,
+  ) {
+    // A task frozen before snapshots named their bounty has its sandbox's.
+    const bountyId =
+      "bountyId" in task
+        ? task.bountyId
+        : ((await options.sandboxes.get(owner, sandboxId))?.bountyId ?? "");
+    return decisionsStanding(
+      decisionsGate,
+      owner,
+      bountyId,
+      task.spec === null
+        ? null
+        : {
+            proposalId: task.spec.proposalId,
+            specRevision: task.spec.specRevision,
+            draft: task.spec.draft,
+          },
+      action,
+    );
+  }
+
+  /**
+   * The refusal a sandbox's first version would meet on its proposal's
+   * spec (the one a cut freezes into its task) while that spec's decisions
+   * wait for a person, or null when they stand. The preparer and
+   * `POST /sandboxes/start` ask it before they make the sandbox, so nothing
+   * is made, cut and then refused: a proposal approved before decisions
+   * were asked for stays held, with no sandbox, until a person confirms.
+   */
+  async function decisionsRefusal(
+    owner: string,
+    bountyId: string,
+    proposal: Pick<StoredBountyProposal, "id" | "specRevision"> | null,
+    action: string,
+  ) {
+    if (proposal === null || proposal.specRevision === null) return null;
+    const stored = await options.specs.get(
+      owner,
+      proposal.id,
+      proposal.specRevision,
+    );
+    if (stored === null) return null;
+    const decided = await decisionsStanding(
+      decisionsGate,
+      owner,
+      bountyId,
+      {
+        proposalId: proposal.id,
+        specRevision: stored.revision,
+        draft: stored.draft,
+      },
+      action,
+    );
+    return decided.ok ? null : failure(decided.body, "conflict");
+  }
+
+  /**
+   * What publishing a version stands on beyond its build being ready and
+   * its price approved (which the store checks): its spec's decisions
+   * confirmed, and the publication gates its build recorded passing
+   * (`freezeReadiness`, read from `build-manifest.json` by `gatesOf`). A
+   * version whose build recorded no gates was built before them: a draft
+   * is built again first (`gates_unrecorded`), since the round trip needs
+   * the repository's source, which only the worker reads; one published
+   * before stands on that first publication (`grandfathered`). A version
+   * with no build is left to the store's `not_ready`.
+   */
+  async function publication(
+    owner: string,
+    actor: string,
+    stored: StoredVersionWithSource,
+    now: Date,
+  ): Promise<
+    | ReturnType<typeof failure>
+    | {
+        readonly ok: true;
+        readonly evidence: PublicationEvidence | undefined;
+        readonly gates:
+          | { status: "passed" | "grandfathered"; reason: string | null }
+          | undefined;
+      }
+  > {
+    const decided = await decisionsOf(
+      owner,
+      stored.source.approvedTask,
+      stored.version.sandboxId,
+      "publishing",
+    );
+    if (!decided.ok) return failure(decided.body, "conflict");
+    const buildRunId = stored.source.buildRunId;
+    if (buildRunId === null)
+      return { ok: true as const, evidence: undefined, gates: undefined };
+    const artifact = (await options.artifacts.list(owner, buildRunId)).find(
+      (item) => item.path === "build-manifest.json",
+    );
+    const bytes =
+      artifact === undefined
+        ? undefined
+        : await options.objects.get(artifact.objectKey);
+    if (bytes === undefined)
+      return failure(
+        {
+          error: "The version's build manifest could not be read.",
+          code: "artifacts_unavailable",
+        },
+        "unavailable",
+      );
+    const manifest = JSON.parse(
+      Buffer.from(bytes).toString("utf8"),
+    ) as SandboxBuildManifest;
+    const read = gatesOf(buildRunId, manifest);
+    if (!read.recorded) {
+      if (stored.version.frozenAt !== null)
+        return {
+          ok: true as const,
+          evidence: undefined,
+          gates: {
+            status: "grandfathered" as const,
+            reason:
+              "First published before the publication gates; its build recorded none.",
+          },
+        };
+      return failure(
+        {
+          error:
+            "This version was built before the publication gates (the no-change round trip and the disclosure scan). Build it again, then publish.",
+          code: "gates_unrecorded",
+        },
+        "conflict",
+      );
+    }
+    const check = freezeReadiness(
+      {
+        ...stored.source,
+        roundTripRunId: read.roundTripRunId,
+        disclosureRunId: read.disclosureRunId,
+        // Publishing is the approval of this exact candidate.
+        approvedBy: stored.source.approvedBy ?? actor,
+        approvedAt: stored.source.approvedAt ?? now.toISOString(),
+      },
+      read.evidence,
+    );
+    const gate = check.failed[0];
+    if (gate !== undefined)
+      return failure(
+        {
+          error: `The version cannot be published: ${check.reasons.join(" ")}`,
+          code: PUBLICATION_GATE_CODES[gate],
+          gate,
+          reasons: check.reasons,
+          ...(gate === "round_trip" && manifest.gates !== undefined
+            ? { problems: manifest.gates.roundTrip.problems }
+            : {}),
+        },
+        "conflict",
+      );
+    return {
+      ok: true as const,
+      evidence: {
+        buildRunId,
+        roundTripRunId: read.roundTripRunId,
+        disclosureRunId: read.disclosureRunId,
+      },
+      gates: { status: "passed" as const, reason: null },
+    };
+  }
+
   async function workspaceNames(
     owner: string,
     sandboxId: string,
@@ -823,6 +1018,14 @@ export function versionService(options: SandboxRouteOptions) {
         },
         "conflict",
       );
+    // The starter agent writes the hidden tests to the spec's decisions.
+    const decided = await decisionsOf(
+      owner,
+      approvedTask,
+      sandbox.id,
+      "generating the sandbox",
+    );
+    if (!decided.ok) return failure(decided.body, "conflict");
     const approvedTaskSha256 = approvedTaskHash(approvedTask);
     const versionId = generateId("sbv");
     const queued = await options.runs.enqueue(owner, null, {
@@ -834,6 +1037,9 @@ export function versionService(options: SandboxRouteOptions) {
         approvedTaskSha256,
         stack,
         vocabulary: await workspaceNames(owner, sandbox.id),
+        ...(decided.decisionsSha256 === null
+          ? {}
+          : { decisionsSha256: decided.decisionsSha256 }),
       },
       requestedBy: actor,
       maxActive: options.maxActive ?? 3,
@@ -1077,6 +1283,14 @@ export function versionService(options: SandboxRouteOptions) {
         },
         "conflict",
       );
+    // A draft with no hidden tests has them written to its spec's decisions.
+    const decided = await decisionsOf(
+      owner,
+      stored.source.approvedTask,
+      stored.version.sandboxId,
+      "building the sandbox",
+    );
+    if (!decided.ok) return failure(decided.body, "conflict");
     const vocabulary = await workspaceNames(owner, stored.version.sandboxId);
     // What the sandbox's preparation wrote for this slice, which the build
     // takes when its checks hold it: named only while it is there to read,
@@ -1098,6 +1312,9 @@ export function versionService(options: SandboxRouteOptions) {
         approvedTaskSha256: stored.source.approvedTaskSha256,
         vocabulary,
         ...(preparedRunId === null ? {} : { preparedRunId }),
+        ...(decided.decisionsSha256 === null
+          ? {}
+          : { decisionsSha256: decided.decisionsSha256 }),
       },
       requestedBy: actor,
       maxActive: options.maxActive ?? 3,
@@ -1532,10 +1749,12 @@ export function versionService(options: SandboxRouteOptions) {
   return {
     sliceInputs,
     fixturesFromRun,
+    decisionsRefusal,
     create,
     generate,
     upload,
     build,
+    publication,
     sliceState,
     slice,
     approveSlice,

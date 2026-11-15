@@ -96,6 +96,14 @@ jobs:
         env:
           DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres
 
+      # The platform end to end on this server: a scratch database of its own
+      # to a published sandbox version, API and worker in one process with
+      # fakes only at the edges (docs/development.md#flow-test).
+      - name: Flow (empty database to a published version)
+        run: node e2e/flow/flow.mjs
+        env:
+          DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres
+
       # Provenance injection fails *quietly*: a bad `define`, an undeclared
       # turbo env var or a renamed field just stamps the artifact "unknown". The
       # build above ran with no BUILD_* set (the local-dev path), so this

@@ -320,6 +320,19 @@ test("approved, re-priced, specless and missing proposals are left alone", async
   assert.deepEqual(noSpec.writes, []);
 });
 
+test("an approved price is frozen: code measured after the approval re-scores nothing", async () => {
+  // Approved spec-only, then profiled for its sandbox's slice: the price
+  // stays what was approved; only a re-price, which unapproves, moves it.
+  for (const status of ["ready", "awaiting_approval", "failed"] as const) {
+    const h = harness(
+      proposal({ status: "approved", sizedBy: "rubric", revision: 4 }),
+    );
+    await h.pricer.settled(OWNER, profile({ status }));
+    assert.deepEqual(h.writes, [], status);
+    assert.deepEqual(h.errors, [], status);
+  }
+});
+
 test("a profile measured for an earlier spec scores the proposal's current one", async () => {
   const h = harness(proposal({ specRevision: 4 }));
   await h.pricer.settled(OWNER, profile({ specRevision: 2 }));

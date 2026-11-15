@@ -279,6 +279,8 @@ export async function writeHiddenTests(input: {
     readonly title: string;
     readonly summary: string;
     readonly spec: SpecDraft | null;
+    /** The spec's confirmed decisions, in the project's names; none when unconfirmed. */
+    readonly decisions?: readonly string[] | undefined;
   };
   /** The slice's entry points at the project's paths, for the scaffold. */
   readonly entryPoints: readonly string[];
@@ -462,6 +464,7 @@ export async function writeHiddenTests(input: {
         title: input.task.title,
         summary: input.task.summary,
         spec: input.task.spec,
+        decisions: input.task.decisions,
         overview: repositoryOverview(index),
         ...quotedProject(project),
         scaffold: hiddenTestScaffold({

@@ -27,6 +27,7 @@ import {
   SANDBOX_TOOLCHAIN,
   TASK_DESCRIPTOR_PATH,
   TASK_DESCRIPTOR_SCHEMA_VERSION,
+  disclosureGate,
   isSandboxImportParams,
 } from "sandbox-factory";
 import type {
@@ -310,6 +311,12 @@ export function createSandboxImportAdapter(options: {
       const { written } = await writeBuildOutputs({
         outDir: input.outDir,
         toolVersion: SANDBOX_IMPORT_TOOL_VERSION,
+        // Nothing to carry back to here (the maintainer's receipt does), and
+        // the upload route refused the folder unless its scans came clean.
+        gates: {
+          roundTrip: { status: "not_applicable", files: 0, problems: [] },
+          disclosure: disclosureGate(blockers, 0, "upload"),
+        },
         sandboxVersionId: params.sandboxVersionId,
         bindings: {
           sourceSnapshotId: null,

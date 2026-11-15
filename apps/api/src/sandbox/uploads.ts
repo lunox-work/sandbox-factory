@@ -9,18 +9,26 @@
  * platform never has the private names or the receipt, so it checks what
  * it can: the folder says it is public and in pseudonyms, none of the
  * workspace's own names is in it (the union check builds block on), no
- * credential is in it, and every path is a plain one. A refusal names
- * files, never a term or a secret.
+ * credential is in it, every path is a plain one, and both the carveout
+ * that uploads it and the one that cut it are at least
+ * `UPLOAD_CARVEOUT_MIN_VERSION`, whose record carries what the import and
+ * `patch --from` read. A refusal names files, never a term or a secret.
  */
 
 import { createHash } from "node:crypto";
-import { UPLOAD_LIMITS, type CreateUploadDto } from "@sandbox-factory/shared";
+import {
+  UPLOAD_CARVEOUT_MIN_VERSION,
+  UPLOAD_LIMITS,
+  type CreateUploadDto,
+} from "@sandbox-factory/shared";
 import {
   isSecretPath,
   pathProblem,
   publicVocabularyLeaks,
   scanSecrets,
 } from "sandbox-factory";
+
+import { isOlder } from "../client-version.js";
 
 /** What every upload holds: the cut's record, its manifest and its lockfile. */
 export const REQUIRED_UPLOAD_FILES = [
@@ -30,11 +38,13 @@ export const REQUIRED_UPLOAD_FILES = [
 ] as const;
 
 export interface UploadRefusal {
-  readonly status: 400 | 409;
+  readonly status: 400 | 409 | 422;
   readonly body: {
     readonly error: string;
     readonly code: string;
     readonly files?: readonly string[];
+    /** With `carveout_too_old`: the oldest carveout taken. */
+    readonly minimumVersion?: string;
   };
 }
 
@@ -42,7 +52,7 @@ const sha256 = (text: string) =>
   createHash("sha256").update(text, "utf8").digest("hex");
 
 const refuse = (
-  status: 400 | 409,
+  status: 400 | 409 | 422,
   code: string,
   error: string,
   files?: readonly string[],
@@ -56,6 +66,34 @@ const refuse = (
     },
   },
 });
+
+/**
+ * The refusal of a folder from a carveout older than the floor, by the
+ * release that uploads it or the one that cut it; a version that does not
+ * parse is older.
+ */
+function tooOld(version: unknown, cut: boolean): { refusal: UploadRefusal } {
+  const named = typeof version === "string" ? ` (${version})` : "";
+  return {
+    refusal: {
+      status: 422,
+      body: {
+        error: cut
+          ? `The folder was cut by an older carveout${named}; the platform imports folders cut by carveout ${UPLOAD_CARVEOUT_MIN_VERSION} or later. Upgrade (npm i -g carveout@latest) and hand off again.`
+          : `This carveout${named} is older than the platform takes uploads from. Upgrade to carveout ${UPLOAD_CARVEOUT_MIN_VERSION} or later (npm i -g carveout@latest) and hand off again.`,
+        code: "carveout_too_old",
+        ...(cut ? { files: ["carveout.json"] } : {}),
+        minimumVersion: UPLOAD_CARVEOUT_MIN_VERSION,
+      },
+    },
+  };
+}
+
+/** Whether `version` is a release at or above the upload floor. */
+const meetsFloor = (version: unknown): boolean =>
+  typeof version === "string" &&
+  /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(version) &&
+  !isOlder(version, UPLOAD_CARVEOUT_MIN_VERSION);
 
 /** Why a path cannot be in an upload; null when it can. */
 function uploadPathProblem(path: string): string | null {
@@ -90,6 +128,9 @@ export function checkUpload(
   body: CreateUploadDto,
   vocabulary: readonly string[],
 ): { refusal: UploadRefusal } | { recordSha256: string } {
+  // First: an older client is told to upgrade before anything else.
+  if (!meetsFloor(body.carveout.version))
+    return tooOld(body.carveout.version, false);
   const all = [...body.files, ...body.acceptanceTests];
   const large = all
     .filter(
@@ -142,6 +183,8 @@ export function checkUpload(
     );
   const recordText = byPath.get("carveout.json") ?? "";
   let record: {
+    carveoutVersion?: unknown;
+    cutId?: unknown;
     publicScrubbed?: unknown;
     request?: { public?: unknown };
     lockfile?: unknown;
@@ -153,12 +196,15 @@ export function checkUpload(
       "carveout.json",
     ]);
   }
-  if (
-    record === null ||
-    typeof record !== "object" ||
-    record.publicScrubbed !== true ||
-    record.request?.public !== true
-  )
+  if (record === null || typeof record !== "object")
+    return refuse(400, "not_public_folder", "carveout.json is not a record.", [
+      "carveout.json",
+    ]);
+  // A record from before receipts has no cut id for `patch --from` to
+  // find its receipt by.
+  if (!meetsFloor(record.carveoutVersion) || typeof record.cutId !== "string")
+    return tooOld(record.carveoutVersion, true);
+  if (record.publicScrubbed !== true || record.request?.public !== true)
     return refuse(
       400,
       "not_public_folder",

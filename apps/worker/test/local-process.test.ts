@@ -22,6 +22,57 @@ import { privateTestOutcome, tapPoints } from "../src/tools/sandbox-build.js";
 
 const limits = { timeoutMs: 10_000, maxOutputBytes: 64 * 1024 };
 
+test("a provider's own npm cache and lockfile store go when it is disposed; named ones stay", async () => {
+  const root = await mkdtemp(join(tmpdir(), "local-eval-"));
+  const owned = async () =>
+    (await readdir(root)).filter((name) => name.startsWith("sandbox-factory-"));
+  const cacheOf = async (
+    provider: ReturnType<typeof createLocalProcessProvider>,
+  ) => {
+    const job = await provider.create({
+      label: "cache",
+      signal: new AbortController().signal,
+    });
+    // A manifest, so the lockfile store is asked for too.
+    await job.stage([{ path: "package.json", text: "{}" }]);
+    const result = await job.exec({
+      argv: ["node", "-e", "console.log(process.env.npm_config_cache)"],
+      limits,
+    });
+    await job.destroy();
+    return result.stdout.trim();
+  };
+  try {
+    const provider = createLocalProcessProvider({ root });
+    const cache = await cacheOf(provider);
+    // Made beside the jobs, not loose in the OS temporary directory.
+    assert.ok(
+      cache.startsWith(join(root, "sandbox-factory-npm-cache-")),
+      cache,
+    );
+    assert.equal((await owned()).length, 2, (await owned()).join(", "));
+    await provider.dispose();
+    assert.deepEqual(await owned(), []);
+    // A later job makes them again, and a second dispose removes those.
+    assert.notEqual(await cacheOf(provider), cache);
+    await provider.dispose();
+    await provider.dispose();
+    assert.deepEqual(await owned(), []);
+
+    const npmCache = join(root, "npm");
+    const lockfiles = join(root, "lockfiles");
+    await mkdir(npmCache);
+    await mkdir(lockfiles);
+    const named = createLocalProcessProvider({ root, npmCache, lockfiles });
+    assert.equal(await cacheOf(named), npmCache);
+    await named.dispose();
+    await access(npmCache);
+    await access(lockfiles);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("a local job stages files, runs scrubbed processes, reads results and tears down", async () => {
   const root = await mkdtemp(join(tmpdir(), "local-eval-"));
   process.env["SANDBOX_TEST_SECRET"] = "leak";

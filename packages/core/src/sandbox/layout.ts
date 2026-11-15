@@ -12,6 +12,7 @@
  * layout, so every version built before layouts grades as it did.
  */
 
+import { PSEUDONYMS_FILE } from "./aliases.js";
 import type { HiddenTestRun } from "./build.js";
 import { TASK_DESCRIPTOR_PATH } from "./descriptor.js";
 import {
@@ -210,4 +211,30 @@ export function hiddenArtifactPath(
 ): string {
   const dir = layout.tests.privateDir;
   return `private/${dir !== null && path.startsWith(`${dir}/`) ? path.slice(dir.length + 1) : path}`;
+}
+
+/**
+ * A hidden test by name: a TypeScript test file, as an upload's acceptance
+ * tests are (`.test.ts`, `.spec.ts`, `.mts`, `.cts`, `.tsx`) and as the
+ * platform writes its own (`.test.ts`).
+ */
+export const HIDDEN_TEST_FILE = /\.(?:test|spec)\.[cm]?tsx?$/;
+
+/**
+ * Where a build's artifact is staged as a hidden test (`hiddenTestPath`),
+ * or null when it is not one: outside `private/`, the name table kept
+ * beside the tests (`private/pseudonym.lunox`), or not a test file. The
+ * judge stages exactly these, and the handout counts exactly these.
+ */
+export function stagedHiddenTest(
+  layout: GradingLayout,
+  artifactPath: string,
+): string | null {
+  if (
+    !artifactPath.startsWith("private/") ||
+    artifactPath === `private/${PSEUDONYMS_FILE}`
+  )
+    return null;
+  const rel = artifactPath.slice("private/".length);
+  return HIDDEN_TEST_FILE.test(rel) ? hiddenTestPath(layout, rel) : null;
 }

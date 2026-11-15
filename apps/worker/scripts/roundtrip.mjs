@@ -52,7 +52,9 @@ import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   canonicalJson,
+  decisionsText,
   resolveScope,
+  specDecisions,
   transformConfigOf,
 } from "sandbox-factory";
 import {
@@ -151,6 +153,8 @@ async function walk(root, dir = root) {
   return out.sort();
 }
 
+/** The build's provider, whose own npm cache goes on the way out. */
+let provider;
 try {
   // The repository at the commit the version is cut at.
   const source = join(directory, "source");
@@ -314,7 +318,9 @@ try {
           scenario("s3", "edge", "a small debit pays the 25 cent minimum"),
         ],
         openQuestions: [],
-        assumptions: [],
+        // A confirmed decision, written in the workspace's names: TASK.md
+        // carries it renamed, as the scenarios are.
+        assumptions: ["The Orvanta fee is rounded half up to the cent."],
       },
     },
     pricing: null,
@@ -369,7 +375,7 @@ try {
   };
 
   // 1c. Build, with its baseline run for real.
-  const provider = createLocalProcessProvider();
+  provider = createLocalProcessProvider();
   const buildLog = [];
   const builtFiles = await createSandboxBuildAdapter({ provider }).run({
     sourceDir: source,
@@ -383,6 +389,10 @@ try {
       transformConfigSha256: versionSource.transformConfigSha256,
       approvedTaskSha256: versionSource.approvedTaskSha256,
       vocabulary: ["Orvanta Payments"],
+      // The API names the decisions a person confirmed by their hash.
+      decisionsSha256: sha256(
+        decisionsText(specDecisions(approvedTask.spec.draft)),
+      ),
     },
     run: { snapshotId: SNAPSHOT, commitSha: COMMIT },
     inputs: {
@@ -411,6 +421,16 @@ try {
     true,
     JSON.stringify(buildManifest.baseline, null, 2),
   );
+  // Both publication gates: the unchanged project carries back to the
+  // fixture's own bytes, and no public file names the workspace.
+  assert.equal(
+    buildManifest.gates?.roundTrip.status,
+    "passed",
+    JSON.stringify(buildManifest.gates, null, 2),
+  );
+  assert.ok(buildManifest.gates.roundTrip.files > 0);
+  assert.equal(buildManifest.gates.disclosure.status, "passed");
+  assert.equal(buildManifest.gates.disclosure.blocking, 0);
   assert.ok(
     await builtText("project/src/northwind/fees.ts"),
     "the fee module is renamed",
@@ -420,7 +440,7 @@ try {
     "the name table is kept privately",
   );
   say(
-    `built a ready version: ${build.artifacts.filter((a) => a.path.startsWith("project/")).length} public files, ${acceptanceTests.length} hidden tests, baseline as expected`,
+    `built a ready version: ${build.artifacts.filter((a) => a.path.startsWith("project/")).length} public files, ${acceptanceTests.length} hidden tests, baseline as expected, round trip and disclosure gates passed`,
   );
 
   // 2. The contributor's machine: the public project alone.
@@ -499,6 +519,10 @@ try {
   const agentsGuide = await readFile(join(contributor, "AGENTS.md"), "utf8");
   assert.match(taskGuide, /Feature: Northwind entry fee/);
   assert.match(taskGuide, /# s2\n {2}Scenario: a debit pays one percent/);
+  assert.match(
+    taskGuide,
+    /## Decided\n\n.*confirmed each.*\n\n- The Northwind fee is rounded half up to the cent\./,
+  );
   assert.match(agentsGuide, /`TASK\.md`: read it first/);
   for (const text of [taskGuide, agentsGuide]) {
     assert.doesNotMatch(text, /tests\/private/);
@@ -581,7 +605,7 @@ try {
     "a stack maps to the .ts",
   );
   say(
-    "contributor: npm ci, npm run build, npm test and npm run dev pass on project/ alone; no hidden test or workspace name in it; TASK.md, AGENTS.md and .vscode/ in place, stacks map to .ts",
+    "contributor: npm ci, npm run build, npm test and npm run dev pass on project/ alone; no hidden test or workspace name in it; TASK.md (with the confirmed decision, renamed), AGENTS.md and .vscode/ in place, stacks map to .ts",
   );
 
   // 3. Grading, through the adapter a submission_grade run calls.
@@ -951,5 +975,6 @@ try {
     "Worker round trip passed: slice with pseudonyms, build with scripted hidden tests, contributor commands on project/ alone, grading (passed, overfit, four refusals, hidden tests unreadable at run time), the reversed check in the repository's names (held, and withheld a carry that breaks the repository), carry-back onto the repository and its own test.",
   );
 } finally {
+  await provider?.dispose();
   await rm(directory, { recursive: true, force: true });
 }

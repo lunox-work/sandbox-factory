@@ -24,6 +24,7 @@ import {
 } from "react";
 import {
   priceFor,
+  pricedFromOf,
   WEIGHT_POINTS,
   WHOLE_BOUNTY_COMPLEXITIES,
   type WholeComplexity,
@@ -288,6 +289,21 @@ export function ProposalPeek({
   const awaitingCode = proposal.rubric?.code.status === "pending";
   // The profile at work below, said at the top too.
   const measuring = profileWorking(profile);
+  /*
+    Whether an approval would wait on the code (the server's
+    `profile_pending`): a profile in flight, or, while the rubric still
+    waits on the code, profiles not read yet or settled with the re-score
+    still landing, which the re-read below picks up. An approved price
+    waits on nothing: it is frozen.
+  */
+  const profiling =
+    open &&
+    (measuring !== null ||
+      (awaitingCode && (profile.state === "loading" || settled !== null)));
+  // The price never saw the code: none was measured, or it failed.
+  const specOnly =
+    !profiling &&
+    (proposal.pricedFrom ?? pricedFromOf(proposal.rubric ?? null)) === "spec";
   const reread = useRef<string | null>(null);
   // The latest callback, so a parent's new function does not cancel the read.
   const changed = useRef(onChanged);
@@ -470,8 +486,8 @@ export function ProposalPeek({
   const arriving =
     respec.state.phase === "working"
       ? "The scenarios are still changing. Approve once they land."
-      : measuring !== null
-        ? "The code is still being measured, and the price may change. Approve once it settles."
+      : profiling
+        ? "The code is still being profiled, and the price may change. Approve once it settles."
         : null;
   // Whether this proposal can still be approved, and so removed.
   const decidable = canDecide && open && proposal.complexity !== "unsized";
@@ -487,15 +503,34 @@ export function ProposalPeek({
             arriving !== null ||
             approveBlocked !== null
           }
-          aria-busy={acting === "approve"}
+          aria-busy={acting === "approve" || profiling}
           onClick={() =>
             void act("approve", `/proposals/${proposal.id}/approve`, {
               expectedRevision: proposal.revision,
+              // The price on screen: one moved since is refused, not
+              // approved unseen.
+              ...(proposal.amountMinor === null ||
+              proposal.currency === null ||
+              proposal.complexity === "unsized"
+                ? {}
+                : {
+                    expectedPrice: {
+                      complexity: proposal.complexity,
+                      amountMinor: proposal.amountMinor,
+                      currency: proposal.currency,
+                    },
+                  }),
             })
           }
         >
-          {acting === "approve" && <Loader2 className="animate-spin" />}
-          {acting === "approve" ? "Approving…" : "Approve"}
+          {(acting === "approve" || profiling) && (
+            <Loader2 className="animate-spin motion-reduce:animate-none" />
+          )}
+          {acting === "approve"
+            ? "Approving…"
+            : profiling
+              ? "Profiling the code…"
+              : "Approve"}
         </Button>
       </DisabledReason>
     )
@@ -720,6 +755,18 @@ export function ProposalPeek({
             </span>
           )}
         </div>
+      )}
+      {/*
+        Said wherever the price is, approved or not: an approval of it is
+        an approval of a price that never saw the code.
+      */}
+      {!reanalyzing && priced && specOnly && (
+        <p
+          className="text-muted-foreground text-xs"
+          data-testid="priced-from-spec"
+        >
+          Priced from the spec only; the code was not measured.
+        </p>
       )}
     </>
   );

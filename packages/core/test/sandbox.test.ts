@@ -721,6 +721,7 @@ test("freeze needs matching evidence for every gate, and replay never substitute
   assert.deepEqual(freezeReadiness(source, evidence), {
     ready: true,
     reasons: [],
+    failed: [],
   });
   const stale = freezeReadiness(
     {
@@ -743,6 +744,15 @@ test("freeze needs matching evidence for every gate, and replay never substitute
   );
   assert.equal(stale.ready, false);
   assert.equal(stale.reasons.length, 9);
+  // Each failing gate once, in order: publication refuses with the first.
+  assert.deepEqual(stale.failed, [
+    "build_evidence",
+    "baseline",
+    "harness",
+    "round_trip",
+    "disclosure",
+    "approval",
+  ]);
   const noBuild = freezeReadiness(
     { ...source, buildRunId: null },
     { ...evidence, disclosureBlocking: 2 },
@@ -1445,6 +1455,20 @@ test("the project carries the contributor guide: TASK.md, AGENTS.md, CLAUDE.md a
     fenced.files.find((file) => file.path === "TASK.md")?.text ?? "",
     /````gherkin\n[\s\S]*\n````\n/,
   );
+});
+
+test("TASK.md carries confirmed decisions it is given, under the scenarios, and none otherwise", () => {
+  const task = (decisions?: readonly string[]) =>
+    project(decisions === undefined ? {} : { decisions }).files.find(
+      (file) => file.path === "TASK.md",
+    )?.text ?? "";
+  const decided = task(["Half a cent rounds up.", "Refunds  are\nfree."]);
+  assert.match(
+    decided,
+    /```\n\n## Decided\n\nWhere the ticket was silent, the spec decided these, and the client confirmed each\. .*\n\n- Half a cent rounds up\.\n- Refunds are free\.\n\n## Accepted when/,
+  );
+  for (const none of [task(), task([])])
+    assert.doesNotMatch(none, /## Decided/);
 });
 
 test("a barrel's runtime forwards to the modules its stub forwards to, never to a package", () => {

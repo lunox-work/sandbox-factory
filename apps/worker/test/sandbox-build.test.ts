@@ -41,10 +41,12 @@ import {
   quotedProject,
 } from "../src/tools/hidden-tests.js";
 import { unresolvedImportRules } from "../src/tools/pseudonyms.js";
+import { hiddenSha256 } from "duediligence/api";
 import {
   BUILD_TRANSFORM_PATH,
   buildArtifactKind,
   createSandboxBuildAdapter,
+  hiddenCommitmentOf,
   nearestCompilerOptions,
   packageVocabulary,
   privateTestOutcome,
@@ -160,6 +162,8 @@ async function versionFor(
     stale: boolean;
     fixtures: VersionFixtures | null;
     slice: SliceOutput;
+    /** What the spec decided where the ticket was silent. */
+    assumptions: string[];
   }> = {},
 ): Promise<StoredVersionWithSource> {
   const { artifacts, manifest, contract } = overrides.slice ?? (await slice());
@@ -230,7 +234,7 @@ async function versionFor(
               },
             ],
             openQuestions: [],
-            assumptions: [],
+            assumptions: overrides.assumptions ?? [],
           },
         },
         pricing: null,
@@ -529,6 +533,20 @@ test("a build produces a standalone project, hidden tests apart, a verified base
     ),
   );
   assert.deepEqual(manifest.blockers, []);
+  // Both publication gates: the unchanged project, its import rewrite
+  // included, carries back to the source, and no public file names the
+  // workspace.
+  assert.deepEqual(manifest.gates?.roundTrip.status, "passed");
+  assert.deepEqual(manifest.gates?.roundTrip.problems, []);
+  assert.ok((manifest.gates?.roundTrip.files ?? 0) > 0);
+  assert.deepEqual(
+    [
+      manifest.gates?.disclosure.status,
+      manifest.gates?.disclosure.scannedBy,
+      manifest.gates?.disclosure.blocking,
+    ],
+    ["passed", "build", 0],
+  );
   assert.equal(manifest.sandboxVersionId, "sbv_1");
   assert.equal(manifest.sourceCommitSha, "a".repeat(40));
   assert.equal(manifest.evaluator?.provider, "fake");
@@ -1922,6 +1940,42 @@ test("a hidden test that disagrees with itself across two runs is flaky, and the
   );
 });
 
+test("the hidden commitment is duediligence's hash at tests/private/, the same manifest at an upload's folder paths, none for no test", () => {
+  const a = 'test("a", () => {});\n';
+  const b = 'test("b", () => {});\n';
+  // Byte order, not code-unit order, for the lines; JS order for kept ids.
+  const platform = {
+    "tests/private/s2-b.test.ts": b,
+    "tests/private/s1-a.test.ts": a,
+  };
+  assert.deepEqual(
+    hiddenCommitmentOf(
+      Object.entries(platform).map(([path, text]) => ({
+        path,
+        sha256: sha256(text),
+      })),
+    ),
+    {
+      version: 2,
+      hiddenTests: 2,
+      hiddenSha256: hiddenSha256(platform, Object.keys(platform).sort()),
+    },
+  );
+  const folder = hiddenCommitmentOf([
+    { path: "src/price.spec.ts", sha256: sha256(b) },
+    { path: "lib/rate.test.ts", sha256: sha256(a) },
+  ]);
+  const manifest =
+    `${sha256(a)}  lib/rate.test.ts\n${sha256(b)}  src/price.spec.ts\n` +
+    `${sha256(JSON.stringify(["lib/rate.test.ts", "src/price.spec.ts"]))}  calibration.kept\n`;
+  assert.equal(folder.hiddenSha256, sha256(manifest));
+  assert.deepEqual(hiddenCommitmentOf([]), {
+    version: 2,
+    hiddenTests: 0,
+    hiddenSha256: null,
+  });
+});
+
 test("a draft with no pseudonyms has a table drafted by rule, checked as the build applies it, and it settles with the build", async () => {
   const fake = fakeProvider((argv) => (runsHiddenTest(argv) ? TAP_FAILED : {}));
   // No turns: an agent asked for anything would keep nothing.
@@ -1954,6 +2008,22 @@ test("a draft with no pseudonyms has a table drafted by rule, checked as the bui
     pseudonyms: { usage: { turns: number } };
   };
   assert.deepEqual(transform.aliasRules, rules);
+  // The handout's commitment, recorded: duediligence's own hash over the
+  // hidden tests at tests/private/, the name table beside them left out.
+  const hidden = built.manifest.files.filter(
+    (record) => record.class === "test-private",
+  );
+  assert.ok(hidden.length > 0);
+  const suite: Record<string, string> = {};
+  for (const record of hidden)
+    suite[record.path] = await built.read(
+      `private/${record.path.slice("tests/private/".length)}`,
+    );
+  assert.deepEqual(built.manifest.hiddenCommitment, {
+    version: 2,
+    hiddenTests: hidden.length,
+    hiddenSha256: hiddenSha256(suite, Object.keys(suite).sort()),
+  });
   // Drafted by rule, the table cost no turn.
   assert.equal(transform.pseudonyms.usage.turns, 0);
   const transformConfigSha256 = sha256(
@@ -2920,6 +2990,73 @@ test("hidden tests a reference passes are calibrated and kept, with the referenc
     built.messages.includes(
       `Calibration kept all 1 hidden test(s) (${calibration?.engine}).`,
     ),
+  );
+});
+
+test("confirmed decisions are quoted to the hidden-tests and reference agents, renamed, and carried in TASK.md when safe to show", async () => {
+  const assumptions = ["Each thing keeps its retries count."];
+  const decisionsSha256 = sha256("d1\tEach thing keeps its retries count.\n");
+  const build = async (
+    params: Record<string, unknown>,
+    assumed = assumptions,
+  ) => {
+    const model = scripted([
+      turn([call("run_hidden_tests", { tests: [hiddenTest] })]),
+      turn([call("submit_hidden_tests", { tests: null, summary: "One." })]),
+      turn([call("run_reference", { files: [referenceFile] })]),
+      turn([call("submit_reference", { files: null, summary: "Ref.\nnone" })]),
+    ]);
+    const built = await runBuild(referenceProvider().provider, {
+      version: await versionFor({
+        acceptance: false,
+        aliasRules: named,
+        fixtures: given,
+        assumptions: assumed,
+      }),
+      agent: { model, limits },
+      calibration: "reference",
+      params,
+    });
+    return { built, model, task: await built.read("project/TASK.md") };
+  };
+  const confirmed = await build({ decisionsSha256 });
+  assert.equal(confirmed.built.manifest.ready, true);
+  // In the project's names, as the table renamed the spec.
+  for (const prompt of confirmed.model.prompts.slice(0, 2))
+    assert.match(
+      prompt,
+      /Decided, confirmed by the client:\\n- Each thing keeps its attempts count\./,
+    );
+  assert.match(
+    confirmed.task,
+    /## Decided\n\n.*\n\n- Each thing keeps its attempts count\.\n/,
+  );
+  // Not confirmed (no hash named): quoted as nothing, shown to no one.
+  const unconfirmed = await build({});
+  for (const prompt of unconfirmed.model.prompts)
+    assert.doesNotMatch(prompt, /confirmed by the client/);
+  assert.doesNotMatch(unconfirmed.task, /## Decided/);
+  // A decision still in the workspace's names is kept from TASK.md, never
+  // leaked; the agents, which are private, still hold the tests to it.
+  const leaking = await build(
+    {
+      decisionsSha256: sha256("d1\tZorblax keeps its retries count.\n"),
+      vocabulary: ["Zorblax"],
+    },
+    ["Zorblax keeps its retries count."],
+  );
+  assert.equal(leaking.built.manifest.ready, true);
+  assert.doesNotMatch(leaking.task, /## Decided|Zorblax/);
+  assert.ok(
+    leaking.built.messages.some((line) =>
+      /TASK\.md leaves out the 1 confirmed decision/.test(line),
+    ),
+  );
+  assert.match(leaking.model.prompts[0] ?? "", /confirmed by the client/);
+  // A hash of other decisions: the task moved under the run.
+  await assert.rejects(
+    build({ decisionsSha256: "0".repeat(64) }),
+    /tool_failed/,
   );
 });
 

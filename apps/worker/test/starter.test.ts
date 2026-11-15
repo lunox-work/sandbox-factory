@@ -551,6 +551,59 @@ test("a starter naming the workspace anywhere a developer reads is refused until
   }
 });
 
+test("a starter's TASK.md carries its confirmed decisions, renamed, unless they would name the workspace", async () => {
+  const root = await mkdtemp(join(tmpdir(), "starter-decided-"));
+  try {
+    const spec = {
+      feature: "Cart",
+      background: [],
+      scenarios: [
+        {
+          id: "s1",
+          kind: "happy" as const,
+          title: "lines add up",
+          steps: [{ keyword: "Then" as const, text: "the lines add up" }],
+          origin: "draft" as const,
+        },
+      ],
+      openQuestions: [],
+      assumptions: ["An empty cart totals zero.", "Acme rounds to the cent."],
+    };
+    const task = (
+      decisions: readonly string[],
+      aliases = submission.aliases,
+    ) => {
+      const checked = checkStarter({
+        root,
+        version: projectVersion,
+        starter: { ...submission, aliases },
+        spec,
+        decisions,
+        vocabulary: ["acme"],
+      });
+      assert.equal(checked.ok, true, checked.problems.join("\n"));
+      return checked.ok
+        ? (checked.project.files.find((file) => file.path === "TASK.md")
+            ?.text ?? "")
+        : "";
+    };
+    // A decision still naming the workspace keeps the list out of TASK.md.
+    assert.doesNotMatch(task(spec.assumptions), /## Decided|Acme/);
+    // Renamed by the table, the list is shown.
+    assert.match(
+      task(spec.assumptions, [
+        ...submission.aliases,
+        { before: "Acme", after: "The shop", kind: "text", paths: [] },
+      ]),
+      /## Decided\n\n.*\n\n- An empty cart totals zero\.\n- The shop rounds to the cent\.\n/,
+    );
+    // Unconfirmed, none.
+    assert.doesNotMatch(task([]), /## Decided/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("the starter agent checks, runs and submits a starter that is built as the version", async () => {
   const fake = fakeProvider();
   const model = scripted([
@@ -619,6 +672,16 @@ test("the starter agent checks, runs and submits a starter that is built as the 
     assert.equal(manifest.sourceSnapshotId, null);
     assert.equal(manifest.starterSha256, sha(setText));
     assert.equal(manifest.toolVersion, "sandbox_starter@6");
+    // No repository to carry back to; the check scanned every public file.
+    assert.deepEqual(manifest.gates, {
+      roundTrip: { status: "not_applicable", files: 0, problems: [] },
+      disclosure: {
+        status: "passed",
+        scannedBy: "build",
+        names: 1,
+        blocking: 0,
+      },
+    });
     assert.equal(
       manifest.transformConfigSha256,
       sha(

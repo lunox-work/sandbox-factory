@@ -12,6 +12,7 @@
 import type { SliceManifest, BoundaryContract } from "../slice/manifest.js";
 import type { AliasRule } from "./aliases.js";
 import type { VersionFixtures } from "./fixtures.js";
+import type { SandboxBuildManifest } from "./build.js";
 
 export const SANDBOX_STATUSES = ["draft", "published", "closed"] as const;
 export type SandboxStatus = (typeof SANDBOX_STATUSES)[number];
@@ -401,9 +402,29 @@ export interface AcceptanceTest {
 }
 
 /**
- * Whether a draft may freeze. 5A records the rule; 5D supplies the round
- * trip and disclosure runs and is its first caller. Evidence that names a different manifest or
+ * The gates a version freezes on, as publication names the first that
+ * fails (`PUBLICATION_GATE_CODES`): the build's evidence names this
+ * version's inputs, its baseline passed, its harness and toolchain are
+ * recorded, the no-change round trip passed, the disclosure scan found
+ * nothing, and a person approved this exact candidate.
+ */
+export const FREEZE_GATES = [
+  "build_evidence",
+  "baseline",
+  "harness",
+  "round_trip",
+  "disclosure",
+  "approval",
+] as const;
+export type FreezeGate = (typeof FREEZE_GATES)[number];
+
+/**
+ * Whether a draft may freeze. Evidence that names a different manifest or
  * transform than the record is invalid, because inputs changed after it.
+ * The build run is the run that ran both the round trip and the disclosure
+ * scan (`PublicationGates` in its manifest), so publication records it as
+ * `roundTripRunId` and `disclosureRunId` once each passed (`gatesOf`).
+ * `failed` lists each failing gate once, in `FREEZE_GATES` order.
  */
 export function freezeReadiness(
   source: VersionSourceRecord,
@@ -415,31 +436,106 @@ export function freezeReadiness(
     readonly roundTripOk: boolean;
     readonly disclosureBlocking: number | null;
   },
-): { ready: boolean; reasons: string[] } {
-  const reasons: string[] = [];
-  if (source.buildRunId === null) reasons.push("No build run is recorded.");
+): { ready: boolean; reasons: string[]; failed: FreezeGate[] } {
+  const found: { gate: FreezeGate; reason: string }[] = [];
+  const fail = (gate: FreezeGate, reason: string) =>
+    found.push({ gate, reason });
+  if (source.buildRunId === null)
+    fail("build_evidence", "No build run is recorded.");
   else {
     if (evidence.buildManifestSha256 !== source.manifestSha256)
-      reasons.push("The build evidence names a different slice manifest.");
+      fail(
+        "build_evidence",
+        "The build evidence names a different slice manifest.",
+      );
     if (evidence.buildTransformSha256 !== source.transformConfigSha256)
-      reasons.push("The build evidence names a different transform.");
+      fail("build_evidence", "The build evidence names a different transform.");
     if (evidence.buildApprovedTaskSha256 !== source.approvedTaskSha256)
-      reasons.push("The build evidence names a different approved task.");
-    if (!evidence.baselineOk) reasons.push("The baseline check did not pass.");
+      fail(
+        "build_evidence",
+        "The build evidence names a different approved task.",
+      );
+    if (!evidence.baselineOk)
+      fail("baseline", "The baseline check did not pass.");
   }
   if (source.harnessSha256 === null)
-    reasons.push("No harness hash is recorded.");
+    fail("harness", "No harness hash is recorded.");
   if (source.toolchainDigest === null)
-    reasons.push("No toolchain digest is recorded.");
+    fail("harness", "No toolchain digest is recorded.");
   if (source.roundTripRunId === null || !evidence.roundTripOk)
-    reasons.push("The no-change round trip has not passed.");
+    fail("round_trip", "The no-change round trip has not passed.");
   if (source.disclosureRunId === null)
-    reasons.push("No disclosure scan is recorded.");
+    fail("disclosure", "No disclosure scan is recorded.");
   else if ((evidence.disclosureBlocking ?? 1) > 0)
-    reasons.push("The disclosure scan has blocking findings.");
+    fail("disclosure", "The disclosure scan has blocking findings.");
   if (source.approvedBy === null || source.approvedAt === null)
-    reasons.push("The exact candidate has not been approved.");
-  return { ready: reasons.length === 0, reasons };
+    fail("approval", "The exact candidate has not been approved.");
+  return {
+    ready: found.length === 0,
+    reasons: found.map(({ reason }) => reason),
+    failed: FREEZE_GATES.filter((gate) =>
+      found.some((item) => item.gate === gate),
+    ),
+  };
+}
+
+/** The refusal code publication answers for the first failing gate. */
+export const PUBLICATION_GATE_CODES: Readonly<Record<FreezeGate, string>> = {
+  build_evidence: "build_evidence_stale",
+  baseline: "not_ready",
+  harness: "not_ready",
+  round_trip: "round_trip_failed",
+  disclosure: "disclosure_failed",
+  approval: "not_approved",
+};
+
+/**
+ * A version's publication gates, read from its build's manifest, as
+ * `freezeReadiness` takes them: the evidence, and the run ids the source
+ * records for the round trip and the disclosure scan (the build's, each
+ * when it passed). A round trip with nothing to carry to (a generated or
+ * uploaded version) passes. `recorded` is false for a build made before
+ * the gates, whose manifest has none.
+ */
+export function gatesOf(
+  buildRunId: string,
+  manifest: Pick<
+    SandboxBuildManifest,
+    | "manifestSha256"
+    | "transformConfigSha256"
+    | "approvedTaskSha256"
+    | "baseline"
+    | "gates"
+  >,
+): {
+  readonly recorded: boolean;
+  readonly roundTripRunId: string | null;
+  readonly disclosureRunId: string | null;
+  readonly evidence: Parameters<typeof freezeReadiness>[1];
+} {
+  const gates = manifest.gates;
+  const roundTripOk =
+    gates !== undefined && gates.roundTrip.status !== "failed";
+  const disclosureOk =
+    gates !== undefined && gates.disclosure.status === "passed";
+  return {
+    recorded: gates !== undefined,
+    roundTripRunId: roundTripOk ? buildRunId : null,
+    disclosureRunId: gates === undefined ? null : buildRunId,
+    evidence: {
+      buildManifestSha256: manifest.manifestSha256,
+      buildTransformSha256: manifest.transformConfigSha256,
+      buildApprovedTaskSha256: manifest.approvedTaskSha256,
+      baselineOk: manifest.baseline?.ok === true,
+      roundTripOk,
+      disclosureBlocking:
+        gates === undefined
+          ? null
+          : disclosureOk
+            ? 0
+            : Math.max(1, gates.disclosure.blocking),
+    },
+  };
 }
 
 /**
