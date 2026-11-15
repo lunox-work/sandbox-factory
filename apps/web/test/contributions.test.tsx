@@ -6,6 +6,9 @@
  * client, as in `app.test.tsx`.
  */
 
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+
 import type { ContributionSubmissionDto } from "@sandbox-factory/shared";
 
 import { render, screen, waitFor, within } from "./render";
@@ -495,6 +498,33 @@ test("the contributions page makes a token for an editor or agent, shown once", 
       /claude mcp add --transport http lunox-contribute .*\/mcp\/contribute$/,
     ),
   ).toBeTruthy();
+  // The agent paths name this app's own origin, the skill, and the
+  // extension's commands as its manifest titles them.
+  expect(
+    within(section).getByText(
+      `claude mcp add --transport http lunox-contribute ${window.location.origin}/mcp/contribute`,
+    ),
+  ).toBeTruthy();
+  expect(within(section).getByText("lunox-contribute")).toBeTruthy();
+  const { VSCODE_COMMANDS } =
+    await import("../src/features/contributions/ContributorTokens");
+  const manifest = JSON.parse(
+    readFileSync(
+      join(import.meta.dirname, "../../extension/package.json"),
+      "utf8",
+    ),
+  ) as {
+    contributes: { commands: { title: string; category: string }[] };
+  };
+  const palette = manifest.contributes.commands.map(
+    (command) => `${command.category}: ${command.title}`,
+  );
+  for (const command of VSCODE_COMMANDS) {
+    expect(palette).toContain(command);
+    expect(
+      within(screen.getByTestId("vscode-commands")).getByText(command),
+    ).toBeTruthy();
+  }
   expect(await within(section).findByText("No tokens yet.")).toBeTruthy();
   const user = userEvent.setup();
   await user.click(within(section).getByRole("button", { name: "New token" }));

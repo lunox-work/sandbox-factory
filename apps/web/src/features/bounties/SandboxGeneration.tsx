@@ -56,7 +56,9 @@ import {
   DisclosureFindings,
   disclosureAcknowledgedAtOf,
   disclosureFindingsOf,
+  disclosureUnrecordedOf,
   openDisclosureFindingCount,
+  unrecordedText,
   type DisclosureAcknowledgedAt,
   type DisclosureFindingView,
 } from "../sandbox/DisclosureFindings";
@@ -122,6 +124,8 @@ function outcomeOf(artifacts: readonly ArtifactDto[]): {
   disclosure: DisclosureFindingView[];
   /** Where those are acknowledged: a sliced build, or publication. */
   acknowledgedAt: DisclosureAcknowledgedAt;
+  /** Findings past the record, which no acknowledgement clears. */
+  unrecorded: number;
   /** The repository's tests a sliced build carried and left out; null when it carried none by request. */
   carriedTests: { kept: number; dropped: number } | null;
 } {
@@ -155,6 +159,7 @@ function outcomeOf(artifacts: readonly ArtifactDto[]): {
     blockers,
     disclosure: disclosureFindingsOf(build),
     acknowledgedAt: disclosureAcknowledgedAtOf(build),
+    unrecorded: disclosureUnrecordedOf(build),
     carriedTests: kept === null || dropped === null ? null : { kept, dropped },
   };
 }
@@ -751,6 +756,7 @@ export function SandboxGeneration({
   let hiddenTests: number | null = null;
   let disclosure: DisclosureFindingView[] = [];
   let acknowledgedAt: DisclosureAcknowledgedAt = "build";
+  let unrecorded = 0;
   let carried: { kept: number; dropped: number } | null = null;
   // Whether the selected draft's finished build carried tests; null before one.
   let builtCarrying: boolean | null = null;
@@ -793,6 +799,7 @@ export function SandboxGeneration({
       hiddenTests = outcome.hiddenTests;
       disclosure = outcome.disclosure;
       acknowledgedAt = outcome.acknowledgedAt;
+      unrecorded = outcome.unrecorded;
       carried = outcome.carriedTests;
       if (!artifacts.isPending) {
         builtCarrying = carried !== null;
@@ -834,6 +841,7 @@ export function SandboxGeneration({
     disclosure,
     source.data?.source?.disclosureAcknowledgements ?? [],
     acknowledgedAt,
+    unrecorded,
   );
   const building = run.data !== undefined && !runEnded;
   const publishHeld: { by: string; reason: string } | null =
@@ -853,7 +861,10 @@ export function SandboxGeneration({
           : openFindings > 0
             ? {
                 by: "disclosure",
-                reason: `Acknowledge ${openFindings === 1 ? "1 finding" : `${openFindings} findings`} first: the disclosure scan found text that may say whose code this is.`,
+                reason:
+                  unrecorded > 0 && acknowledgedAt === "publish"
+                    ? unrecordedText(unrecorded)
+                    : `Acknowledge ${openFindings === 1 ? "1 finding" : `${openFindings} findings`} first: the disclosure scan found text that may say whose code this is.`,
               }
             : !publishable ||
                 run.data?.status === "failed" ||
@@ -1045,7 +1056,7 @@ export function SandboxGeneration({
             </a>
           </p>
         )}
-        {canManage && disclosure.length > 0 && (
+        {canManage && (disclosure.length > 0 || unrecorded > 0) && (
           <DisclosureFindings
             id={findingsId}
             // A new build's findings start the marks afresh.
@@ -1057,6 +1068,7 @@ export function SandboxGeneration({
               source.data?.source?.disclosureAcknowledgements ?? []
             }
             acknowledgedAt={acknowledgedAt}
+            unrecorded={unrecorded}
             canAcknowledge={!readOnly && selected.frozenAt === null}
             onSaved={() => {
               void queryClient.invalidateQueries({

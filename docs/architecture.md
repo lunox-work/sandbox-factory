@@ -769,7 +769,9 @@ installation, and any other refusal reads as not found. Grading takes
 `names: "repository"`: the files are carried forward with `forwardChange`
 on the snapshot, only editable files and files new to the repository are
 judged, and nothing is carried back. The same files again queue a
-submission that has no run (`run_limit` is `retryable`). The job's own exit
+submission that has no run (`run_limit` is `retryable`), and grade an
+errored one again in place with its run's params, as `…/submissions/:sid/regrade`
+does (`regrade_spent` once its run has used its attempts). The job's own exit
 is the check; no `checks` permission is needed.
 
 **Nobody picks the repository.** `POST .../sandboxes` takes `bountyId` and cuts
@@ -1021,7 +1023,11 @@ default to 0, 1, 2 and 4 points, four per half step; trimming never goes below
 the base and XL is the cap. A covered scenario (`weight.ts`) is behaviour
 another scenario's code already has, so an exhaustive draft can still be XS.
 Manual resize sets a new base at step zero; respec keeps base and settings
-without a sizing call; reprice starts fresh on the current card.
+without a sizing call; reprice starts fresh on the current card. Each resize
+appends a `proposal_size_label` row in its transaction (size, price and setter
+before, model and rubric sizes, the chosen size, who and when;
+`packages/db/src/proposal-size-labels.ts`): human labels for calibration, read
+on the proposal detail only (`sizeLabels`).
 
 **The rubric sizes a proposal from its draft, and again once its code is
 measured** (`packages/core/src/pricing/rubric.ts`, `rubric-v4`): scenarios by weight plus

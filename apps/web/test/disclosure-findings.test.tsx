@@ -6,6 +6,8 @@ import {
   DisclosureFindings,
   disclosureAcknowledgedAtOf,
   disclosureFindingsOf,
+  disclosureUnrecordedOf,
+  openDisclosureFindingCount,
 } from "../src/features/sandbox/DisclosureFindings";
 
 afterEach(() => {
@@ -321,4 +323,74 @@ test("a member sees what waits for acknowledgement at publication, with no contr
       /acknowledges it as public before the version is published/,
     ),
   ).toBeTruthy();
+});
+
+test("findings past a publication gate's record count as blocking, and say to cut the folder again", () => {
+  const gate = {
+    acknowledgedAt: "publish",
+    total: 5,
+    findings: [findings[0], findings[1]],
+  };
+  expect(disclosureUnrecordedOf({ disclosure: gate })).toBe(3);
+  // A sliced build's gate blocks on its own count; none recorded short.
+  expect(
+    disclosureUnrecordedOf({
+      disclosure: { ...gate, acknowledgedAt: "build" },
+    }),
+  ).toBe(0);
+  expect(
+    disclosureUnrecordedOf({ disclosure: { acknowledgedAt: "publish" } }),
+  ).toBe(0);
+  expect(
+    disclosureUnrecordedOf({
+      disclosure: {
+        acknowledgedAt: "publish",
+        total: 1,
+        findings: gate.findings,
+      },
+    }),
+  ).toBe(0);
+  expect(disclosureUnrecordedOf(null)).toBe(0);
+  const covered = [
+    {
+      kind: "host" as const,
+      value: "halcyon.io",
+      note: null,
+      by: "u",
+      at: stamp,
+    },
+    {
+      kind: "url" as const,
+      value: "https://wiki.halcyon.internal/runbooks/app",
+      note: null,
+      by: "u",
+      at: stamp,
+    },
+  ];
+  const recorded = findings.slice(0, 2).map((item) => ({
+    ...item,
+    acknowledged: false,
+    term: item.kind === "url" ? "wiki.halcyon.internal" : "halcyon.io",
+  }));
+  // Every recorded one acknowledged: the three past the record still hold it.
+  expect(openDisclosureFindingCount(recorded, covered, "publish", 3)).toBe(3);
+  expect(openDisclosureFindingCount(recorded, covered, "build", 3)).toBe(2);
+  render(
+    <DisclosureFindings
+      organizationId="org_1"
+      versionId="sbv_1"
+      findings={recorded}
+      acknowledgements={covered}
+      acknowledgedAt="publish"
+      unrecorded={3}
+      canAcknowledge
+    />,
+  );
+  const panel = screen.getByTestId("disclosure-findings");
+  expect(within(panel).getByTestId("unrecorded").textContent).toBe(
+    "3 more findings were not recorded; re-cut the folder.",
+  );
+  expect(within(panel).getByRole("status").textContent).toBe(
+    "3 of 5 to acknowledge before publishing.",
+  );
 });

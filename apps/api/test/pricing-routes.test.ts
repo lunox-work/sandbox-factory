@@ -13,7 +13,10 @@ import type {
 } from "@sandbox-factory/db";
 
 import { JiraApiError } from "@sandbox-factory/jira";
-import type { JiraIssueDto } from "@sandbox-factory/shared";
+import {
+  proposalDetailResponseSchema,
+  type JiraIssueDto,
+} from "@sandbox-factory/shared";
 import {
   assessRubric,
   COMPLEXITY_PROFILE_VERSION,
@@ -1172,6 +1175,8 @@ test("proposal detail returns the proposal and validates its board deep link", a
   assert.equal(body.freshness.liveTitle, "Live");
   // One proposal per bounty now: there is no history to return.
   assert.equal(body.history, undefined);
+  // Without a label store, no labels.
+  assert.deepEqual((body as { sizeLabels?: unknown }).sizeLabels, []);
 
   const wrongBoard = await state.app.request(
     "/api/v1/orgs/org_1/proposals/bpr_1?boardId=jrb_other",
@@ -1414,6 +1419,47 @@ test("a resize sets the size chosen, and the step starts again from it", async (
   assert.equal(state.current().step?.addedPoints, 0);
   assert.deepEqual(state.current().step?.added, []);
   assert.equal(state.current().step?.baseRevision, 2);
+});
+
+test("a proposal's detail carries its reviewers' resizes as calibration labels; the list does not", async () => {
+  const label = {
+    id: "psl_1",
+    proposalId: "bpr_1",
+    proposalRevision: 1,
+    specRevision: 2,
+    modelComplexity: "M" as const,
+    modelConfidence: "high" as const,
+    rubricComplexity: "L" as const,
+    fromComplexity: "L" as const,
+    fromSizedBy: "rubric" as const,
+    fromAmountMinor: 300,
+    complexity: "S" as const,
+    amountMinor: 100,
+    currency: "USD",
+    resizedBy: "user_1",
+    resizedAt: "2026-11-15T00:00:00.000Z",
+  };
+  const asked: unknown[][] = [];
+  const state = reviewHarness(undefined, {}, undefined, {
+    sizeLabels: {
+      list: (...args: unknown[]) => {
+        asked.push(args);
+        return Promise.resolve([label]);
+      },
+    },
+  });
+  const detail = await state.app.request("/api/v1/orgs/org_1/proposals/bpr_1", {
+    headers,
+  });
+  assert.equal(detail.status, 200);
+  const body = proposalDetailResponseSchema.parse(await detail.json());
+  const { proposalId: _proposalId, ...shown } = label;
+  assert.deepEqual(body.sizeLabels, [shown]);
+  assert.deepEqual(asked, [["org_1", "bpr_1"]]);
+  const listed = (await (
+    await state.app.request("/api/v1/orgs/org_1/proposals", { headers })
+  ).json()) as { proposals: Record<string, unknown>[] };
+  assert.equal(listed.proposals[0]?.["sizeLabels"], undefined);
 });
 
 test("a resize refuses a half size: those are only where a step lands", async () => {

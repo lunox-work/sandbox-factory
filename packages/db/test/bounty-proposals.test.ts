@@ -915,8 +915,16 @@ test("withdraws and resizes through expected-revision filters", async () => {
   assert.equal(withdrawFake.calls[0]?.values?.["version"], undefined);
 
   const resized = row({ revision: 2, complexity: "L", amountMinor: 300 });
+  const before = row({
+    revision: 1,
+    specRevision: 3,
+    sizedBy: "rubric",
+    rubric: { size: "M" } as RubricAssessment,
+  });
   const resizeFake = createSequencedFakeDb([
+    [before],
     [resized],
+    [],
     [{ row: resized, ...NAME }],
   ]);
   assert.equal(
@@ -933,11 +941,40 @@ test("withdraws and resizes through expected-revision filters", async () => {
     ).ok,
     true,
   );
+  // The size it had, read locked at the revision the reviewer saw.
+  assert.equal(resizeFake.calls[0]?.kind, "select");
+  assert.equal(resizeFake.calls[0]?.lock, "update");
+  assert.equal(resizeFake.calls[0]?.filtered, true);
   // Without a step the proposal is left with none.
-  assert.equal(resizeFake.calls[0]?.values?.["complexity"], "L");
-  assert.equal(resizeFake.calls[0]?.values?.["step"], null);
-  assert.equal(resizeFake.calls[0]?.values?.["stepVersion"], null);
-  assert.equal(resizeFake.calls[0]?.values?.["sizedBy"], "reviewer");
+  assert.equal(resizeFake.calls[1]?.values?.["complexity"], "L");
+  assert.equal(resizeFake.calls[1]?.values?.["step"], null);
+  assert.equal(resizeFake.calls[1]?.values?.["stepVersion"], null);
+  assert.equal(resizeFake.calls[1]?.values?.["sizedBy"], "reviewer");
+  // And a human label beside it: what the model, the rubric and the price
+  // said before, and what the reviewer chose, by whom and when.
+  const label = resizeFake.calls[2];
+  assert.equal(label?.kind, "insert");
+  const { id, resizedAt, ...kept } = label?.values ?? {};
+  assert.match(String(id), /^psl_/);
+  assert.ok(resizedAt instanceof Date);
+  assert.deepEqual(kept, {
+    organizationId: "org_1",
+    proposalId: "bpr_1",
+    proposalRevision: 1,
+    specRevision: 3,
+    modelComplexity: "M",
+    modelConfidence: "high",
+    rubricComplexity: "M",
+    rubric: { size: "M" },
+    fromComplexity: "M",
+    fromSizedBy: "rubric",
+    fromAmountMinor: 200,
+    complexity: "L",
+    amountMinor: 300,
+    currency: "USD",
+    resizedBy: "usr_1",
+  });
+  assert.equal(resizedAt, resizeFake.calls[1]?.values?.["resizedAt"]);
 });
 
 test("a resize with a step writes the rebased step and the size it comes to", async () => {
@@ -950,7 +987,12 @@ test("a resize with a step writes the rebased step and the size it comes to", as
     step,
     stepVersion: step.stepVersion,
   });
-  const fake = createSequencedFakeDb([[resized], [{ row: resized, ...NAME }]]);
+  const fake = createSequencedFakeDb([
+    [row()],
+    [resized],
+    [],
+    [{ row: resized, ...NAME }],
+  ]);
   const result = await createBountyProposalStore(fake.db).resize(
     "org_1",
     "bpr_1",
@@ -962,7 +1004,10 @@ test("a resize with a step writes the rebased step and the size it comes to", as
     step,
   );
   assert.equal(result.ok, true);
-  const values = fake.calls[0]?.values;
+  const values = fake.calls[1]?.values;
+  // The label keeps the size the step came to; no rubric, none of its.
+  assert.equal(fake.calls[2]?.values?.["complexity"], "L+");
+  assert.equal(fake.calls[2]?.values?.["rubricComplexity"], null);
   assert.equal(values?.["complexity"], "L+");
   assert.equal(values?.["amountMinor"], 350);
   assert.deepEqual(values?.["step"], step);
@@ -990,6 +1035,31 @@ test("a missed mutation distinguishes not found from changed", async () => {
   );
   assert.equal(result.ok, false);
   if (!result.ok) assert.equal(result.reason, "changed");
+  // A miss records no label.
+  assert.equal(
+    conflict.calls.some((call) => call.kind === "insert"),
+    false,
+  );
+  // Read, then changed under the lock's race: no label either.
+  const raced = createSequencedFakeDb([
+    [row()],
+    [],
+    [{ row: changed, ...NAME }],
+  ]);
+  const racedResult = await createBountyProposalStore(raced.db).resize(
+    "org_1",
+    "bpr_1",
+    1,
+    "usr_1",
+    "S",
+    100,
+    "USD",
+  );
+  assert.equal(racedResult.ok, false);
+  assert.equal(
+    raced.calls.some((call) => call.kind === "insert"),
+    false,
+  );
 
   // Withdrawing what is already proposed: the revision matches, the state
   // does not.

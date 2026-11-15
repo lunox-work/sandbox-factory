@@ -370,6 +370,31 @@ export const proposalFreshnessSchema = z.enum([
   "unknown",
 ]);
 
+/**
+ * A reviewer's resize kept as a human label for calibrating sizing: the
+ * size and price before it (and what set them), what the model and the
+ * rubric said then, and what the reviewer chose, by whom and when. On the
+ * owner's proposal detail only (`sizeLabels`).
+ */
+export const proposalSizeLabelDtoSchema = z.object({
+  id: z.string().min(1),
+  /** The proposal revision resized, and the spec revision it sized. */
+  proposalRevision: z.number().int().positive(),
+  specRevision: z.number().int().positive().nullable(),
+  modelComplexity: modelComplexitySchema,
+  modelConfidence: sizingConfidenceSchema,
+  rubricComplexity: pricedComplexitySchema.nullable(),
+  fromComplexity: bountyComplexitySchema,
+  fromSizedBy: proposalSizedBySchema,
+  fromAmountMinor: minorAmountSchema.nullable(),
+  complexity: bountyComplexitySchema,
+  amountMinor: minorAmountSchema,
+  currency: z.string().length(3),
+  /** The reviewer; null once their account is gone. */
+  resizedBy: z.string().nullable(),
+  resizedAt: z.iso.datetime(),
+});
+
 export const bountyProposalDtoSchema = z.object({
   id: z.string().min(1),
   organizationId: z.string().min(1),
@@ -550,6 +575,7 @@ export type BountyRunPlannedIssue = z.infer<typeof bountyRunPlannedIssueSchema>;
 export type BountyRunDto = z.infer<typeof bountyRunDtoSchema>;
 export type BountyRunProgressDto = z.infer<typeof bountyRunProgressSchema>;
 export type BountyProposalDto = z.infer<typeof bountyProposalDtoSchema>;
+export type ProposalSizeLabelDto = z.infer<typeof proposalSizeLabelDtoSchema>;
 export type RubricAssessmentDto = z.infer<typeof rubricAssessmentSchema>;
 export type ProposalFreshnessDto = z.infer<typeof proposalFreshnessDtoSchema>;
 export type ProposalLiveSpecDto = z.infer<typeof proposalLiveSpecSchema>;

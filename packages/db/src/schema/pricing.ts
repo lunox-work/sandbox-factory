@@ -387,6 +387,58 @@ export const bountyProposal = pgTable(
   ],
 );
 
+/**
+ * A reviewer's resize, kept as a human label for calibrating sizing: the
+ * size and price the proposal had before (`from*`, and who had set it),
+ * what the model and the rubric said then, and the size the reviewer chose.
+ * Appended in the transaction that resizes (`BountyProposalStore.resize`),
+ * never changed after; a resize undone (`applyRubric`) leaves its label.
+ * Read on the owner's proposal detail only (`sizeLabels`).
+ */
+export const proposalSizeLabel = pgTable(
+  "proposal_size_label",
+  {
+    id: text("id").primaryKey(),
+    organizationId: text("organization_id")
+      .notNull()
+      .references(() => organization.id, { onDelete: "cascade" }),
+    proposalId: text("proposal_id")
+      .notNull()
+      .references(() => bountyProposal.id, { onDelete: "cascade" }),
+    /** The proposal revision the reviewer resized, and its spec revision. */
+    proposalRevision: integer("proposal_revision").notNull(),
+    specRevision: integer("spec_revision"),
+    modelComplexity: text("model_complexity").notNull(),
+    modelConfidence: text("model_confidence").notNull(),
+    /** The rubric's band then, null without one; its whole assessment too. */
+    rubricComplexity: text("rubric_complexity"),
+    rubric: jsonb("rubric").$type<RubricAssessment>(),
+    fromComplexity: text("from_complexity").notNull(),
+    fromSizedBy: text("from_sized_by").notNull(),
+    fromAmountMinor: safeMinor("from_amount_minor"),
+    /** What the resize came to: the reviewer's size (or its step's). */
+    complexity: text("complexity").notNull(),
+    amountMinor: safeMinor("amount_minor").notNull(),
+    currency: text("currency").notNull(),
+    resizedBy: text("resized_by").references(() => user.id, {
+      onDelete: "set null",
+    }),
+    resizedAt: ts("resized_at").notNull().defaultNow(),
+  },
+  (table) => [
+    index("proposal_size_label_organization_id_idx").on(table.organizationId),
+    index("proposal_size_label_proposal_id_idx").on(table.proposalId),
+    check(
+      "proposal_size_label_from_sized_by_check",
+      sql`${table.fromSizedBy} in ('model', 'rubric', 'reviewer')`,
+    ),
+    check(
+      "proposal_size_label_revision_check",
+      sql`${table.proposalRevision} > 0 AND (${table.specRevision} IS NULL OR ${table.specRevision} > 0)`,
+    ),
+  ],
+);
+
 /** How a spec revision came to be. */
 export const BOUNTY_SPEC_ORIGINS = [
   "draft",

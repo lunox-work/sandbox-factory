@@ -21,6 +21,7 @@ import {
   createBountyPostedSpecStore,
   createBountySpecStore,
   createDecisionConfirmationStore,
+  createProposalSizeLabelStore,
   createContributorStore,
   createSubmissionMergeStore,
   createSubmissionStore,
@@ -164,6 +165,7 @@ const bountyRuns = createBountyRunStore(connection.db, { tokenQuota });
 const bountyProposals = createBountyProposalStore(connection.db);
 const bountySpecs = createBountySpecStore(connection.db);
 const decisionConfirmations = createDecisionConfirmationStore(connection.db);
+const sizeLabels = createProposalSizeLabelStore(connection.db);
 const postedSpecs = createBountyPostedSpecStore(connection.db);
 const bountyProfiles = createBountyProfileStore(connection.db);
 const jiraIssues = createJiraIssueStore(connection.db);
@@ -877,6 +879,7 @@ const app = createApp({
     proposals: bountyProposals,
     specs: bountySpecs,
     decisions: decisionConfirmations,
+    sizeLabels,
     postedSpecs,
     issues: jiraIssues,
     bounties,

@@ -52,6 +52,17 @@ export function contributorMcpAddWithToken(origin: string): string {
   return `${contributorMcpAdd(origin)} --header "Authorization: Bearer lnxc_…"`;
 }
 
+/**
+ * The VS Code extension's commands a contributor runs, in order, as the
+ * Command Palette shows them (`apps/extension/package.json`, category
+ * "Lunox"); `contributions.test.tsx` holds them to that file.
+ */
+export const VSCODE_COMMANDS = [
+  "Lunox: Sign in with a contributor token",
+  "Lunox: Open contribution",
+  "Lunox: Submit",
+] as const;
+
 function failureText(error: unknown, fallback: string): string {
   return error instanceof ApiError && error.status !== 404
     ? error.message
@@ -115,13 +126,26 @@ export function ContributorTokens() {
       <div className="text-muted-foreground flex flex-col gap-2 text-xs">
         <p>
           In Claude Code, add the contributor MCP server and sign in when it
-          asks; or pass a token to a client that cannot open a browser.
+          asks; or pass a token to a client that cannot open a browser. The{" "}
+          <code className="text-foreground font-mono">lunox-contribute</code>{" "}
+          skill, in the duediligence and carveout plugins, walks an agent
+          through a contribution with it.
         </p>
         <Snippet text={contributorMcpAdd(origin)} label="Copy command" />
         <Snippet
           text={contributorMcpAddWithToken(origin)}
           label="Copy command with a token"
         />
+        <p data-testid="vscode-commands">
+          In VS Code, the Lunox extension's commands:{" "}
+          {VSCODE_COMMANDS.map((command, index) => (
+            <span key={command}>
+              {index > 0 && ", then "}
+              <span className="text-foreground font-medium">{command}</span>
+            </span>
+          ))}
+          .
+        </p>
       </div>
 
       {created !== null && (

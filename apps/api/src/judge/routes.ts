@@ -6,7 +6,10 @@
  *   POST /api/judge      { workspace, versionId, files }  → 202 { submission }
  *
  * The same files again answer the submission already made (200), and queue
- * its run when it has none: a 409 `run_limit` is `retryable`.
+ * its run when it has none: a 409 `run_limit` is `retryable`. Sent again for
+ * an errored submission (the CI job re-run), it is graded again in place, as
+ * `POST …/submissions/:sid/regrade` does: 202, or 409 `regrade_spent` once
+ * its run has used its attempts.
  *   GET  /api/judge/:id                                    → { submission }
  *
  * Outside `/api/v1`, as GitHub's webhook is: the caller has no session. It
@@ -172,8 +175,12 @@ export function mountJudgeRoutes<E extends Env>(
     if (!created.ok) return refused(c, 404, "not_found", "Not found.");
     // A new submission, or one still waiting whose first enqueue may have
     // been refused at the active-run limit: the run is cached by the
-    // submission, so a live or ended one is found, never doubled.
-    if (!created.created && created.submission.status !== "queued")
+    // submission, so a live or ended one is found, never doubled. An
+    // errored one is the platform's failure, and re-running the CI job is
+    // its owner's natural retry: its run (same snapshot, same params) is
+    // queued again while it has attempts, which reopens the submission.
+    const regrade = !created.created && created.submission.status === "errored";
+    if (!created.created && created.submission.status !== "queued" && !regrade)
       return c.json(answer(created.submission), 200);
     const queued = await enqueueGrade(
       options.runs,
@@ -184,6 +191,20 @@ export function mountJudgeRoutes<E extends Env>(
       options.maxActive ?? 3,
     );
     if (!queued.ok) return gradeRefused(c, queued);
+    if (
+      regrade &&
+      !queued.created &&
+      queued.run.status !== "queued" &&
+      queued.run.status !== "running"
+    )
+      return c.json(
+        {
+          error:
+            "The submission's grading run has used its attempts. Push other files to judge them.",
+          code: "regrade_spent",
+        },
+        409,
+      );
     if (queued.created)
       await options.ensureWorker().catch(() => options.onLaunchError?.());
     // The store errors a waiting submission whose run has ended for good.

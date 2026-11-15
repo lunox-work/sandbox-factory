@@ -137,17 +137,19 @@ export function mountPricingRoutes<Env extends PricingAppEnv>(
     proposal: NonNullable<Awaited<ReturnType<BountyProposalStore["get"]>>>,
     storedOnly = false,
   ) => {
-    const [live, writebackOperations, activeRun] = await Promise.all([
-      freshProposal(
-        { ...reviewOptions(options), recent: recentIssues, storedOnly },
-        organizationId,
-        proposal,
-      ),
-      options.writebacks === undefined
-        ? []
-        : options.writebacks.listForProposal(organizationId, proposal.id),
-      options.runs.activeForProposal(organizationId, proposal.id),
-    ]);
+    const [live, writebackOperations, activeRun, sizeLabels] =
+      await Promise.all([
+        freshProposal(
+          { ...reviewOptions(options), recent: recentIssues, storedOnly },
+          organizationId,
+          proposal,
+        ),
+        options.writebacks === undefined
+          ? []
+          : options.writebacks.listForProposal(organizationId, proposal.id),
+        options.runs.activeForProposal(organizationId, proposal.id),
+        options.sizeLabels?.list(organizationId, proposal.id) ?? [],
+      ]);
     const { proposal: stored, liveSpec, ...freshness } = live;
     return {
       proposal: stored,
@@ -155,6 +157,8 @@ export function mountPricingRoutes<Env extends PricingAppEnv>(
       freshness,
       writebackOperations,
       activeRun,
+      // The workspace's own read: reviewers' resizes as calibration labels.
+      sizeLabels,
     };
   };
   /** `GET /proposals/:id/profile`'s answer. */

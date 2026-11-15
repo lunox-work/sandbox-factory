@@ -118,6 +118,7 @@ export {
   bountySpec,
   bountyWriteback,
   decisionConfirmation,
+  proposalSizeLabel,
   rateCard,
   workspaceSetting,
 } from "./schema/pricing.js";

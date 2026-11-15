@@ -88,6 +88,37 @@ export function disclosureFindingsOf(meta: unknown): DisclosureFindingView[] {
 }
 
 /**
+ * How many findings a gate acknowledged at publication counted past its
+ * record (`total` beyond the findings it holds): no acknowledgement can
+ * clear them, so they hold publication until the folder is cut again
+ * (`openDisclosureFindings` in core, the API's `unrecorded`). A sliced
+ * build's gate blocks on its own count, so it has none here.
+ */
+export function disclosureUnrecordedOf(meta: unknown): number {
+  const gate =
+    typeof meta === "object" && meta !== null
+      ? (
+          meta as {
+            disclosure?: {
+              acknowledgedAt?: unknown;
+              findings?: unknown;
+              total?: unknown;
+            };
+          }
+        ).disclosure
+      : undefined;
+  if (gate?.acknowledgedAt !== "publish" || typeof gate.total !== "number")
+    return 0;
+  const recorded = Array.isArray(gate.findings) ? gate.findings.length : 0;
+  return Math.max(0, gate.total - recorded);
+}
+
+/** What the panel and a held Publish say of findings past the record. */
+export function unrecordedText(unrecorded: number): string {
+  return `${unrecorded === 1 ? "1 more finding was" : `${unrecorded} more findings were`} not recorded; re-cut the folder.`;
+}
+
+/**
  * Whether a finding stands acknowledged: as its build marked it, or, at
  * publication, as the draft's list covers it now.
  */
@@ -104,18 +135,23 @@ function standsAcknowledged(
 }
 
 /**
- * How many findings still wait for an owner's acknowledgement, as the
- * draft stands now: what holds publication (`disclosure_failed`).
+ * How many findings still hold publication as the draft stands now (the
+ * API's `disclosure_failed` count): those waiting for an owner's
+ * acknowledgement, and, at publication, those past the record
+ * (`disclosureUnrecordedOf`), which none can clear.
  */
 export function openDisclosureFindingCount(
   findings: readonly DisclosureFindingView[],
   acknowledgements: readonly DisclosureAcknowledgementDto[],
   acknowledgedAt: DisclosureAcknowledgedAt = "build",
+  unrecorded = 0,
 ): number {
   const atPublish = acknowledgedAt === "publish";
-  return findings.filter(
-    (item) => !standsAcknowledged(item, acknowledgements, atPublish),
-  ).length;
+  return (
+    findings.filter(
+      (item) => !standsAcknowledged(item, acknowledgements, atPublish),
+    ).length + (atPublish ? unrecorded : 0)
+  );
 }
 
 export function DisclosureFindings({
@@ -125,6 +161,7 @@ export function DisclosureFindings({
   findings,
   acknowledgements,
   acknowledgedAt = "build",
+  unrecorded = 0,
   canAcknowledge,
   onSaved,
 }: {
@@ -141,6 +178,8 @@ export function DisclosureFindings({
    * publication with no build again.
    */
   acknowledgedAt?: DisclosureAcknowledgedAt;
+  /** Findings past the record (`disclosureUnrecordedOf`): always blocking. */
+  unrecorded?: number;
   /** An owner or admin, on a draft not yet frozen. */
   canAcknowledge: boolean;
   /** After the list is put (and a sliced draft queued to build again). */
@@ -164,7 +203,8 @@ export function DisclosureFindings({
   );
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  if (findings.length === 0) return null;
+  const past = atPublish ? unrecorded : 0;
+  if (findings.length === 0 && past === 0) return null;
 
   const listed = new Set(findings.map((item) => keyOf(item)));
   // A finding a broader entry (a host) covers stays covered here.
@@ -179,9 +219,11 @@ export function DisclosureFindings({
   const changed =
     wanted.size !== current.size ||
     [...wanted].some((key) => !current.has(key));
-  const blocking = findings.filter(
-    (item) => !marked.has(keyOf(item)) && !coveredElsewhere(item),
-  ).length;
+  const blocking =
+    findings.filter(
+      (item) => !marked.has(keyOf(item)) && !coveredElsewhere(item),
+    ).length + past;
+  const counted = findings.length + past;
 
   async function acknowledge() {
     setBusy(true);
@@ -250,6 +292,11 @@ export function DisclosureFindings({
               : "Text in the public files beyond the workspace's names. An owner or admin renames it with a pseudonym or acknowledges it as public."}
         </p>
       </div>
+      {past > 0 && (
+        <p className="text-destructive text-sm" data-testid="unrecorded">
+          {unrecordedText(past)}
+        </p>
+      )}
       <ul className="divide-border flex flex-col divide-y rounded-md border text-sm">
         {findings.map((item, index) => {
           const key = keyOf(item);
@@ -316,8 +363,8 @@ export function DisclosureFindings({
               ? "All acknowledged."
               : "None blocking."
             : atPublish
-              ? `${blocking} of ${findings.length} to acknowledge before publishing.`
-              : `${blocking} of ${findings.length} blocking.`}
+              ? `${blocking} of ${counted} to acknowledge before publishing.`
+              : `${blocking} of ${counted} blocking.`}
         </p>
         {canAcknowledge && (
           <Button

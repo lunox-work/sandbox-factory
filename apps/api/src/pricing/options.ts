@@ -6,6 +6,7 @@ import {
   type BountyRunStore,
   type BountySpecStore,
   type DecisionConfirmationStore,
+  type ProposalSizeLabelStore,
   type BountyWritebackStore,
   type JiraBoardStore,
   type JiraConnectionStore,
@@ -27,6 +28,11 @@ export interface PricingRouteOptions {
   readonly boards: JiraBoardStore;
   readonly proposals: BountyProposalStore;
   readonly specs: BountySpecStore;
+  /**
+   * Reviewers' resizes kept as labels (written by `proposals.resize`);
+   * absent, a proposal's detail reads none.
+   */
+  readonly sizeLabels?: Pick<ProposalSizeLabelStore, "list">;
   /** Confirmations of specs' decisions; absent, none can be made. */
   readonly decisions?: DecisionConfirmationStore;
   /** Specs posted with bounties, which a bounty's page names. */

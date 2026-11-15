@@ -6125,6 +6125,8 @@ test("a version without a passing build cannot be published", async () => {
 
 test("findings no owner acknowledged hold Publish, which says how many and links to them", async () => {
   let acknowledged = false;
+  // Findings the gate counted past its record, which no entry clears.
+  let total = 2;
   const ready = {
     ...generatedSource,
     origin: "upload",
@@ -6151,7 +6153,9 @@ test("findings no owner acknowledged hold Publish, which says how many and links
           names: 0,
           blocking: 0,
           acknowledgedAt: "publish",
-          total: 2,
+          get total() {
+            return total;
+          },
           acknowledged: 0,
           findings: [
             {
@@ -6198,6 +6202,23 @@ test("findings no owner acknowledged hold Publish, which says how many and links
   expect(
     within(again).queryByRole("link", { name: /^Acknowledge/ }),
   ).toBeNull();
+  // Two more the build counted but never recorded: still held, and told
+  // to cut the folder again, as the API refuses it.
+  total = 4;
+  cleanup();
+  const past = await sandboxPart();
+  const held = await within(past).findByRole("button", { name: "Publish" });
+  await waitFor(() => expect(held.hasAttribute("disabled")).toBe(true));
+  expect(await reasonOn(held)).toBe(
+    "2 more findings were not recorded; re-cut the folder.",
+  );
+  const counted = within(past).getByTestId("disclosure-findings");
+  expect(within(counted).getByTestId("unrecorded").textContent).toBe(
+    "2 more findings were not recorded; re-cut the folder.",
+  );
+  expect(within(counted).getByRole("status").textContent).toBe(
+    "2 of 4 to acknowledge before publishing.",
+  );
 });
 
 test("a build still running, or decisions no person confirmed, hold Publish and say why", async () => {

@@ -645,6 +645,13 @@
       "when": 1794711493372,
       "tag": "0091_decision_credential",
       "breakpoints": true
+    },
+    {
+      "idx": 92,
+      "version": "7",
+      "when": 1794717287278,
+      "tag": "0092_proposal_size_labels",
+      "breakpoints": true
     }
   ]
 }

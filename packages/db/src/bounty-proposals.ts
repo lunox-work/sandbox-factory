@@ -30,11 +30,13 @@ import {
 } from "./errors.js";
 import { jiraWriteGranted, splitScopes } from "./jira-connections.js";
 import { generateId } from "./mapping.js";
+import { sizeLabelValues } from "./proposal-size-labels.js";
 import { approvalVersion, withdrawalVersion } from "./proposal-version.js";
 import {
   bountyProposal,
   bountyRun,
   bountyWriteback,
+  proposalSizeLabel,
   jiraBoard,
   jiraConnection,
   jiraIssue,
@@ -1045,30 +1047,50 @@ export function createBountyProposalStore(db: Database): BountyProposalStore {
       step = null,
     ) {
       const now = new Date();
-      const rows = (await db
-        .update(bountyProposal)
-        .set({
-          complexity,
-          step,
-          stepVersion: step?.stepVersion ?? null,
-          sizedBy: "reviewer",
-          resizedBy,
-          resizedAt: now,
-          amountMinor,
-          currency,
-          revision: expectedRevision + 1,
-          updatedAt: now,
-        })
-        .where(
-          and(
-            eq(bountyProposal.organizationId, organizationId),
-            eq(bountyProposal.id, proposalId),
-            eq(bountyProposal.status, "proposed"),
-            eq(bountyProposal.revision, expectedRevision),
-          ),
-        )
-        .returning()) as BountyProposalRow[];
-      const updated = rows[0];
+      const proposed = and(
+        eq(bountyProposal.organizationId, organizationId),
+        eq(bountyProposal.id, proposalId),
+        eq(bountyProposal.status, "proposed"),
+        eq(bountyProposal.revision, expectedRevision),
+      );
+      // The size it had, locked, is the label's "before": kept with the
+      // resize or not at all (`proposal_size_label`).
+      const updated = await db.transaction(async (tx) => {
+        const [before] = (await tx
+          .select()
+          .from(bountyProposal)
+          .where(proposed)
+          .limit(1)
+          .for("update")) as BountyProposalRow[];
+        if (before === undefined) return undefined;
+        const [row] = (await tx
+          .update(bountyProposal)
+          .set({
+            complexity,
+            step,
+            stepVersion: step?.stepVersion ?? null,
+            sizedBy: "reviewer",
+            resizedBy,
+            resizedAt: now,
+            amountMinor,
+            currency,
+            revision: expectedRevision + 1,
+            updatedAt: now,
+          })
+          .where(proposed)
+          .returning()) as BountyProposalRow[];
+        if (row === undefined) return undefined;
+        await tx.insert(proposalSizeLabel).values(
+          sizeLabelValues(before, {
+            complexity,
+            amountMinor,
+            currency,
+            resizedBy,
+            resizedAt: now,
+          }),
+        );
+        return row;
+      });
       if (updated === undefined) {
         return mutationMiss(db, organizationId, proposalId, expectedRevision);
       }

@@ -124,6 +124,11 @@ export type {
   StoredPostedSpec,
 } from "./bounty-posted-specs.js";
 export { createDecisionConfirmationStore } from "./decision-confirmations.js";
+export { createProposalSizeLabelStore } from "./proposal-size-labels.js";
+export type {
+  ProposalSizeLabelStore,
+  StoredProposalSizeLabel,
+} from "./proposal-size-labels.js";
 export {
   createSubmissionMergeStore,
   MERGE_CLAIM_LEASE_MS,
