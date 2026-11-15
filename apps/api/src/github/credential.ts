@@ -15,12 +15,14 @@
 
 import type { GithubGrantStore, GithubGrantSummary } from "@sandbox-factory/db";
 import {
+  CI_READ_PERMISSIONS,
   GithubAuthError,
   GithubClient,
   GithubOAuthError,
   type InstallationNarrowing,
   type InstallationTokens,
   MERGE_BACK_PERMISSIONS,
+  PullRequestCiReader,
   PullRequestWriter,
   type TokenSource,
   UserCredential,
@@ -116,6 +118,29 @@ export function mergeBackWriter(
     token: tokens.provider(installationId, {
       repositoryIds: [id],
       permissions: MERGE_BACK_PERMISSIONS,
+    }),
+    ...(fetchImpl === undefined ? {} : { fetch: fetchImpl }),
+  });
+}
+
+/**
+ * Reads a merge-back pull request's CI back: a token narrowed to the one
+ * repository and `CI_READ_PERMISSIONS` alone, apart from the writer's, so
+ * an installation without them still opens pull requests.
+ */
+export function mergeCiReader(
+  tokens: InstallationTokens,
+  installationId: string,
+  repositoryId: string,
+  fetchImpl?: typeof globalThis.fetch,
+): PullRequestCiReader {
+  const id = Number(repositoryId);
+  if (!Number.isSafeInteger(id) || id <= 0)
+    throw new Error("A CI read needs GitHub's numeric repository id.");
+  return new PullRequestCiReader({
+    token: tokens.provider(installationId, {
+      repositoryIds: [id],
+      permissions: CI_READ_PERMISSIONS,
     }),
     ...(fetchImpl === undefined ? {} : { fetch: fetchImpl }),
   });

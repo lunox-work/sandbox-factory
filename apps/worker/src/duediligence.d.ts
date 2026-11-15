@@ -65,6 +65,14 @@ declare module "duediligence/api" {
       readonly message: string;
     }[];
   };
+  /**
+   * The commitment hash over a hidden suite given as a file map keyed
+   * `tests/private/<file>`, with the kept test ids (`bin/hash.mjs`).
+   */
+  export function hiddenSha256(
+    files: Readonly<Record<string, string | Uint8Array>>,
+    kept: readonly string[],
+  ): string;
   /** The absolute path of prompts/<name>.md inside the package. */
   export function promptPath(name: string): string;
   /** prompts/<name>.md with each `{{key}}` filled; a missing key throws. */

@@ -1,4 +1,4 @@
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { clients, queryKeys, useUserId } from "./data/query";
 import { plural } from "./lib/format";
 export { plural } from "./lib/format";
@@ -215,6 +215,7 @@ export function useDecisions(
 ): DecisionsControl | undefined {
   const owner = decodeURIComponent(base.split("/").at(-1) ?? "");
   const userId = useUserId();
+  const client = useQueryClient();
   const [state, setState] = useState<"idle" | "pending" | "failed">("idle");
   const query = useQuery({
     queryKey: queryKeys.resource(
@@ -235,6 +236,9 @@ export function useDecisions(
   return {
     count: read.decisions.length,
     confirmedAt: read.confirmation?.confirmedAt ?? null,
+    confirmedVia: read.confirmation?.via ?? null,
+    confirmedCredential: read.confirmation?.credential ?? null,
+    confirmedByName: read.confirmation?.confirmedByName ?? null,
     state,
     confirm: async () => {
       if (decisionsSha256 === null) return;
@@ -245,6 +249,15 @@ export function useDecisions(
           decisionsSha256,
         });
         await query.refetch();
+        // The Sandbox step's hold reads the same decisions under its own key.
+        void client.invalidateQueries({
+          queryKey: queryKeys.resource(
+            userId,
+            owner,
+            "proposal-decisions",
+            proposalId,
+          ),
+        });
         setState("idle");
       } catch {
         setState("failed");
@@ -253,11 +266,58 @@ export function useDecisions(
   };
 }
 
+/**
+ * Whether an approved price's spec has decisions no person confirmed yet:
+ * the preparer holds the sandbox, and builds and publication are refused
+ * (`decisions_unconfirmed`), until one does on the Price step. False while
+ * it is read, and for a price not approved.
+ */
+export function useDecisionsHeld(
+  base: string,
+  proposalId: string | null,
+  approved: boolean,
+): boolean {
+  const owner = decodeURIComponent(base.split("/").at(-1) ?? "");
+  const userId = useUserId();
+  const query = useQuery({
+    queryKey: queryKeys.resource(
+      userId,
+      owner,
+      "proposal-decisions",
+      proposalId,
+      "held",
+    ),
+    enabled: approved && proposalId !== null,
+    queryFn: ({ signal }) =>
+      clients.pricing.decisions(owner, proposalId ?? "", signal),
+  });
+  const read = query.data;
+  return (
+    approved &&
+    read !== undefined &&
+    read.specRevision !== null &&
+    read.decisions.length > 0 &&
+    read.confirmation === null
+  );
+}
+
 /** What the Assumptions card offers about confirming them. */
 export interface DecisionsControl {
   readonly count: number;
   /** When a person confirmed these decisions; null until one does. */
   readonly confirmedAt: string | null;
+  /**
+   * Where they were confirmed when not here: `duediligence`, by the
+   * person who posted the spec with its bounty. Null for the Price step.
+   */
+  readonly confirmedVia?: "duediligence" | null;
+  /**
+   * The credential they were confirmed with: a session, or an API token or
+   * OAuth grant acting as its person. Null when not recorded.
+   */
+  readonly confirmedCredential?: "session" | "token" | "oauth" | null;
+  /** Who confirmed them, by name, when it can be read. */
+  readonly confirmedByName?: string | null;
   readonly state: "idle" | "pending" | "failed";
   readonly confirm: () => Promise<void>;
 }
@@ -756,6 +816,21 @@ function SpecBody({
             )}
           </p>
         </div>
+        {/*
+          A spec posted with its bounty from duediligence: sized as the
+          person wrote and confirmed it there, never drafted here.
+        */}
+        {spec.source != null && (
+          <p
+            className="text-muted-foreground flex items-center gap-1.5 text-xs"
+            data-testid="spec-source"
+          >
+            <Badge variant="outline" className="font-normal">
+              {sourceLabel(spec.source)}
+            </Badge>
+            Posted with the bounty and sized as written; not drafted here.
+          </p>
+        )}
         {/* What the reviewer asked for, on a revision that came from it. */}
         {spec.origin !== "draft" && spec.instruction !== null && (
           <p
@@ -1241,16 +1316,18 @@ function DecisionsConfirm({
       className="bg-card flex flex-wrap items-center justify-between gap-3 rounded-xl border px-5 py-3 text-sm"
     >
       {decisions.confirmedAt !== null ? (
-        <p className="flex items-center gap-2">
+        <p
+          className="flex items-center gap-2"
+          data-testid="decisions-confirmed"
+        >
           <Check aria-hidden="true" className="size-4 text-emerald-500" />
-          Decisions confirmed{" "}
-          {new Date(decisions.confirmedAt).toLocaleDateString()}.
+          {confirmedLine(decisions, decisions.confirmedAt)}
         </p>
       ) : (
         <>
           <p className="text-muted-foreground">
             {canConfirm
-              ? "Hidden tests are written to these decisions. Confirm them once you have read them."
+              ? "Hidden tests are written to these decisions, so the price is approved, and the sandbox built, only once they are confirmed. Confirm them once you have read them."
               : "Waiting for an owner or admin to confirm these decisions."}
             {decisions.state === "failed" && (
               <span role="alert" className="text-destructive block">
@@ -1273,6 +1350,37 @@ function DecisionsConfirm({
       )}
     </section>
   );
+}
+
+/** How a confirmation's credential is named beside where it was made. */
+const CREDENTIAL_LABELS = {
+  token: "API token",
+  oauth: "connected app",
+} as const;
+
+/**
+ * Who confirmed the decisions, where and when: "Confirmed in duediligence
+ * (API token) by Ada Lovelace on 15/11/2026." for a spec posted confirmed
+ * with a token; a session's names no credential.
+ */
+function confirmedLine(decisions: DecisionsControl, at: string): string {
+  const credential =
+    decisions.confirmedCredential === "token" ||
+    decisions.confirmedCredential === "oauth"
+      ? ` (${CREDENTIAL_LABELS[decisions.confirmedCredential]})`
+      : "";
+  const where =
+    decisions.confirmedVia === "duediligence"
+      ? ` in duediligence${credential}`
+      : "";
+  const by =
+    decisions.confirmedByName == null ? "" : ` by ${decisions.confirmedByName}`;
+  return `${where === "" ? "Decisions confirmed" : "Confirmed"}${where}${by} on ${new Date(at).toLocaleDateString()}.`;
+}
+
+/** `duediligence@0.5.1` as a reader names it: "duediligence 0.5.1". */
+function sourceLabel(source: string): string {
+  return source.replace("@", " ");
 }
 
 /** The spec's open questions or its assumptions, as a card, numbered. */

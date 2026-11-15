@@ -9,7 +9,11 @@ import type { KeyObject } from "node:crypto";
 import { z } from "zod";
 
 import { parseClientFloors } from "./client-version.js";
-import { MONTHLY_MODEL_TOKENS_DEFAULT } from "./quota.js";
+import {
+  CONTRIBUTOR_GRADING_RUNS_PER_ORG_DAY_DEFAULT,
+  MONTHLY_EVALUATOR_SECONDS_DEFAULT,
+  MONTHLY_MODEL_TOKENS_DEFAULT,
+} from "./quota.js";
 
 /**
  * An optional secret that has no value. Terraform seeds every secret with
@@ -50,6 +54,27 @@ const envSchema = z.object({
   MONTHLY_MODEL_TOKENS_PER_ORG: z.preprocess(
     unsetSecret,
     z.coerce.number().int().min(1).default(MONTHLY_MODEL_TOKENS_DEFAULT),
+  ),
+  /**
+   * The evaluation-job seconds a workspace's runs may use in a calendar
+   * month (UTC) before a new build, import or grading run is refused
+   * (`quota_exceeded`, kind `evaluator_seconds`). See `quota.ts`.
+   */
+  MONTHLY_EVALUATOR_SECONDS_PER_ORG: z.preprocess(
+    unsetSecret,
+    z.coerce.number().int().min(1).default(MONTHLY_EVALUATOR_SECONDS_DEFAULT),
+  ),
+  /**
+   * All of a workspace's invited contributors' grading attempts in a rolling
+   * day before the next is refused (`rate_limited`). See `quota.ts`.
+   */
+  CONTRIBUTOR_GRADING_RUNS_PER_ORG_DAY: z.preprocess(
+    unsetSecret,
+    z.coerce
+      .number()
+      .int()
+      .min(1)
+      .default(CONTRIBUTOR_GRADING_RUNS_PER_ORG_DAY_DEFAULT),
   ),
   CORS_ORIGINS: z
     .string()

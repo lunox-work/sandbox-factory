@@ -767,3 +767,154 @@ test("a new default branch that cannot be read asks for no snapshot", async () =
 
   assert.deepEqual(asked, []);
 });
+
+/** Merge-back's CI read-back as the webhook sees it: what it matched and read. */
+function ciTracker(open: Record<string, string[]> = {}) {
+  const asked: unknown[] = [];
+  const refreshed: string[][] = [];
+  return {
+    asked,
+    refreshed,
+    mergeCi: {
+      matching: async (
+        organizationId: string,
+        repoId: string,
+        signal: {
+          branches?: readonly string[];
+          shas?: readonly string[];
+          pullNumbers?: readonly number[];
+        },
+      ) => {
+        asked.push({ organizationId, repoId, ...signal });
+        return (open[repoId] ?? []).filter(
+          (id) =>
+            (signal.branches ?? []).includes(`lunox/${id}`) ||
+            (signal.shas ?? []).includes(SHA_A),
+        );
+      },
+      refreshAll: async (_organizationId: string, ids: readonly string[]) => {
+        refreshed.push([...ids]);
+      },
+    },
+  };
+}
+
+const widgets = { id: 1296269, full_name: "acme/widgets" };
+
+test("a CI delivery naming a merge-back's branch or head reads it back after the answer; others cost no GitHub call", async () => {
+  const f = await setup();
+  const ci = ciTracker({ [f.repoId]: ["sbm_1"] });
+  const background: Promise<unknown>[] = [];
+  const options: GithubWebhookOptions = {
+    ...f.options,
+    mergeCi: ci.mergeCi,
+    background: (work) => background.push(work),
+  };
+  const calls = f.fetch.urls.length;
+  assert.equal(
+    await handleGithubEvent(options, "check_suite", {
+      action: "completed",
+      check_suite: {
+        head_sha: SHA_B,
+        head_branch: "lunox/sbm_1",
+        pull_requests: [{ number: 7 }],
+      },
+      repository: widgets,
+      installation: { id: 9 },
+    }),
+    "applied",
+  );
+  await Promise.all(background);
+  assert.deepEqual(ci.refreshed, [["sbm_1"]]);
+  assert.deepEqual(ci.asked[0], {
+    organizationId: "org_1",
+    repoId: f.repoId,
+    branches: ["lunox/sbm_1"],
+    shas: [SHA_B],
+    pullNumbers: [7],
+  });
+  // A check run and a status name the head the same way.
+  assert.equal(
+    await handleGithubEvent(options, "check_run", {
+      action: "completed",
+      check_run: {
+        head_sha: SHA_A,
+        check_suite: { head_branch: null },
+        pull_requests: [],
+      },
+      repository: widgets,
+      installation: { id: 9 },
+    }),
+    "applied",
+  );
+  assert.equal(
+    await handleGithubEvent(options, "status", {
+      sha: SHA_A,
+      state: "success",
+      branches: [{ name: "lunox/sbm_1" }],
+      repository: widgets,
+      installation: { id: 9 },
+    }),
+    "applied",
+  );
+  // A pull request closed or given a new head; any other action is not a cue.
+  assert.equal(
+    await handleGithubEvent(options, "pull_request", {
+      action: "closed",
+      number: 7,
+      pull_request: { head: { sha: SHA_B, ref: "lunox/sbm_1" } },
+      repository: widgets,
+      installation: { id: 9 },
+    }),
+    "applied",
+  );
+  assert.equal(
+    await handleGithubEvent(options, "pull_request", {
+      action: "labeled",
+      number: 7,
+      pull_request: { head: { sha: SHA_B, ref: "lunox/sbm_1" } },
+      repository: widgets,
+      installation: { id: 9 },
+    }),
+    "ignored",
+  );
+  await Promise.all(background);
+  assert.equal(ci.refreshed.length, 4);
+  // Unrelated: another branch, an unregistered repository, a malformed body.
+  assert.equal(
+    await handleGithubEvent(options, "check_suite", {
+      action: "completed",
+      check_suite: { head_sha: SHA_C, head_branch: "main" },
+      repository: widgets,
+      installation: { id: 9 },
+    }),
+    "ignored",
+  );
+  assert.equal(
+    await handleGithubEvent(options, "check_suite", {
+      action: "completed",
+      check_suite: { head_branch: "lunox/sbm_1" },
+      repository: { id: 1, full_name: "acme/other" },
+      installation: { id: 9 },
+    }),
+    "ignored",
+  );
+  assert.equal(
+    await handleGithubEvent(options, "status", {
+      sha: SHA_A,
+      installation: { id: 9 },
+    }),
+    "ignored",
+  );
+  assert.equal(f.fetch.urls.length, calls, "no GitHub call while answering");
+  // Without CI read-back configured, a CI delivery is ignored.
+  assert.equal(
+    await handleGithubEvent(f.options, "check_suite", {
+      action: "completed",
+      check_suite: { head_branch: "lunox/sbm_1" },
+      repository: widgets,
+      installation: { id: 9 },
+    }),
+    "ignored",
+  );
+});

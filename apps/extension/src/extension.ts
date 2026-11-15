@@ -4,14 +4,13 @@
  * app uses, so an endpoint change lands in both at once.
  *
  * This file is the adapter: it wires the `vscode` API into the `Host` the
- * commands in `commands.ts` are written against, and registers them. The
- * logic is tested there without an extension host; nothing here decides
- * what runs.
+ * commands in `commands.ts` and `contribute.ts` are written against, and
+ * registers them. The logic is tested there without an extension host;
+ * nothing here decides what runs.
  */
 
-import { execFile } from "node:child_process";
 import { readFile } from "node:fs/promises";
-import { ApiClient, ApiError } from "@sandbox-factory/client";
+import { ContributorClient } from "@sandbox-factory/client";
 import {
   buildBanner,
   buildInfoSchema,
@@ -24,8 +23,9 @@ import * as vscode from "vscode";
 
 import { extensionBuild } from "./build.js";
 import { createTaskCommands } from "./commands.js";
+import { createContributeCommands } from "./contribute.js";
 import type { Host } from "./host.js";
-import { resolveApiOrigin, tokenKeyFor } from "./origin.js";
+import { resolvePlatformOrigin, tokenKeyFor } from "./origin.js";
 
 /** Global state: the task folder `Open Task` is reopening the window into. */
 const OPENED_FOLDER_KEY = "sandboxFactory.openedFolder";
@@ -33,36 +33,34 @@ const OPENED_FOLDER_KEY = "sandboxFactory.openedFolder";
 export function activate(context: vscode.ExtensionContext): void {
   // An output channel, not a notification: it must still be there when someone
   // goes looking.
-  const output = vscode.window.createOutputChannel("sandbox-factory");
+  const output = vscode.window.createOutputChannel("Lunox");
   output.appendLine(buildBanner("sandbox-factory", extensionBuild));
 
   /**
-   * The API origin, from user or application settings only, and the token
-   * bound to it. A repository's workspace settings cannot redirect an
+   * The platform origin, from user or application settings only, and the
+   * token bound to it. A repository's workspace settings cannot redirect an
    * authenticated request to another host.
    */
-  const resolved = resolveApiOrigin(
+  const resolved = resolvePlatformOrigin(
     vscode.workspace
       .getConfiguration("sandboxFactory")
-      .inspect<string>("apiBaseUrl"),
+      .inspect<string>("platformUrl"),
   );
   if (resolved.overrideIgnored)
     output.appendLine(
-      "Ignoring a workspace-level sandboxFactory.apiBaseUrl: the API address is a user setting.",
+      "Ignoring a workspace-level sandboxFactory.platformUrl: the platform address is a user setting.",
     );
   if (resolved.invalid)
     output.appendLine(
-      `sandboxFactory.apiBaseUrl is not an http(s) URL; using ${resolved.origin}.`,
+      `sandboxFactory.platformUrl is not an http(s) URL; using ${resolved.origin}.`,
     );
   const origin = resolved.origin;
   const tokenKey = tokenKeyFor(origin);
 
-  const client = new ApiClient({
-    baseUrl: origin,
-    getToken: () =>
-      context.secrets.get(tokenKey).then((token) => token ?? null),
-  });
-  void client;
+  const status = vscode.window.createStatusBarItem(
+    vscode.StatusBarAlignment.Left,
+    50,
+  );
 
   const host: Host = {
     workspaceFolders: () =>
@@ -78,13 +76,19 @@ export function activate(context: vscode.ExtensionContext): void {
           ? null
           : Promise.reject(error),
       ),
-    pick: (items, placeHolder) =>
-      Promise.resolve(vscode.window.showQuickPick([...items], { placeHolder })),
-    input: (prompt, placeHolder) =>
+    choose: async (items, placeHolder) => {
+      const picked = await vscode.window.showQuickPick(
+        items.map((item) => ({ ...item })),
+        { placeHolder, ignoreFocusOut: true },
+      );
+      return picked?.value;
+    },
+    input: (prompt, placeHolder, options) =>
       Promise.resolve(
         vscode.window.showInputBox({
           prompt,
           placeHolder,
+          password: options?.password === true,
           ignoreFocusOut: true,
         }),
       ),
@@ -97,19 +101,11 @@ export function activate(context: vscode.ExtensionContext): void {
       });
       return picked?.[0]?.fsPath;
     },
-    clone: (url, destination) =>
-      new Promise<void>((resolve, reject) => {
-        execFile("git", ["clone", "--", url, destination], (error) =>
-          error === null ? resolve() : reject(error),
-        );
-      }),
-    openFolder: async (path) => {
+    openFolder: async (path, newWindow = false) => {
       await vscode.commands.executeCommand(
         "vscode.openFolder",
         vscode.Uri.file(path),
-        {
-          forceNewWindow: false,
-        },
+        { forceNewWindow: newWindow },
       );
     },
     rememberOpened: (folder) =>
@@ -120,38 +116,82 @@ export function activate(context: vscode.ExtensionContext): void {
       terminal.show(true);
       terminal.sendText(command, true);
     },
+    getSecret: (key) => Promise.resolve(context.secrets.get(key)),
+    storeSecret: (key, value) =>
+      Promise.resolve(context.secrets.store(key, value)),
+    deleteSecret: (key) => Promise.resolve(context.secrets.delete(key)),
+    openExternal: async (url) => {
+      await vscode.env.openExternal(vscode.Uri.parse(url));
+    },
+    setStatus: (view) => {
+      if (view === undefined) {
+        status.hide();
+        return;
+      }
+      status.text = view.text;
+      status.tooltip = view.tooltip;
+      status.command = `sandboxFactory.${view.command}`;
+      status.show();
+    },
+    progress: (title, task) =>
+      Promise.resolve(
+        vscode.window.withProgress(
+          { location: vscode.ProgressLocation.Notification, title },
+          task,
+        ),
+      ),
+    delay: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    ask: (level, message, actions) =>
+      Promise.resolve(
+        level === "info"
+          ? vscode.window.showInformationMessage(message, ...actions)
+          : level === "warn"
+            ? vscode.window.showWarningMessage(message, ...actions)
+            : vscode.window.showErrorMessage(message, ...actions),
+      ),
     info: (message) => void vscode.window.showInformationMessage(message),
     warn: (message) => void vscode.window.showWarningMessage(message),
     error: (message) => void vscode.window.showErrorMessage(message),
     log: (line) => output.appendLine(line),
+    showLog: () => output.show(true),
   };
   const tasks = createTaskCommands(host);
+  const contribute = createContributeCommands({
+    host,
+    platformUrl: origin,
+    tokenKey,
+    // No cookies: the token is the only credential the extension sends.
+    connect: (getToken) =>
+      new ContributorClient({ baseUrl: origin, getToken, credentials: "omit" }),
+  });
   void tasks.announceOpened();
+  void contribute.restoreStatus();
 
+  const command = (id: string, run: () => Promise<unknown>) =>
+    vscode.commands.registerCommand(`sandboxFactory.${id}`, run);
   context.subscriptions.push(
     output,
-    vscode.commands.registerCommand("sandboxFactory.openTask", () =>
-      tasks.openTask(),
-    ),
-    vscode.commands.registerCommand("sandboxFactory.showTask", () =>
-      tasks.showTask(),
-    ),
-    vscode.commands.registerCommand("sandboxFactory.installDependencies", () =>
-      tasks.installDependencies(),
-    ),
-    vscode.commands.registerCommand("sandboxFactory.runApp", () =>
-      tasks.runApp(),
-    ),
-    vscode.commands.registerCommand("sandboxFactory.runTests", () =>
-      tasks.runTests(),
-    ),
+    status,
+    command("openTask", () => tasks.openTask()),
+    command("showTask", () => tasks.showTask()),
+    command("installDependencies", () => tasks.installDependencies()),
+    command("runApp", () => tasks.runApp()),
+    command("runTests", () => tasks.runTests()),
+    command("signIn", () => contribute.signIn()),
+    command("signOut", () => contribute.signOut()),
+    command("openContribution", () => contribute.openContribution()),
+    command("previewSubmission", () => contribute.previewSubmission()),
+    command("submit", () => contribute.submit()),
+    command("gradeAgain", () => contribute.gradeAgain()),
+    command("refreshStatus", () => contribute.refreshStatus()),
+    command("showSubmission", () => contribute.showSubmission()),
 
     /**
      * Reports this build and the API's. The two can drift by days: the
      * extension updates only when the marketplace ships it and the user
      * accepts it.
      */
-    vscode.commands.registerCommand("sandboxFactory.showVersion", async () => {
+    command("showVersion", async () => {
       const api = await fetchApiBuild(origin);
       output.appendLine(buildBanner("sandbox-factory", extensionBuild));
       output.appendLine(
@@ -167,7 +207,7 @@ export function activate(context: vscode.ExtensionContext): void {
           ? ` · API ${formatVersion(api)}`
           : "";
       const choice = await vscode.window.showInformationMessage(
-        `sandbox-factory ${formatVersion(extensionBuild)}${detail}`,
+        `Lunox extension ${formatVersion(extensionBuild)}${detail}`,
         ...(link === undefined ? [] : ["View commit"]),
       );
       if (choice === "View commit" && link !== undefined) {
@@ -175,40 +215,12 @@ export function activate(context: vscode.ExtensionContext): void {
       }
     }),
 
-    /**
-     * Stores the bearer token the API issues, bound to the configured
-     * origin. The extension has no cookie jar, so the session the web app
-     * keeps in a cookie reaches here as a token the user pastes in; usable
-     * sign-in arrives with contributor submission.
-     */
-    vscode.commands.registerCommand("sandboxFactory.signIn", async () => {
-      const token = await vscode.window.showInputBox({
-        prompt: `Paste an API token for ${origin}`,
-        password: true,
-        ignoreFocusOut: true,
-      });
-      if (token === undefined) {
-        return;
-      }
-      if (token === "") {
-        await context.secrets.delete(tokenKey);
-        void vscode.window.showInformationMessage(
-          "sandbox-factory: token cleared.",
-        );
-        return;
-      }
-      await context.secrets.store(tokenKey, token);
-      void vscode.window.showInformationMessage(
-        `sandbox-factory: token saved for ${origin}.`,
-      );
-    }),
-
-    // A changed base URL needs a new client, which means a reload.
+    // A changed address needs a new client and token key, which means a reload.
     vscode.workspace.onDidChangeConfiguration((event) => {
-      if (event.affectsConfiguration("sandboxFactory.apiBaseUrl")) {
+      if (event.affectsConfiguration("sandboxFactory.platformUrl")) {
         vscode.window
           .showInformationMessage(
-            "sandbox-factory: API URL changed. Reload to apply.",
+            "Lunox: platform URL changed. Reload to apply.",
             "Reload",
           )
           .then(
@@ -231,11 +243,11 @@ export function deactivate(): void {
 }
 
 /**
- * Asks the configured API what it is running. Undefined on any failure, like
- * the web app's equivalent.
+ * Asks the configured platform what its API is running. Undefined on any
+ * failure, like the web app's equivalent.
  *
  * Not routed through `ApiClient`: /version sits outside /api/v1 and needs no
- * session, and that client sends credentials on every call.
+ * credential, and that client sends one on every call.
  */
 async function fetchApiBuild(
   origin: string,
@@ -249,33 +261,5 @@ async function fetchApiBuild(
     return parsed.success ? parsed.data : undefined;
   } catch {
     return undefined;
-  }
-}
-
-/**
- * Runs an API call and reports failure readably: a 401 means the token is
- * stale, a 404 means someone else already changed it. Kept for the data
- * commands that submission adds.
- */
-export async function run(
-  action: () => Promise<unknown>,
-  onDone?: () => void,
-): Promise<void> {
-  try {
-    await action();
-    onDone?.();
-  } catch (error) {
-    if (error instanceof ApiError && error.isNotFound) {
-      // Already gone elsewhere; refreshing is the whole fix.
-      onDone?.();
-      return;
-    }
-    const message =
-      error instanceof ApiError && error.isUnauthorized
-        ? "sign-in required."
-        : error instanceof Error
-          ? error.message
-          : "Something went wrong.";
-    void vscode.window.showErrorMessage(`sandbox-factory: ${message}`);
   }
 }

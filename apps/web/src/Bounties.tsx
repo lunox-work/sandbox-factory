@@ -140,6 +140,7 @@ import {
   useBountyContext,
 } from "./features/bounties/BountyContext";
 import { BountyProposal } from "./features/bounties/BountyProposal";
+import { useDecisionsHeld } from "./ProposalSpec";
 import { usePrefetchProposal } from "./features/bounties/queries";
 import { BoardFilter } from "./features/bounties/BoardScope";
 import { WorkspaceFilter } from "./features/bounties/WorkspaceScope";
@@ -153,6 +154,7 @@ import {
   NoVersion,
   ScopeVersion,
   StepHeld,
+  DecisionsHeld,
   StepLineage,
   StepTriggers,
   StepVersionCard,
@@ -1541,6 +1543,15 @@ function BountyDetail({
   */
   const priceHeld = heldReason("price", bounty);
   const sandboxHeld = heldReason("sandbox", bounty);
+  // An approved price whose spec's decisions wait for a person holds the
+  // sandbox too: read on a page's Sandbox step only, where it is said.
+  const decisionsHeld = useDecisionsHeld(
+    `/api/v1/orgs/${encodeURIComponent(bounty.organizationId)}`,
+    bounty.proposal?.id ?? null,
+    layout === "page" &&
+      tab === "sandbox" &&
+      bounty.proposal?.status === "approved",
+  );
   const [deciding, setDeciding] = useState(false);
   const [decisionError, setDecisionError] = useState<string | null>(null);
   const decideOverview = (decision: "approve" | "unapprove") => {
@@ -1681,6 +1692,17 @@ function BountyDetail({
           {canManage
             ? "Price it to have its scope sized and priced."
             : "An owner or admin can price it."}
+          {/*
+            Posted with a spec from duediligence: pricing takes it as
+            written, while the scope still says what it was posted with.
+          */}
+          {bounty.postedSpec?.current === true && (
+            <span className="block" data-testid="posted-spec">
+              {`Its spec came from ${bounty.postedSpec.source.replace("@", " ")}${
+                bounty.postedSpec.confirmed ? ", decisions confirmed there" : ""
+              }; pricing sizes it as written and drafts none.`}
+            </span>
+          )}
         </NoVersion>
       </StepVersionCard>
     );
@@ -1861,6 +1883,7 @@ function BountyDetail({
           // A slice is generated, and published, from an approved scope
           // and price only.
           generationBlocked={sandboxHeld}
+          decisionsHeld={decisionsHeld}
           readOnly={readOnly}
           context={sandboxContext}
           onChanged={() => {
@@ -2246,6 +2269,7 @@ function BountyDetail({
                   onOpen={selectPageTab}
                 />
               )}
+              <DecisionsHeld held={decisionsHeld} onOpen={selectPageTab} />
               <StepLineage
                 step="sandbox"
                 stages={bounty.stages}

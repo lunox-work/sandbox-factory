@@ -436,7 +436,13 @@ test("a starter becomes a standalone project with its tests and config", () => {
       [".gitignore", "config", true],
       [".npmrc", "config", true],
       [".nvmrc", "config", true],
+      [".vscode/launch.json", "config", true],
+      [".vscode/settings.json", "config", true],
+      [".vscode/tasks.json", "config", true],
+      ["AGENTS.md", "config", true],
+      ["CLAUDE.md", "config", true],
       ["README.md", "config", true],
+      ["TASK.md", "config", true],
       ["package.json", "config", true],
       ["sandbox-task.json", "descriptor", true],
       ["sandbox.env", "config", true],
@@ -465,9 +471,40 @@ test("a starter becomes a standalone project with its tests and config", () => {
   assert.doesNotMatch(text("sandbox/ambient.d.ts"), /namespace JSX/);
   assert.doesNotMatch(text("tsconfig.json"), /"jsx"/);
   assert.match(text("tests/public/spec.test.ts"), /s1: sums/);
-  assert.match(text(".gitignore"), /src\/cart\.js/);
+  assert.match(text(".gitignore"), /src\/cart\.js\n[\s\S]*\n\*\.map\n$/);
   for (const file of project.files.filter((item) => item.public))
     assert.doesNotMatch(file.text, /tests\/private/, file.path);
+  // The contributor guide, as a slice's project has it, with nothing mocked.
+  assert.equal(
+    (
+      JSON.parse(text("tsconfig.json")) as {
+        compilerOptions: Record<string, unknown>;
+      }
+    ).compilerOptions["sourceMap"],
+    true,
+  );
+  const task = text("TASK.md");
+  assert.match(task, /^# Task: Sum a cart\n/);
+  assert.match(task, /Scenario: sums/);
+  assert.match(task, /- `src\/cart\.ts`\n- `src\/prices\.json`\n/);
+  assert.doesNotMatch(task, /stubs|mocks\//);
+  // Never a hidden test's name, nor its folder.
+  assert.doesNotMatch(task, /total\.test/);
+  assert.doesNotMatch(text("AGENTS.md"), /mockImplementation|mocks\//);
+  assert.equal(text("CLAUDE.md"), "@AGENTS.md\n");
+  assert.match(text("README.md"), /\[`TASK\.md`\]\(TASK\.md\)/);
+  assert.match(
+    text("README.md"),
+    /zip this folder and upload it on your contribution page/,
+  );
+  assert.match(text("TASK.md"), /## Submit\n\nZip this folder and upload it/);
+  for (const path of [
+    ".vscode/launch.json",
+    ".vscode/settings.json",
+    ".vscode/tasks.json",
+  ])
+    assert.doesNotThrow(() => JSON.parse(text(path)), path);
+  assert.doesNotMatch(text(".vscode/settings.json"), /tsx/);
   // A credential the agent wrote into a public file blocks the starter.
   const key = ["AKIA", "Z3K7Q2M9W4X8C6V1"].join("");
   const leaked = generateStarterProject({
@@ -492,6 +529,8 @@ test("a starter becomes a standalone project with its tests and config", () => {
   ]);
   assert.match(text("README.md"), /# Sum a cart/);
   assert.match(text("README.md"), /zod@3\.25\.76/);
+  assert.match(text("README.md"), /run of the files you submit/);
+  assert.doesNotMatch(text("README.md"), /pushed commit/);
   assert.deepEqual(project.descriptor.editablePaths, [
     "src/cart.ts",
     "src/prices.json",
@@ -538,6 +577,19 @@ test("a starter without a spec, with JSX, packages and a stray import", () => {
     project.files.find((file) => file.path === path)?.text ?? "";
   assert.match(text("sandbox/ambient.d.ts"), /namespace JSX/);
   assert.match(text("tsconfig.json"), /"jsx": "react-jsx"/);
+  // A `.tsx` compiles to a `.js` too, which the editor hides beside it.
+  assert.deepEqual(
+    (
+      JSON.parse(text(".vscode/settings.json")) as {
+        "files.exclude": Record<string, unknown>;
+      }
+    )["files.exclude"]["**/*.[j]s"],
+    { when: "$(basename).tsx" },
+  );
+  assert.match(
+    text("TASK.md"),
+    /The approved spec names no scenarios; the summary above is the task\./,
+  );
   assert.equal(
     project.files.some((file) => file.path === SPEC_TEST_PATH),
     false,

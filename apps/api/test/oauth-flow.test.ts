@@ -5,6 +5,7 @@ import { test } from "node:test";
 import type { OrganizationStore } from "@sandbox-factory/db";
 import { memoryAdapter } from "better-auth/adapters/memory";
 import {
+  CONTRIBUTOR_CONSENT,
   OAUTH_ACCESS_TOKEN_PREFIX,
   OAUTH_REFRESH_TOKEN_PREFIX,
 } from "sandbox-factory";
@@ -376,6 +377,7 @@ test("the resources are the API's origin and each MCP endpoint", () => {
     "https://platform.lunox.work/mcp",
     "https://platform.lunox.work/mcp/duediligence",
     "https://platform.lunox.work/mcp/carveout",
+    "https://platform.lunox.work/mcp/contribute",
   ]);
 });
 
@@ -418,5 +420,121 @@ test("the authorization server describes itself at both well-known paths", async
   assert.equal(
     (await app.request("/.well-known/openid-configuration")).status,
     404,
+  );
+});
+
+test("a person signs in as a contributor: the grant binds no workspace and holds the contributor scope alone", async () => {
+  const { tables, signIn, register, authorize, consent, token } = setup();
+  // A contributor need administer no workspace.
+  const { userId, bearer } = signIn(undefined);
+  const clientId = await register();
+  const { verifier, challenge } = pkce();
+  const page = await authorize(
+    clientId,
+    bearer,
+    challenge,
+    "contributions:write offline_access",
+  );
+  assert.equal(`${page.origin}${page.pathname}`, `${APP}/oauth/consent`);
+  const consented = await consent(
+    bearer,
+    page.search.slice(1),
+    CONTRIBUTOR_CONSENT,
+  );
+  assert.equal(consented.status, 200, await consented.clone().text());
+  const code = new URL(
+    ((await consented.json()) as { url: string }).url,
+  ).searchParams.get("code");
+  assert.ok(code);
+  const [grant] = tables["oauthConsent"] ?? [];
+  assert.equal(grant?.["referenceId"] ?? null, null);
+  assert.equal(grant?.["userId"], userId);
+  assert.deepEqual(grant?.["scopes"], [
+    "contributions:write",
+    "offline_access",
+  ]);
+  const issued = await token({
+    grant_type: "authorization_code",
+    code,
+    redirect_uri: REDIRECT,
+    client_id: clientId,
+    code_verifier: verifier,
+    resource: MCP_RESOURCE,
+  });
+  assert.equal(issued.status, 200, await issued.clone().text());
+  const tokens = (await issued.json()) as { access_token: string };
+  const stored = (tables["oauthAccessToken"] ?? []).find(
+    (row) =>
+      row["token"] ===
+      hashOAuthToken(
+        tokens.access_token.slice(OAUTH_ACCESS_TOKEN_PREFIX.length),
+      ),
+  );
+  assert.ok(stored);
+  assert.equal(stored["referenceId"] ?? null, null);
+
+  // Asked again for the contributor scope, the client gets a code without
+  // the consent page: the grant covers it.
+  const again = await authorize(
+    clientId,
+    bearer,
+    pkce().challenge,
+    "contributions:write offline_access",
+  );
+  assert.equal(`${again.origin}${again.pathname}`, REDIRECT);
+  assert.ok(again.searchParams.get("code"));
+});
+
+test("a contributor grant takes no workspace scope, and a workspace grant no contributor scope", async () => {
+  const { tables, signIn, register, authorize, consent } = setup();
+  const { bearer } = signIn("owner");
+  const clientId = await register();
+  const codeOf = async (res: Response) => {
+    assert.equal(res.status, 403);
+    return ((await res.json()) as { code?: string }).code;
+  };
+  const mixed = await authorize(
+    clientId,
+    bearer,
+    pkce().challenge,
+    "workspace:read contributions:write",
+  );
+  assert.equal(
+    await codeOf(
+      await consent(bearer, mixed.search.slice(1), CONTRIBUTOR_CONSENT),
+    ),
+    "CONTRIBUTOR_SCOPE_ONLY",
+  );
+  assert.equal(
+    await codeOf(await consent(bearer, mixed.search.slice(1), ORG)),
+    "CONTRIBUTOR_SCOPE_FORBIDDEN",
+  );
+  // As a contributor with nothing of a contributor's ticked.
+  const workspaceOnly = await authorize(clientId, bearer, pkce().challenge);
+  assert.equal(
+    await codeOf(
+      await consent(bearer, workspaceOnly.search.slice(1), CONTRIBUTOR_CONSENT),
+    ),
+    "CONTRIBUTOR_SCOPE_REQUIRED",
+  );
+  assert.deepEqual(tables["oauthConsent"], []);
+  // A contributor grant never stands in for a workspace's: asked for
+  // workspace scopes, the person is sent to consent again.
+  const contributor = await authorize(
+    clientId,
+    bearer,
+    pkce().challenge,
+    "contributions:write",
+  );
+  const made = await consent(
+    bearer,
+    contributor.search.slice(1),
+    CONTRIBUTOR_CONSENT,
+  );
+  assert.equal(made.status, 200);
+  const workspace = await authorize(clientId, bearer, pkce().challenge);
+  assert.equal(
+    `${workspace.origin}${workspace.pathname}`,
+    `${APP}/oauth/consent`,
   );
 });

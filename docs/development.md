@@ -42,9 +42,10 @@ never derive integration configuration from production environment files.
   Complete wire fixtures exercise response validation; cache ownership and
   non-overlapping observation regressions live in `server-data.test.tsx`.
   Confirm a UI regression test fails before the fix.
-- Extension tests use `node:test` with a fake `Host`. Keep logic in `commands.ts`,
-  `task.ts` and `origin.ts`; only `extension.ts` imports `vscode`. That entry point,
-  `build.ts` and type-only `host.ts` are excluded from coverage.
+- Extension tests use `node:test` with a fake `Host` (`test/fake-host.ts`), a
+  fake platform client and real temp folders. Keep logic out of `extension.ts`,
+  the only file that imports `vscode`. That entry point, `build.ts` and
+  type-only `host.ts` are excluded from coverage.
 - Core's `*-laws.test.ts` and `*-properties.test.ts` check what a rule
   promises of every input rather than of chosen examples: the pricing
   arithmetic and stage rules over their whole bounded domain, handles,
@@ -82,6 +83,43 @@ OAuth flow, PostgreSQL or third-party integrations. Run
 required check.
 Extend the doubles in `e2e/server.mjs` when a new flow needs a store; never add
 a reset endpoint or auth bypass to the product for the suite.
+
+## Flow test
+
+`npm run test:flow` builds the API and worker, then runs
+[`e2e/flow/flow.mjs`](../e2e/flow/flow.mjs): an empty database to a published
+sandbox version, a second signed-in person invited to it and claiming it, a
+contributor token (`lnxc_`) listing it and paging its project (API and
+`/mcp/contribute`), its archive downloaded, built and tested by that contributor, their partial
+submission (`files[]`) then passing retry (the zipped folder, previewed
+first), the owner's merge-back pull request, its CI read back (the sweep,
+then a signed `check_suite` delivery) and merged once that passes, the
+repository's own test on it, the contributor revoked, a Jira-imported
+bounty sized, `/usage` metering the model tokens, evaluator seconds and
+grading attempts it spent, and a bounty posted with a duediligence-confirmed
+spec sized without a draft and approved on that confirmation;
+through the API's HTTP routes and
+in-process worker runs (local-process provider, npm from the public registry,
+cache kept in `$TMPDIR/sandbox-factory-flow-npm-cache`). It needs a local
+Postgres, `DATABASE_URL` naming only the server (default
+`postgres://postgres:postgres@localhost:5432/postgres`; `make db-up`), and
+refuses a non-local host. It creates and drops its own
+`sandbox_factory_flow_<pid>` database and never writes the one the URL names.
+
+- The API is composed in `compose.mjs` as `apps/api/src/server.ts` composes it;
+  a dependency added there must be added there too.
+- Fakes only at the edges (`fakes.mjs`): in-memory objects, GitHub's REST API
+  (reads, installation probe, merge-back's Git data and pull requests, check
+  runs, statuses and the merge) via the
+  existing `fetch` options, Jira's client via `clientFor`, graphify's Python
+  run, a sizing caller that
+  answers through each tool's `parse`, and one scripted agent model whose
+  agents call the real tools. Seeds (`seed.mjs`) are test-only rows Better Auth
+  writes at sign-in; never add a product bypass for the harness.
+- Steps are `[name, fn]` lists (`steps.mjs`, `roundtrip-steps.mjs`); append a
+  list for later stages. The run ends with each step's time, slowest first;
+  keep it under ~25 s (it says when it is over).
+  Outside `npm run verify`; CI runs it after the bounty concurrency suite.
 
 ## Maintenance tools for agents
 

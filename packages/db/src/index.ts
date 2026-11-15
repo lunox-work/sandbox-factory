@@ -117,14 +117,36 @@ export type {
   WorkspaceSettingsStore,
 } from "./workspace-settings.js";
 export { createBountySpecStore } from "./bounty-specs.js";
-export { createDecisionConfirmationStore } from "./decision-confirmations.js";
-export { createSubmissionMergeStore } from "./submission-merges.js";
+export { createBountyPostedSpecStore } from "./bounty-posted-specs.js";
 export type {
-  NewSubmissionMerge,
+  BountyPostedSpecStore,
+  NewPostedSpec,
+  StoredPostedSpec,
+} from "./bounty-posted-specs.js";
+export { createDecisionConfirmationStore } from "./decision-confirmations.js";
+export { createProposalSizeLabelStore } from "./proposal-size-labels.js";
+export type {
+  ProposalSizeLabelStore,
+  StoredProposalSizeLabel,
+} from "./proposal-size-labels.js";
+export {
+  createSubmissionMergeStore,
+  MERGE_CLAIM_LEASE_MS,
+} from "./submission-merges.js";
+export type {
+  MergeCiRead,
+  MergeCiState,
+  MergeEnded,
+  MergeWhen,
+  NewSubmissionMergeClaim,
+  OpenedSubmissionMerge,
   StoredSubmissionMerge,
+  SubmissionMergeClaim,
   SubmissionMergeStore,
 } from "./submission-merges.js";
 export type {
+  DecisionConfirmationCredential,
+  DecisionConfirmationSource,
   DecisionConfirmationStore,
   StoredDecisionConfirmation,
 } from "./decision-confirmations.js";
@@ -193,6 +215,13 @@ export type {
   ResolvedApiToken,
   StoredApiToken,
 } from "./api-tokens.js";
+export { createContributorTokenStore } from "./contributor-tokens.js";
+export type {
+  ContributorTokenStore,
+  NewContributorToken,
+  ResolvedContributorToken,
+  StoredContributorToken,
+} from "./contributor-tokens.js";
 export { AUDIT_RETENTION_DAYS, createAuditStore } from "./audit.js";
 export type {
   AuditEntry,
@@ -224,6 +253,7 @@ export type {
 } from "./idempotency.js";
 export { createOAuthGrantStore } from "./oauth-grants.js";
 export type {
+  GrantOwner,
   OAuthGrant,
   OAuthGrantStore,
   ResolvedOAuthAccessToken,
@@ -242,8 +272,22 @@ export type {
   ModelUsageStore,
   NewModelUsage,
   QuotaExceeded,
+  QuotaKind,
   TokenQuota,
 } from "./model-usage.js";
+export {
+  billedSeconds,
+  createEvaluatorUsageStore,
+  EVALUATOR_TOOLS,
+  NO_EVALUATOR_USE,
+} from "./evaluator-usage.js";
+export type {
+  EvaluatorQuota,
+  EvaluatorUse,
+  EvaluatorUsageStore,
+  NewEvaluatorUsage,
+} from "./evaluator-usage.js";
+export type { GradingBrakes, GradingRateLimited } from "./grading-attempts.js";
 export type {
   Membership,
   OrganizationMember,
@@ -305,6 +349,7 @@ export type {
   EnqueueAnalysisResult,
   NewArtifact,
   QueueState,
+  RunSettlement,
 } from "./analysis-runs.js";
 export { createArtifactStore } from "./artifacts.js";
 export { createWorkspaceSetupStore } from "./workspace-setup.js";
@@ -335,13 +380,22 @@ export type {
   StoredVersionSource,
   StoredVersionWithSource,
   PublishVersionResult,
+  PublicationEvidence,
   UpdateVersionResult,
 } from "./sandboxes.js";
+export { createContributorStore } from "./contributors.js";
+export type {
+  ClaimInviteResult,
+  ContributorStore,
+  NewContributorInvite,
+  StoredContributorAssignment,
+  StoredContributorInvite,
+} from "./contributors.js";
 export { createSubmissionStore } from "./submissions.js";
 export type {
   CreateSubmissionResult,
   NewSubmission,
+  RetrySubmissionResult,
   StoredSubmission,
-  SubmissionOutcome,
   SubmissionStore,
 } from "./submissions.js";

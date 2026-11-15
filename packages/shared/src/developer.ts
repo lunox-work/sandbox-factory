@@ -1,14 +1,15 @@
 /**
  * The public API's credentials and what they read about themselves:
  * workspace API tokens, the token a command-line client mints after its
- * device sign-in, the apps a workspace granted access over OAuth, and the
- * workspace's usage.
+ * device sign-in, a contributor's own tokens, the apps a workspace (or a
+ * contributor) granted access over OAuth, and the workspace's usage.
  */
 
 import {
   API_SCOPES,
   API_TOKEN_PREFIX,
   CLI_CLIENTS,
+  CONTRIBUTOR_TOKEN_PREFIX,
   type CliClient,
 } from "sandbox-factory";
 import { z } from "zod";
@@ -98,6 +99,54 @@ export const oauthGrantDtoSchema = z.object({
   lastUsedAt: z.iso.datetime().nullable(),
 });
 
+/**
+ * A contributor token as listed: a person's own, bound to no workspace,
+ * reaching only their contributions; never its secret, which is not kept.
+ */
+export const contributorTokenDtoSchema = z.object({
+  id: z.string().min(1),
+  name: z.string().min(1),
+  /** The secret's first characters, `lnxc_` included. */
+  prefix: z.string().startsWith(CONTRIBUTOR_TOKEN_PREFIX),
+  createdAt: z.iso.datetime(),
+  /** Null for a token that does not expire. */
+  expiresAt: z.iso.datetime().nullable(),
+  /** Updated at most once a minute. */
+  lastUsedAt: z.iso.datetime().nullable(),
+  revokedAt: z.iso.datetime().nullable(),
+});
+
+export const contributorTokenListSchema = z.object({
+  tokens: z.array(contributorTokenDtoSchema),
+});
+
+export const contributorTokenResponseSchema = z.object({
+  token: contributorTokenDtoSchema,
+});
+
+/** How long a contributor token lasts when its maker says nothing. */
+export const CONTRIBUTOR_TOKEN_DEFAULT_DAYS = 90;
+
+/** Body for `POST /api/v1/me/contributor-tokens`. */
+export const createContributorTokenSchema = z.object({
+  /** Where it is used, e.g. "Claude Code on my laptop". */
+  name: z.string().trim().min(1).max(80),
+  /** Days until it stops working; absent for the default, null for never. */
+  expiresInDays: z
+    .number()
+    .int()
+    .min(1)
+    .max(366)
+    .nullable()
+    .default(CONTRIBUTOR_TOKEN_DEFAULT_DAYS),
+});
+
+/** The one response that carries a contributor token's secret. */
+export const createdContributorTokenResponseSchema = z.object({
+  token: contributorTokenDtoSchema,
+  secret: z.string().startsWith(CONTRIBUTOR_TOKEN_PREFIX),
+});
+
 export const oauthGrantListSchema = z.object({
   grants: z.array(oauthGrantDtoSchema),
 });
@@ -117,9 +166,9 @@ const tokenCount = z.number().int().nonnegative();
 
 /**
  * Runs started in a window, counted by family, kind and state, and the
- * model tokens the workspace's runs spent this calendar month (UTC) against
- * its monthly limit. The month is not the window: the limit resets at
- * `modelTokens.resetsAt` whatever `days` asked for.
+ * model tokens and evaluator seconds the workspace's runs spent this
+ * calendar month (UTC) against its monthly limits. The month is not the
+ * window: the limits reset at `resetsAt` whatever `days` asked for.
  */
 export const usageResponseSchema = z.object({
   window: z.object({
@@ -152,6 +201,33 @@ export const usageResponseSchema = z.object({
     cacheReadTokens: tokenCount,
     cacheWriteTokens: tokenCount,
   }),
+  /**
+   * The evaluation jobs the workspace's runs used this calendar month (UTC):
+   * whole seconds per job, rounded up, against the monthly cap new build,
+   * import and grading runs are refused at (`quota_exceeded`, kind
+   * `evaluator_seconds`).
+   */
+  evaluatorSeconds: z.object({
+    from: z.iso.datetime(),
+    resetsAt: z.iso.datetime(),
+    used: tokenCount,
+    limit: z.number().int().positive(),
+    remaining: tokenCount,
+    jobs: tokenCount,
+    /** By the run's tool. */
+    byKind: z.array(
+      z.object({ kind: z.string(), seconds: tokenCount, jobs: tokenCount }),
+    ),
+  }),
+  /** Counts over the same month. */
+  thisMonth: z.object({
+    /** Grading runs queued for submissions: first gradings, retries, regrades. */
+    gradingAttempts: tokenCount,
+    /** Of those, invited contributors'. */
+    contributorGradingAttempts: tokenCount,
+    /** Hand-off folders uploaded as versions. */
+    uploads: tokenCount,
+  }),
 });
 
 export type ApiScopeDto = z.infer<typeof apiScopeSchema>;
@@ -161,3 +237,10 @@ export type CreatedApiTokenDto = z.infer<typeof createdApiTokenResponseSchema>;
 export type CreateCliTokenInput = z.infer<typeof createCliTokenSchema>;
 export type UsageDto = z.infer<typeof usageResponseSchema>;
 export type OAuthGrantDto = z.infer<typeof oauthGrantDtoSchema>;
+export type ContributorTokenDto = z.infer<typeof contributorTokenDtoSchema>;
+export type CreateContributorTokenInput = z.input<
+  typeof createContributorTokenSchema
+>;
+export type CreatedContributorTokenDto = z.infer<
+  typeof createdContributorTokenResponseSchema
+>;

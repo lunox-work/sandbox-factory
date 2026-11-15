@@ -20,6 +20,8 @@ export interface FakeRun {
   readonly cwd: string;
   readonly envs: Readonly<Record<string, string>>;
   readonly timeoutMs: number;
+  /** `root` for the provider's own copies; absent for the job's user. */
+  readonly user?: "root";
 }
 
 /**
@@ -71,13 +73,14 @@ export function fakeE2B(
             cwd: run.cwd,
             envs: { ...run.envs },
             timeoutMs: run.timeoutMs,
+            ...(run.user === undefined ? {} : { user: run.user }),
           });
           events.push(command);
           run.signal.throwIfAborted();
           const outcome: FakeOutcome | Error | undefined =
             command === "node --version"
               ? { stdout: `${options.node ?? "v22.12.0"}\n` }
-              : /^(mkdir|cp|rm|kill) /.test(command)
+              : /^(mkdir|cp|rm|kill|chown) /.test(command)
                 ? {}
                 : script(command);
           if (outcome instanceof Error) throw outcome;

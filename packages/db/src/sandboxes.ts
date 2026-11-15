@@ -20,6 +20,7 @@ import type {
   ApprovedTaskSnapshot,
   StoredApprovedTaskSnapshot,
   DependencyChoice,
+  DisclosureAcknowledgement,
   SandboxStatus,
   ScopeRecord,
   VersionFixtures,
@@ -168,6 +169,8 @@ export interface SandboxVersionPatch {
   readonly acceptanceTests?: readonly AcceptanceTest[];
   /** Null drops the version's fixtures. */
   readonly fixtures?: VersionFixtures | null;
+  /** The whole list, replacing the draft's. */
+  readonly disclosureAcknowledgements?: readonly DisclosureAcknowledgement[];
   readonly transformConfigSha256?: string;
   readonly scope?: ScopeRecord;
   /**
@@ -260,8 +263,20 @@ export type PublishVersionResult =
     }
   | {
       readonly ok: false;
-      readonly reason: "not-found" | "not_ready" | "price_not_approved";
+      readonly reason:
+        "not-found" | "not_ready" | "price_not_approved" | "build_changed";
     };
+/**
+ * The publication gates a version is published on, as the route checked
+ * them (`freezeReadiness`): the build run whose manifest it read, and the
+ * run ids that proved the round trip and the disclosure scan (that build's,
+ * or null for a version built before the gates).
+ */
+export interface PublicationEvidence {
+  readonly buildRunId: string;
+  readonly roundTripRunId: string | null;
+  readonly disclosureRunId: string | null;
+}
 export type UpdateVersionResult =
   | ({ readonly ok: true } & StoredVersionWithSource)
   | {
@@ -384,7 +399,9 @@ export interface SandboxStore {
    * whatever the bounty does after: a later version only puts the sandbox
    * behind, and does not take it down. It stands until `expiresAt`, and
    * each publish sets that afresh. A version published before
-   * keeps its first approval and is only pointed at again.
+   * keeps its first approval and is only pointed at again. With
+   * `evidence`, refused `build_changed` unless the version still points at
+   * that build, and a first publication records its run ids.
    */
   publishVersion(
     organizationId: string,
@@ -392,6 +409,7 @@ export interface SandboxStore {
     actor: string,
     expiresAt: Date,
     now?: Date,
+    evidence?: PublicationEvidence,
   ): Promise<PublishVersionResult>;
   /**
    * Takes the sandbox back to a draft with no published version. Its
@@ -507,6 +525,7 @@ const toSource = (
   dependencyChoices: row.dependencyChoices,
   acceptanceTests: row.acceptanceTests,
   fixtures: row.fixtures ?? null,
+  disclosureAcknowledgements: row.disclosureAcknowledgements ?? [],
   scope: row.scope,
   harnessSha256: row.harnessSha256,
   toolchainDigest: row.toolchainDigest,
@@ -1004,12 +1023,20 @@ export function createSandboxStore(db: Database): SandboxStore {
         if (patch.acceptanceTests !== undefined)
           sourceSet.acceptanceTests = [...patch.acceptanceTests];
         if (patch.fixtures !== undefined) sourceSet.fixtures = patch.fixtures;
+        if (patch.disclosureAcknowledgements !== undefined)
+          sourceSet.disclosureAcknowledgements = [
+            ...patch.disclosureAcknowledgements,
+          ];
         if (patch.transformConfigSha256 !== undefined)
           sourceSet.transformConfigSha256 = patch.transformConfigSha256;
         if (patch.scope !== undefined) sourceSet.scope = patch.scope;
         let sourceRow = current.source;
         if (Object.keys(sourceSet).length > 0) {
-          // A changed transform invalidates evidence gathered for the old one.
+          // A changed transform invalidates evidence gathered for the old
+          // one. Disclosure acknowledgements alone do not: a sliced draft's
+          // come with the transform they rehash, and an uploaded or
+          // generated draft's are checked at publication, its build having
+          // read none.
           const invalidates =
             patch.aliasRules !== undefined ||
             patch.dependencyChoices !== undefined ||
@@ -1206,12 +1233,25 @@ export function createSandboxStore(db: Database): SandboxStore {
         return true;
       });
     },
-    async publishVersion(owner, versionId, actor, expiresAt, now = new Date()) {
+    async publishVersion(
+      owner,
+      versionId,
+      actor,
+      expiresAt,
+      now = new Date(),
+      evidence,
+    ) {
       return db.transaction(async (transaction) => {
         const tx = transaction;
         const current = await lockVersion(tx, owner, versionId);
         if (current === undefined)
           return { ok: false, reason: "not-found" } as const;
+        // The gates were read from this build: a rebuild since is unread.
+        if (
+          evidence !== undefined &&
+          current.source.buildRunId !== evidence.buildRunId
+        )
+          return { ok: false, reason: "build_changed" } as const;
         // A ready build is what records the harness and the toolchain.
         if (
           current.source.harnessSha256 === null ||
@@ -1235,7 +1275,17 @@ export function createSandboxStore(db: Database): SandboxStore {
           const approved = (
             await tx
               .update(sandboxVersionSource)
-              .set({ approvedBy: actor, approvedAt: now, updatedAt: now })
+              .set({
+                approvedBy: actor,
+                approvedAt: now,
+                ...(evidence === undefined
+                  ? {}
+                  : {
+                      roundTripRunId: evidence.roundTripRunId,
+                      disclosureRunId: evidence.disclosureRunId,
+                    }),
+                updatedAt: now,
+              })
               .where(eq(sandboxVersionSource.sandboxVersionId, versionId))
               .returning()
           )[0];

@@ -721,8 +721,17 @@ function WithDecisions({ canConfirm }: { canConfirm: boolean }) {
   );
 }
 
-function decisionsServer(options: { failConfirm?: boolean } = {}) {
-  let confirmedAt: string | null = null;
+function decisionsServer(
+  options: {
+    failConfirm?: boolean;
+    /** Posted from duediligence, confirmed there by its poster. */
+    posted?: boolean;
+    /** The credential it was posted with, when recorded. */
+    credential?: "session" | "token" | "oauth";
+  } = {},
+) {
+  let confirmedAt: string | null =
+    options.posted === true ? "2026-11-12T00:00:00.000Z" : null;
   const posted: unknown[] = [];
   const decisions = () =>
     Response.json({
@@ -733,7 +742,19 @@ function decisionsServer(options: { failConfirm?: boolean } = {}) {
       ],
       decisionsSha256: "b".repeat(64),
       confirmation:
-        confirmedAt === null ? null : { confirmedBy: "user_1", confirmedAt },
+        confirmedAt === null
+          ? null
+          : options.posted === true
+            ? {
+                confirmedBy: "user_1",
+                confirmedByName: "Ada Lovelace",
+                via: "duediligence",
+                ...(options.credential === undefined
+                  ? {}
+                  : { credential: options.credential }),
+                confirmedAt,
+              }
+            : { confirmedBy: "user_1", confirmedAt },
       confirmUrl: "https://app.test/bounties/acme/bty_1?tab=price#decisions",
     });
   vi.stubGlobal(
@@ -750,7 +771,14 @@ function decisionsServer(options: { failConfirm?: boolean } = {}) {
         return Promise.resolve(decisions());
       }
       if (url.endsWith("/decisions")) return Promise.resolve(decisions());
-      return Promise.resolve(Response.json({ spec: spec() }));
+      return Promise.resolve(
+        Response.json({
+          spec: spec(
+            {},
+            options.posted === true ? { source: "duediligence@0.5.1" } : {},
+          ),
+        }),
+      );
     }),
   );
   return posted;
@@ -761,7 +789,7 @@ test("an owner confirms the spec's decisions under its assumptions, with the rev
   render(<WithDecisions canConfirm />);
   const bar = await screen.findByRole("region", { name: "Decisions" });
   expect(bar.textContent).toMatch(
-    /Hidden tests are written to these decisions/,
+    /Hidden tests are written to these decisions, so the price is approved, and the sandbox built, only once they are confirmed/,
   );
   await userEvent.click(
     within(bar).getByRole("button", { name: "Confirm decisions" }),
@@ -774,6 +802,47 @@ test("an owner confirms the spec's decisions under its assumptions, with the rev
   expect(posted).toEqual([
     { specRevision: 1, decisionsSha256: "b".repeat(64) },
   ]);
+});
+
+test("a spec posted from duediligence says so, and its decisions were confirmed there, by name", async () => {
+  decisionsServer({ posted: true });
+  render(<WithDecisions canConfirm />);
+  expect((await screen.findByTestId("spec-source")).textContent).toMatch(
+    /duediligence 0\.5\.1.*not drafted here/,
+  );
+  const bar = await screen.findByRole("region", { name: "Decisions" });
+  await waitFor(() =>
+    expect(within(bar).getByTestId("decisions-confirmed").textContent).toMatch(
+      /^Confirmed in duediligence by Ada Lovelace on /,
+    ),
+  );
+  // Nothing left to confirm here.
+  expect(within(bar).queryByRole("button")).toBeNull();
+});
+
+test("decisions confirmed with an API token or a connected app say which", async () => {
+  for (const [credential, said] of [
+    ["token", "Confirmed in duediligence (API token) by Ada Lovelace on "],
+    ["oauth", "Confirmed in duediligence (connected app) by Ada Lovelace on "],
+    ["session", "Confirmed in duediligence by Ada Lovelace on "],
+  ] as const) {
+    decisionsServer({ posted: true, credential });
+    const { unmount } = render(<WithDecisions canConfirm />);
+    const bar = await screen.findByRole("region", { name: "Decisions" });
+    await waitFor(() =>
+      expect(
+        within(bar).getByTestId("decisions-confirmed").textContent,
+      ).toContain(said),
+    );
+    unmount();
+  }
+});
+
+test("a spec drafted here carries no source line", async () => {
+  decisionsServer();
+  render(<WithDecisions canConfirm />);
+  await screen.findByRole("region", { name: "Decisions" });
+  expect(screen.queryByTestId("spec-source")).toBeNull();
 });
 
 test("a member waits for an owner, and a refused confirmation says so", async () => {

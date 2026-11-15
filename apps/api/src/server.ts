@@ -7,6 +7,7 @@ import { serve } from "@hono/node-server";
 import {
   AUDIT_RETENTION_DAYS,
   createApiTokenStore,
+  createContributorTokenStore,
   createAuditStore,
   createOAuthGrantStore,
   createBountyRunStore,
@@ -17,8 +18,11 @@ import {
   createConnection,
   createBountyProfileStore,
   createBountyProposalStore,
+  createBountyPostedSpecStore,
   createBountySpecStore,
   createDecisionConfirmationStore,
+  createProposalSizeLabelStore,
+  createContributorStore,
   createSubmissionMergeStore,
   createSubmissionStore,
   createEmailStore,
@@ -51,10 +55,11 @@ import {
 } from "@sandbox-factory/db";
 
 import { InstallationTokens } from "@sandbox-factory/github";
-import { buildBanner } from "@sandbox-factory/shared";
+import { buildBanner, CONTRIBUTOR_INVITE_PATH } from "@sandbox-factory/shared";
 
 import { createAuth } from "./auth.js";
 import { createAvatarService } from "./avatars/service.js";
+import { decisionsConfirmUrl } from "./pricing/decisions.js";
 import { BountyExecutor } from "./pricing/executor.js";
 import { BountyProfiler } from "./pricing/profiler.js";
 import { RubricPricer } from "./pricing/rubric.js";
@@ -86,6 +91,10 @@ import { GithubSnapshotter } from "./github/snapshot.js";
 import { resolveImageDigest } from "./image-digest.js";
 import { jiraClientFor, jiraClientsFor } from "./jira/credential.js";
 import { createGithubOidcVerifier } from "./judge/oidc.js";
+import {
+  GRADING_ATTEMPTS_PER_ASSIGNMENT_DAY,
+  MODEL_TOKENS_START_FLOOR,
+} from "./quota.js";
 import { createApp } from "./routes.js";
 import { SandboxCutter } from "./sandbox/cutter.js";
 import { SandboxPreparer } from "./sandbox/preparer.js";
@@ -98,7 +107,9 @@ import {
   heldCommits,
   heldContext,
 } from "./bounties/held-context.js";
-import { installationClient, mergeBackWriter } from "./github/credential.js";
+import { installationClient } from "./github/credential.js";
+import { mergeBackTargets } from "./github/merge-back.js";
+import { MergeCiTracker, type SubmissionEventEmit } from "./github/merge-ci.js";
 import {
   AnthropicCaller,
   DeepSeekCaller,
@@ -133,11 +144,29 @@ const repoSnapshots = createRepoSnapshotStore(connection.db);
  * run already admitted is never cut off for tokens: admission is the guard,
  * and the ledger every model reply writes (`modelUsage`) is the truth.
  */
-const tokenQuota = { monthlyLimit: env.MONTHLY_MODEL_TOKENS_PER_ORG };
+const tokenQuota = {
+  monthlyLimit: env.MONTHLY_MODEL_TOKENS_PER_ORG,
+  startFloor: MODEL_TOKENS_START_FLOOR,
+};
+/**
+ * The monthly evaluator cap new build, import and grading runs are admitted
+ * by, from the ledger every evaluation job writes, and the brakes on
+ * invited contributors' grading (`quota.ts`).
+ */
+const evaluatorQuota = {
+  monthlySeconds: env.MONTHLY_EVALUATOR_SECONDS_PER_ORG,
+};
+const gradingBrakes = {
+  perAssignmentDaily: GRADING_ATTEMPTS_PER_ASSIGNMENT_DAY,
+  perOrganizationDaily: env.CONTRIBUTOR_GRADING_RUNS_PER_ORG_DAY,
+};
 const modelUsage = createModelUsageStore(connection.db);
 const bountyRuns = createBountyRunStore(connection.db, { tokenQuota });
 const bountyProposals = createBountyProposalStore(connection.db);
 const bountySpecs = createBountySpecStore(connection.db);
+const decisionConfirmations = createDecisionConfirmationStore(connection.db);
+const sizeLabels = createProposalSizeLabelStore(connection.db);
+const postedSpecs = createBountyPostedSpecStore(connection.db);
 const bountyProfiles = createBountyProfileStore(connection.db);
 const jiraIssues = createJiraIssueStore(connection.db);
 /** The organization's bounties: what every proposal prices, from any source. */
@@ -306,6 +335,7 @@ const bountyExecutor =
         issues: jiraIssues,
         bounties,
         specs: bountySpecs,
+        postedSpecs,
         caller,
         modelUsage,
         clientFor: runClientFor,
@@ -488,6 +518,43 @@ const github =
         onBackgroundError: (code: string, error: unknown) =>
           console.error(code, describeError(error)),
       };
+/**
+ * Merge-backs: the store, where they write (`mergeBackTargets`: a token
+ * for the one repository, minted with MERGE_BACK_PERMISSIONS, its
+ * installation's permissions read before a merge), and the tracker that
+ * reads each open pull request's CI back and merges one opened to merge
+ * when CI passes, told by the webhook and swept by the reconciler.
+ */
+const submissionStore = createSubmissionStore(connection.db);
+const submissionMerges = createSubmissionMergeStore(connection.db);
+const mergeTargets =
+  github === undefined
+    ? undefined
+    : mergeBackTargets({
+        repos: githubRepos,
+        connections: github.connections,
+        installations: github.installations,
+      });
+/** Submission events, to the emitter declared below; called only later. */
+const emitSubmissionEvent: SubmissionEventEmit = (
+  organizationId,
+  type,
+  key,
+  data,
+) => {
+  void webhookEmitter.emit(organizationId, type, key, data);
+};
+const mergeCi =
+  mergeTargets === undefined
+    ? undefined
+    : new MergeCiTracker({
+        merges: submissionMerges,
+        targets: mergeTargets,
+        submissions: submissionStore,
+        emit: emitSubmissionEvent,
+        onError: (code, detail) =>
+          console.error(detail === undefined ? code : `${code} ${detail}`),
+      });
 const githubReconciler =
   github === undefined
     ? undefined
@@ -496,6 +563,7 @@ const githubReconciler =
         connections: github.connections,
         installations: github.installations,
         snapshotter: githubSnapshotter,
+        mergeCi,
         onError: (code, detail) =>
           console.error(detail === undefined ? code : `${code} ${detail}`),
       });
@@ -504,7 +572,11 @@ const githubReconciler =
 const avatars =
   objects === undefined ? undefined : createAvatarService({ store: objects });
 
-const analysisRuns = createAnalysisRunStore(connection.db, { tokenQuota });
+const analysisRuns = createAnalysisRunStore(connection.db, {
+  tokenQuota,
+  evaluatorQuota,
+  gradingBrakes,
+});
 /** What the price reads a repository's brief through. */
 const briefArtifacts = createArtifactStore(connection.db);
 const workerLauncher = new WorkerLauncher({
@@ -539,34 +611,18 @@ const sandbox =
     : {
         sandboxes: sandboxStore,
         cuts: sandboxStore,
-        submissions: createSubmissionStore(connection.db),
-        ...(github === undefined
+        submissions: submissionStore,
+        // Invited contributors; a claim link opens the web app's invite
+        // page, the secret in the fragment, which no server receives.
+        contributors: createContributorStore(connection.db),
+        inviteUrl: (token: string) =>
+          `${appUrl(env)}${CONTRIBUTOR_INVITE_PATH}#${token}`,
+        ...(mergeTargets === undefined
           ? {}
           : {
-              merges: createSubmissionMergeStore(connection.db),
-              // A merge-back writes with a token for the one repository,
-              // minted with MERGE_BACK_PERMISSIONS and nothing else.
-              mergeBack: {
-                target: async (organizationId: string, repoId: string) => {
-                  const repo = await githubRepos.get(organizationId, repoId);
-                  if (repo === null || repo.syncStatus === "gone") return null;
-                  const found = await github.connections.get(
-                    organizationId,
-                    repo.connectionId,
-                  );
-                  return found === null || !found.healthy
-                    ? null
-                    : {
-                        fullName: repo.fullName,
-                        defaultBranch: repo.defaultBranch,
-                        writer: mergeBackWriter(
-                          github.installations,
-                          found.installationId,
-                          repo.externalId,
-                        ),
-                      };
-                },
-              },
+              merges: submissionMerges,
+              mergeBack: mergeTargets,
+              onSubmissionEvent: emitSubmissionEvent,
             }),
         runs: analysisRuns,
         artifacts: analysis.artifacts,
@@ -574,12 +630,26 @@ const sandbox =
         previews: analysisRuns,
         proposals: bountyProposals,
         specs: bountySpecs,
+        // Builds and publication check the frozen spec's decisions too.
+        decisions: decisionConfirmations,
+        decisionsConfirmUrl: async (organizationId: string, bountyId: string) =>
+          decisionsConfirmUrl(
+            appUrl(env),
+            (await organizations.get(organizationId))?.slug,
+            organizationId,
+            bountyId,
+          ),
         bounties,
         repos: githubRepos,
         organizationNames: async (organizationId: string) => {
           const found = await organizations.get(organizationId);
           return found === undefined ? [] : [found.name, found.slug];
         },
+        // Issue keys of the workspace's Jira projects reach no public file.
+        ticketKeys: async (organizationId: string) =>
+          (await jiraBoards.list(organizationId)).flatMap((board) =>
+            board.projectKey === null ? [] : [board.projectKey],
+          ),
         contextFor,
         profiles: bountyProfiles,
         // Declared below, on the same footing; called only on a request.
@@ -682,6 +752,13 @@ const sandboxPreparer =
         sandboxes: sandboxStore,
         touchedSource: (owner, bountyId) =>
           touchedSource(sandbox, owner, bountyId),
+        decisionsRefusal: (owner, bountyId, proposal) =>
+          versionService(sandbox).decisionsRefusal(
+            owner,
+            bountyId,
+            proposal,
+            "preparing the sandbox",
+          ),
         slice: versionService(sandbox).slice,
         onError: (code, error) =>
           console.error(
@@ -755,6 +832,7 @@ const webhookEmitter = new WebhookEmitter({
   analysisRuns,
   bountyRuns,
   sandboxes: sandboxStore,
+  submissions: submissionStore,
   onEnqueued: () => webhookSender.kick(),
   onError: (code) => console.error(code),
 });
@@ -791,7 +869,7 @@ const app = createApp({
   profiles,
   organizations,
   jira,
-  github,
+  github: github === undefined ? undefined : { ...github, mergeCi },
   analysis,
   sandbox,
   pricing: {
@@ -800,7 +878,9 @@ const app = createApp({
     boards: jiraBoards,
     proposals: bountyProposals,
     specs: bountySpecs,
-    decisions: createDecisionConfirmationStore(connection.db),
+    decisions: decisionConfirmations,
+    sizeLabels,
+    postedSpecs,
     issues: jiraIssues,
     bounties,
     contexts: bountyContexts,
@@ -849,7 +929,9 @@ const app = createApp({
           requestedModel: caller?.model,
           promptVersion: JIRA_SIZE_PROMPT_VERSION,
         }),
+    // An approval, or decisions confirmed, may let a sandbox start.
     onApproved: () => sandboxPreparer?.kick(),
+    rescore: (owner, profile) => rubricPricer.settled(owner, profile),
   },
   settings: {
     settings: createWorkspaceSettingsStore(connection.db),
@@ -870,9 +952,11 @@ const app = createApp({
   flows: { waits: createFlowWaitStore(connection.db) },
   apiTokens: createApiTokenStore(connection.db),
   oauthGrants: createOAuthGrantStore(connection.db),
+  contributorTokens: createContributorTokenStore(connection.db),
   publicUrl: env.BETTER_AUTH_URL,
   usage: createUsageStore(connection.db),
   monthlyModelTokens: env.MONTHLY_MODEL_TOKENS_PER_ORG,
+  monthlyEvaluatorSeconds: env.MONTHLY_EVALUATOR_SECONDS_PER_ORG,
   audit,
   idempotencyKeys,
   webhooks: {

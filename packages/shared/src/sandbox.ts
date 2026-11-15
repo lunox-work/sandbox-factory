@@ -11,9 +11,12 @@ import {
   ALIAS_RULES_MAX,
   APPROVED_TASK_SCHEMA_VERSION,
   DEPENDENCY_RESOLUTIONS,
+  DISCLOSURE_ACKNOWLEDGEMENTS_MAX,
+  DISCLOSURE_KINDS,
   FIXTURE_LIMITS,
   PRICED_BOUNTY_COMPLEXITIES,
   SANDBOX_COMMANDS,
+  SUBMISSION_ERRORS,
   SANDBOX_STATUSES,
   SLICE_APPROVAL_REASONS,
   TASK_DESCRIPTOR_SCHEMA_VERSION,
@@ -72,6 +75,38 @@ export const acceptanceTestsSchema = z
     (tests) => new Set(tests.map((test) => test.path)).size === tests.length,
     "Hidden test paths must be unique.",
   );
+
+/**
+ * An owner's word that a disclosure finding may be public, as a request
+ * gives it: the finding's kind and value, and why. A `host` covers every
+ * link and address on that host.
+ */
+export const disclosureAcknowledgementInputSchema = z.strictObject({
+  kind: z.enum(DISCLOSURE_KINDS),
+  value: z.string().min(1).max(2_000),
+  note: z.string().trim().max(500).nullable().optional(),
+});
+/** As a draft keeps it, with who acknowledged it and when. */
+export const disclosureAcknowledgementSchema =
+  disclosureAcknowledgementInputSchema.extend({
+    by: z.string().nullable().optional(),
+    at: z.iso.datetime().nullable().optional(),
+  });
+/**
+ * `PUT .../versions/:vid/disclosure-acknowledgements`: the draft's whole
+ * list, replacing what it held. Each kind and value once.
+ */
+export const setDisclosureAcknowledgementsSchema = z.strictObject({
+  acknowledgements: z
+    .array(disclosureAcknowledgementInputSchema)
+    .max(DISCLOSURE_ACKNOWLEDGEMENTS_MAX)
+    .refine(
+      (list) =>
+        new Set(list.map((item) => `${item.kind}\u0000${item.value}`)).size ===
+        list.length,
+      "Acknowledge each finding once.",
+    ),
+});
 
 /** Fixtures written by hand, or replaced on a draft. */
 export const fixturesInputSchema = z.strictObject({
@@ -285,6 +320,13 @@ export const sandboxVersionSourceDtoSchema = z.strictObject({
   buildRunId: z.string().nullable(),
   roundTripRunId: z.string().nullable(),
   disclosureRunId: z.string().nullable(),
+  /**
+   * Disclosure findings an owner said may be public: in a sliced draft's
+   * transform; checked at publication for an uploaded or generated one.
+   */
+  disclosureAcknowledgements: z
+    .array(disclosureAcknowledgementSchema)
+    .default([]),
   approvedBy: z.string().nullable(),
   approvedAt: z.iso.datetime().nullable(),
   createdAt: z.iso.datetime(),
@@ -352,6 +394,16 @@ export const sandboxSliceDtoSchema = z.object({
 });
 export type SandboxSliceDto = z.infer<typeof sandboxSliceDtoSchema>;
 /**
+ * `POST .../sandboxes/:id/slice`, every field optional (a body may be
+ * left out). `carryTests: false` builds the draft without the repository's
+ * own tests its slice offers, and the draft's later builds keep that until
+ * asked again with `true`.
+ */
+export const sliceSandboxSchema = z.strictObject({
+  carryTests: z.boolean().optional(),
+});
+export type SliceSandboxInput = z.input<typeof sliceSandboxSchema>;
+/**
  * `POST .../sandboxes/:id/slice/approve`: the slice awaiting approval,
  * named by its run and the request it was cut from, as the approver saw
  * it. Anything else is refused, so an approval never covers a slice its
@@ -415,6 +467,18 @@ export const publishVersionResponseSchema = z.object({
   sandbox: sandboxDtoSchema,
   version: sandboxVersionDtoSchema,
   source: sandboxVersionSourceDtoSchema,
+  /**
+   * The publication gates it stood on: `passed` (the build's round trip and
+   * disclosure scan, recorded on the source as `roundTripRunId` and
+   * `disclosureRunId`), or `grandfathered` for a version first published
+   * before the gates existed, with the reason.
+   */
+  gates: z
+    .object({
+      status: z.enum(["passed", "grandfathered"]),
+      reason: z.string().nullable(),
+    })
+    .optional(),
 });
 export type PublishVersionResponseDto = z.infer<
   typeof publishVersionResponseSchema
@@ -448,16 +512,78 @@ export const sandboxFileDtoSchema = z.strictObject({
  */
 export const sandboxHandoutSchema = z.object({
   versionId: z.string(),
+  /** The build run; absent from a contributor's handout. */
   run: z
     .object({ id: z.string(), status: z.enum(ANALYSIS_STATUSES) })
-    .nullable(),
+    .nullable()
+    .optional(),
   /** The public project's files, at their paths in the project. */
   files: z.array(sandboxFileDtoSchema),
   hiddenTests: z.number().int().nonnegative(),
   /** Null until a build has committed hidden tests. */
   hiddenSha256: z.string().length(64).nullable(),
+  /**
+   * How `hiddenSha256` is computed (core's `HIDDEN_COMMITMENT_VERSION`): 2
+   * for a build that recorded its commitment, 1 for one made before, which
+   * keeps the hash it always showed.
+   */
+  hiddenSha256Version: z.literal([1, 2]),
 });
 export type SandboxHandout = z.infer<typeof sandboxHandoutSchema>;
+
+/**
+ * The most bytes, summed over the handout's files, that
+ * `GET /versions/:vid/archive` packs; a larger project is refused
+ * (`project_too_large`) rather than held in memory.
+ */
+export const PROJECT_ARCHIVE_MAX_BYTES = 64 * 1024 * 1024;
+/** What one page of `GET /versions/:vid/handout/files` holds by default. */
+export const HANDOUT_PAGE_DEFAULT_BYTES = 60_000;
+/** The bounds of a page's `maxBytes`, counted as encoded content. */
+export const HANDOUT_PAGE_LIMITS = { min: 1_000, max: 1_000_000 } as const;
+/** The most files one page lists, whatever their size. */
+export const HANDOUT_PAGE_MAX_FILES = 200;
+
+/** `GET /versions/:vid/handout/files`: which page, and how big. */
+export const handoutFilesQuerySchema = z.object({
+  /** The previous page's `nextCursor`; absent, the first page. */
+  cursor: z.string().min(1).max(100).optional(),
+  maxBytes: z.coerce
+    .number()
+    .int()
+    .min(HANDOUT_PAGE_LIMITS.min)
+    .max(HANDOUT_PAGE_LIMITS.max)
+    .default(HANDOUT_PAGE_DEFAULT_BYTES),
+});
+export type HandoutFilesQuery = z.input<typeof handoutFilesQuerySchema>;
+
+/**
+ * One page of the handout's files with their contents, so an agent can
+ * write the project out without the archive: UTF-8 text as is, any other
+ * file as base64. A page holds at least one file; one whose encoded
+ * content is over `SANDBOX_FILE_TEXT_MAX_BYTES` is listed with
+ * `omitted: "too_large"` and is in the archive. `root` is the folder the
+ * archive unpacks to; `sha256` names the project (the archive's ETag).
+ */
+export const handoutFilesSchema = z.object({
+  versionId: z.string(),
+  root: z.string().min(1),
+  sha256: z.string().regex(/^[a-f0-9]{64}$/),
+  total: z.number().int().nonnegative(),
+  files: z.array(
+    z.object({
+      path: z.string().min(1),
+      sizeBytes: z.number().int().nonnegative(),
+      sha256: z.string().regex(/^[a-f0-9]{64}$/),
+      encoding: z.enum(["utf8", "base64"]).nullable(),
+      content: z.string().nullable(),
+      omitted: z.literal("too_large").nullable(),
+    }),
+  ),
+  /** Null on the last page. */
+  nextCursor: z.string().nullable(),
+});
+export type HandoutFilesDto = z.infer<typeof handoutFilesSchema>;
 
 export const sandboxFileListSchema = z.object({
   run: z
@@ -507,6 +633,12 @@ export type CreateSandboxVersionInput = z.input<
 >;
 export type UpdateSandboxVersionInput = z.input<
   typeof updateSandboxVersionSchema
+>;
+export type DisclosureAcknowledgementInput = z.input<
+  typeof disclosureAcknowledgementInputSchema
+>;
+export type DisclosureAcknowledgementDto = z.infer<
+  typeof disclosureAcknowledgementSchema
 >;
 export type SandboxDto = z.infer<typeof sandboxDtoSchema>;
 export type SandboxVersionDto = z.infer<typeof sandboxVersionDtoSchema>;
@@ -586,6 +718,91 @@ export const createSubmissionSchema = z.strictObject({
     ),
 });
 
+/**
+ * The largest zipped project folder `POST …/submissions/zip` reads, as
+ * sent. `node_modules/` may ride along (it is skipped unread), so the cap
+ * leaves room for it; the files read are bounded apart.
+ */
+export const SUBMISSION_ZIP_MAX_BYTES = 48 * 1024 * 1024;
+
+/**
+ * What an uploaded project folder would submit (`?dryRun=1`), or why it
+ * cannot: the files it changes or adds, the guide and editor files it
+ * changed (never submitted), how many entries were skipped unread
+ * (`node_modules/`, `.git/`, OS files, build output), the read-only files
+ * it lacks (the version's text stands) and each refusal by path.
+ */
+export const folderPreviewSchema = z.object({
+  files: z.array(
+    z.object({
+      path: z.string(),
+      change: z.enum(["changed", "added"]),
+    }),
+  ),
+  ignored: z.array(z.string()),
+  skipped: z.number().int().nonnegative(),
+  missing: z.array(z.string()),
+  refused: z.array(z.object({ path: z.string(), reason: z.string() })),
+});
+export type FolderPreviewDto = z.infer<typeof folderPreviewSchema>;
+export const folderPreviewResponseSchema = z.object({
+  preview: folderPreviewSchema,
+});
+/**
+ * `?dryRun=1` on a submission or retry (files JSON or zipped folder):
+ * answer what it would submit (`folderPreviewResponseSchema`, 200) and
+ * store nothing.
+ */
+export const submissionDryRunQuerySchema = z.object({
+  dryRun: z.enum(["1", "true"]).optional(),
+});
+
+/**
+ * A merge-back's pull request, as read back from GitHub. `when`: `open`
+ * opens it and leaves it to the repository's people; `ci_passes` also
+ * merges it (squash) once its CI passes and GitHub lets it.
+ */
+export const MERGE_WHEN = ["open", "ci_passes"] as const;
+export type MergeWhen = (typeof MERGE_WHEN)[number];
+export const PULL_REQUEST_STATES = ["open", "merged", "closed"] as const;
+export type PullRequestState = (typeof PULL_REQUEST_STATES)[number];
+/**
+ * Its head commit's checks and commit statuses: `none` when the repository
+ * reported none within a grace period; `unknown` when the GitHub App has
+ * not been granted `checks:read` and `statuses:read` to read them.
+ */
+export const MERGE_CI_STATES = [
+  "pending",
+  "passing",
+  "failing",
+  "none",
+  "unknown",
+] as const;
+export type MergeCiState = (typeof MERGE_CI_STATES)[number];
+/** Counts over check runs and commit statuses, and the failing ones' names. */
+export const mergeCiSummarySchema = z.object({
+  total: z.number().int().nonnegative(),
+  passed: z.number().int().nonnegative(),
+  failed: z.number().int().nonnegative(),
+  pending: z.number().int().nonnegative(),
+  failing: z.array(z.string()).max(20),
+  /** The first failing check's page, else the first check's; null for none. */
+  detailsUrl: z.string().nullable(),
+});
+export type MergeCiSummary = z.infer<typeof mergeCiSummarySchema>;
+export const mergeCiSchema = z.object({
+  state: z.enum(MERGE_CI_STATES),
+  summary: mergeCiSummarySchema.nullable(),
+  /** The commit the state describes: the pull request's head when read. */
+  headSha: z.string().nullable(),
+  checkedAt: z.iso.datetime().nullable(),
+});
+/** Body for `POST …/submissions/:sid/merge`; empty opens the pull request alone. */
+export const mergeSubmissionSchema = z.strictObject({
+  when: z.enum(MERGE_WHEN).default("open"),
+});
+export type MergeSubmissionInput = z.input<typeof mergeSubmissionSchema>;
+
 const suiteCountSchema = z.object({
   passed: z.number().int().nonnegative(),
   total: z.number().int().nonnegative(),
@@ -600,23 +817,69 @@ export const submissionDtoSchema = z.object({
   id: z.string(),
   sandboxVersionId: z.string(),
   status: z.enum(["queued", "running", "passed", "failed", "errored"]),
+  /**
+   * Why an `errored` submission could not be graded: a fixed reason. It is
+   * graded again with the same files without spending its retry. Absent
+   * from an API older than the reason.
+   */
+  errorCode: z.enum(SUBMISSION_ERRORS).nullable().default(null),
   verdict: z.enum(["passed", "overfit", "incomplete", "refused"]).nullable(),
   public: suiteCountSchema.nullable(),
   hidden: suiteCountSchema.nullable(),
   failedScenarios: z.array(z.string()),
   refused: z.array(z.object({ path: z.string(), reason: z.string() })),
+  /**
+   * `failed`: it passed, but carried back to the repository's names it did
+   * not build and pass there, or the carry renamed a word the contributor
+   * wrote, so it is not merged back (`carry_failed`).
+   * Null when it carried or nothing is carried back; absent from an API
+   * older than the check.
+   */
+  carryBack: z.enum(["failed"]).nullable().default(null),
   runId: z.string().nullable(),
   /** The submission this one retries; null for a first attempt. */
   retryOf: z.string().nullable(),
-  /** The pull request it was merged back as (gate 3); null before. */
+  /**
+   * The pull request it was merged back as (gate 3); null before. The
+   * fields after `createdAt` are what the platform has read back of it
+   * since (`apps/api/src/github/merge-ci.ts`); absent from an older API.
+   */
   merge: z
     .object({
       pullRequestNumber: z.number().int(),
       pullRequestUrl: z.string(),
       branch: z.string(),
       createdAt: z.iso.datetime(),
+      /** `ci_passes`: the platform merges it once its CI passes. */
+      when: z.enum(MERGE_WHEN).default("open"),
+      pullRequestState: z.enum(PULL_REQUEST_STATES).default("open"),
+      ci: mergeCiSchema.default({
+        state: "pending",
+        summary: null,
+        headSha: null,
+        checkedAt: null,
+      }),
+      /** The commit it landed as on the base branch, once merged. */
+      mergedCommitSha: z.string().nullable().default(null),
+      mergedAt: z.iso.datetime().nullable().default(null),
+      /** Why GitHub refused the platform's merge (branch protection…); it stays open. */
+      mergeError: z.string().nullable().default(null),
     })
     .nullable(),
+  /**
+   * The invited contributor who made it, as the workspace knows them; null
+   * for the workspace's own people and the CI judge, and absent from an
+   * API older than contributors.
+   */
+  contributor: z
+    .object({
+      assignmentId: z.string(),
+      userId: z.string(),
+      name: z.string(),
+      email: z.string(),
+    })
+    .nullable()
+    .default(null),
   createdAt: z.iso.datetime(),
   updatedAt: z.iso.datetime(),
 });
@@ -627,6 +890,36 @@ export const submissionListSchema = z.object({
   submissions: z.array(submissionDtoSchema),
 });
 export type SubmissionDto = z.infer<typeof submissionDtoSchema>;
+
+/**
+ * Whether a version's passing submissions can be merged back now, read
+ * before the button is pressed. `code` is the refusal a merge would answer
+ * (`app_permissions_missing` names `missing`, e.g. `pull_requests:write`,
+ * and `acceptUrl`, where an installation admin accepts them); null when
+ * it would go ahead.
+ */
+export const MERGE_BACK_BLOCKS = [
+  "merge_unavailable",
+  "not_sliced",
+  "repository_unavailable",
+  "app_permissions_missing",
+] as const;
+export const mergeBackStatusSchema = z.object({
+  code: z.enum(MERGE_BACK_BLOCKS).nullable(),
+  error: z.string().nullable(),
+  missing: z.array(z.string()),
+  acceptUrl: z.string().nullable(),
+  /**
+   * What reading the pull request's CI back still needs (`checks:read`,
+   * `statuses:read`), accepted at `acceptUrl`. It never blocks opening
+   * one: CI then reads `unknown`, and merging when CI passes is refused.
+   */
+  ciMissing: z.array(z.string()).default([]),
+});
+export const mergeBackStatusResponseSchema = z.object({
+  mergeBack: mergeBackStatusSchema,
+});
+export type MergeBackStatusDto = z.infer<typeof mergeBackStatusSchema>;
 
 /**
  * How many files, and how large, one uploaded hand-off folder may carry:
@@ -640,6 +933,14 @@ export const UPLOAD_LIMITS = {
 } as const;
 /** The request body limit for an upload: the files, the tests and JSON's overhead. */
 export const UPLOAD_BODY_MAX_BYTES = 12_000_000;
+/**
+ * The oldest carveout an upload is taken from, both the release that
+ * uploads it (`carveout.version`) and the one that cut the folder (its
+ * record's `carveoutVersion`): 0.4.0 shipped `handoff --platform`, with the
+ * record's `cutId` (the receipt `patch --from` reads) and the layout the
+ * import grades by. An older one is refused 422 `carveout_too_old`.
+ */
+export const UPLOAD_CARVEOUT_MIN_VERSION = "0.4.0";
 
 /**
  * One of the maintainer's acceptance tests, at its path in the folder
@@ -708,15 +1009,21 @@ export const uploadResponseSchema = z.object({
 
 /**
  * `GET /sandboxes/submissions/:sid/files`: a passing submission's changed
- * files on an uploaded version, for `carveout patch --from`: what the
- * contributor changed or added, at the folder's paths, never a hidden test.
+ * files on a version with no repository to merge back to, never a hidden
+ * test. On an uploaded version, for `carveout patch --from`, at the
+ * folder's paths, with the receipt's hash (`upload`); on a generated
+ * (starter) one, at the version's own paths and names (`upload` null).
  */
 export const submissionFilesResponseSchema = z.object({
   submission: submissionDtoSchema,
-  upload: z.object({
-    recordSha256: z.string(),
-    carveoutVersion: z.string(),
-  }),
+  /** Absent from an API older than starter take-back: an upload. */
+  origin: z.enum(["upload", "starter"]).default("upload"),
+  upload: z
+    .object({
+      recordSha256: z.string(),
+      carveoutVersion: z.string(),
+    })
+    .nullable(),
   files: z.array(z.object({ path: z.string(), text: z.string() })),
 });
 export type SubmissionFilesResponseDto = z.infer<

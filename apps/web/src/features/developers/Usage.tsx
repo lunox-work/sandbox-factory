@@ -1,11 +1,14 @@
 /**
- * Usage: the runs the workspace started in the last 7, 30 or 90 days,
- * counted by family, kind and state, from `GET /orgs/:orgId/usage`. A bar
- * on each row shows its share of the largest; no chart, since a table of a
- * dozen rows reads faster than one.
+ * Usage, from `GET /orgs/:orgId/usage`: this month's model tokens and
+ * evaluator time, each against the monthly limit new runs are refused at,
+ * with its grading attempts and uploads; then the runs the workspace
+ * started in the last 7, 30 or 90 days, counted by family, kind and state.
+ * A bar on each row shows its share of the largest; no chart, since a
+ * table of a dozen rows reads faster than one.
  */
 
 import { useState } from "react";
+import type { UsageDto } from "@sandbox-factory/shared";
 
 import { LoadingLine, RetryableError } from "@/components/Message";
 import { SectionHeader } from "@/components/Page";
@@ -20,6 +23,122 @@ const FAMILY_LABEL: Record<string, string> = {
   sizing: "Sizing",
   analysis: "Analysis",
 };
+
+/** Seconds as a person reads them: `42 s`, `5 min`, `1 h 23 min`. */
+export function duration(seconds: number): string {
+  if (seconds < 60) return `${seconds} s`;
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) return `${minutes} min`;
+  const hours = Math.floor(minutes / 60);
+  const rest = minutes % 60;
+  return rest === 0 ? `${hours} h` : `${hours} h ${rest} min`;
+}
+
+const count = (value: number) => value.toLocaleString("en-US");
+
+/** One metered figure against its monthly limit, with how full it is. */
+function Meter({
+  label,
+  used,
+  limit,
+  format,
+}: {
+  label: string;
+  used: number;
+  limit: number;
+  format: (value: number) => string;
+}) {
+  const share = Math.min(1, used / Math.max(1, limit));
+  return (
+    <div className="bg-background flex flex-col gap-2 px-4 py-3">
+      <span className="eyebrow">{label}</span>
+      <span className="font-mono text-sm tabular-nums">
+        {format(used)}
+        <span className="text-muted-foreground"> of {format(limit)}</span>
+      </span>
+      <div
+        role="meter"
+        aria-label={`${label} used`}
+        aria-valuemin={0}
+        aria-valuemax={limit}
+        aria-valuenow={Math.min(used, limit)}
+        aria-valuetext={`${format(used)} of ${format(limit)}`}
+        className="bg-muted h-1.5 overflow-hidden rounded-full"
+      >
+        <div
+          className={cn(
+            "h-full rounded-full",
+            share >= 1 ? "bg-destructive" : "bg-foreground/70",
+          )}
+          style={{ width: `${share * 100}%` }}
+        />
+      </div>
+    </div>
+  );
+}
+
+/** A count over the month, with a line under it. */
+function Figure({
+  label,
+  value,
+  detail,
+}: {
+  label: string;
+  value: number;
+  detail: string;
+}) {
+  return (
+    <div className="bg-background flex flex-col gap-2 px-4 py-3">
+      <span className="eyebrow">{label}</span>
+      <span className="font-mono text-sm tabular-nums">{count(value)}</span>
+      <span className="text-muted-foreground text-xs">{detail}</span>
+    </div>
+  );
+}
+
+/** This month's metered use, against the limits that refuse new runs. */
+function ThisMonth({ usage }: { usage: UsageDto }) {
+  const resets = new Date(usage.modelTokens.resetsAt).toLocaleDateString(
+    "en-US",
+    { month: "long", day: "numeric", timeZone: "UTC" },
+  );
+  return (
+    <div className="flex flex-col gap-2">
+      <div
+        role="group"
+        aria-label="This month"
+        className="bg-border grid gap-px overflow-hidden rounded-lg border sm:grid-cols-2 lg:grid-cols-4"
+      >
+        <Meter
+          label="Model tokens"
+          used={usage.modelTokens.used}
+          limit={usage.modelTokens.limit}
+          format={count}
+        />
+        <Meter
+          label="Evaluator time"
+          used={usage.evaluatorSeconds.used}
+          limit={usage.evaluatorSeconds.limit}
+          format={duration}
+        />
+        <Figure
+          label="Grading attempts"
+          value={usage.thisMonth.gradingAttempts}
+          detail={`${count(usage.thisMonth.contributorGradingAttempts)} by invited contributors`}
+        />
+        <Figure
+          label="Uploads"
+          value={usage.thisMonth.uploads}
+          detail="Hand-off folders uploaded as versions"
+        />
+      </div>
+      <p className="text-muted-foreground text-xs">
+        This month (UTC). New runs are refused once a limit is reached; both
+        reset on {resets}.
+      </p>
+    </div>
+  );
+}
 
 export function Usage({ organizationId }: { organizationId: string }) {
   const [days, setDays] = useState<(typeof RANGES)[number]>(30);
@@ -38,7 +157,7 @@ export function Usage({ organizationId }: { organizationId: string }) {
       <SectionHeader
         id="developers-usage"
         title="Usage"
-        description="Runs this workspace started, by family, kind and state."
+        description="This month's metered use, and the runs this workspace started, by family, kind and state."
         actions={
           <div
             role="group"
@@ -64,6 +183,8 @@ export function Usage({ organizationId }: { organizationId: string }) {
           </div>
         }
       />
+
+      {usage.data === undefined ? null : <ThisMonth usage={usage.data} />}
 
       {usage.isPending ? (
         <LoadingLine />

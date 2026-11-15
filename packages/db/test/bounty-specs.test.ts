@@ -50,6 +50,7 @@ function row(overrides: Partial<BountySpecRow> = {}): BountySpecRow {
     runId: "brn_1",
     actualModel: "drafting-model",
     promptVersion: "draft-v1",
+    source: null,
     createdAt: new Date("2026-09-30T00:00:00Z"),
     ...overrides,
   };
@@ -73,6 +74,7 @@ test("gets one revision, scoped to the owner, the proposal and the revision", as
     runId: "brn_1",
     actualModel: "drafting-model",
     promptVersion: "draft-v1",
+    source: null,
     createdAt: "2026-09-30T00:00:00.000Z",
   });
   assert.equal(fake.calls[0]?.kind, "select");
@@ -182,6 +184,51 @@ test("a revision is written for its owner, proposal and run", async () => {
       runId: "brn_1",
       actualModel: "drafting-model",
       promptVersion: "draft-v1",
+      source: null,
+    },
+  );
+  assert.equal(fake.calls.length, 1, "no confirmation without one");
+});
+
+test("a posted spec records its source and poster, and its confirmation with it", async () => {
+  const fake = createFakeDb([]);
+  await insertSpecRevision(
+    fake.tx,
+    "org_1",
+    { proposalId: "bpr_1", runId: "brn_1", revision: 1 },
+    {
+      specHash: "b".repeat(64),
+      specHashVersion: 1,
+      draft,
+      origin: "draft",
+      actualModel: null,
+      promptVersion: null,
+      source: "duediligence@0.5.1",
+      createdBy: "user_1",
+      confirmation: {
+        confirmedBy: "user_1",
+        decisionsSha256: "c".repeat(64),
+        via: "duediligence",
+        credential: "token",
+      },
+    },
+  );
+  assert.equal(fake.calls[0]?.values?.["source"], "duediligence@0.5.1");
+  assert.equal(fake.calls[0]?.values?.["createdBy"], "user_1");
+  const confirmation = fake.calls[1]?.values;
+  assert.equal(fake.calls[1]?.kind, "insert");
+  assert.match(String(confirmation?.["id"]), /^dcf_/);
+  assert.deepEqual(
+    { ...confirmation, id: "dcf" },
+    {
+      id: "dcf",
+      organizationId: "org_1",
+      proposalId: "bpr_1",
+      specRevision: 1,
+      decisionsSha256: "c".repeat(64),
+      confirmedBy: "user_1",
+      via: "duediligence",
+      credential: "token",
     },
   );
 });

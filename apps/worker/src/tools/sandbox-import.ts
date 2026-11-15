@@ -16,18 +16,36 @@
  * The baseline then runs the layout's commands (`runLayoutBaseline`), and
  * every acceptance test must fail on it: a test that passes before the
  * work accepts anything. The run calls no model.
+ *
+ * The upload route refused the folder unless carveout's name and
+ * credential scans came clean; the disclosure scan beyond the names
+ * (`scanDisclosure`: addresses, hosts, authors, ticket keys, chat links)
+ * runs here over its public files, after the baseline. Its findings are
+ * not blockers: the build records every one in the disclosure gate as
+ * `pending_acknowledgement`, and publication refuses the version until an
+ * owner acknowledges each (`gatesOf`) or it is cut again. The build reads
+ * no acknowledgement, so an upload, which cannot be built again, never
+ * needs to be: its files are the same whatever the list says. The
+ * descriptor's title, summary and tags, the bounty's words, are redacted
+ * of every finding (`redactDisclosure`) for the same reason.
  */
 
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
-import { folderLayout, type FolderLayout } from "carveout/api";
+import { folderLayout } from "carveout/api";
+import { gradingLayoutOf } from "./folder-layout.js";
 import {
   SANDBOX_COMMANDS,
   SANDBOX_IMPORT_TOOL_VERSION,
   SANDBOX_TOOLCHAIN,
   TASK_DESCRIPTOR_PATH,
   TASK_DESCRIPTOR_SCHEMA_VERSION,
+  DISCLOSURE_FINDINGS_EVALUATED,
+  disclosureGate,
+  disclosureRecords,
   isSandboxImportParams,
+  redactDisclosure,
+  scanDisclosure,
 } from "sandbox-factory";
 import type {
   AcceptanceTest,
@@ -101,45 +119,7 @@ export function parseUpload(text: string): StoredUpload | null {
   };
 }
 
-/**
- * carveout's layout of a folder as grading reads it: the same, with the
- * descriptor the platform adds among the files a submission never changes.
- */
-export function gradingLayoutOf(folder: FolderLayout): GradingLayout {
-  return {
-    harnessDir: folder.harnessDir,
-    mocksDir: folder.mocksDir,
-    mockRuntimePath: folder.mockRuntimePath,
-    envFile: folder.envFile,
-    harnessRoots: [...folder.harnessRoots],
-    configFiles: {
-      ...folder.configFiles,
-      [TASK_DESCRIPTOR_PATH]: `${TASK_DESCRIPTOR_PATH} is the version's.`,
-    },
-    commands: folder.commands.map(({ name, argv }) => ({
-      name,
-      argv: [...argv],
-    })),
-    tests: {
-      publicDir: folder.tests.publicDir,
-      privateDir: folder.tests.privateDir,
-      files: [...folder.tests.files],
-      run: {
-        "node:test": {
-          argv: [...folder.tests.run["node:test"].argv],
-          emitted: folder.tests.run["node:test"].emitted,
-        },
-        vitest:
-          folder.tests.run.vitest === null
-            ? null
-            : {
-                argv: [...folder.tests.run.vitest.argv],
-                emitted: folder.tests.run.vitest.emitted,
-              },
-      },
-    },
-  };
-}
+export { gradingLayoutOf };
 
 const under = (path: string, dir: string) =>
   path === dir || path.startsWith(`${dir}/`);
@@ -243,15 +223,18 @@ export function createSandboxImportAdapter(options: {
         )
         .sort();
       const publicTests = layout.tests.files.filter((path) => held.has(path));
+      // No acknowledgement is read: they are checked at publication.
+      const disclosure = { ticketKeys: params.ticketKeys ?? [] };
+      const scrub = (text: string) => redactDisclosure(text, disclosure);
       const descriptor: TaskDescriptor = {
         schemaVersion: TASK_DESCRIPTOR_SCHEMA_VERSION,
         sandboxId: stored.version.sandboxId,
         versionId: stored.version.id,
         version: stored.version.version,
-        title: stored.version.title,
-        specSummary: stored.version.specSummary,
+        title: scrub(stored.version.title),
+        specSummary: scrub(stored.version.specSummary),
         complexity: stored.version.complexity,
-        tags: [...stored.version.tags],
+        tags: stored.version.tags.map(scrub),
         commands: SANDBOX_COMMANDS,
         toolchain: SANDBOX_TOOLCHAIN,
         editablePaths,
@@ -307,9 +290,32 @@ export function createSandboxImportAdapter(options: {
               layout,
               timing: input.timing,
             });
+      // The folder as a contributor reads it, scanned beyond the names:
+      // recorded for an owner to acknowledge before publishing, not a
+      // blocker, so the baseline's verdict stands as the build's.
+      const scanned = scanDisclosure(files, disclosure);
+      if (scanned.length > 0)
+        input.log(
+          `The disclosure scan finds ${scanned.length} item(s) in the folder's public files; an owner acknowledges each before the version is published.`,
+        );
       const { written } = await writeBuildOutputs({
         outDir: input.outDir,
         toolVersion: SANDBOX_IMPORT_TOOL_VERSION,
+        // Nothing to carry back to here (the maintainer's receipt does);
+        // the names and credentials the upload route scanned, the rest here.
+        gates: {
+          roundTrip: { status: "not_applicable", files: 0, problems: [] },
+          disclosure: disclosureGate(blockers, 0, "upload", {
+            findings: disclosureRecords(
+              scanned,
+              [],
+              DISCLOSURE_FINDINGS_EVALUATED,
+            ),
+            total: scanned.length,
+            unacknowledged: scanned.length,
+            acknowledgedAt: "publish",
+          }),
+        },
         sandboxVersionId: params.sandboxVersionId,
         bindings: {
           sourceSnapshotId: null,

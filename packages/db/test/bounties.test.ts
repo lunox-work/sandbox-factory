@@ -100,6 +100,44 @@ test("creates a bounty written here, with no Jira issue", async () => {
   assert.equal("repoId" in (values ?? {}), false);
 });
 
+test("a bounty posted with a spec writes the spec in the same transaction", async () => {
+  const fake = createFakeDb([bountyRow()]);
+  const draft = {
+    feature: "Invitations",
+    background: [],
+    scenarios: [],
+    openQuestions: ["Which mailer?"],
+    assumptions: [],
+  };
+  await createBountyStore(fake.db).create("org_1", "user_1", {
+    ...newBounty,
+    postedSpec: {
+      document: "Feature: Invitations",
+      draft,
+      source: "duediligence@0.5.1",
+      specHash: "a".repeat(64),
+      specHashVersion: 2,
+      confirmedBy: "user_1",
+      confirmedCredential: "token",
+    },
+  });
+  const posted = fake.calls.find(
+    (call) => call.kind === "insert" && call.values?.["document"] !== undefined,
+  )?.values;
+  assert.deepEqual(posted, {
+    bountyId: bountyRow().id,
+    organizationId: "org_1",
+    document: "Feature: Invitations",
+    draft,
+    source: "duediligence@0.5.1",
+    specHash: "a".repeat(64),
+    specHashVersion: 2,
+    confirmedBy: "user_1",
+    confirmedCredential: "token",
+    createdBy: "user_1",
+  });
+});
+
 test("creates a bounty from a GitHub issue, keeping its URL as the source", async () => {
   const url = "https://github.com/acme/app/issues/12";
   const fake = createFakeDb([

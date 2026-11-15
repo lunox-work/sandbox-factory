@@ -6,6 +6,8 @@ import { SPEC_LIMITS } from "sandbox-factory";
 import { WEIGHT_REASON_CHARS } from "sandbox-factory";
 
 import {
+  postedSpecSchema,
+  proposalDecisionsResponseSchema,
   bountySpecDtoSchema,
   bountySpecRevisionDtoSchema,
   proposalSpecResponseSchema,
@@ -274,4 +276,70 @@ test("a spec change asks for kinds or an instruction, answers or removals", () =
       JSON.stringify(request),
     );
   }
+});
+
+test("a posted spec is a duediligence document, kept as written, with an engine version", () => {
+  const spec = {
+    document: "Feature: x\n",
+    format: "duediligence",
+    confirmed: true,
+    engine: { name: "duediligence", version: "0.5.1" },
+  };
+  assert.deepEqual(postedSpecSchema.parse(spec), spec);
+  for (const bad of [
+    { ...spec, document: "  \n" },
+    { ...spec, format: "markdown" },
+    { ...spec, confirmed: "yes" },
+    { ...spec, engine: { name: "duediligence", version: "latest" } },
+    { ...spec, engine: { name: "carveout", version: "0.5.1" } },
+    { ...spec, extra: true },
+  ])
+    assert.equal(
+      postedSpecSchema.safeParse(bad).success,
+      false,
+      JSON.stringify(bad),
+    );
+  assert.equal(
+    postedSpecSchema.safeParse({
+      ...spec,
+      engine: { name: "duediligence", version: "1.0.0-rc.1" },
+    }).success,
+    true,
+  );
+});
+
+test("a confirmation says where it was made, and older answers without it still parse", () => {
+  const read = {
+    specRevision: 1,
+    decisions: [{ key: "d1", text: "Half rounds up." }],
+    decisionsSha256: "a".repeat(64),
+    confirmUrl: "https://app.test/x",
+  };
+  const confirmation = {
+    confirmedBy: "user_1",
+    confirmedByName: "Ada Lovelace",
+    via: "duediligence",
+    confirmedAt: "2026-11-15T00:00:00.000Z",
+  };
+  assert.deepEqual(
+    proposalDecisionsResponseSchema.parse({ ...read, confirmation })
+      .confirmation,
+    confirmation,
+  );
+  assert.equal(
+    proposalDecisionsResponseSchema.safeParse({
+      ...read,
+      confirmation: { ...confirmation, via: "jira" },
+    }).success,
+    false,
+  );
+  assert.ok(
+    proposalDecisionsResponseSchema.safeParse({
+      ...read,
+      confirmation: {
+        confirmedBy: "user_1",
+        confirmedAt: confirmation.confirmedAt,
+      },
+    }).success,
+  );
 });

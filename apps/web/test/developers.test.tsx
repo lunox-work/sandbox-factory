@@ -20,6 +20,7 @@ const { DevelopersPage } =
 const { ApiReferenceView, groupOperations, typeLabel } =
   await import("../src/features/developers/ApiReference");
 const { tokenState } = await import("../src/features/developers/data");
+const { duration } = await import("../src/features/developers/Usage");
 const {
   developerSectionForPath,
   developersPath,
@@ -40,6 +41,21 @@ const modelTokens = {
   outputTokens: 0,
   cacheReadTokens: 0,
   cacheWriteTokens: 0,
+};
+/** This month's evaluator seconds and counts, as every usage answer carries them. */
+const evaluatorSeconds = {
+  from: "2026-11-01T00:00:00.000Z",
+  resetsAt: "2026-12-01T00:00:00.000Z",
+  used: 0,
+  limit: 360_000,
+  remaining: 360_000,
+  jobs: 0,
+  byKind: [],
+};
+const thisMonth = {
+  gradingAttempts: 0,
+  contributorGradingAttempts: 0,
+  uploads: 0,
 };
 const acme: MembershipDto = {
   id: "org_1",
@@ -85,6 +101,8 @@ beforeEach(() => {
       window: { from: at, to: at, days },
       runs: [],
       modelTokens,
+      evaluatorSeconds,
+      thisMonth,
     }),
     calls: [],
     bodies: [],
@@ -362,6 +380,8 @@ test("usage reads the chosen window again when it changes", async () => {
   server.usage = (days) => ({
     window: { from: at, to: at, days },
     modelTokens,
+    evaluatorSeconds,
+    thisMonth,
     runs:
       days === 30
         ? [
@@ -392,6 +412,47 @@ test("usage reads the chosen window again when it changes", async () => {
     screen.getByRole("button", { name: "7 days" }).getAttribute("aria-pressed"),
   ).toBe("true");
   expect(screen.queryByText("backlog")).toBeNull();
+});
+
+test("usage shows this month's model tokens and evaluator time against their limits, with grading attempts and uploads", async () => {
+  server.usage = (days) => ({
+    window: { from: at, to: at, days },
+    runs: [],
+    modelTokens: { ...modelTokens, used: 2_500_000, remaining: 7_500_000 },
+    evaluatorSeconds: {
+      ...evaluatorSeconds,
+      used: 4_980,
+      remaining: 355_020,
+      jobs: 31,
+      byKind: [{ kind: "sandbox_build", seconds: 4_980, jobs: 31 }],
+    },
+    thisMonth: {
+      gradingAttempts: 7,
+      contributorGradingAttempts: 4,
+      uploads: 2,
+    },
+  });
+  showPortal("usage");
+  const month = await screen.findByRole("group", { name: "This month" });
+  const tokens = within(month).getByRole("meter", {
+    name: "Model tokens used",
+  });
+  expect(tokens.getAttribute("aria-valuetext")).toBe("2,500,000 of 10,000,000");
+  const evaluator = within(month).getByRole("meter", {
+    name: "Evaluator time used",
+  });
+  expect(evaluator.getAttribute("aria-valuetext")).toBe("1 h 23 min of 100 h");
+  expect(within(month).getByText("7")).toBeTruthy();
+  expect(within(month).getByText("4 by invited contributors")).toBeTruthy();
+  expect(within(month).getByText("2")).toBeTruthy();
+  expect(screen.getByText(/both reset on December 1/)).toBeTruthy();
+});
+
+test("evaluator time reads in seconds, minutes and hours", () => {
+  expect(duration(42)).toBe("42 s");
+  expect(duration(300)).toBe("5 min");
+  expect(duration(3_600)).toBe("1 h");
+  expect(duration(4_980)).toBe("1 h 23 min");
 });
 
 test("an empty window says so", async () => {

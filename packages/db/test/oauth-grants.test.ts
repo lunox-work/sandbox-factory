@@ -58,7 +58,7 @@ test("findAccessToken answers the token with its grant and person", async () => 
   assert.equal(fake.calls[0]?.limited, 1);
 });
 
-test("findAccessToken finds nothing for a missing or unbound token", async () => {
+test("findAccessToken finds nothing for a missing token, and answers a contributor grant with no workspace", async () => {
   assert.equal(
     await createOAuthGrantStore(createFakeDb([]).db).findAccessToken("ab"),
     undefined,
@@ -72,15 +72,35 @@ test("findAccessToken finds nothing for a missing or unbound token", async () =>
       userId: "user_1",
       userEmail: "ada@example.test",
       userName: "Ada Lovelace",
-      scopes: ["workspace:read"],
+      scopes: ["contributions:write"],
       expiresAt,
       grantLastUsedAt: null,
     },
   ]);
+  // The credential guard reads null as a contributor grant, holding the
+  // contributor scope alone.
   assert.equal(
-    await createOAuthGrantStore(unbound.db).findAccessToken("ab"),
-    undefined,
+    (await createOAuthGrantStore(unbound.db).findAccessToken("ab"))
+      ?.organizationId,
+    null,
   );
+});
+
+test("a contributor's grants are listed, touched and revoked as theirs", async () => {
+  const owner = { contributor: "user_1" };
+  const listed = createFakeDb([grantRow]);
+  assert.deepEqual(await createOAuthGrantStore(listed.db).list(owner), [grant]);
+  assert.equal(listed.calls[0]?.filtered, true);
+  const touched = createFakeDb([]);
+  const at = new Date("2026-11-12T10:00:00.000Z");
+  await createOAuthGrantStore(touched.db).touch(owner, "consent_1", at, at);
+  assert.equal(touched.calls[0]?.filtered, true);
+  const revoked = createSequencedFakeDb([[grantRow], [], [], []]);
+  assert.deepEqual(
+    await createOAuthGrantStore(revoked.db).revoke(owner, "consent_1"),
+    grant,
+  );
+  assert.ok(revoked.calls.every((call) => call.filtered === true));
 });
 
 test("list is the workspace's grants, most recently approved first", async () => {

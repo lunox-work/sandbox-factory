@@ -241,6 +241,47 @@ function fixture(
     launches: () => launches,
   };
 }
+test("a slice request may leave the repository's tests out, or bound how many its builds carry", async () => {
+  const f = fixture();
+  for (const body of [
+    { entryPoints: ["src/main.ts"], carryTests: false },
+    {
+      entryPoints: ["src/main.ts"],
+      carriedTestLimits: { maxFiles: 5, maxBytes: 10_000 },
+    },
+  ])
+    assert.equal(
+      (await f.request("repositories/ghr_1/slices", body)).status,
+      202,
+    );
+  const slices = f.enqueued.filter((run) => run.tool === "slice");
+  assert.deepEqual(
+    slices.map(({ params }) => {
+      const { carryTests, carriedTestLimits } = params as {
+        carryTests?: boolean;
+        carriedTestLimits?: unknown;
+      };
+      return { carryTests, carriedTestLimits };
+    }),
+    [
+      { carryTests: false, carriedTestLimits: undefined },
+      {
+        carryTests: true,
+        carriedTestLimits: { maxFiles: 5, maxBytes: 10_000 },
+      },
+    ],
+  );
+  assert.equal(
+    (
+      await f.request("repositories/ghr_1/slices", {
+        entryPoints: ["src/main.ts"],
+        carriedTestLimits: { maxFiles: 0, maxBytes: 1 },
+      })
+    ).status,
+    400,
+  );
+});
+
 test("a slice checks its entry points against the tree and queues behind the graph run", async () => {
   const f = fixture();
   const response = await f.request("repositories/ghr_1/slices", {
@@ -264,6 +305,8 @@ test("a slice checks its entry points against the tree and queues behind the gra
         entryPoints: ["src", "src/main.ts", "src/util.ts"],
         budget: { maxFiles: 5, maxDepth: 3 },
         includeInferred: false,
+        // Asked for by default; a request may leave them out.
+        carryTests: true,
       },
     },
   ]);

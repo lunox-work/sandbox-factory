@@ -13,7 +13,10 @@
 import type {
   BountyContextStore,
   BountyListOptions,
+  BountyPostedSpecStore,
   BountyProposalStore,
+  DecisionConfirmationCredential,
+  NewBounty,
   ListedBounty,
   StoredBounty,
   BountyMutationResult,
@@ -47,11 +50,13 @@ import {
 } from "sandbox-factory";
 
 import { isAtLeastAdmin } from "../access.js";
+import type { Principal } from "../principal.js";
 import { noteAuditResource } from "../audit/trail.js";
 import { boundedLimit, rowCursor } from "../paging.js";
 import type { BountyLive } from "../pricing/routes.js";
 import { importGithubIssue, type GithubIssueSource } from "./github-issue.js";
 import { contextVersionsOf, heldContext } from "./held-context.js";
+import { postedBounty } from "./posted-spec.js";
 
 export interface BountyRouteOptions {
   readonly bounties: BountyStore;
@@ -76,13 +81,51 @@ export interface BountyRouteOptions {
    * answers 503 `unconfigured`.
    */
   readonly githubIssues?: GithubIssueSource;
+  /**
+   * The specs posted with bounties, for a bounty's `postedSpec`. Absent,
+   * none is shown (one is still written with its bounty).
+   */
+  readonly postedSpecs?: Pick<BountyPostedSpecStore, "get">;
 }
 
 interface BountyAppEnv {
   Variables: {
     user: { id: string };
     member: { organizationId: string; role: string };
+    /**
+     * Which credential is asking: a spec posted as confirmed is recorded
+     * so only for one acting as a person, and, for a token or OAuth grant,
+     * holding `decisions:confirm`. Absent, none is.
+     */
+    principal?: Pick<Principal, "via" | "scopes">;
   };
+}
+
+/*
+  The credentials that act as a person: a session is one, and a workspace
+  token or an OAuth grant acts as the person who made or consented to it
+  (`principal.ts`). A device session or a contributor credential never
+  reaches these routes.
+*/
+const PERSON_CREDENTIALS: ReadonlySet<string> =
+  new Set<DecisionConfirmationCredential>(["session", "token", "oauth"]);
+
+/**
+ * Whether a credential may record a posted spec's decisions as confirmed
+ * by its person, and as which kind; `skipped_scope` for a person's token
+ * or grant without `decisions:confirm` (one made before the scope), whose
+ * spec is still posted, its decisions unconfirmed. A session holds every
+ * scope.
+ */
+function confirmingCredential(
+  principal: Pick<Principal, "via" | "scopes"> | undefined,
+): DecisionConfirmationCredential | "skipped_scope" | null {
+  if (principal === undefined || !PERSON_CREDENTIALS.has(principal.via))
+    return null;
+  const via = principal.via as DecisionConfirmationCredential;
+  return via === "session" || principal.scopes.includes("decisions:confirm")
+    ? via
+    : "skipped_scope";
 }
 
 export function mountBountyRoutes<Env extends BountyAppEnv>(
@@ -112,13 +155,52 @@ export function mountBountyRoutes<Env extends BountyAppEnv>(
         400,
       );
     }
+    const { spec, ...input } = parsed.data;
+    let written: NewBounty = input;
+    // Posted confirmed by a credential without `decisions:confirm`.
+    let skipped = false;
+    if (spec !== undefined) {
+      /*
+        A spec confirmed where it was written: read with duediligence's
+        parser, refused whole with every problem when it cannot be stored
+        as written, and kept with the bounty for sizing to take instead of
+        drafting. Its decisions stand confirmed by the poster only when
+        they said so and act as a person.
+      */
+      const credential = confirmingCredential(c.get("principal"));
+      skipped = spec.confirmed && credential === "skipped_scope";
+      const posted = await postedBounty(
+        { ...input, spec },
+        credential === null || credential === "skipped_scope"
+          ? null
+          : { userId: c.get("user").id, credential },
+      );
+      if (!posted.ok)
+        return c.json(
+          {
+            code: "invalid_spec",
+            error: `The posted spec cannot be stored as written: ${posted.problems
+              .map(({ path, message }) => `${path}: ${message}`)
+              .join(" ")}`,
+            problems: posted.problems,
+          },
+          422,
+        );
+      written = posted.bounty;
+    }
     const created = await options.bounties.create(
       organizationId,
       c.get("user").id,
-      parsed.data,
+      written,
     );
     noteAuditResource(c, created.id);
-    return c.json({ bounty: await detail(options, created) }, 201);
+    return c.json(
+      {
+        bounty: await detail(options, created),
+        ...(skipped ? { confirmation: "skipped_scope" as const } : {}),
+      },
+      201,
+    );
   });
 
   /** `{ source: { githubIssue } }`: a bounty read from a GitHub issue. */
@@ -560,6 +642,25 @@ export async function detail(
             context: { ...build.context },
           },
   };
+  /*
+    The spec posted with it: whether its decisions came confirmed, and
+    whether sizing still takes it, which it does while the bounty's text
+    is what it was posted with.
+  */
+  const posted =
+    (await options.postedSpecs?.get(bounty.organizationId, bounty.id)) ?? null;
+  const postedSpec =
+    posted === null
+      ? null
+      : {
+          source: posted.source,
+          confirmed: posted.confirmedBy !== null,
+          current:
+            posted.specHashVersion === BOUNTY_SPEC_HASH_VERSION &&
+            posted.specHash ===
+              (await bountySpecHash(bounty.title, bounty.description)),
+          createdAt: posted.createdAt,
+        };
   return bountyDtoSchema.parse(
     bountyDto(
       bounty,
@@ -577,6 +678,7 @@ export async function detail(
             currency: live.currency,
           },
       stages,
+      postedSpec,
     ),
   );
 }
@@ -626,6 +728,7 @@ function bountyDto(
   bounty: StoredBounty,
   proposal: BountyProposalSummaryDto | null,
   stages: BountyStagesDto,
+  postedSpec: BountyDto["postedSpec"],
 ): BountyDto {
   return {
     ...summaryDto({ ...bounty, proposal }),
@@ -636,5 +739,6 @@ function bountyDto(
     sourceUrl: bounty.sourceUrl,
     createdBy: bounty.createdBy,
     stages,
+    postedSpec,
   };
 }

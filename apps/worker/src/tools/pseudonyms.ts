@@ -50,6 +50,12 @@ export interface PseudonymCheck {
   readonly problems: readonly string[];
   /** Replacements each rule made, in the table's order. */
   readonly applied: readonly number[];
+  /**
+   * What the disclosure scan still finds in the public files under this
+   * table that no owner acknowledged (`scanDisclosure`): shown, never a
+   * problem, since a public link may stay and an owner may acknowledge it.
+   */
+  readonly findings?: readonly string[];
 }
 
 /** A table whose check was clean. */
@@ -163,10 +169,19 @@ function ruleCount(input: unknown): string {
 
 /** What a check says to the agent: its problems, or what each rule did. */
 function report(rules: readonly AliasRule[], check: PseudonymCheck): string {
+  const findings = check.findings ?? [];
+  const left =
+    findings.length === 0
+      ? []
+      : [
+          `Still in the public files, which may say whose code this is (rename those that do with a text rule; leave public links; ${findings.length} in all):`,
+          ...findings.slice(0, 20).map((finding) => `- ${finding}`),
+        ];
   if (check.problems.length > 0)
     return [
       `The table does not hold (${check.problems.length} problem(s)):`,
       ...check.problems.map((problem) => `- ${problem}`),
+      ...left,
     ].join("\n");
   return [
     "The table holds: it maps back, the project generates and no public file names the workspace.",
@@ -174,6 +189,7 @@ function report(rules: readonly AliasRule[], check: PseudonymCheck): string {
       (rule, index) =>
         `${index + 1}. ${rule.kind} ${rule.before} -> ${rule.after}: ${check.applied[index] ?? 0} replacement(s)`,
     ),
+    ...left,
   ].join("\n");
 }
 
@@ -202,6 +218,12 @@ export async function writePseudonyms(input: {
   readonly files: readonly { readonly path: string; readonly text: string }[];
   /** The names the build checks no public file carries. */
   readonly vocabulary: readonly string[];
+  /**
+   * What the disclosure scan finds in the slice beyond those names
+   * (`disclosureHints`: addresses, hosts, authors, ticket keys), as
+   * candidates for text rules.
+   */
+  readonly hints?: readonly string[];
   /** The build's check of a table; pure, so cheap to repeat. */
   readonly check: (rules: readonly AliasRule[]) => PseudonymCheck;
   /**
@@ -294,6 +316,7 @@ export async function writePseudonyms(input: {
         summary: input.task.summary,
         spec: input.task.spec,
         vocabulary: input.vocabulary,
+        hints: input.hints ?? [],
         unrenamed: input.check([]).problems,
         overview: repositoryOverview(index),
         ...(input.drafted === undefined

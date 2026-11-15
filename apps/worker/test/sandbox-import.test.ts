@@ -6,8 +6,9 @@
  * it, the folder's own runner runs its public tests, node:test runs the
  * acceptance test), and two submissions graded through the folder's
  * layout. The provider is a local stand-in: the install links the
- * worker's TypeScript instead of reaching a registry, and a `fresh`
- * command runs in a copy of the job's files, as E2B's does.
+ * worker's TypeScript instead of reaching a registry, and seals and runs
+ * hidden tests as both providers do (`hidden-runner.ts`): each in a fresh
+ * copy of the sealed tree, read from memory by the platform's runner.
  */
 
 import assert from "node:assert/strict";
@@ -41,6 +42,7 @@ import type {
   ToolInputs,
   ToolRunInput,
 } from "../src/tools/adapter.js";
+import { hiddenRunFiles } from "../src/evaluation/hidden-runner.js";
 import {
   classOf,
   createSandboxImportAdapter,
@@ -49,7 +51,9 @@ import {
 import {
   SUBMISSION_RESULT_PATH,
   createSubmissionGradeAdapter,
+  versionFilesOf,
 } from "../src/tools/submission-grade.js";
+import { PLATFORM_LAYOUT } from "sandbox-factory";
 
 const sha256 = (text: string) =>
   createHash("sha256").update(text).digest("hex");
@@ -77,7 +81,7 @@ function filesOf(root: string, dir = ""): { path: string; text: string }[] {
 
 /** A provider that really runs the folder's commands, without a registry. */
 function localProvider() {
-  const ran: { argv: readonly string[]; fresh: boolean }[] = [];
+  const ran: { argv: readonly string[]; hidden: boolean }[] = [];
   const provider: EvaluationProvider = {
     name: "local-test",
     async create({ label }) {
@@ -85,7 +89,7 @@ function localProvider() {
       const work = join(root, "work");
       const pristine = join(root, "pristine");
       mkdirSync(work);
-      let snapshot = false;
+      let withheld: Map<string, string> | null = null;
       return {
         id: `job_${label}`,
         environment: {
@@ -99,20 +103,37 @@ function localProvider() {
             writeFileSync(join(work, file.path), file.text);
           }
         },
-        async exec(command: EvaluationCommand) {
-          ran.push({ argv: command.argv, fresh: command.fresh === true });
-          let cwd = work;
-          if (command.fresh === true) {
-            if (!snapshot) {
-              cpSync(work, pristine, {
-                recursive: true,
-                verbatimSymlinks: true,
-              });
-              snapshot = true;
+        async seal(paths) {
+          withheld = new Map();
+          for (const path of paths)
+            if (existsSync(join(work, path))) {
+              withheld.set(path, readFileSync(join(work, path), "utf8"));
+              rmSync(join(work, path));
             }
+          cpSync(work, pristine, { recursive: true, verbatimSymlinks: true });
+        },
+        async exec(command: EvaluationCommand) {
+          ran.push({
+            argv: command.argv,
+            hidden: command.hidden !== undefined,
+          });
+          let cwd = work;
+          let argv = command.argv;
+          if (command.hidden !== undefined) {
+            assert.ok(withheld !== null, "a hidden run follows the seal");
             cwd = join(root, "fresh");
             rmSync(cwd, { recursive: true, force: true });
             cpSync(pristine, cwd, { recursive: true, verbatimSymlinks: true });
+            const run = hiddenRunFiles(
+              command.hidden,
+              command.argv,
+              withheld.get(command.hidden.entry) ?? null,
+            );
+            for (const file of run.files) {
+              mkdirSync(dirname(join(cwd, file.path)), { recursive: true });
+              writeFileSync(join(cwd, file.path), file.text);
+            }
+            argv = run.argv;
           }
           if (command.argv[0] === "npm") {
             mkdirSync(join(work, "node_modules", ".bin"), { recursive: true });
@@ -130,7 +151,7 @@ function localProvider() {
               durationMs: 1,
             };
           }
-          const [bin, ...args] = command.argv;
+          const [bin, ...args] = argv;
           const result = spawnSync(
             bin === "node" ? process.execPath : (bin ?? "false"),
             args,
@@ -166,7 +187,7 @@ let upload = { text: "", sha256: "", recordSha256: "" };
 let written: ArtifactFile[] = [];
 let importDir = "";
 let importLog: string[] = [];
-let ran: { argv: readonly string[]; fresh: boolean }[] = [];
+let ran: { argv: readonly string[]; hidden: boolean }[] = [];
 
 const version = {
   version: {
@@ -297,7 +318,22 @@ test("the folder is the version's public project verbatim, its acceptance test t
     true,
     `${JSON.stringify(manifest.baseline?.reasons)}\n${importLog.join("\n")}`,
   );
-  assert.equal(manifest.toolVersion, "sandbox_import@1");
+  assert.equal(manifest.toolVersion, "sandbox_import@2");
+  // The upload route scanned its names, this run the rest; there is
+  // nothing here to carry back to.
+  assert.deepEqual(manifest.gates, {
+    roundTrip: { status: "not_applicable", files: 0, problems: [] },
+    disclosure: {
+      status: "passed",
+      scannedBy: "upload",
+      names: 0,
+      blocking: 0,
+      acknowledgedAt: "publish",
+      findings: [],
+      total: 0,
+      acknowledged: 0,
+    },
+  });
   assert.deepEqual(manifest.upload, {
     recordSha256: upload.recordSha256,
     carveoutVersion: "0.4.0",
@@ -348,13 +384,159 @@ test("the folder is the version's public project verbatim, its acceptance test t
     (step) => step.argv.at(-1) === "src/price.accept.test.js",
   );
   assert.equal(hidden.length, 2);
-  assert.ok(hidden.every((step) => step.fresh));
+  assert.ok(hidden.every((step) => step.hidden));
   assert.ok(
     written.some(
       (file) =>
         file.path === `private/${ACCEPT}` && file.kind === "private_test",
     ),
   );
+  // The handout's commitment, recorded: duediligence's manifest over the
+  // acceptance test at its folder path, where the judge stages it, and not
+  // over the name table written beside it under private/.
+  assert.ok(written.some((file) => file.path === "private/pseudonym.lunox"));
+  const line = `${sha256(ACCEPT_TEXT)}  ${ACCEPT}\n`;
+  const kept = `${sha256(JSON.stringify([ACCEPT]))}  calibration.kept\n`;
+  assert.deepEqual(manifest.hiddenCommitment, {
+    version: 2,
+    hiddenTests: 1,
+    hiddenSha256: sha256(`${line}${kept}`),
+  });
+});
+
+test("what the disclosure scan finds in an uploaded folder waits for an owner's acknowledgement at publication, never read by the build; the descriptor's listing is redacted", async () => {
+  // The same folder with an address in a comment, and a bounty title that
+  // links its tracker.
+  const stored = JSON.parse(upload.text) as {
+    files: { path: string; text: string }[];
+    acceptanceTests: unknown[];
+  };
+  const files = stored.files.map((file) =>
+    file.path === "src/price.ts"
+      ? { ...file, text: `// Ask jo@acme-shop.io.\n${file.text}` }
+      : file,
+  );
+  const text = JSON.stringify({ ...stored, files });
+  const run = async (acknowledgements: unknown[]) => {
+    const outDir = mkdtempSync(join(scratch, "import-found-"));
+    const log: string[] = [];
+    const inputs = {
+      getVersion: async () => ({
+        version: {
+          ...version.version,
+          title: "A tenth off (wiki.acme-shop.io/PRICE)",
+        },
+        source: {
+          ...version.source,
+          disclosureAcknowledgements: acknowledgements,
+        },
+      }),
+      readUpload: async () => text,
+      recordStarterOutput: async () => true,
+    } as unknown as ToolInputs;
+    await createSandboxImportAdapter({
+      provider: localProvider().provider,
+    }).run({
+      runId: "arn_import",
+      sourceDir: join(scratch, "empty"),
+      outDir,
+      params: {
+        deadlineMinutes: 60,
+        importer: "upload",
+        sandboxVersionId: "sbv_up",
+        uploadSha256: sha256(text),
+        recordSha256: upload.recordSha256,
+        carveoutVersion: "0.4.0",
+      },
+      run: null,
+      inputs,
+      signal: new AbortController().signal,
+      log: (line) => log.push(line),
+    });
+    const manifest = JSON.parse(
+      readFileSync(join(outDir, "build-manifest.json"), "utf8"),
+    ) as SandboxBuildManifest;
+    const descriptor = JSON.parse(
+      readFileSync(join(outDir, "project/sandbox-task.json"), "utf8"),
+    ) as { title: string };
+    return { manifest, descriptor, log };
+  };
+  const found = await run([]);
+  // Recorded as pending, not a blocker: the baseline's verdict stands.
+  assert.equal(
+    found.manifest.ready,
+    true,
+    JSON.stringify(found.manifest.baseline?.reasons),
+  );
+  assert.deepEqual(found.manifest.blockers, []);
+  const gate = found.manifest.gates?.disclosure;
+  assert.equal(gate?.status, "pending_acknowledgement");
+  assert.equal(gate?.acknowledgedAt, "publish");
+  assert.equal(gate?.blocking, 0);
+  assert.equal(gate?.total, 1);
+  assert.deepEqual(
+    gate?.findings?.map(({ kind, file, line, value, acknowledged }) => [
+      kind,
+      `${file}:${line}`,
+      value,
+      acknowledged,
+    ]),
+    [["email", "src/price.ts:1", "jo@acme-shop.io", false]],
+  );
+  assert.ok(
+    found.log.some((line) => /1 item\(s\).*acknowledges each/.test(line)),
+    found.log.join("\n"),
+  );
+  // The bounty's words are redacted in the descriptor contributors read.
+  assert.equal(found.descriptor.title, "A tenth off ([host removed]/PRICE)");
+  // The build reads no acknowledgement: the draft's list changes nothing
+  // it writes, so publication checks it and the upload is never rebuilt.
+  const acknowledged = await run([
+    { kind: "email", value: "jo@acme-shop.io" },
+    { kind: "host", value: "wiki.acme-shop.io" },
+  ]);
+  for (const key of [
+    "files",
+    "gates",
+    "transformConfigSha256",
+    "publicProjectSha256",
+    "blockers",
+  ] as const)
+    assert.deepEqual(acknowledged.manifest[key], found.manifest[key], key);
+  assert.equal(acknowledged.descriptor.title, found.descriptor.title);
+});
+
+test("the judge stages every hidden test in the version's layout, never the name table", async () => {
+  const artifacts = [
+    "project/src/price.ts",
+    "private/pseudonym.lunox",
+    "private/src/price.spec.ts",
+    "private/tests/private/held.test.ts",
+    "private/notes.md",
+  ];
+  const inputs = {
+    listArtifacts: async () =>
+      artifacts.map((path) => ({ path, objectKey: path })),
+    readArtifact: async (key: string) => Buffer.from(key),
+  } as unknown as ToolInputs;
+  const staged = async (layout: GradingLayout) =>
+    (await versionFilesOf({ inputs }, "arn_build", layout)).map((file) => [
+      file.path,
+      file.class,
+    ]);
+  // An upload's layout: each at its own path, a `.spec.ts` too, and a
+  // folder path that holds tests/private/ kept whole.
+  assert.deepEqual(await staged(manifestOf().layout), [
+    ["src/price.ts", "source"],
+    ["src/price.spec.ts", "test-private"],
+    ["tests/private/held.test.ts", "test-private"],
+  ]);
+  // The platform's: under tests/private/.
+  assert.deepEqual(await staged(PLATFORM_LAYOUT), [
+    ["src/price.ts", "source"],
+    ["tests/private/src/price.spec.ts", "test-private"],
+    ["tests/private/tests/private/held.test.ts", "test-private"],
+  ]);
 });
 
 test("the stored upload reads back, and anything else does not", () => {
@@ -413,7 +595,7 @@ async function grade(
       },
       files,
     }),
-    finishSubmission: async () => true,
+    settleSubmission: () => {},
   } as unknown as ToolInputs;
   const input: ToolRunInput = {
     runId: "arn_grade",

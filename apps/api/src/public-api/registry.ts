@@ -21,6 +21,14 @@
  * A create is marked `idempotent`: a machine credential's retry under the
  * same `Idempotency-Key` gets its first answer back (`idempotency.ts`).
  *
+ * Each entry has an **audience**. A workspace route (the default) admits
+ * workspace credentials only: an API token (`lnx_`) or a workspace OAuth
+ * grant. A `contributor` route (`/contributions`, `/invites/claim`) admits
+ * contributor credentials only: a contributor token (`lnxc_`) or an OAuth
+ * grant made as a contributor, holding `contributions:write`. A self route
+ * admits either. Neither kind can reach the other's routes, whatever its
+ * scopes (`admit` in `credentials.ts`).
+ *
  * Every entry declares its request body (`null` when it takes none) and its
  * response schema, both from `@sandbox-factory/shared`; `openapi.ts` turns
  * the list into `GET /api/v1/openapi.json`, and `public-api.test.ts` fails
@@ -43,9 +51,22 @@ import {
   bountyRunResponseSchema,
   bountySizingResponseSchema,
   buildAllSchema,
+  claimInviteSchema,
+  contributionListSchema,
+  contributionResponseSchema,
+  contributionSubmissionListSchema,
+  contributionSubmissionResponseSchema,
+  submissionDryRunQuerySchema,
   postBountySchema,
   sandboxHandoutSchema,
+  handoutFilesQuerySchema,
+  handoutFilesSchema,
   createSubmissionSchema,
+  createContributorInviteSchema,
+  createdContributorInviteResponseSchema,
+  contributorAssignmentResponseSchema,
+  contributorInviteResponseSchema,
+  contributorListResponseSchema,
   createUploadSchema,
   submissionFilesResponseSchema,
   uploadResponseSchema,
@@ -125,7 +146,7 @@ import {
   writebackOperationResponseSchema,
   writebackReconcileResponseSchema,
 } from "@sandbox-factory/shared";
-import type { ApiScope } from "sandbox-factory";
+import type { CredentialScope } from "sandbox-factory";
 import type { z } from "zod";
 
 export type PublicMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
@@ -133,6 +154,8 @@ export type PublicMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
 /** What a route answers on success. */
 export type PublicResponse =
   | { readonly status: 200 | 201 | 202; readonly schema: z.ZodType }
+  /** A file to save, not JSON: its media type. */
+  | { readonly status: 200; readonly file: string }
   /** No body: a removal. */
   | { readonly status: 204 }
   /**
@@ -142,18 +165,33 @@ export type PublicResponse =
    */
   | { readonly status: 302; readonly schema?: z.ZodType };
 
+/** Which credentials a route admits; see the module's comment. */
+export type PublicAudience = "workspace" | "contributor" | "any";
+
+/** A request body that is a file's bytes, not JSON: its media type. */
+export interface FileBody {
+  readonly file: string;
+}
+
 export interface PublicRoute {
   readonly method: PublicMethod;
   /** The Hono pattern the route is registered under, `/api/v1/...`. */
   readonly path: string;
   /** Null for a self route: any bound credential, acting on itself only. */
-  readonly scope: ApiScope | null;
+  readonly scope: CredentialScope | null;
+  /** Who it admits; a workspace's credentials when left out. */
+  readonly audience?: PublicAudience | undefined;
   readonly summary: string;
   /** The OpenAPI tag: the section of PLAN.md section 3 it belongs to. */
   readonly tag:
-    "Workspace" | "Integrations" | "Bounties" | "Sandboxes" | "Webhooks";
-  /** The JSON body it reads, or null when it reads none. */
-  readonly request: z.ZodType | null;
+    | "Workspace"
+    | "Integrations"
+    | "Bounties"
+    | "Sandboxes"
+    | "Webhooks"
+    | "Contributions";
+  /** The JSON body it reads, a file body, or null when it reads none. */
+  readonly request: z.ZodType | FileBody | null;
   /** Query parameters, where a shared schema states them. */
   readonly query?: z.ZodObject | undefined;
   readonly response: PublicResponse;
@@ -201,14 +239,138 @@ function read(
   };
 }
 
+/** The contributor routes; see their section below. */
+function contributorRoutes(): PublicRoute[] {
+  const C = `${V1}/contributions/:vid`;
+  const scope = "contributions:write";
+  const own = (
+    path: string,
+    summary: string,
+    schema: z.ZodType,
+    query?: z.ZodObject,
+  ): PublicRoute => ({
+    method: "GET",
+    path,
+    scope,
+    audience: "contributor",
+    summary,
+    tag: "Contributions",
+    request: null,
+    query,
+    response: ok(schema),
+  });
+  const write = (
+    path: string,
+    summary: string,
+    request: PublicRoute["request"],
+    query?: z.ZodObject,
+  ): PublicRoute => ({
+    method: "POST",
+    path,
+    scope,
+    audience: "contributor",
+    summary,
+    tag: "Contributions",
+    request,
+    query,
+    response: accepted(contributionSubmissionResponseSchema),
+  });
+  const zip: FileBody = { file: "application/zip" };
+  return [
+    {
+      method: "POST",
+      path: `${V1}/invites/claim`,
+      scope,
+      audience: "contributor",
+      summary:
+        "Claim an invite with the secret from its link (`lnxinv_…`): the version it gives you (201 on the first claim)",
+      tag: "Contributions",
+      request: claimInviteSchema,
+      response: ok(contributionResponseSchema),
+    },
+    own(
+      `${V1}/contributions`,
+      "The versions you were invited to, with each one's title, summary, commands and editable paths",
+      contributionListSchema,
+    ),
+    own(
+      C,
+      "One version you were invited to: its task summary, commands (install, build, test, dev), editable paths and whether it takes submissions",
+      contributionResponseSchema,
+    ),
+    own(
+      `${C}/handout`,
+      "The version's public files and its hidden suite's count and commitment hash",
+      sandboxHandoutSchema,
+    ),
+    {
+      method: "GET",
+      path: `${C}/archive`,
+      scope,
+      audience: "contributor",
+      summary:
+        "The version's public project as one .zip under one folder; never a hidden test",
+      tag: "Contributions",
+      request: null,
+      response: { status: 200, file: "application/zip" },
+    },
+    own(
+      `${C}/handout/files`,
+      "One page of the public project's files with their contents (`cursor`, `maxBytes`), text as UTF-8 and other files as base64",
+      handoutFilesSchema,
+      handoutFilesQuerySchema,
+    ),
+    own(
+      `${C}/submissions`,
+      "Your own submissions to the version and their verdicts, newest first",
+      contributionSubmissionListSchema,
+    ),
+    own(
+      `${C}/submissions/:sid`,
+      "One of your submissions: its verdict, counts and failing scenario keys; never a hidden test",
+      contributionSubmissionResponseSchema,
+    ),
+    write(
+      `${C}/submissions`,
+      "Your first submission: the files you changed or added, each whole; guide and editor files are dropped. One per version (409 `already_submitted` names it); `?dryRun=1` answers what it would submit (200 `preview`) and stores nothing",
+      createSubmissionSchema,
+      submissionDryRunQuerySchema,
+    ),
+    write(
+      `${C}/submissions/zip`,
+      "Your first submission as the whole project folder, zipped (`application/zip`, node_modules may ride along unread): what it changes is submitted, a changed read-only file is refused by path (422 `folder_refused`); `?dryRun=1` answers the preview (200) and stores nothing",
+      zip,
+      submissionDryRunQuerySchema,
+    ),
+    write(
+      `${C}/submissions/:sid/retry`,
+      "The one retry of your failed submission, with new files; an errored one sent with its own files is graded again without spending it; `?dryRun=1` previews",
+      createSubmissionSchema,
+      submissionDryRunQuerySchema,
+    ),
+    write(
+      `${C}/submissions/:sid/retry/zip`,
+      "The one retry as the zipped project folder; `?dryRun=1` previews",
+      zip,
+      submissionDryRunQuerySchema,
+    ),
+    write(
+      `${C}/submissions/:sid/regrade`,
+      "Grade your errored submission again with its own files; no retry is spent; any other state is 409 `not_errored`",
+      null,
+    ),
+  ];
+}
+
 export const PUBLIC_ROUTES: readonly PublicRoute[] = [
   // The credential itself
   {
     method: "POST",
     path: `${V1}/tokens/self/revoke`,
     scope: null,
+    audience: "any",
     summary:
-      "Revoke the presenting API token or OAuth access token (log out); no scope needed",
+      "Revoke the presenting API token, contributor token or OAuth access token (log out); no scope needed",
     tag: "Workspace",
     request: null,
     response: removed,
@@ -426,7 +588,7 @@ export const PUBLIC_ROUTES: readonly PublicRoute[] = [
     idempotent: true,
     scope: "bounties:write",
     summary:
-      "Write a bounty from text, or import one from a connected repository's GitHub issue (`source.githubIssue`; an issue imported before answers 200 with its bounty)",
+      "Write a bounty from text, optionally with a spec confirmed in duediligence (`spec`: sized as posted, its decisions confirmed by the poster when the credential holds `decisions:confirm`, else `confirmation: skipped_scope`; 422 `invalid_spec` with `problems` when it cannot be stored as written), or import one from a connected repository's GitHub issue (`source.githubIssue`; an issue imported before answers 200 with its bounty)",
     tag: "Bounties",
     request: postBountySchema,
     response: created(bountyResponseSchema),
@@ -809,9 +971,19 @@ export const PUBLIC_ROUTES: readonly PublicRoute[] = [
     idempotent: true,
     scope: "submissions:write",
     summary:
-      "Retry a failed submission once with new files, told only its failing scenario keys (owners and admins)",
+      "Retry a failed submission once with new files, told only its failing scenario keys; an errored one with its own files is graded again without spending it (owners and admins)",
     tag: "Sandboxes",
     request: createSubmissionSchema,
+    response: accepted(submissionResponseSchema),
+  },
+  {
+    method: "POST",
+    path: `${SBX}/submissions/:sid/regrade`,
+    scope: "submissions:write",
+    summary:
+      "Grade an errored submission again with its own files: the platform's failure, so no retry is spent; any other state is 409 `not_errored` (owners and admins)",
+    tag: "Sandboxes",
+    request: null,
     response: accepted(submissionResponseSchema),
   },
   {
@@ -819,7 +991,7 @@ export const PUBLIC_ROUTES: readonly PublicRoute[] = [
     path: `${SBX}/submissions/:sid/files`,
     scope: "submissions:write",
     summary:
-      "A passing submission's changed files on an uploaded version, never a hidden test (owners and admins)",
+      "A passing submission's changed files on an uploaded or generated version, never a hidden test (owners and admins)",
     tag: "Sandboxes",
     request: null,
     response: ok(submissionFilesResponseSchema),
@@ -842,6 +1014,65 @@ export const PUBLIC_ROUTES: readonly PublicRoute[] = [
     "Sandboxes",
     sandboxHandoutSchema,
   ),
+  {
+    method: "GET",
+    path: `${SBX}/versions/:vid/archive`,
+    scope: "workspace:read",
+    summary:
+      "The handout's public project as one .zip under one folder, each file checked against the handout's sha256; never a hidden test (owners and admins)",
+    tag: "Sandboxes",
+    request: null,
+    response: { status: 200, file: "application/zip" },
+  },
+  read(
+    `${SBX}/versions/:vid/handout/files`,
+    "One page of the handout's public files with their contents (`cursor`, `maxBytes`), text as UTF-8 and other files as base64 (owners and admins)",
+    "Sandboxes",
+    handoutFilesSchema,
+    handoutFilesQuerySchema,
+  ),
+  /*
+    Invited contributors, the workspace's side. Inviting is a write on the
+    sandbox (`sandboxes:write`), its secret answered once; the contributor's
+    own routes (`/contributions`, `/invites/claim`) are a person's session
+    alone, so they are not listed.
+  */
+  {
+    method: "POST",
+    path: `${SBX}/versions/:vid/invites`,
+    idempotent: true,
+    scope: "sandboxes:write",
+    summary:
+      "Invite one contributor to the current published version: the claim link and its secret, answered once (owners and admins)",
+    tag: "Sandboxes",
+    request: createContributorInviteSchema,
+    response: created(createdContributorInviteResponseSchema),
+  },
+  read(
+    `${SBX}/versions/:vid/contributors`,
+    "A version's invites and invited contributors (owners and admins)",
+    "Sandboxes",
+    contributorListResponseSchema,
+  ),
+  {
+    method: "POST",
+    path: `${SBX}/invites/:id/revoke`,
+    scope: "sandboxes:write",
+    summary: "Revoke an invite: it admits no more claims (owners and admins)",
+    tag: "Sandboxes",
+    request: null,
+    response: ok(contributorInviteResponseSchema),
+  },
+  {
+    method: "POST",
+    path: `${SBX}/contributors/:id/revoke`,
+    scope: "sandboxes:write",
+    summary:
+      "Revoke an invited contributor's access to their version, at once (owners and admins)",
+    tag: "Sandboxes",
+    request: null,
+    response: ok(contributorAssignmentResponseSchema),
+  },
   read(
     `${SBX}/versions/:vid/files/content`,
     "One file's content (`path`)",
@@ -854,6 +1085,15 @@ export const PUBLIC_ROUTES: readonly PublicRoute[] = [
     "Sandboxes",
     replayResponseSchema,
   ),
+
+  /*
+    An invited contributor's own routes: their versions, each one's public
+    project, and their own submissions. Contributor credentials only
+    (`lnxc_` tokens, contributor OAuth grants), with `contributions:write`;
+    every route answers 404 for a version the person holds no live
+    assignment to. A session reaches them too, as every route.
+  */
+  ...contributorRoutes(),
 
   // Webhooks out
   read(

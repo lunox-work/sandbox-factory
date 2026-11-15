@@ -38,6 +38,8 @@ export const ID_PREFIXES = [
   "bpf",
   /** A person's confirmation of a spec revision's decisions. */
   "dcf",
+  /** A reviewer's resize, kept as a label for calibration. */
+  "psl",
   "smg",
   /** One durable Jira write intent. */
   "bwo",
@@ -56,8 +58,16 @@ export const ID_PREFIXES = [
   "sbx",
   "sbv",
   "sbm",
+  /**
+   * A contributor's invite to one published version, and the assignment a
+   * claimed one makes: their access to that version alone.
+   */
+  "cin",
+  "cas",
   /** A workspace API token. */
   "tok",
+  /** A contributor's own token (`lnxc_…`), bound to no workspace. */
+  "ctk",
   /** One audit log entry: a change a machine credential made. */
   "aud",
   /** A webhook endpoint, and one event's delivery to it. */
@@ -65,6 +75,10 @@ export const ID_PREFIXES = [
   "whd",
   /** One model reply's tokens in the ledger the monthly quota counts. */
   "mtk",
+  /** One evaluation job's seconds in the ledger the evaluator cap counts. */
+  "evu",
+  /** One grading run admitted for a submission, which the brakes count. */
+  "gat",
 ] as const;
 
 export type IdPrefix = (typeof ID_PREFIXES)[number];

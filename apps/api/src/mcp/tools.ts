@@ -4,28 +4,52 @@
  * **Every tool is a thin wrapper over one public route.** It names the
  * route, calls it with the caller's own credential (`ApiCall`), and returns
  * the API's JSON as text. Read tools are GETs; write tools post work (a
- * bounty, an imported issue, a sizing, a spec change) or hand back a
- * connect link. Approving, publishing and confirming decisions have no
- * tool: they are a person's act in the web app. It holds no access logic: the credential guard,
- * the public registry, scopes and `requireMembership` decide everything,
- * and a refusal comes back as a tool error carrying the API's `code`
- * (`insufficient_scope`, `not_public`, ...). A tool that needs the
- * workspace reads it from `GET /api/v1/me/orgs`, which answers a bound
- * credential's one workspace.
+ * bounty, an imported issue, a sizing, a spec change, a submission, an
+ * invite) or hand back a link or a command. Approving, publishing and
+ * confirming decisions have no tool: they are a person's act in the web
+ * app. It holds no access logic: the credential guard, the public registry,
+ * scopes and `requireMembership` decide everything, and a refusal comes
+ * back as a tool error carrying the API's `code` (`insufficient_scope`,
+ * `not_public`, ...). A tool that needs the workspace reads it from
+ * `GET /api/v1/me/orgs`, which answers a bound credential's one workspace.
+ *
+ * Two audiences, as the registry has: the workspace tools (`TOOLS`, every
+ * endpoint but one) over a workspace credential, and the contributor tools
+ * (`CONTRIBUTOR_TOOLS`, `/mcp/contribute`) over a contributor credential,
+ * which name no workspace: each finds its version through
+ * `GET /api/v1/contributions`. Some share a workspace tool's name; none
+ * shares its route.
+ *
+ * `upload_handoff` is the one tool that sends nothing: an upload is a
+ * carveout hand-off folder cut and renamed on the person's machine with a
+ * receipt that never leaves it, so the tool checks the bounty and answers
+ * the `carveout handoff --platform` command that uploads it.
  */
 
 import { randomUUID } from "node:crypto";
 
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
-import { respecRequestSchema } from "@sandbox-factory/shared";
+import {
+  CONTRIBUTOR_INVITE_MAX_CLAIMS,
+  CONTRIBUTOR_INVITE_MAX_DAYS,
+  HANDOUT_PAGE_DEFAULT_BYTES,
+  HANDOUT_PAGE_LIMITS,
+  respecRequestSchema,
+  SUBMISSION_LIMITS,
+  UPLOAD_CARVEOUT_MIN_VERSION,
+  postedSpecSchema,
+} from "@sandbox-factory/shared";
 import {
   API_SCOPES,
   BOUNTY_LIMITS,
+  CONTRIBUTOR_SCOPE,
+  CONTRIBUTOR_SCOPES,
+  MCP_CONTRIBUTOR_PATH,
   MCP_DEFAULT_SCOPES,
   MCP_TOOLSETS,
   PRICED_BOUNTY_COMPLEXITIES,
-  type ApiScope,
+  type CredentialScope,
 } from "sandbox-factory";
 import { z } from "zod";
 
@@ -43,14 +67,31 @@ export type ApiCall = (
   init?: ApiCallInit,
 ) => Promise<{ status: number; body: unknown }>;
 
+/** What a tool knows of where it is served, besides the caller's credential. */
+export interface ToolContext {
+  /** The API's public origin, which a command a tool answers names. */
+  readonly baseUrl: string;
+}
+
+/** Whose tools: a workspace's credential's, or a contributor's. */
+export type ToolAudience = "workspace" | "contributor";
+
 interface Tool {
   readonly name: string;
   /** The scope its one route needs (the public registry's), null for none. */
-  readonly scope: ApiScope | null;
+  readonly scope: CredentialScope | null;
+  /**
+   * Scopes its route reads beyond that one, which widen what it does
+   * without being needed to call it (`decisions:confirm` on post_bounty):
+   * asked for at sign-in too.
+   */
+  readonly alsoScopes: readonly CredentialScope[];
+  /** The registry audience of its route. */
+  readonly audience: ToolAudience;
   /** The route it calls, from its arguments and the workspace id. */
   route(args: Record<string, unknown>, organizationId: string): string;
   readonly method: "GET" | "POST";
-  register(server: McpServer, call: ApiCall): void;
+  register(server: McpServer, call: ApiCall, context: ToolContext): void;
 }
 
 const enc = encodeURIComponent;
@@ -121,24 +162,36 @@ function tool<Shape extends z.ZodRawShape>(definition: {
   name: string;
   /** A short human-readable name, sent as the tool's title and its `title` annotation. */
   title: string;
-  scope: ApiScope | null;
+  scope: CredentialScope | null;
+  alsoScopes?: readonly CredentialScope[];
+  /** A contributor tool; a workspace tool when left out. */
+  audience?: "contributor";
   description: string;
   input: Shape;
   scoped: boolean;
   path: (args: z.infer<z.ZodObject<Shape>>, organizationId: string) => string;
   method?: "POST";
+  /** A POST that stores nothing (a dry run): annotated as a read. */
+  readOnly?: true;
   body?: (args: z.infer<z.ZodObject<Shape>>) => unknown;
   accept?: string;
-  answer?: (body: unknown) => CallToolResult;
+  answer?: (
+    body: unknown,
+    args: z.infer<z.ZodObject<Shape>>,
+    context: ToolContext & { organizationId: string },
+  ) => CallToolResult;
 }): Tool {
-  const writes = definition.method !== undefined;
+  const writes =
+    definition.method !== undefined && definition.readOnly !== true;
   return {
     name: definition.name,
     scope: definition.scope,
+    alsoScopes: definition.alsoScopes ?? [],
+    audience: definition.audience ?? "workspace",
     method: definition.method ?? "GET",
     route: (args, organizationId) =>
       definition.path(args as z.infer<z.ZodObject<Shape>>, organizationId),
-    register(server, call) {
+    register(server, call, context) {
       const schema = z.object(definition.input);
       server.registerTool(
         definition.name,
@@ -185,7 +238,9 @@ function tool<Shape extends z.ZodRawShape>(definition: {
             },
           );
           if (status < 200 || status >= 300) return toolError(status, body);
-          return (definition.answer ?? text)(body);
+          return definition.answer === undefined
+            ? text(body)
+            : definition.answer(body, parsed, { ...context, organizationId });
         },
       );
     },
@@ -213,6 +268,97 @@ const org = (id: string) => `/api/v1/orgs/${enc(id)}`;
 const id = (what: string) =>
   z.string().min(1).describe(`The ${what}'s id, as a list tool returned it.`);
 
+/** Each file changed or added, whole: what a submission, retry or preview sends. */
+const filesInput = z
+  .array(
+    z.object({
+      path: z.string().min(1).max(500),
+      text: z.string(),
+    }),
+  )
+  .min(1)
+  .max(SUBMISSION_LIMITS.files)
+  .describe(
+    "Each file the work changed or added, whole, at its path in the project. Leave out what you did not change: a file left out keeps the version's text (a submission cannot delete one).",
+  );
+
+/** A page query for the handout's files: `cursor` and `maxBytes`. */
+const pageInput = {
+  cursor: z
+    .string()
+    .min(1)
+    .max(100)
+    .optional()
+    .describe("The previous page's nextCursor; left out, the first page."),
+  maxBytes: z
+    .number()
+    .int()
+    .min(HANDOUT_PAGE_LIMITS.min)
+    .max(HANDOUT_PAGE_LIMITS.max)
+    .optional()
+    .describe(
+      `About how much content one page holds; ${HANDOUT_PAGE_DEFAULT_BYTES} when left out. A page always holds at least one file.`,
+    ),
+};
+
+function pageQuery({
+  cursor,
+  maxBytes,
+}: {
+  cursor?: string | undefined;
+  maxBytes?: number | undefined;
+}): string {
+  const query = new URLSearchParams();
+  if (cursor !== undefined) query.set("cursor", cursor);
+  if (maxBytes !== undefined) query.set("maxBytes", String(maxBytes));
+  const search = query.toString();
+  return search === "" ? "" : `?${search}`;
+}
+
+/** One shell word, quoted when it needs to be (POSIX `sh`). */
+export function shellWord(value: string): string {
+  return /^[A-Za-z0-9_@%+=:,./-]+$/.test(value)
+    ? value
+    : `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+/**
+ * The commands that upload a carveout hand-off folder as a draft version
+ * of `bountyId`: sign carveout in to this platform, then cut, check and
+ * upload in one step. Run in the repository's checkout.
+ */
+export function handoffCommands(input: {
+  readonly platform: string;
+  readonly organizationId: string;
+  readonly bountyId: string;
+  readonly entryPoints: readonly string[];
+  readonly accept: readonly string[];
+  readonly out: string;
+  readonly title?: string | undefined;
+  readonly task?: string | undefined;
+}): string[] {
+  const carveout = "npx -y carveout@latest";
+  const handoff = [
+    carveout,
+    "handoff",
+    ...input.entryPoints.map(shellWord),
+    "--out",
+    shellWord(input.out),
+    ...(input.task === undefined ? [] : ["--task", shellWord(input.task)]),
+    "--accept",
+    ...input.accept.map(shellWord),
+    "--platform",
+    shellWord(input.platform),
+    "--bounty",
+    shellWord(input.bountyId),
+    ...(input.title === undefined ? [] : ["--title", shellWord(input.title)]),
+  ];
+  return [
+    `${carveout} login --platform ${shellWord(input.platform)} --org ${shellWord(input.organizationId)}`,
+    handoff.join(" "),
+  ];
+}
+
 export const TOOLS = [
   tool({
     name: "list_workspaces",
@@ -229,7 +375,7 @@ export const TOOLS = [
     title: "Get usage",
     scope: "workspace:read",
     description:
-      "Count the workspace's sizing and analysis runs by kind and state over recent days, and show the model tokens its runs spent this calendar month (UTC) against its monthly limit and when that resets. Runs that call a model are refused with quota_exceeded once the limit is reached.",
+      "Count the workspace's sizing and analysis runs by kind and state over recent days, and show the model tokens and evaluator seconds its runs spent this calendar month (UTC), each against its monthly limit and when that resets, with the month's grading attempts and uploads. Runs are refused with quota_exceeded (and the kind that ran out) once a limit is reached.",
     input: {
       days: z
         .number()
@@ -295,7 +441,7 @@ export const TOOLS = [
     title: "Get decisions",
     scope: "workspace:read",
     description:
-      "Read what a proposal's spec decided where the bounty was silent: its decisions (d1, d2…), whether a person confirmed them, and the spec as Gherkin with its Decided: list. Hidden tests are written to confirmed decisions.",
+      "Read what a proposal's spec decided where the bounty was silent: its decisions (d1, d2…), whether a person confirmed them, and the spec as Gherkin with its Decided: list. Hidden tests are written to confirmed decisions: until a person confirms them (confirm_link), approving the price, prepare and publishing are refused with decisions_unconfirmed. A spec with no decisions needs nothing.",
     input: { proposalId: id("proposal") },
     scoped: true,
     path: ({ proposalId }, workspace) =>
@@ -425,8 +571,10 @@ export const TOOLS = [
     name: "post_bounty",
     title: "Post bounty",
     scope: "bounties:write",
+    // A spec posted confirmed records its decisions confirmed only with it.
+    alsoScopes: ["decisions:confirm"],
     description:
-      "Write a new bounty in the workspace from a title and a description of the work. It is not sized; call size_bounty with its id to price it.",
+      "Write a new bounty in the workspace from a title and a description of the work. It is not sized; call size_bounty with its id to price it. With spec, post a spec confirmed in duediligence (spec.md as written, format duediligence, confirmed true once its Decided: items were confirmed): sizing prices that spec and drafts none, and its decisions need no second confirmation. A spec that cannot be stored as written is refused (invalid_spec) with each problem's path. Without a description, the bounty's description is the spec.",
     input: {
       title: z
         .string()
@@ -446,14 +594,20 @@ export const TOOLS = [
         .describe(
           "Technologies the work needs beyond what the repositories use.",
         ),
+      spec: postedSpecSchema
+        .optional()
+        .describe(
+          "A spec confirmed in duediligence: { document: spec.md's text, format: 'duediligence', confirmed: true once a person confirmed its Decided: items, engine?: { name: 'duediligence', version } }.",
+        ),
     },
     scoped: true,
     method: "POST",
     path: (_args, workspace) => `${org(workspace)}/bounties`,
-    body: ({ title, description, stack }) => ({
+    body: ({ title, description, stack, spec }) => ({
       title,
       ...(description === undefined ? {} : { description }),
       ...(stack === undefined ? {} : { stack }),
+      ...(spec === undefined ? {} : { spec }),
     }),
   }),
   tool({
@@ -496,7 +650,7 @@ export const TOOLS = [
     title: "Size and price bounty",
     scope: "pricing:write",
     description:
-      "Size and price one bounty with a model call; it runs in the background. Poll get_bounty until it has a proposal, then read it with get_proposal.",
+      "Size and price one bounty with a model call; it runs in the background. Poll get_bounty until it has a proposal, then read it with get_proposal. Approving the price is a person's act in the web app: it waits for the proposal's complexity profile to settle (profile_pending) and for its spec's decisions to be confirmed (decisions_unconfirmed, see get_decisions).",
     input: { bountyId: id("bounty") },
     scoped: true,
     method: "POST",
@@ -536,7 +690,7 @@ export const TOOLS = [
     title: "Plan slice",
     scope: "sandboxes:write",
     description:
-      "Slice a connected repository from entry points: which files a sandbox copies, which modules it cuts to stubs, its public surface and what blocks it. It runs in the background; read it with get_run. Nothing is cut or published.",
+      "Slice a connected repository from entry points: which files a sandbox copies, which modules it cuts to stubs, its public surface and what blocks it. With carryTests (the default), a version built from it carries the repository's own node:test tests of those files as read-only public tests, those that pass on the untouched project, at most 20 by default; the build records the rest with why. It runs in the background; read it with get_run. Nothing is cut or published.",
     input: {
       repositoryId: id("repository"),
       entryPoints: z
@@ -546,16 +700,23 @@ export const TOOLS = [
         .describe("Repository paths the slice starts from."),
       maxFiles: z.number().int().min(1).max(200).optional(),
       maxDepth: z.number().int().min(0).max(10).optional(),
+      carryTests: z
+        .boolean()
+        .optional()
+        .describe(
+          "Carry the repository's own tests of the slice into its versions (default true).",
+        ),
     },
     scoped: true,
     method: "POST",
     path: ({ repositoryId }, workspace) =>
       `${org(workspace)}/github/repositories/${enc(repositoryId)}/slices`,
-    body: ({ entryPoints, maxFiles, maxDepth }) => ({
+    body: ({ entryPoints, maxFiles, maxDepth, carryTests }) => ({
       entryPoints: [...new Set(entryPoints)].sort(),
       ...(maxFiles === undefined && maxDepth === undefined
         ? {}
         : { budget: { maxFiles: maxFiles ?? 40, maxDepth: maxDepth ?? 3 } }),
+      ...(carryTests === undefined ? {} : { carryTests }),
     }),
   }),
   tool({
@@ -575,7 +736,7 @@ export const TOOLS = [
     title: "Cut slice",
     scope: "sandboxes:write",
     description:
-      "Cut a draft version of a sandbox from a succeeded slice run (plan_slice), priced from the bounty's approved proposal. A wide slice still waits for a person's approval in the web app.",
+      "Cut a draft version of a sandbox from a succeeded slice run (plan_slice), priced from the bounty's approved proposal. Its build carries the repository's own tests when the slice was planned with carryTests (plan_slice's default). A wide slice still waits for a person's approval in the web app.",
     input: {
       sandboxId: id("sandbox"),
       sliceRunId: id("slice run"),
@@ -603,12 +764,75 @@ export const TOOLS = [
     title: "Build sandbox version",
     scope: "sandboxes:write",
     description:
-      "Build a draft version: the standalone project, its baseline, and, when it has none, hidden tests written from the approved spec and calibrated by a reference implementation (duediligence's rule). It runs in the background; read it with get_run, then get_handout. Publishing stays a person's act in the web app.",
+      "Build a draft version: the standalone project, its baseline, and, when it has none, hidden tests written from the approved spec and its confirmed decisions, and calibrated by a reference implementation (duediligence's rule). Refused with decisions_unconfirmed while the spec's decisions wait for a person (confirm_link). It runs in the background; read it with get_run, then get_handout. Publishing stays a person's act in the web app.",
     input: { versionId: id("version") },
     scoped: true,
     method: "POST",
     path: ({ versionId }, workspace) =>
       `${org(workspace)}/sandboxes/versions/${enc(versionId)}/build`,
+  }),
+  tool({
+    name: "upload_handoff",
+    title: "Get hand-off upload commands",
+    scope: "workspace:read",
+    description:
+      "Get the exact commands that upload a carveout hand-off folder as a draft version of a bounty. MCP does not carry the upload: carveout cuts the folder on your machine, renames it into pseudonyms and renames the acceptance tests with a receipt that never leaves it, then uploads (POST …/sandboxes/uploads). This tool checks the bounty exists and answers the commands to run in the repository's checkout: `carveout login`, then `carveout handoff … --platform … --bounty …`. After the upload, read the version with get_sandbox and its import run with get_run; publishing stays a person's act in the web app. Take a passing submission's files back with get_submission_files (or `carveout patch --from <submission id>`).",
+    input: {
+      bountyId: id("bounty"),
+      entryPoints: z
+        .array(z.string().min(1).max(500))
+        .min(1)
+        .max(20)
+        .describe("Repository paths the slice starts from."),
+      accept: z
+        .array(z.string().min(1).max(500))
+        .min(1)
+        .max(20)
+        .describe(
+          "The acceptance tests (.test.ts or .spec.ts, repository paths) that fail before the work and must pass after it.",
+        ),
+      out: z
+        .string()
+        .min(1)
+        .max(200)
+        .default("handoff")
+        .describe("The folder carveout writes the hand-off to."),
+      title: z.string().trim().min(1).max(120).optional(),
+      task: z
+        .string()
+        .min(1)
+        .max(4_000)
+        .optional()
+        .describe("A file or text for the folder's TASK.md."),
+    },
+    scoped: true,
+    path: ({ bountyId }, workspace) =>
+      `${org(workspace)}/bounties/${enc(bountyId)}`,
+    answer: (_body, args, { baseUrl, organizationId }) => {
+      const platform = new URL(baseUrl).origin;
+      const commands = handoffCommands({
+        platform,
+        organizationId,
+        bountyId: args.bountyId,
+        entryPoints: [...new Set(args.entryPoints)],
+        accept: [...new Set(args.accept)],
+        out: args.out,
+        title: args.title,
+        task: args.task,
+      });
+      return {
+        content: [
+          {
+            type: "text",
+            text: [
+              `Run these in the repository's checkout (carveout ${UPLOAD_CARVEOUT_MIN_VERSION} or later; the platform refuses an older one with carveout_too_old). The first signs carveout in to this workspace in a browser; the second cuts the folder, checks that its tests pass and the acceptance tests fail before any edit, and uploads it with the acceptance tests as a draft version of the bounty. The receipt stays on this machine: keep it for \`carveout patch --from\`.`,
+              "",
+              ...commands,
+            ].join("\n"),
+          },
+        ],
+      };
+    },
   }),
   tool({
     name: "get_handout",
@@ -620,6 +844,63 @@ export const TOOLS = [
     scoped: true,
     path: ({ versionId }, workspace) =>
       `${org(workspace)}/sandboxes/versions/${enc(versionId)}/handout`,
+  }),
+  tool({
+    name: "get_project_files",
+    title: "Get project files",
+    scope: "workspace:read",
+    description:
+      "Read a built version's public project, the files get_handout lists, with their contents, one page at a time, so you can write the project to disk and run it (npm ci, npm test). Write each file at `root`/`path`: `encoding` utf8 is text as is, base64 is any other file. Pass the page's `nextCursor` as `cursor` until it is null. A file listed with omitted too_large has no content here; the workspace's web app downloads the whole project as a .zip. No hidden test is ever among the files.",
+    input: { versionId: id("version"), ...pageInput },
+    scoped: true,
+    path: ({ versionId, ...page }, workspace) =>
+      `${org(workspace)}/sandboxes/versions/${enc(versionId)}/handout/files${pageQuery(page)}`,
+  }),
+  tool({
+    name: "create_contributor_invite",
+    title: "Create contributor invite",
+    scope: "sandboxes:write",
+    description:
+      "Invite one person outside the workspace to work on a sandbox's current published version: answers the claim link and its secret, once (only its hash is kept). Give the person the link; they sign in to Lunox, claim it, and see only that version's public project and their own submissions: never the workspace, its private files or other people's work. They submit from the web app, with a contributor token (lnxc_), or over MCP at /mcp/contribute. One first submission and one retry each. A version that is not the current published one is refused (not_published).",
+    input: {
+      versionId: id("published version"),
+      label: z
+        .string()
+        .trim()
+        .min(1)
+        .max(100)
+        .optional()
+        .describe("Who it is for, shown to the workspace only."),
+      email: z
+        .email()
+        .max(320)
+        .optional()
+        .describe("A hint of the address it goes to; not checked at claim."),
+      expiresInDays: z
+        .number()
+        .int()
+        .min(1)
+        .max(CONTRIBUTOR_INVITE_MAX_DAYS)
+        .optional()
+        .describe("How long it admits claims; 14 days when left out."),
+      maxClaims: z
+        .number()
+        .int()
+        .min(1)
+        .max(CONTRIBUTOR_INVITE_MAX_CLAIMS)
+        .optional()
+        .describe("How many people it admits; one when left out."),
+    },
+    scoped: true,
+    method: "POST",
+    path: ({ versionId }, workspace) =>
+      `${org(workspace)}/sandboxes/versions/${enc(versionId)}/invites`,
+    body: ({ label, email, expiresInDays, maxClaims }) => ({
+      ...(label === undefined ? {} : { label }),
+      ...(email === undefined ? {} : { email }),
+      ...(expiresInDays === undefined ? {} : { expiresInDays }),
+      ...(maxClaims === undefined ? {} : { maxClaims }),
+    }),
   }),
   tool({
     name: "submit_patch",
@@ -680,7 +961,7 @@ export const TOOLS = [
     title: "Retry submission",
     scope: "submissions:write",
     description:
-      "Retry a failed submission once: submit the files again, changed, after reading its failing scenario keys with get_verdict. A submission has one retry, a passed one none. Read the new verdict with get_verdict.",
+      "Retry a failed submission once: submit the files again, changed, after reading its failing scenario keys with get_verdict. A submission has one retry, a passed one none. An errored submission (grading could not run) sent with the same files is graded again without spending its retry. Read the new verdict with get_verdict.",
     input: {
       submissionId: id("submission"),
       files: z
@@ -703,6 +984,18 @@ export const TOOLS = [
     body: ({ files }) => ({ files }),
   }),
   tool({
+    name: "regrade",
+    title: "Regrade submission",
+    scope: "submissions:write",
+    description:
+      "Grade an errored submission again with its own files: its grading could not run (timed out, interrupted, or failed on the platform's side), which is not the contributor's doing, so its one retry is not spent. Any other state is refused (not_errored). Read the new verdict with get_verdict.",
+    input: { submissionId: id("submission") },
+    scoped: true,
+    method: "POST",
+    path: ({ submissionId }, workspace) =>
+      `${org(workspace)}/sandboxes/submissions/${enc(submissionId)}/regrade`,
+  }),
+  tool({
     name: "get_verdict",
     title: "Get verdict",
     scope: "workspace:read",
@@ -712,6 +1005,17 @@ export const TOOLS = [
     scoped: true,
     path: ({ submissionId }, workspace) =>
       `${org(workspace)}/sandboxes/submissions/${enc(submissionId)}`,
+  }),
+  tool({
+    name: "get_submission_files",
+    title: "Get submission files",
+    scope: "submissions:write",
+    description:
+      "Take a passing submission's changed files back, never a hidden test: on an uploaded version (carveout hand-off) at the folder's paths, with the receipt's hash, for `carveout patch --from <submission id>` to judge and rename back against the receipt on your machine; on a generated (starter) version at the version's own paths. A version sliced from a connected repository merges back by pull request from the web app instead, and is refused here.",
+    input: { submissionId: id("submission") },
+    scoped: true,
+    path: ({ submissionId }, workspace) =>
+      `${org(workspace)}/sandboxes/submissions/${enc(submissionId)}/files`,
   }),
   tool({
     name: "connect_github",
@@ -739,38 +1043,199 @@ export const TOOLS = [
   }),
 ] as const;
 
-export type ToolName = (typeof TOOLS)[number]["name"];
+/** A contributor's own route for one version they were invited to. */
+const contribution = (versionId: string, rest = "") =>
+  `/api/v1/contributions/${enc(versionId)}${rest}`;
+
+/** What every contributor tool's rules come back to, said once. */
+const RULES =
+  "One first submission per version, then one retry if it did not pass; a retry is not retried, a passed one has none. An errored submission (grading could not run: timed out, interrupted, failed on the platform's side) is the platform's failure: regrade it, or retry it with the same files, and the retry is not spent. Only the task's editable files (and new .ts files beside them) count: never change tests/ (the public tests), package.json, the lockfile, tsconfig.json, .npmrc or other config, or the submission is refused.";
+
+/**
+ * The contributor tools, `/mcp/contribute`: an invited contributor's own
+ * versions, each one's project, and their own submissions, over their
+ * contributor credential. Each names a version by the id
+ * `list_contributions` answers; none names a workspace.
+ */
+export const CONTRIBUTOR_TOOLS = [
+  tool({
+    name: "list_contributions",
+    title: "List contributions",
+    scope: CONTRIBUTOR_SCOPE,
+    audience: "contributor",
+    description:
+      "List the versions you were invited to work on: each one's versionId, title, task summary, size, commands, editable paths and whether it still takes submissions. Call it first; every other tool takes a versionId from here.",
+    input: {},
+    scoped: false,
+    path: () => "/api/v1/contributions",
+  }),
+  tool({
+    name: "get_contribution",
+    title: "Get contribution",
+    scope: CONTRIBUTOR_SCOPE,
+    audience: "contributor",
+    description: `Read one version you were invited to: the task summary (TASK.md in the project holds it in full, with its scenarios and rules), the commands to install, build, test and run it, the editable paths (the only files a submission may change) and whether it takes submissions now. ${RULES}`,
+    input: { versionId: id("version") },
+    scoped: false,
+    path: ({ versionId }) => contribution(versionId),
+  }),
+  tool({
+    name: "get_project_files",
+    title: "Get project files",
+    scope: CONTRIBUTOR_SCOPE,
+    audience: "contributor",
+    description:
+      "Read the version's public project with its contents, one page at a time, to write it to disk and work in it (npm ci, npm test). Write each file at `root`/`path`: `encoding` utf8 is text as is, base64 is any other file. Pass the page's `nextCursor` as `cursor` until it is null. A file listed with omitted too_large has no content here: download the whole project as a .zip from your Contributions page, or GET /api/v1/contributions/<versionId>/archive with your token. No hidden test is ever among the files.",
+    input: { versionId: id("version"), ...pageInput },
+    scoped: false,
+    path: ({ versionId, ...page }) =>
+      contribution(versionId, `/handout/files${pageQuery(page)}`),
+  }),
+  tool({
+    name: "preview_submission",
+    title: "Preview submission",
+    scope: CONTRIBUTOR_SCOPE,
+    audience: "contributor",
+    description:
+      "See what files would be submitted, and what would get them refused, without submitting: the files changed or added, the guide and editor files left out (TASK.md, AGENTS.md, CLAUDE.md, README.md, .vscode/), and each refusal by path with its reason (a changed test or config file, a file where none may go). Nothing is stored and no attempt is spent. Pass retryOf to preview a retry. Call it before submit or retry.",
+    input: {
+      versionId: id("version"),
+      files: filesInput,
+      retryOf: id("submission to retry").optional(),
+    },
+    scoped: false,
+    method: "POST",
+    readOnly: true,
+    path: ({ versionId, retryOf }) =>
+      contribution(
+        versionId,
+        retryOf === undefined
+          ? "/submissions?dryRun=1"
+          : `/submissions/${enc(retryOf)}/retry?dryRun=1`,
+      ),
+    body: ({ files }) => ({ files }),
+  }),
+  tool({
+    name: "submit",
+    title: "Submit work",
+    scope: CONTRIBUTOR_SCOPE,
+    audience: "contributor",
+    description: `Submit your work on a version for grading against its public and hidden tests: the files you changed or added, each whole. Guide and editor files, and build output beside its source (a .js beside its .ts, .map), are dropped. It runs in the background: poll get_my_submission for the verdict (passed, incomplete, overfit with the failing scenarios' keys, or refused with each file's reason). A second first submission is refused already_submitted, naming the first: retry that one instead. ${RULES} A command-line client may instead POST the zipped project folder to /api/v1/contributions/<versionId>/submissions/zip (application/zip, ?dryRun=1 to preview) with an lnxc_ token.`,
+    input: { versionId: id("version"), files: filesInput },
+    scoped: false,
+    method: "POST",
+    path: ({ versionId }) => contribution(versionId, "/submissions"),
+    body: ({ files }) => ({ files }),
+  }),
+  tool({
+    name: "list_my_submissions",
+    title: "List my submissions",
+    scope: CONTRIBUTOR_SCOPE,
+    audience: "contributor",
+    description:
+      "List your own submissions to a version, newest first, with each one's status and verdict; a retry names the submission it retried.",
+    input: { versionId: id("version") },
+    scoped: false,
+    path: ({ versionId }) => contribution(versionId, "/submissions"),
+  }),
+  tool({
+    name: "get_my_submission",
+    title: "Get my submission",
+    scope: CONTRIBUTOR_SCOPE,
+    audience: "contributor",
+    description:
+      "Read one of your submissions: queued, running, passed, failed or errored; the verdict, the public and hidden test counts, the keys of the spec scenarios a failing hidden test covers, and each refused file's reason. Never a hidden test's name, code or output. Poll it after submit, retry or regrade.",
+    input: { versionId: id("version"), submissionId: id("submission") },
+    scoped: false,
+    path: ({ versionId, submissionId }) =>
+      contribution(versionId, `/submissions/${enc(submissionId)}`),
+  }),
+  tool({
+    name: "retry",
+    title: "Retry submission",
+    scope: CONTRIBUTOR_SCOPE,
+    audience: "contributor",
+    description: `Retry your submission that did not pass, once, with changed files, after reading its failing scenario keys with get_my_submission. Sent with the same files to an errored submission, it is graded again without spending the retry (or call regrade). ${RULES}`,
+    input: {
+      versionId: id("version"),
+      submissionId: id("submission"),
+      files: filesInput,
+    },
+    scoped: false,
+    method: "POST",
+    path: ({ versionId, submissionId }) =>
+      contribution(versionId, `/submissions/${enc(submissionId)}/retry`),
+    body: ({ files }) => ({ files }),
+  }),
+  tool({
+    name: "regrade",
+    title: "Regrade submission",
+    scope: CONTRIBUTOR_SCOPE,
+    audience: "contributor",
+    description:
+      "Grade your errored submission again with its own files: its grading could not run, which is the platform's failure, so no retry is spent. Taken while your access stands, even after the version stops taking new work. Any other state is refused (not_errored).",
+    input: { versionId: id("version"), submissionId: id("submission") },
+    scoped: false,
+    method: "POST",
+    path: ({ versionId, submissionId }) =>
+      contribution(versionId, `/submissions/${enc(submissionId)}/regrade`),
+  }),
+] as const;
+
+export type ToolName =
+  (typeof TOOLS)[number]["name"] | (typeof CONTRIBUTOR_TOOLS)[number]["name"];
 
 /**
  * The tools each MCP endpoint serves, by path: `MCP_TOOLSETS` in core,
- * shared with the web app's MCP page. `/mcp` names every tool here, and a
- * toolset names no other (`mcp.test.ts`).
+ * shared with the web app's MCP page. `/mcp` names every workspace tool
+ * and `/mcp/contribute` every contributor tool; a toolset names no other
+ * (`mcp.test.ts`).
  */
 export const TOOLSETS: Readonly<Record<string, readonly ToolName[]>> =
   MCP_TOOLSETS;
+
+/** Whose tools an endpoint serves. */
+export function toolsetAudience(path: string): ToolAudience {
+  return path === MCP_CONTRIBUTOR_PATH ? "contributor" : "workspace";
+}
+
+/** The tools `path` serves, from its audience's list. */
+export function toolsAt(path: string): readonly Tool[] {
+  const names = new Set<string>(TOOLSETS[path] ?? []);
+  const pool: readonly Tool[] =
+    toolsetAudience(path) === "contributor" ? CONTRIBUTOR_TOOLS : TOOLS;
+  return pool.filter((entry) => names.has(entry.name));
+}
 
 /**
  * The scopes an endpoint's tools need, in `API_SCOPES` order: what its
  * sign-in challenge and protected-resource metadata ask an MCP client to
  * request, so a client signed in through one plugin can use every tool
  * that plugin's skill names. The person may still untick any of them.
+ * The contributor endpoint asks for the contributor scope alone.
  */
-export function toolsetScopes(path: string): ApiScope[] {
-  const names = new Set<string>(TOOLSETS[path] ?? []);
-  const needed = new Set<ApiScope>(MCP_DEFAULT_SCOPES);
-  for (const entry of TOOLS) {
-    if (names.has(entry.name) && entry.scope !== null) needed.add(entry.scope);
+export function toolsetScopes(path: string): CredentialScope[] {
+  const tools = toolsAt(path);
+  if (toolsetAudience(path) === "contributor") {
+    const needed = new Set<CredentialScope>(
+      tools.flatMap((entry) => (entry.scope === null ? [] : [entry.scope])),
+    );
+    return CONTRIBUTOR_SCOPES.filter((scope) => needed.has(scope));
+  }
+  const needed = new Set<CredentialScope>(MCP_DEFAULT_SCOPES);
+  for (const entry of tools) {
+    if (entry.scope !== null) needed.add(entry.scope);
+    for (const scope of entry.alsoScopes) needed.add(scope);
   }
   return API_SCOPES.filter((scope) => needed.has(scope));
 }
 
-/** Registers the tools named in `toolset` on `server`, calling through `call`. */
+/** Registers the tools `path` serves on `server`, calling through `call`. */
 export function registerTools(
   server: McpServer,
-  toolset: readonly ToolName[],
+  path: string,
   call: ApiCall,
+  context: ToolContext,
 ): void {
-  for (const entry of TOOLS) {
-    if (toolset.includes(entry.name)) entry.register(server, call);
-  }
+  for (const entry of toolsAt(path)) entry.register(server, call, context);
 }

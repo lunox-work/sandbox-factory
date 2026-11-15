@@ -165,7 +165,15 @@ function fixtureApp(token) {
             : null;
         },
       },
-      proposals: { liveForBounty: async () => null },
+      proposals: {
+        liveForBounty: async () => null,
+        // Nothing here is sized, so no proposal is in any category.
+        categoryCounts: async () => ({
+          total: 0,
+          uncategorized: 0,
+          counts: {},
+        }),
+      },
       // Nothing is being sized.
       runs: { activeForBounty: async () => null },
     },

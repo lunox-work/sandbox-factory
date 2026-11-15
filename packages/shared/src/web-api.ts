@@ -8,6 +8,7 @@ import {
   bountyWritebackDtoSchema,
   proposalLiveSpecSchema,
   proposalFreshnessDtoSchema,
+  proposalSizeLabelDtoSchema,
 } from "./pricing.js";
 import {
   githubConnectionDtoSchema,
@@ -100,6 +101,8 @@ export const proposalDetailResponseSchema = z.object({
    * click that started it.
    */
   activeRun: bountyRunDtoSchema.nullable().default(null),
+  /** Reviewers' resizes of it, oldest first: human labels for calibration. */
+  sizeLabels: z.array(proposalSizeLabelDtoSchema).default([]),
 });
 
 /** A bounty's first sizing while it is in flight, or null when none is. */

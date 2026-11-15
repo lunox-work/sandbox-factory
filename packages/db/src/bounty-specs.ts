@@ -1,9 +1,13 @@
 import { countScenarios, type SpecDraft } from "sandbox-factory";
 import { and, desc, eq, lte } from "drizzle-orm";
 
+import type {
+  DecisionConfirmationCredential,
+  DecisionConfirmationSource,
+} from "./decision-confirmations.js";
 import type { Database, Transaction } from "./errors.js";
 import { generateId } from "./mapping.js";
-import { bountySpec } from "./schema.js";
+import { bountySpec, decisionConfirmation } from "./schema.js";
 import type { BountySpecOrigin, BountySpecRow } from "./schema.js";
 
 /**
@@ -25,6 +29,24 @@ export interface NewBountySpec {
   readonly promptVersion: string | null;
   /** What the reviewer asked for, for a revision that came from a request. */
   readonly instruction?: string | null;
+  /**
+   * Where a spec written outside the platform came from
+   * (`duediligence@0.5.1`); absent for one a run drafted or changed.
+   */
+  readonly source?: string | null;
+  /** The person who wrote it, when it was not a run: the poster. */
+  readonly createdBy?: string | null;
+  /**
+   * Its decisions as confirmed where it was written, recorded for this
+   * revision in the same transaction (`decision_confirmation`).
+   */
+  readonly confirmation?: {
+    readonly confirmedBy: string;
+    readonly decisionsSha256: string;
+    readonly via: DecisionConfirmationSource;
+    /** The credential it was posted with; null when not recorded. */
+    readonly credential?: DecisionConfirmationCredential | null;
+  };
 }
 
 export interface StoredBountySpec {
@@ -41,6 +63,8 @@ export interface StoredBountySpec {
   readonly runId: string | null;
   readonly actualModel: string | null;
   readonly promptVersion: string | null;
+  /** Where a revision written outside the platform came from; else null. */
+  readonly source: string | null;
   readonly createdAt: string;
 }
 
@@ -95,6 +119,7 @@ function toDto(row: BountySpecRow): StoredBountySpec {
     runId: row.runId,
     actualModel: row.actualModel,
     promptVersion: row.promptVersion,
+    source: row.source,
     createdAt: row.createdAt.toISOString(),
   };
 }
@@ -152,11 +177,23 @@ export async function insertSpecRevision(
     draft: spec.draft,
     origin: spec.origin,
     instruction: spec.instruction ?? null,
-    createdBy: target.createdBy ?? null,
+    createdBy: spec.createdBy ?? target.createdBy ?? null,
     runId: target.runId,
     actualModel: spec.actualModel,
     promptVersion: spec.promptVersion,
+    source: spec.source ?? null,
   });
+  if (spec.confirmation !== undefined)
+    await db.insert(decisionConfirmation).values({
+      id: generateId("dcf"),
+      organizationId,
+      proposalId: target.proposalId,
+      specRevision: target.revision,
+      decisionsSha256: spec.confirmation.decisionsSha256,
+      confirmedBy: spec.confirmation.confirmedBy,
+      via: spec.confirmation.via,
+      credential: spec.confirmation.credential ?? null,
+    });
 }
 
 export function createBountySpecStore(db: Database): BountySpecStore {

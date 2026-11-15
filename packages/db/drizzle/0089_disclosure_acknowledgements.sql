@@ -1,0 +1,1 @@
+ALTER TABLE "sandbox_version_source" ADD COLUMN "disclosure_acknowledgements" jsonb DEFAULT '[]'::jsonb NOT NULL;

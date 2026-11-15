@@ -95,6 +95,8 @@ function harness(
     readonly proposal?: Partial<StoredBountyProposal>;
     readonly bounty?: Partial<StoredBounty>;
     readonly touched?: string | null;
+    /** Whether the proposal's spec has decisions nobody confirmed. */
+    readonly undecided?: () => boolean;
   } = {},
 ) {
   const made: { owner: string; bountyId: string; sourceRepoId: unknown }[] = [];
@@ -106,6 +108,7 @@ function harness(
   const details: unknown[] = [];
   /** Proposal reads: what a pass costs for a profile it does not start. */
   let reads = 0;
+  const decisionReads: { bountyId: string; proposalId: string }[] = [];
   const summary = options.summary === undefined ? narrow : options.summary;
   const preparer = new SandboxPreparer({
     profiles: {
@@ -179,6 +182,12 @@ function harness(
     },
     touchedSource: async () =>
       options.touched === undefined ? "ghr_1" : options.touched,
+    decisionsRefusal: async (_owner, bountyId, proposal) => {
+      decisionReads.push({ bountyId, proposalId: proposal.id });
+      return options.undecided?.() === true
+        ? { code: "decisions_unconfirmed" }
+        : null;
+    },
     slice: async (owner, actor, sandbox) => {
       sliced.push({ owner, actor, sandboxId: sandbox.id });
       return options.sliced?.() ?? started;
@@ -198,6 +207,7 @@ function harness(
     errors,
     details,
     reads: () => reads,
+    decisionReads,
   };
 }
 
@@ -295,6 +305,33 @@ test("what the cut would refuse is refused before the sandbox is made; refused o
   assert.match(detail.message, /sbx_bty_1/);
 });
 
+test("a proposal approved before decisions were asked for is held with nothing made, until they are confirmed", async () => {
+  let undecided = true;
+  const h = harness([profile()], { undecided: () => undecided });
+  await h.preparer.sweep();
+  // Asked of the approved proposal, before anything is made: no sandbox,
+  // no draft, no build to be refused, and nothing reported as an error.
+  assert.deepEqual(h.decisionReads, [
+    { bountyId: "bty_1", proposalId: "bpr_1" },
+  ]);
+  assert.deepEqual(h.made, []);
+  assert.deepEqual(h.sliced, []);
+  assert.deepEqual(h.cuts, []);
+  assert.deepEqual(h.errors, []);
+  // The timer leaves it, unchanged, alone.
+  await h.preparer.sweep(false);
+  assert.equal(h.decisionReads.length, 1);
+  // Confirmed: the confirmation prompts a pass (`onApproved`), which
+  // starts it as any approved bounty.
+  undecided = false;
+  h.preparer.kick();
+  await h.preparer.stop();
+  assert.deepEqual(h.made, [
+    { owner: "org_1", bountyId: "bty_1", sourceRepoId: "ghr_1" },
+  ]);
+  assert.equal(h.sliced.length, 1);
+});
+
 test("a profile skipped once is not read again by a timer pass, until a prompt or a change", async () => {
   const rows = [profile()];
   const h = harness(rows, { touched: null });
@@ -350,6 +387,7 @@ test("organizations are worked on four at a time, each in its own try", async ()
       requestCut: async () => false,
     },
     touchedSource: async () => null,
+    decisionsRefusal: async () => null,
     slice: async () => started,
     onError: (code) => errors.push(code),
   });
@@ -389,6 +427,7 @@ test("one organization's trouble is reported and the pass goes on; the timer sta
       requestCut: async () => false,
     },
     touchedSource: async () => null,
+    decisionsRefusal: async () => null,
     slice: async () => started,
     intervalMs: 60_000,
     onError: (code) => errors.push(code),

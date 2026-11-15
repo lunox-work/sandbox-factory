@@ -1,4 +1,5 @@
 import {
+  BOUNTY_LIMITS,
   RESPEC_LIMITS,
   SCENARIO_KINDS,
   SCENARIO_ORIGINS,
@@ -117,6 +118,12 @@ export const bountySpecDtoSchema = z.object({
   runId: z.string().nullable(),
   actualModel: z.string().nullable(),
   promptVersion: z.string().nullable(),
+  /**
+   * Where a revision written outside the platform came from, as
+   * `duediligence@0.5.1` for a spec posted with its bounty; null for one
+   * the platform drafted or changed. Optional, so an older API still parses.
+   */
+  source: z.string().nullable().optional(),
   createdAt: z.iso.datetime(),
 });
 
@@ -241,6 +248,19 @@ export type ProposalSpecRevisionsResponse = z.infer<
   typeof proposalSpecRevisionsResponseSchema
 >;
 
+/** Where a confirmation made outside the Price step came from. */
+export const DECISION_CONFIRMATION_SOURCES = ["duediligence"] as const;
+
+/**
+ * The credential a confirmation was made with, acting as its person: the
+ * web app's session, a workspace API token, or an OAuth grant.
+ */
+export const DECISION_CONFIRMATION_CREDENTIALS = [
+  "session",
+  "token",
+  "oauth",
+] as const;
+
 /** A spec decision as `specDecisions` keys it. */
 export const specDecisionDtoSchema = z.object({
   key: z.string().regex(/^d\d+$/),
@@ -260,6 +280,19 @@ export const proposalDecisionsResponseSchema = z.object({
   confirmation: z
     .object({
       confirmedBy: z.string(),
+      /** The person's name, to say who; null when it cannot be read. */
+      confirmedByName: z.string().nullable().optional(),
+      /**
+       * `duediligence` for decisions a person confirmed there and posted
+       * with the spec (`POST …/bounties` with `spec.confirmed`); null for
+       * a confirmation made on the Price step.
+       */
+      via: z.enum(DECISION_CONFIRMATION_SOURCES).nullable().optional(),
+      /** The credential it was made with; null for one made before it was kept. */
+      credential: z
+        .enum(DECISION_CONFIRMATION_CREDENTIALS)
+        .nullable()
+        .optional(),
       confirmedAt: z.iso.datetime(),
     })
     .nullable(),
@@ -276,6 +309,49 @@ export const confirmDecisionsSchema = z.strictObject({
   decisionsSha256: z.string().regex(/^[0-9a-f]{64}$/),
 });
 
+/** A semantic version, as an engine names its own: `0.5.1`, `1.0.0-rc.1`. */
+const ENGINE_VERSION =
+  /^\d{1,6}\.\d{1,6}\.\d{1,6}(?:[-+][0-9A-Za-z.-]{1,40})?$/;
+
+/**
+ * A spec posted with its bounty (`POST …/bounties`, `spec`): a
+ * duediligence `spec.md` as written, or the platform's own spec document
+ * (`GET …/spec/gherkin`). The API reads it with duediligence's parser and
+ * refuses one it cannot store (422 `invalid_spec`, with each problem's
+ * path). `confirmed` says the person posting confirmed its `Decided:` items
+ * where it was written; the API records that confirmation for them, so
+ * approval needs no second one. Sizing prices it as written and drafts
+ * none while the bounty's text is what it was posted with.
+ */
+export const postedSpecSchema = z.strictObject({
+  // Kept as posted, byte for byte: it is what the person confirmed.
+  document: z
+    .string()
+    .max(BOUNTY_LIMITS.description)
+    .refine((value) => value.trim() !== "", "The spec document is empty."),
+  format: z.literal("duediligence"),
+  confirmed: z.boolean(),
+  /** The engine that wrote it, recorded as the spec's source. */
+  engine: z
+    .strictObject({
+      name: z.literal("duediligence"),
+      version: z.string().regex(ENGINE_VERSION, "A version such as 0.5.1."),
+    })
+    .optional(),
+});
+
+/**
+ * A bounty's posted spec, in brief: where it came from, whether its
+ * decisions were confirmed with it, and whether sizing still takes it
+ * (`current`: the bounty's text is still what it was posted with).
+ */
+export const postedSpecSummarySchema = z.object({
+  source: z.string(),
+  confirmed: z.boolean(),
+  current: z.boolean(),
+  createdAt: z.iso.datetime(),
+});
+
 /** `GET /proposals/:id/spec/gherkin`: the spec as duediligence reads one. */
 export const proposalSpecDocumentResponseSchema = z.object({
   specRevision: z.number().int().positive().nullable(),
@@ -286,3 +362,5 @@ export type ProposalDecisionsResponse = z.infer<
   typeof proposalDecisionsResponseSchema
 >;
 export type ConfirmDecisionsRequest = z.infer<typeof confirmDecisionsSchema>;
+export type PostedSpecInput = z.infer<typeof postedSpecSchema>;
+export type PostedSpecSummaryDto = z.infer<typeof postedSpecSummarySchema>;

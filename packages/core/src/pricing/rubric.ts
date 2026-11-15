@@ -447,6 +447,21 @@ export interface RubricAssessment {
   readonly weightPoints: Readonly<Record<ScenarioWeight, number>>;
 }
 
+/**
+ * What a proposal's price saw: `code` once the assessment beside it measured
+ * every repository the work touches, `spec` otherwise (no assessment, no
+ * repository, a failed profile, or the code still pending). An approval of a
+ * `spec` price is allowed only once the code is no longer pending, and says
+ * the price never saw the code.
+ */
+export type PricedFrom = "spec" | "code";
+
+export function pricedFromOf(
+  rubric: Pick<RubricAssessment, "code"> | null,
+): PricedFrom {
+  return rubric?.code.status === "measured" ? "code" : "spec";
+}
+
 const plural = (count: number, noun: string) =>
   `${count} ${noun}${count === 1 ? "" : "s"}`;
 

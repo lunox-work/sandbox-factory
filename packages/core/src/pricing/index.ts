@@ -5,3 +5,4 @@ export * from "./step.js";
 export * from "./respec.js";
 export * from "./profile.js";
 export * from "./rubric.js";
+export * from "./posted-spec.js";

@@ -145,11 +145,22 @@ const fakeVerifier: GithubOidcVerifier = {
 };
 
 function judgeFixture(
-  overrides: { frozen?: boolean; unhealthy?: boolean; limit?: boolean } = {},
+  overrides: {
+    frozen?: boolean;
+    unhealthy?: boolean;
+    limit?: boolean;
+    /** The store finds the version's snapshot gone. */
+    snapshotGone?: boolean;
+    /** The submission was made already and errored (the CI job re-run). */
+    errored?: boolean;
+    /** Its grading run has ended for good: the store finds it, failed. */
+    spent?: boolean;
+  } = {},
 ) {
   const enqueued: unknown[] = [];
+  const runs = new Set<string>();
   const stored: Record<string, Buffer> = {};
-  let made = false;
+  let made = overrides.errored === true;
   const submission = (status = "queued") => ({
     id: "sbm_1",
     sandboxVersionId: "sbv_1",
@@ -208,11 +219,22 @@ function judgeFixture(
         created.push({ owner, ...(input as object) });
         const first = !made;
         made = true;
-        return { ok: true, created: first, submission: submission() } as never;
+        return {
+          ok: true,
+          created: first,
+          submission: {
+            ...submission(
+              !first && overrides.errored === true ? "errored" : "queued",
+            ),
+            patchSha256: (input as { patchSha256: string }).patchSha256,
+          },
+        } as never;
       },
       get: async (owner: string, id: string) =>
         owner === "org_1" && id === "sbm_1"
-          ? (submission("passed") as never)
+          ? (submission(
+              overrides.errored === true ? "queued" : "passed",
+            ) as never)
           : null,
     },
     objects: {
@@ -227,9 +249,25 @@ function judgeFixture(
         input: unknown,
       ) => {
         enqueued.push({ owner, snapshotId, ...(input as object) });
-        return overrides.limit === true
-          ? ({ ok: false, reason: "limit" } as never)
-          : ({ ok: true } as never);
+        if (overrides.limit === true)
+          return { ok: false, reason: "run_limit" } as never;
+        if (overrides.snapshotGone === true)
+          return { ok: false, reason: "not-found" } as never;
+        if (overrides.spent === true)
+          return {
+            ok: true,
+            created: false,
+            run: { id: "arn_grade", status: "failed" },
+          } as never;
+        // Cached by its parameters, as the store does.
+        const key = JSON.stringify((input as { params: unknown }).params);
+        const created = !runs.has(key);
+        runs.add(key);
+        return {
+          ok: true,
+          created,
+          run: { id: "arn_grade", status: "queued" },
+        } as never;
       },
     },
     ensureWorker: async () => {},
@@ -248,7 +286,17 @@ function judgeFixture(
       },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     });
-  return { call, enqueued, created, stored };
+  return {
+    call,
+    enqueued,
+    created,
+    stored,
+    /** How many grading runs the store made, not found cached. */
+    runs: () => runs.size,
+    limit: (on: boolean) => {
+      overrides.limit = on;
+    },
+  };
 }
 
 const files = [{ path: "src/a.ts", text: "export const a = 1;\n" }];
@@ -281,7 +329,7 @@ test("the CI judge takes a pull request's files from the repository the version 
   // The same files again: the submission already made, and no second run.
   const again = await f.call("POST", "/api/judge", "token:42", ask);
   assert.equal(again.status, 200);
-  assert.equal(f.enqueued.length, 1);
+  assert.equal(f.runs(), 1);
 
   const read = await f.call(
     "GET",
@@ -340,6 +388,25 @@ test("the CI judge refuses without a token, a bad one, another repository's, a d
     409,
     "run_limit",
   ]);
+  assert.deepEqual(await status("token:42", ask, { snapshotGone: true }), [
+    409,
+    "not_gradable",
+  ]);
+
+  // Kept at the limit: the CI job run again queues the same submission.
+  const full = judgeFixture({ limit: true });
+  const refused = await full.call("POST", "/api/judge", "token:42", ask);
+  assert.equal(refused.status, 409);
+  assert.equal(refused.headers.get("retry-after"), "60");
+  assert.equal(
+    ((await refused.json()) as { retryable?: boolean }).retryable,
+    true,
+  );
+  full.limit(false);
+  const queued = await full.call("POST", "/api/judge", "token:42", ask);
+  assert.equal(queued.status, 202);
+  assert.equal(full.runs(), 1);
+  assert.equal(full.created.length, 2);
 
   const f = judgeFixture();
   assert.equal(
@@ -359,5 +426,58 @@ test("the CI judge refuses without a token, a bad one, another repository's, a d
   assert.equal(
     (await f.call("GET", "/api/judge/sbm_1?workspace=org_1", undefined)).status,
     401,
+  );
+});
+
+test("the CI job re-run for an errored submission grades it again in place, with its run's params", async () => {
+  const f = judgeFixture({ errored: true });
+  const again = await f.call("POST", "/api/judge", "token:42", ask);
+  assert.equal(again.status, 202);
+  // No new submission: the same one, waiting again, in the repository's names.
+  const body = (await again.json()) as {
+    submission: { id: string; status: string };
+  };
+  assert.deepEqual(
+    [body.submission.id, body.submission.status],
+    ["sbm_1", "queued"],
+  );
+  assert.equal(f.runs(), 1);
+  assert.deepEqual(
+    (f.enqueued[0] as { snapshotId: string; params: unknown }).params,
+    {
+      deadlineMinutes: 60,
+      grader: "submission",
+      submissionId: "sbm_1",
+      sandboxVersionId: "sbv_1",
+      patchSha256: (f.created[0] as { patchSha256: string }).patchSha256,
+      names: "repository",
+    },
+  );
+  assert.equal((f.enqueued[0] as { snapshotId: string }).snapshotId, "rsn_1");
+  assert.equal((f.enqueued[0] as { requestedBy: unknown }).requestedBy, null);
+
+  // Out of attempts: told so, never queued again.
+  const spent = await judgeFixture({ errored: true, spent: true }).call(
+    "POST",
+    "/api/judge",
+    "token:42",
+    ask,
+  );
+  assert.equal(spent.status, 409);
+  assert.equal(
+    ((await spent.json()) as { code: string }).code,
+    "regrade_spent",
+  );
+  // A full queue keeps it errored and asks for the re-run again.
+  const full = await judgeFixture({ errored: true, limit: true }).call(
+    "POST",
+    "/api/judge",
+    "token:42",
+    ask,
+  );
+  assert.equal(full.status, 409);
+  assert.equal(
+    ((await full.json()) as { retryable?: boolean }).retryable,
+    true,
   );
 });

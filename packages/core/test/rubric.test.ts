@@ -8,6 +8,7 @@ import {
   CONTEXT_BANDS,
   describeRubric,
   PRICED_BOUNTY_COMPLEXITIES,
+  pricedFromOf,
   RUBRIC_BANDS,
   RUBRIC_DIMENSIONS,
   RUBRIC_LIMITS,
@@ -777,4 +778,18 @@ test("a rubric size two whole sizes from the one in force waits for a reviewer",
   assert.equal(rubricNeedsReview("XS+", "M+"), true);
   // Nothing in force to disagree with.
   assert.equal(rubricNeedsReview("unsized", "XL"), false);
+});
+
+test("a price saw the code only once every repository was measured", () => {
+  assert.equal(pricedFromOf(null), "spec");
+  for (const status of ["pending", "unavailable", "failed"] as const)
+    assert.equal(
+      pricedFromOf({ code: { status, specRevision: null } }),
+      "spec",
+      status,
+    );
+  assert.equal(
+    pricedFromOf({ code: { status: "measured", specRevision: 1 } }),
+    "code",
+  );
 });

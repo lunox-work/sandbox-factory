@@ -47,6 +47,27 @@ test("a bounty written here needs only a title", () => {
   assert.equal(createBountySchema.safeParse({}).success, false);
 });
 
+test("a bounty written here may carry a spec confirmed in duediligence", () => {
+  const spec = {
+    document: "Feature: x\n",
+    format: "duediligence",
+    confirmed: false,
+  };
+  assert.deepEqual(createBountySchema.parse({ title: "t", spec }), {
+    title: "t",
+    description: "",
+    stack: [],
+    spec,
+  });
+  assert.equal(
+    createBountySchema.safeParse({
+      title: "t",
+      spec: { ...spec, format: "gherkin" },
+    }).success,
+    false,
+  );
+});
+
 test("a bounty written here is bounded at the description limit", () => {
   assert.equal(
     createBountySchema.safeParse({

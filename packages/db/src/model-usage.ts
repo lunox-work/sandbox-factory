@@ -15,6 +15,13 @@
  * what it spends and may finish past the limit, and the next run is the one
  * refused. Two runs admitted at once may both start; the guard is not a
  * reservation.
+ *
+ * **A floor, not a forecast.** A run is refused only once fewer than
+ * `TokenQuota.startFloor` tokens are left this month, never because its
+ * declared budget (`AGENT_TOKEN_BUDGET` per agent, several agents a build)
+ * would not fit: budgets are worst cases most runs never near, and refusing
+ * on them would refuse nearly everything. The floor keeps a run from
+ * starting on a month too spent to get anywhere.
  */
 
 import { and, eq, gte, sql, type AnyColumn } from "drizzle-orm";
@@ -91,13 +98,25 @@ export function quotaMonth(now: Date): { from: Date; resetsAt: Date } {
 /** A store's admission rule: how many tokens a workspace may spend a month. */
 export interface TokenQuota {
   readonly monthlyLimit: number;
+  /**
+   * The fewest tokens left this month a new run may start on; 1 when
+   * absent, so a run is refused only once the month is spent.
+   */
+  readonly startFloor?: number;
   readonly now?: () => Date;
 }
+
+/**
+ * What a monthly quota counts: `model_tokens` (this ledger) or
+ * `evaluator_seconds` (`evaluator-usage.ts`).
+ */
+export type QuotaKind = "model_tokens" | "evaluator_seconds";
 
 /** A run refused because the workspace's month is spent. */
 export interface QuotaExceeded {
   readonly ok: false;
   readonly reason: "quota_exceeded";
+  readonly kind: QuotaKind;
   readonly used: number;
   readonly limit: number;
   readonly resetsAt: Date;
@@ -131,7 +150,8 @@ export async function modelTokensSince(
 
 /**
  * The refusal a new model run meets, or null while the workspace's month
- * has tokens left. Read in the caller's transaction where it has one.
+ * has at least the floor left. Read in the caller's transaction where it
+ * has one.
  */
 export async function quotaExceeded(
   db: Pick<Database, "select">,
@@ -142,11 +162,12 @@ export async function quotaExceeded(
   const used = totalTokens(
     await modelTokensSince(db, organizationId, month.from),
   );
-  return used < quota.monthlyLimit
+  return quota.monthlyLimit - used >= Math.max(1, quota.startFloor ?? 1)
     ? null
     : {
         ok: false,
         reason: "quota_exceeded",
+        kind: "model_tokens",
         used,
         limit: quota.monthlyLimit,
         resetsAt: month.resetsAt,

@@ -40,7 +40,14 @@
  * toggling only moves the edge: nothing the eye was tracking jumps.
  */
 
-import { Box, Building2, CodeXml, House, Rocket } from "lucide-react";
+import {
+  Box,
+  Building2,
+  CodeXml,
+  FolderCode,
+  House,
+  Rocket,
+} from "lucide-react";
 import { useEffect, useState } from "react";
 
 import type { MembershipDto } from "@sandbox-factory/shared";
@@ -70,6 +77,12 @@ export type Screen =
   | "create-org"
   /** The workspace's developer portal: tokens, apps, MCP, reference, usage. */
   | "developers"
+  /** Claiming a contributor's invite, from its link. */
+  | "invite"
+  /** The versions the person was invited to work on, under no workspace. */
+  | "contributions"
+  /** One of them, as a page of its own. Carries a version id. */
+  | "contribution"
   /** An address that names no page. */
   | "not-found";
 
@@ -81,6 +94,7 @@ export function SideNav({
   image,
   invitationCount = 0,
   onboardingOnly = false,
+  contributions = false,
   organizations,
   onSelectOrganization,
   onNavigate,
@@ -103,6 +117,12 @@ export function SideNav({
    * destination offered; otherwise it is not offered at all.
    */
   onboardingOnly?: boolean | undefined;
+  /**
+   * Whether the person was invited to work on a version. Their work sits
+   * under no workspace, so it is offered whatever the workspace in the rail
+   * is, set up or not.
+   */
+  contributions?: boolean | undefined;
   /** For the switcher at the head of the rail. */
   organizations: Pick<Organizations, "organizations" | "active" | "loading">;
   onSelectOrganization: (organization: MembershipDto) => void;
@@ -259,6 +279,25 @@ export function SideNav({
             onClick={() => onNavigate("developers")}
           >
             <CodeXml strokeWidth={1.6} />
+          </RailButton>
+        )}
+
+        {/*
+          An invited contributor's versions: theirs, under no workspace, so
+          offered beside onboarding as well as beside the work. Only to
+          someone who has one, or is on its page.
+        */}
+        {(contributions ||
+          screen === "contributions" ||
+          screen === "contribution") && (
+          <RailButton
+            label="Contributions"
+            href={pathForScreen("contributions")}
+            expanded={expanded}
+            current={screen === "contributions" || screen === "contribution"}
+            onClick={() => onNavigate("contributions")}
+          >
+            <FolderCode strokeWidth={1.6} />
           </RailButton>
         )}
 

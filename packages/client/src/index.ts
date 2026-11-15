@@ -25,6 +25,8 @@ import {
   artifactUrlSchema,
   enqueueSliceResponseSchema,
   generateStarterResponseSchema,
+  folderPreviewResponseSchema,
+  handoutFilesSchema,
   publishVersionResponseSchema,
   repositoryProposalListSchema,
   repoTreePageDtoSchema,
@@ -43,10 +45,18 @@ import {
   sliceVersionResponseSchema,
   startSandboxResponseSchema,
   submissionListSchema,
+  mergeBackStatusResponseSchema,
+  submissionFilesResponseSchema,
   submissionResponseSchema,
+  contributorAssignmentResponseSchema,
+  contributorInviteResponseSchema,
+  contributorListResponseSchema,
+  createdContributorInviteResponseSchema,
 } from "@sandbox-factory/shared";
 import type {
+  CreateContributorInviteInput,
   ApproveSliceInput,
+  SliceSandboxInput,
   BuildAllInput,
   CreateSandboxInput,
   CreateSandboxVersionInput,
@@ -54,7 +64,10 @@ import type {
   EnqueueFixturesInput,
   EnqueueScopeInput,
   EnqueueSliceInput,
+  HandoutFilesQuery,
+  MergeSubmissionInput,
   UpdateSandboxVersionInput,
+  DisclosureAcknowledgementInput,
 } from "@sandbox-factory/shared";
 
 /** Private repository analysis, available to both browser and extension clients. */
@@ -366,11 +379,17 @@ export class SandboxClient extends GithubAnalysisClient {
    * ready, a draft is cut from it and built; until then, the slice is
    * asked for and answered with where it stands.
    */
-  async sliceSandboxVersion(owner: string, sandboxId: string) {
+  async sliceSandboxVersion(
+    owner: string,
+    sandboxId: string,
+    input?: SliceSandboxInput,
+  ) {
     return sliceVersionResponseSchema.parse(
       await this.request(
         `${this.#sandboxes(owner)}/${encodeURIComponent(sandboxId)}/slice`,
-        { method: "POST" },
+        input === undefined
+          ? { method: "POST" }
+          : { method: "POST", body: JSON.stringify(input) },
       ),
     );
   }
@@ -421,6 +440,24 @@ export class SandboxClient extends GithubAnalysisClient {
       await this.request(
         `${this.#sandboxes(owner)}/versions/${encodeURIComponent(versionId)}`,
         { method: "PATCH", body: JSON.stringify(input) },
+      ),
+    );
+  }
+  /**
+   * Replaces a draft's disclosure acknowledgements: the findings an owner
+   * or admin says may be public. A sliced draft's are part of its
+   * transform, so it is built again after; an uploaded or generated
+   * draft's are checked at publication, with no build again.
+   */
+  async setDisclosureAcknowledgements(
+    owner: string,
+    versionId: string,
+    acknowledgements: readonly DisclosureAcknowledgementInput[],
+  ) {
+    return sandboxVersionResponseSchema.parse(
+      await this.request(
+        `${this.#sandboxes(owner)}/versions/${encodeURIComponent(versionId)}/disclosure-acknowledgements`,
+        { method: "PUT", body: JSON.stringify({ acknowledgements }) },
       ),
     );
   }
@@ -481,6 +518,38 @@ export class SandboxClient extends GithubAnalysisClient {
       ),
     );
   }
+  /**
+   * The version's public project as one `.zip` (everything under one
+   * folder), what a contributor opens in an editor; never a hidden test.
+   * `filename` is the name to save it as.
+   */
+  async projectArchive(owner: string, versionId: string, signal?: AbortSignal) {
+    const file = await this.requestFile(
+      `${this.#sandboxes(owner)}/versions/${encodeURIComponent(versionId)}/archive`,
+      "application/zip",
+      { signal },
+    );
+    return { ...file, filename: file.filename ?? `${versionId}.zip` };
+  }
+  /** One page of the public project's files with their contents. */
+  async handoutFiles(
+    owner: string,
+    versionId: string,
+    query: HandoutFilesQuery = {},
+    signal?: AbortSignal,
+  ) {
+    const search = new URLSearchParams();
+    if (query.cursor !== undefined) search.set("cursor", query.cursor);
+    if (query.maxBytes !== undefined)
+      search.set("maxBytes", String(query.maxBytes));
+    const suffix = search.toString() === "" ? "" : `?${search.toString()}`;
+    return handoutFilesSchema.parse(
+      await this.request(
+        `${this.#sandboxes(owner)}/versions/${encodeURIComponent(versionId)}/handout/files${suffix}`,
+        { signal },
+      ),
+    );
+  }
   /** A version's submissions and their verdicts, newest first. */
   async sandboxSubmissions(
     owner: string,
@@ -520,6 +589,29 @@ export class SandboxClient extends GithubAnalysisClient {
       ),
     ).submission;
   }
+  /**
+   * Submits the zipped project folder against a published version: what
+   * it changes in the task (`dryRun` answers that, refusals included, and
+   * stores nothing). A signed-in session's act; a token is refused.
+   */
+  async submitFolderToSandbox(
+    owner: string,
+    versionId: string,
+    folder: Blob,
+    { dryRun = false }: { dryRun?: boolean } = {},
+  ) {
+    const payload = await this.request(
+      `${this.#sandboxes(owner)}/versions/${encodeURIComponent(versionId)}/submissions/zip${dryRun ? "?dryRun=1" : ""}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/zip" },
+        body: folder,
+      },
+    );
+    return dryRun
+      ? { preview: folderPreviewResponseSchema.parse(payload).preview }
+      : { submission: submissionResponseSchema.parse(payload).submission };
+  }
   /** A failed submission's one retry, with new files. */
   async retrySubmission(
     owner: string,
@@ -534,16 +626,129 @@ export class SandboxClient extends GithubAnalysisClient {
     ).submission;
   }
   /**
-   * Merges a passing submission back: a pull request on the repository it
-   * was sliced from. A signed-in session's act; a token is refused.
+   * Grades an errored submission again with its own files, without
+   * spending its one retry. A signed-in session's act.
    */
-  async mergeSubmission(owner: string, submissionId: string) {
+  async regradeSubmission(owner: string, submissionId: string) {
     return submissionResponseSchema.parse(
       await this.request(
-        `${this.#sandboxes(owner)}/submissions/${encodeURIComponent(submissionId)}/merge`,
+        `${this.#sandboxes(owner)}/submissions/${encodeURIComponent(submissionId)}/regrade`,
         { method: "POST" },
       ),
     ).submission;
+  }
+  /**
+   * Merges a passing submission back: a pull request on the repository it
+   * was sliced from; `{ when: "ci_passes" }` also has the platform merge
+   * it once the repository's CI passes (asked of one already open, it is
+   * recorded). A signed-in session's act; a token is refused.
+   */
+  async mergeSubmission(
+    owner: string,
+    submissionId: string,
+    input?: MergeSubmissionInput,
+  ) {
+    return submissionResponseSchema.parse(
+      await this.request(
+        `${this.#sandboxes(owner)}/submissions/${encodeURIComponent(submissionId)}/merge`,
+        input === undefined
+          ? { method: "POST" }
+          : { method: "POST", body: JSON.stringify(input) },
+      ),
+    ).submission;
+  }
+  /**
+   * A passing submission's changed files on a version with no repository
+   * to merge back to (uploaded or generated), never a hidden test.
+   */
+  async submissionFiles(
+    owner: string,
+    submissionId: string,
+    signal?: AbortSignal,
+  ) {
+    return submissionFilesResponseSchema.parse(
+      await this.request(
+        `${this.#sandboxes(owner)}/submissions/${encodeURIComponent(submissionId)}/files`,
+        { signal },
+      ),
+    );
+  }
+  /** The same files as a `.zip`, named by the API. */
+  async submissionFilesArchive(
+    owner: string,
+    submissionId: string,
+    signal?: AbortSignal,
+  ) {
+    const file = await this.requestFile(
+      `${this.#sandboxes(owner)}/submissions/${encodeURIComponent(submissionId)}/files/archive`,
+      "application/zip",
+      { signal },
+    );
+    return { ...file, filename: file.filename ?? `${submissionId}-files.zip` };
+  }
+  /**
+   * Whether the version's passing submissions can be merged back now, and
+   * if not why: the GitHub App's missing permissions and where to accept
+   * them. Read before the merge button is offered.
+   */
+  async mergeBackStatus(
+    owner: string,
+    versionId: string,
+    signal?: AbortSignal,
+  ) {
+    return mergeBackStatusResponseSchema.parse(
+      await this.request(
+        `${this.#sandboxes(owner)}/versions/${encodeURIComponent(versionId)}/merge-back`,
+        { signal },
+      ),
+    ).mergeBack;
+  }
+  /**
+   * Invites one contributor to the version: the claim link and its secret,
+   * answered this once and never again. Only the current published version.
+   */
+  async createContributorInvite(
+    owner: string,
+    versionId: string,
+    input: CreateContributorInviteInput = {},
+  ) {
+    return createdContributorInviteResponseSchema.parse(
+      await this.request(
+        `${this.#sandboxes(owner)}/versions/${encodeURIComponent(versionId)}/invites`,
+        { method: "POST", body: JSON.stringify(input) },
+      ),
+    );
+  }
+  /** A version's invites and invited contributors, revoked ones too. */
+  async versionContributors(
+    owner: string,
+    versionId: string,
+    signal?: AbortSignal,
+  ) {
+    return contributorListResponseSchema.parse(
+      await this.request(
+        `${this.#sandboxes(owner)}/versions/${encodeURIComponent(versionId)}/contributors`,
+        { signal },
+      ),
+    );
+  }
+  /** Stops an invite admitting claims. */
+  async revokeContributorInvite(owner: string, inviteId: string) {
+    return contributorInviteResponseSchema.parse(
+      await this.request(
+        `${this.#sandboxes(owner)}/invites/${encodeURIComponent(inviteId)}/revoke`,
+        { method: "POST" },
+      ),
+    ).invite;
+  }
+  /** Ends an invited contributor's access to their version, at once. */
+  async revokeContributor(owner: string, assignmentId: string) {
+    return contributorAssignmentResponseSchema.parse(
+      await this.request(
+        `${this.#sandboxes(owner)}/contributors/${encodeURIComponent(assignmentId)}/revoke`,
+        { method: "POST" },
+      ),
+    ).contributor;
   }
   /** What replaying the version would use, or why it cannot be replayed. */
   async sandboxReplay(owner: string, versionId: string, signal?: AbortSignal) {
@@ -557,6 +762,7 @@ export class SandboxClient extends GithubAnalysisClient {
 }
 
 export * from "./memberships.js";
+export * from "./contributors.js";
 export * from "./bounties.js";
 export * from "./jira.js";
 export * from "./github.js";

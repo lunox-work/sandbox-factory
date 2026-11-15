@@ -2,7 +2,12 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import type { SubmissionRow } from "../src/schema.js";
-import { createSubmissionStore } from "../src/submissions.js";
+import {
+  createSubmissionStore,
+  erroredSubmissions,
+  reopenSubmission,
+  settleSubmission,
+} from "../src/submissions.js";
 import { createFakeDb, createSequencedFakeDb } from "./fake-db.js";
 
 const now = new Date("2026-10-04T00:00:00Z");
@@ -22,8 +27,10 @@ const row = (overrides: Partial<SubmissionRow> = {}): SubmissionRow => ({
   patchSha256: input.patchSha256,
   status: "queued",
   result: null,
+  errorCode: null,
   runId: null,
   retryOf: null,
+  assignmentId: null,
   createdAt: now,
   updatedAt: now,
   ...overrides,
@@ -103,64 +110,102 @@ test("a version's submissions are listed under the owner, newest first", async (
   assert.equal(fake.calls[0]?.ordered, true);
 });
 
-test("a submission starts once, and finishes with the verdict its counts give", async () => {
-  const started = createFakeDb([row({ status: "running", runId: "arn_1" })]);
+test("a grading run's verdict settles a waiting submission with the counts it gives", async () => {
+  const all = { passed: 3, total: 3 };
+  const passed = createFakeDb([{ id: "sbm_1" }]);
   assert.equal(
-    await createSubmissionStore(started.db).start("owner", "sbm_1", "arn_1"),
+    await settleSubmission(
+      passed.tx,
+      "owner",
+      { id: "sbm_1", runId: "arn_1" },
+      { public: all, hidden: all },
+      now,
+    ),
     true,
   );
-  assert.equal(started.calls[0]?.values?.["status"], "running");
-  assert.equal(started.calls[0]?.values?.["runId"], "arn_1");
-  assert.equal(started.calls[0]?.filtered, true);
+  assert.deepEqual(passed.calls[0]?.values, {
+    status: "passed",
+    result: { public: all, hidden: all },
+    errorCode: null,
+    runId: "arn_1",
+    updatedAt: now,
+  });
+  assert.equal(passed.calls[0]?.filtered, true);
+  const failed = createFakeDb([{ id: "sbm_1" }]);
+  await settleSubmission(
+    failed.tx,
+    "owner",
+    { id: "sbm_1", runId: "arn_1" },
+    { public: all, hidden: { passed: 1, total: 3 } },
+    now,
+  );
+  assert.equal(failed.calls[0]?.values?.["status"], "failed");
+  // One that is no longer waiting takes none.
   assert.equal(
-    await createSubmissionStore(createFakeDb([]).db).start(
+    await settleSubmission(
+      createFakeDb([]).tx,
       "owner",
-      "sbm_1",
-      "arn_1",
+      { id: "sbm_1", runId: "arn_1" },
+      { public: all, hidden: all },
+      now,
     ),
     false,
   );
+});
 
-  const all = { passed: 3, total: 3 };
-  const passed = createFakeDb([row({ status: "passed" })]);
-  await createSubmissionStore(passed.db).finish(
+test("a run that ended without a verdict errors its waiting submission; queued again, it waits again", async () => {
+  const errored = createFakeDb([]);
+  await erroredSubmissions(
+    errored.tx,
     "owner",
-    "sbm_1",
-    { public: all, hidden: all },
+    [
+      { submissionId: "sbm_1", runId: "arn_1", errorCode: "grading_failed" },
+      {
+        submissionId: "sbm_2",
+        runId: "arn_2",
+        errorCode: "grading_interrupted",
+      },
+    ],
     now,
   );
-  assert.equal(passed.calls[0]?.values?.["status"], "passed");
-  assert.deepEqual(passed.calls[0]?.values?.["result"], {
-    public: all,
-    hidden: all,
-  });
-
-  const failed = createFakeDb([row({ status: "failed" })]);
-  await createSubmissionStore(failed.db).finish("owner", "sbm_1", {
-    public: all,
-    hidden: { passed: 1, total: 3 },
-  });
-  assert.equal(failed.calls[0]?.values?.["status"], "failed");
-
-  // A run that could not run at all records no counts.
-  const errored = createFakeDb([row({ status: "errored" })]);
-  const result = await createSubmissionStore(errored.db).finish(
-    "owner",
-    "sbm_1",
-    "errored",
+  assert.deepEqual(
+    errored.calls.map((call) => [call.kind, call.values, call.filtered]),
+    [
+      [
+        "update",
+        {
+          status: "errored",
+          errorCode: "grading_failed",
+          runId: "arn_1",
+          updatedAt: now,
+        },
+        true,
+      ],
+      [
+        "update",
+        {
+          status: "errored",
+          errorCode: "grading_interrupted",
+          runId: "arn_2",
+          updatedAt: now,
+        },
+        true,
+      ],
+    ],
   );
-  assert.equal(result?.status, "errored");
-  assert.equal(errored.calls[0]?.values?.["status"], "errored");
-  assert.equal(errored.calls[0]?.values?.["result"], undefined);
-
+  // Counts are never written for an error.
   assert.equal(
-    await createSubmissionStore(createFakeDb([]).db).finish(
-      "owner",
-      "sbm_1",
-      "errored",
-    ),
-    null,
+    errored.calls.some((call) => call.values?.["result"] !== undefined),
+    false,
   );
+  const reopened = createFakeDb([]);
+  await reopenSubmission(reopened.tx, "owner", "sbm_1", now);
+  assert.deepEqual(reopened.calls[0]?.values, {
+    status: "queued",
+    errorCode: null,
+    updatedAt: now,
+  });
+  assert.equal(reopened.calls[0]?.filtered, true);
 });
 
 test("one submission is read under its owner, with the key its files are under", async () => {
@@ -218,6 +263,32 @@ test("a failed or errored submission takes one retry, against the same version",
     { ok: false, reason: "retry_used" },
   );
 
+  // An errored submission with its own files is graded again in place:
+  // nothing is made, and its retry (or a retry's error) is not spent.
+  for (const retryOf of [null, "sbm_0"]) {
+    const errored = row({
+      status: "errored",
+      errorCode: "grading_failed",
+      retryOf,
+    });
+    const regrade = store([[errored]]);
+    const answered = await regrade.store.retry("owner", "sbm_1", {
+      ...retryInput,
+      patchSha256: input.patchSha256,
+    });
+    assert.deepEqual(
+      answered.ok && [
+        answered.created,
+        answered.regrade,
+        answered.submission.id,
+        answered.submission.errorCode,
+        "patchKey" in answered.submission,
+      ],
+      [false, true, "sbm_1", "grading_failed", false],
+    );
+    assert.equal(regrade.fake.calls.length, 1);
+  }
+
   const refused = async (
     responses: readonly (readonly unknown[] | Error)[],
     patchSha256 = retryInput.patchSha256,
@@ -249,4 +320,101 @@ test("a failed or errored submission takes one retry, against the same version",
     store([[failed], [], []]).store.retry("owner", "sbm_1", retryInput),
     /returned no row/,
   );
+});
+
+test("an invited contributor makes one first submission per assignment, and only they retry it", async () => {
+  const contributor = {
+    ...input,
+    submittedBy: "user_c",
+    assignmentId: "cas_1",
+  };
+  const made = createSequencedFakeDb([
+    frozen,
+    [],
+    [],
+    [row({ submittedBy: "user_c", assignmentId: "cas_1" })],
+  ]);
+  const created = await createSubmissionStore(made.db).create(
+    "owner",
+    contributor,
+  );
+  assert.deepEqual(created.ok && created.submission.assignmentId, "cas_1");
+  assert.equal(made.calls[3]?.values?.["assignmentId"], "cas_1");
+  assert.equal(made.calls[3]?.values?.["submittedBy"], "user_c");
+  // Owners' submissions carry none.
+  const owners = createSequencedFakeDb([frozen, [], [row()]]);
+  await createSubmissionStore(owners.db).create("owner", input);
+  assert.equal(owners.calls[2]?.values?.["assignmentId"], null);
+  // CI judge's (no person) still finds its own.
+  const judged = await createSubmissionStore(
+    createSequencedFakeDb([frozen, [row({ submittedBy: null })]]).db,
+  ).create("owner", { ...input, submittedBy: null });
+  assert.deepEqual(judged.ok && judged.created, false);
+
+  // Other files under the same assignment: the first is named, not made.
+  assert.deepEqual(
+    await createSubmissionStore(
+      createSequencedFakeDb([frozen, [], [{ id: "sbm_first" }]]).db,
+    ).create("owner", contributor),
+    { ok: false, reason: "already_submitted", submissionId: "sbm_first" },
+  );
+  // Two first submissions at once: the loser is told of the winner's.
+  assert.deepEqual(
+    await createSubmissionStore(
+      createSequencedFakeDb([
+        frozen,
+        [],
+        [],
+        duplicate(),
+        [],
+        [{ id: "sbm_w" }],
+      ]).db,
+    ).create("owner", contributor),
+    { ok: false, reason: "already_submitted", submissionId: "sbm_w" },
+  );
+
+  // A contributor's submission is retried by them alone, under their assignment.
+  const theirs = row({
+    status: "failed",
+    submittedBy: "user_c",
+    assignmentId: "cas_1",
+  });
+  const retryInput = {
+    submittedBy: "user_c",
+    assignmentId: "cas_1",
+    patchKey: "k",
+    patchSha256: "b".repeat(64),
+  };
+  assert.deepEqual(
+    await createSubmissionStore(createSequencedFakeDb([[theirs]]).db).retry(
+      "owner",
+      "sbm_1",
+      { ...retryInput, submittedBy: "user_owner", assignmentId: null },
+    ),
+    { ok: false, reason: "contributor_submission" },
+  );
+  const retried = createSequencedFakeDb([
+    [theirs],
+    [],
+    [row({ id: "sbm_2", retryOf: "sbm_1", assignmentId: "cas_1" })],
+  ]);
+  const outcome = await createSubmissionStore(retried.db).retry(
+    "owner",
+    "sbm_1",
+    retryInput,
+  );
+  assert.equal(outcome.ok, true);
+  assert.equal(retried.calls[2]?.values?.["assignmentId"], "cas_1");
+});
+
+test("a version's submissions are listed for one person when asked", async () => {
+  const fake = createFakeDb([row()]);
+  const list = await createSubmissionStore(fake.db).list("owner", "sbv_1", {
+    submittedBy: "user_1",
+  });
+  assert.deepEqual(
+    list.map((item) => [item.id, item.assignmentId]),
+    [["sbm_1", null]],
+  );
+  assert.equal(fake.calls[0]?.filtered, true);
 });

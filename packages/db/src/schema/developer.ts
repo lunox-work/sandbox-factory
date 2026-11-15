@@ -66,9 +66,49 @@ export type ApiTokenRow = typeof apiToken.$inferSelect;
 export type NewApiTokenRow = typeof apiToken.$inferInsert;
 
 /**
+ * A contributor token (`lnxc_…`): one person's own, made from their
+ * session for an editor, agent or CLI. It belongs to no organization and
+ * reaches only the contributor routes (`/api/v1/contributions`), acting as
+ * that person on the versions they were invited to; which ones is the
+ * assignments' to say, read at use. It holds the contributor scope and
+ * nothing else, so it keeps no scopes. Only a SHA-256 of the secret is kept.
+ */
+export const contributorToken = pgTable(
+  "contributor_token",
+  {
+    id: text("id").primaryKey(),
+    /** The person it acts as; it goes when they do. */
+    userId: text("user_id")
+      .notNull()
+      .references(() => user.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    /** The secret's first characters, `lnxc_` included: display only. */
+    prefix: text("prefix").notNull(),
+    /** Hex SHA-256 of the whole secret; the lookup key on every request. */
+    hash: text("hash").notNull().unique(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }),
+    /** Written at most once a minute, as an API token's. */
+    lastUsedAt: timestamp("last_used_at", { withTimezone: true }),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    index("contributor_token_user_created_idx").on(
+      table.userId,
+      table.createdAt,
+    ),
+  ],
+);
+
+export type ContributorTokenRow = typeof contributorToken.$inferSelect;
+
+/**
  * One request that changed something: every POST, PUT, PATCH or DELETE a
- * machine credential (`token`, `oauth`, `device`) made, and credential and
- * webhook management by a person's session. Who (the person, the
+ * machine credential (`token`, `oauth`, `device`, `contributor`) made, and
+ * credential and webhook management by a person's session. A contributor
+ * credential's entry is the workspace's whose version it acted on. Who (the person, the
  * credential, its client), what (method and the route's pattern, the
  * resource when the path names one) and how it ended. Never a body, a
  * secret or a query string: the route pattern is stored, not the URL.
@@ -82,7 +122,7 @@ export const auditEntry = pgTable(
     organizationId: text("organization_id")
       .notNull()
       .references(() => organization.id, { onDelete: "cascade" }),
-    /** The principal's `via`: `token`, `oauth`, `device` or `session`. */
+    /** The principal's `via`: `token`, `oauth`, `device`, `contributor` or `session`. */
     via: text("via").notNull(),
     /** The API token's, access token's or session's id; never a secret. */
     credentialId: text("credential_id").notNull(),
@@ -109,7 +149,7 @@ export const auditEntry = pgTable(
     index("audit_entry_at_idx").on(table.at),
     check(
       "audit_entry_via_check",
-      sql`${table.via} in ('session', 'token', 'oauth', 'device')`,
+      sql`${table.via} in ('session', 'token', 'oauth', 'device', 'contributor')`,
     ),
   ],
 );
@@ -278,3 +318,69 @@ export const modelUsage = pgTable(
 );
 
 export type ModelUsageRow = typeof modelUsage.$inferSelect;
+
+/**
+ * The evaluator ledger, beside the model-token one: one row per evaluation
+ * job a worker run created (a build's baseline, a hidden-tests or reference
+ * candidate, a calibration's rerun, a grading run's jobs, an import's), with
+ * the seconds it was alive from creation to teardown, rounded up. What the
+ * monthly evaluator cap counts and `GET .../usage` reports; see
+ * `evaluator-usage.ts`. `run_id` has no foreign key, as `model_usage`'s.
+ */
+export const evaluatorUsage = pgTable(
+  "evaluator_usage",
+  {
+    id: text("id").primaryKey(),
+    organizationId: text("organization_id")
+      .notNull()
+      .references(() => organization.id, { onDelete: "cascade" }),
+    runId: text("run_id").notNull(),
+    /** The analysis run's tool. */
+    kind: text("kind").notNull(),
+    /** The provider that ran the job (`e2b`, `local-process`). */
+    provider: text("provider").notNull(),
+    seconds: integer("seconds").notNull(),
+    at: at("at").notNull().defaultNow(),
+  },
+  (table) => [
+    index("evaluator_usage_organization_at_idx").on(
+      table.organizationId,
+      table.at,
+    ),
+    check("evaluator_usage_seconds_check", sql`${table.seconds} >= 0`),
+  ],
+);
+
+export type EvaluatorUsageRow = typeof evaluatorUsage.$inferSelect;
+
+/**
+ * One row per grading run admitted for a submission: a first grading, a
+ * retry's, or an errored one queued again. Dry runs never reach a run, so
+ * never write one. What the contributor brakes count (an assignment's
+ * attempts a day, a workspace's contributor attempts a day) and the usage
+ * page's grading count. `assignment_id` is the submission's: null for a
+ * workspace's own submission and the CI judge's. No foreign keys but the
+ * organization's: an attempt stays counted when its submission goes.
+ */
+export const gradingAttempt = pgTable(
+  "grading_attempt",
+  {
+    id: text("id").primaryKey(),
+    organizationId: text("organization_id")
+      .notNull()
+      .references(() => organization.id, { onDelete: "cascade" }),
+    submissionId: text("submission_id").notNull(),
+    assignmentId: text("assignment_id"),
+    runId: text("run_id").notNull(),
+    at: at("at").notNull().defaultNow(),
+  },
+  (table) => [
+    index("grading_attempt_organization_at_idx").on(
+      table.organizationId,
+      table.at,
+    ),
+    index("grading_attempt_assignment_at_idx").on(table.assignmentId, table.at),
+  ],
+);
+
+export type GradingAttemptRow = typeof gradingAttempt.$inferSelect;

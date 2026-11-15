@@ -4283,6 +4283,177 @@ test("a build at work offers the files it has written, and says what it usually 
   );
 });
 
+test("a sliced build held by its disclosure scan says so, and lists the findings for an owner to acknowledge", async () => {
+  vi.stubGlobal(
+    "fetch",
+    slicingServer({
+      versions: () => [generatedVersion],
+      slice: () => sliceOf(),
+      routes: [
+        [
+          "GET",
+          "/github/runs/arn_build/artifacts",
+          () =>
+            json({
+              artifacts: [
+                {
+                  ...artifactOf("build_manifest", {
+                    ready: false,
+                    baseline: null,
+                    blockers: [
+                      {
+                        code: "disclosure_findings",
+                        file: "src/app.ts",
+                        detail:
+                          "Text that may say whose code this is appears at src/app.ts:2.",
+                      },
+                    ],
+                    disclosure: {
+                      status: "failed",
+                      scannedBy: "build",
+                      names: 2,
+                      blocking: 1,
+                      total: 1,
+                      acknowledged: 0,
+                      findings: [
+                        {
+                          kind: "email",
+                          file: "src/app.ts",
+                          line: 2,
+                          value: "jo.doe@halcyon.io",
+                          term: "halcyon.io",
+                          acknowledged: false,
+                        },
+                      ],
+                    },
+                  }),
+                  runId: "arn_build",
+                },
+              ],
+            }),
+        ],
+        [
+          "GET",
+          "/github/runs/arn_build",
+          () =>
+            json({
+              run: buildRun({
+                status: "succeeded",
+                finishedAt: stamp,
+                toolVersion: SANDBOX_BUILD_RUN_VERSION,
+              }),
+            }),
+        ],
+      ],
+    }).fetchMock,
+  );
+  const part = await sandboxPart();
+  expect(await within(part).findByText("Blocked")).toBeDefined();
+  const panel = await within(part).findByTestId("disclosure-findings");
+  expect(within(panel).getByText("jo.doe@halcyon.io")).toBeDefined();
+  expect(
+    within(panel).getByRole("checkbox", {
+      name: "Address at src/app.ts:2 may be public",
+    }),
+  ).toBeDefined();
+  // Not a failing baseline: no baseline ran.
+  expect(within(part).queryByText("Baseline fails")).toBeNull();
+});
+
+for (const origin of ["upload", "starter"] as const)
+  test(`${origin === "upload" ? "an uploaded" : "a generated"} draft's findings are acknowledged for publication, with no build again`, async () => {
+    const state = generatingServer({
+      versions: () => [generatedVersion],
+      run: () => ({ status: "succeeded", finishedAt: stamp }),
+      source: () => ({ ...generatedSource, origin }),
+      artifacts: [
+        artifactOf("build_manifest", {
+          ready: true,
+          baseline: { ok: true, reasons: [], steps: [] },
+          blockers: [],
+          disclosure: {
+            status: "pending_acknowledgement",
+            scannedBy: origin === "upload" ? "upload" : "build",
+            names: 0,
+            blocking: 0,
+            acknowledgedAt: "publish",
+            total: 1,
+            acknowledged: 0,
+            findings: [
+              {
+                kind: "url",
+                file: "src/billing.ts",
+                line: 1,
+                value: "https://docs.stripe.com/api/charges",
+                term: "docs.stripe.com",
+                acknowledged: false,
+              },
+            ],
+          },
+        }),
+      ],
+      routes: [
+        [
+          "PUT",
+          "/sandboxes/versions/sbv_1/disclosure-acknowledgements",
+          () =>
+            json({
+              version: generatedVersion,
+              source: { ...generatedSource, origin },
+            }),
+        ],
+      ],
+    });
+    vi.stubGlobal("fetch", state.fetchMock);
+    const part = await sandboxPart();
+    // Ready: the finding holds publication, not the build.
+    expect(await within(part).findByText("Baseline passes")).toBeDefined();
+    const panel = await within(part).findByTestId("disclosure-findings");
+    expect(
+      within(panel).getByText("https://docs.stripe.com/api/charges"),
+    ).toBeDefined();
+    expect(within(panel).getByText(/with no build again/)).toBeDefined();
+    expect(within(panel).getByRole("status").textContent).toBe(
+      "1 of 1 to acknowledge before publishing.",
+    );
+    expect(
+      within(panel).queryByRole("button", {
+        name: "Acknowledge and build again",
+      }),
+    ).toBeNull();
+    await userEvent.click(
+      within(panel).getByRole("checkbox", {
+        name: "Link at src/billing.ts:1 may be public",
+      }),
+    );
+    await userEvent.click(
+      within(panel).getByRole("button", { name: "Acknowledge" }),
+    );
+    await waitFor(() =>
+      expect(
+        state.calls.some(
+          ({ method, url }) =>
+            method === "PUT" && url.endsWith("/disclosure-acknowledgements"),
+        ),
+      ).toBe(true),
+    );
+    expect(state.calls.find(({ method }) => method === "PUT")?.body).toEqual({
+      acknowledgements: [
+        {
+          kind: "url",
+          value: "https://docs.stripe.com/api/charges",
+          note: null,
+        },
+      ],
+    });
+    // Nothing is built again.
+    expect(
+      state.calls.some(
+        ({ method, url }) => method === "POST" && url.endsWith("/build"),
+      ),
+    ).toBe(false);
+  });
+
 test("a built draft holds Slice again, and says a new price cuts a new slice", async () => {
   vi.stubGlobal(
     "fetch",
@@ -4319,6 +4490,71 @@ test("a built draft holds Slice again, and says a new price cuts a new slice", a
       )
     ).length,
   ).toBeGreaterThan(0);
+});
+
+test("the slice section counts the repository's tests a build carried, and a changed choice slices again with it", async () => {
+  const state = slicingServer({
+    versions: () => [generatedVersion],
+    slice: () => sliceOf(),
+    routes: [
+      [
+        "GET",
+        "/github/runs/arn_build/artifacts",
+        () =>
+          json({
+            artifacts: [
+              {
+                ...artifactOf("build_manifest", {
+                  ready: true,
+                  baseline: { ok: true, reasons: [], steps: [] },
+                  blockers: [],
+                  carriedTests: { kept: 1, dropped: 2 },
+                }),
+                runId: "arn_build",
+              },
+            ],
+          }),
+      ],
+      // After its artifacts, which the run's path would match first.
+      [
+        "GET",
+        "/github/runs/arn_build",
+        () =>
+          json({
+            run: buildRun({
+              status: "succeeded",
+              finishedAt: stamp,
+              toolVersion: SANDBOX_BUILD_RUN_VERSION,
+            }),
+          }),
+      ],
+    ],
+  });
+  vi.stubGlobal("fetch", state.fetchMock);
+  const part = await sandboxPart();
+  expect(await within(part).findByText("1 carried, 2 left out")).toBeDefined();
+  const carry = within(part).getByRole("checkbox", {
+    name: /Carry the repository's own tests/,
+  }) as HTMLInputElement;
+  // The build carried them, and the draft is already this slice's.
+  expect(carry.checked).toBe(true);
+  const again = within(part).getByRole("button", {
+    name: "Slice again",
+  }) as HTMLButtonElement;
+  expect(again.disabled).toBe(true);
+  // Leaving them out builds the draft again without them.
+  await userEvent.click(carry);
+  expect(carry.checked).toBe(false);
+  await waitFor(() => expect(again.disabled).toBe(false));
+  await userEvent.click(again);
+  await waitFor(() =>
+    expect(
+      state.calls.find(
+        ({ method, url }) =>
+          method === "POST" && url.endsWith("/sandboxes/sbx_1/slice"),
+      )?.body,
+    ).toEqual({ carryTests: false }),
+  );
 });
 
 test("a sandbox whose publication is live holds Slice again until it is unpublished", async () => {
@@ -5111,8 +5347,198 @@ test("a proposal whose code is being measured offers no re-analysis or approval 
     within(price).queryByRole("button", { name: "Re-analyze" }),
   ).toBeNull();
   // Nor is it approved while the price it would approve may still move.
-  const approve = within(page).getByRole("button", { name: "Approve" });
+  const approve = within(page).getByRole("button", {
+    name: "Profiling the code…",
+  });
   expect((approve as HTMLButtonElement).disabled).toBe(true);
+  expect(await reasonOn(approve)).toBe(
+    "The code is still being profiled, and the price may change. Approve once it settles.",
+  );
+  // The price so far is the spec's, but it is not said to be final.
+  expect(within(price).queryByTestId("priced-from-spec")).toBeNull();
+});
+
+test("an approval names the price on screen; one moved since is read again with both prices said", async () => {
+  let current = proposal({ specRevision: 1 });
+  const approvals: unknown[] = [];
+  const { fetchMock, calls } = server([
+    [
+      "GET",
+      "/bounties/bty_7",
+      () => json({ bounty: detail({ ...SCOPED, proposal: liveProposal() }) }),
+    ],
+    [
+      "POST",
+      "/proposals/bpr_9/approve",
+      (body) => {
+        approvals.push(body);
+        const previous = { complexity: "M", amountMinor: 200, currency: "USD" };
+        // The code landed while the page was open: M+ now.
+        current = proposal({
+          specRevision: 1,
+          revision: 2,
+          complexity: "M+",
+          amountMinor: 250,
+        });
+        return json(
+          {
+            code: "price_changed",
+            error:
+              "The price changed since it was loaded. Check the new price, then approve.",
+            previous,
+            current: { complexity: "M+", amountMinor: 250, currency: "USD" },
+            proposal: current,
+          },
+          409,
+        );
+      },
+    ],
+    [
+      "GET",
+      "/proposals/bpr_9",
+      () =>
+        json({
+          proposal: current,
+          freshness: { freshness: "current", checkedAt: stamp },
+          liveSpec: null,
+          writebackOperations: [],
+        }),
+    ],
+  ]);
+  vi.stubGlobal("fetch", fetchMock);
+  window.history.replaceState(null, "", "/bounties/acme/bty_7?tab=price");
+  render(<Shell {...inAcme("admin")} />);
+  const page = await screen.findByTestId("bounty-detail");
+  const approve = await within(page).findByRole("button", { name: "Approve" });
+  await waitFor(() =>
+    expect((approve as HTMLButtonElement).disabled).toBe(false),
+  );
+  await userEvent.click(approve);
+  expect(approvals).toEqual([
+    {
+      expectedRevision: 1,
+      expectedPrice: { complexity: "M", amountMinor: 200, currency: "USD" },
+    },
+  ]);
+  expect(
+    await within(page).findByText(
+      "The price changed from $2.00 (M) to $2.50 (M+) once the code was measured. Check it, then approve.",
+    ),
+  ).toBeDefined();
+  // Read again, so what is approved next is what is on screen.
+  const price = within(page).getByTestId("proposal-price");
+  await waitFor(() => expect(price.textContent).toContain("$2.50"));
+  const reads = calls.filter(
+    ({ method, url }) => method === "GET" && /\/proposals\/bpr_9$/.test(url),
+  );
+  expect(reads.length).toBeGreaterThanOrEqual(2);
+});
+
+test("a price whose code failed to measure is approvable, and says it is from the spec only", async () => {
+  const spec = {
+    feature: "Invitations",
+    background: [],
+    scenarios: [
+      {
+        id: "s1",
+        kind: "happy",
+        title: "One invitation",
+        steps: [{ keyword: "Then", text: "one email" }],
+        origin: "draft",
+        weight: "heavy",
+      },
+    ],
+    openQuestions: [],
+    assumptions: [],
+  } as const;
+  const failed = proposal({
+    specRevision: 1,
+    rubric: assessRubric({ spec, code: { status: "failed" } }),
+    pricedFrom: "spec",
+  });
+  const { fetchMock } = server([
+    [
+      "GET",
+      "/bounties/bty_7",
+      () => json({ bounty: detail({ ...SCOPED, proposal: liveProposal() }) }),
+    ],
+    [
+      "GET",
+      "/profile",
+      () =>
+        json({
+          profiles: [
+            {
+              id: "bpf_1",
+              proposalId: "bpr_9",
+              specRevision: 1,
+              repository: "acme/app",
+              status: "failed",
+              errorCode: "scope_failed",
+              runErrorCode: null,
+              snapshotId: "rsn_1",
+              scopeRunId: "arn_1",
+              sliceRunId: null,
+              profile: null,
+              createdAt: stamp,
+              updatedAt: stamp,
+            },
+          ],
+        }),
+    ],
+    ["GET", "/spec", () => json({ spec: null })],
+    [
+      "GET",
+      "/proposals/bpr_9",
+      () =>
+        json({
+          proposal: failed,
+          freshness: { freshness: "current", checkedAt: stamp },
+          liveSpec: null,
+          writebackOperations: [],
+        }),
+    ],
+  ]);
+  vi.stubGlobal("fetch", fetchMock);
+  window.history.replaceState(null, "", "/bounties/acme/bty_7?tab=price");
+  render(<Shell {...inAcme("admin")} />);
+  const page = await screen.findByTestId("bounty-detail");
+  const price = await within(page).findByTestId("proposal-price");
+  expect(
+    (await within(price).findByTestId("priced-from-spec")).textContent,
+  ).toBe("Priced from the spec only; the code was not measured.");
+  const approve = await within(page).findByRole("button", { name: "Approve" });
+  await waitFor(() =>
+    expect((approve as HTMLButtonElement).disabled).toBe(false),
+  );
+});
+
+test("a price that saw the code says nothing of the spec", async () => {
+  const { fetchMock } = server([
+    [
+      "GET",
+      "/bounties/bty_7",
+      () => json({ bounty: detail({ ...SCOPED, proposal: liveProposal() }) }),
+    ],
+    [
+      "GET",
+      "/proposals/bpr_9",
+      () =>
+        json({
+          proposal: proposal({ pricedFrom: "code" }),
+          freshness: { freshness: "current", checkedAt: stamp },
+          liveSpec: null,
+          writebackOperations: [],
+        }),
+    ],
+  ]);
+  vi.stubGlobal("fetch", fetchMock);
+  window.history.replaceState(null, "", "/bounties/acme/bty_7?tab=price");
+  render(<Shell {...inAcme("admin")} />);
+  const page = await screen.findByTestId("bounty-detail");
+  const price = await within(page).findByTestId("proposal-price");
+  await within(page).findByRole("button", { name: "Approve" });
+  expect(within(price).queryByTestId("priced-from-spec")).toBeNull();
 });
 
 /** The last Jira update on `bpr_9`'s approval, as its read names it. */
@@ -5697,6 +6123,157 @@ test("a version without a passing build cannot be published", async () => {
   expect(publish.hasAttribute("disabled")).toBe(true);
 });
 
+test("findings no owner acknowledged hold Publish, which says how many and links to them", async () => {
+  let acknowledged = false;
+  // Findings the gate counted past its record, which no entry clears.
+  let total = 2;
+  const ready = {
+    ...generatedSource,
+    origin: "upload",
+    harnessSha256: "h".repeat(64),
+    toolchainDigest: "d".repeat(64),
+  };
+  const state = generatingServer({
+    versions: () => [generatedVersion],
+    run: () => ({ status: "succeeded", finishedAt: stamp }),
+    source: () => ({
+      ...ready,
+      disclosureAcknowledgements: acknowledged
+        ? [{ kind: "host", value: "acme.io", note: null }]
+        : [],
+    }),
+    artifacts: [
+      artifactOf("build_manifest", {
+        ready: true,
+        baseline: { ok: true, reasons: [], steps: [] },
+        blockers: [],
+        disclosure: {
+          status: "pending_acknowledgement",
+          scannedBy: "upload",
+          names: 0,
+          blocking: 0,
+          acknowledgedAt: "publish",
+          get total() {
+            return total;
+          },
+          acknowledged: 0,
+          findings: [
+            {
+              kind: "url",
+              file: "src/billing.ts",
+              line: 1,
+              value: "https://pay.acme.io/charges",
+              term: "pay.acme.io",
+              acknowledged: false,
+            },
+            {
+              kind: "email",
+              file: "src/billing.ts",
+              line: 4,
+              value: "ops@acme.io",
+              term: "acme.io",
+              acknowledged: false,
+            },
+          ],
+        },
+      }),
+    ],
+  });
+  vi.stubGlobal("fetch", state.fetchMock);
+  const part = await sandboxPart();
+  expect(await within(part).findByText("Baseline passes")).toBeDefined();
+  const publish = await within(part).findByRole("button", { name: "Publish" });
+  await waitFor(() => expect(publish.hasAttribute("disabled")).toBe(true));
+  expect(await reasonOn(publish)).toBe(
+    "Acknowledge 2 findings first: the disclosure scan found text that may say whose code this is.",
+  );
+  // The way to them, on the page: the findings panel.
+  const link = within(part).getByRole("link", { name: "Acknowledge them" });
+  const panel = within(part).getByTestId("disclosure-findings");
+  expect(link.getAttribute("href")).toBe(`#${panel.id}`);
+  await userEvent.click(link);
+  expect(document.activeElement).toBe(panel);
+  // A host the draft's list names covers both: Publish is free.
+  acknowledged = true;
+  cleanup();
+  const again = await sandboxPart();
+  const free = await within(again).findByRole("button", { name: "Publish" });
+  await waitFor(() => expect(free.hasAttribute("disabled")).toBe(false));
+  expect(
+    within(again).queryByRole("link", { name: /^Acknowledge/ }),
+  ).toBeNull();
+  // Two more the build counted but never recorded: still held, and told
+  // to cut the folder again, as the API refuses it.
+  total = 4;
+  cleanup();
+  const past = await sandboxPart();
+  const held = await within(past).findByRole("button", { name: "Publish" });
+  await waitFor(() => expect(held.hasAttribute("disabled")).toBe(true));
+  expect(await reasonOn(held)).toBe(
+    "2 more findings were not recorded; re-cut the folder.",
+  );
+  const counted = within(past).getByTestId("disclosure-findings");
+  expect(within(counted).getByTestId("unrecorded").textContent).toBe(
+    "2 more findings were not recorded; re-cut the folder.",
+  );
+  expect(within(counted).getByRole("status").textContent).toBe(
+    "2 of 4 to acknowledge before publishing.",
+  );
+});
+
+test("a build still running, or decisions no person confirmed, hold Publish and say why", async () => {
+  const ready = {
+    ...generatedSource,
+    harnessSha256: "h".repeat(64),
+    toolchainDigest: "d".repeat(64),
+  };
+  vi.stubGlobal(
+    "fetch",
+    generatingServer({
+      versions: () => [generatedVersion],
+      run: () => ({ status: "running", startedAt: stamp }),
+      source: () => ready,
+    }).fetchMock,
+  );
+  let part = await sandboxPart();
+  let publish = await within(part).findByRole("button", { name: "Publish" });
+  await waitFor(() => expect(publish.hasAttribute("disabled")).toBe(true));
+  expect(await reasonOn(publish)).toBe(
+    "Its build is still running: publish once it passes.",
+  );
+  cleanup();
+
+  vi.stubGlobal(
+    "fetch",
+    generatingServer({
+      versions: () => [generatedVersion],
+      run: () => ({ status: "succeeded", finishedAt: stamp }),
+      artifacts: [artifactOf("build_manifest", { ready: true })],
+      source: () => ready,
+      routes: [
+        [
+          "GET",
+          "/proposals/bpr_7/decisions",
+          () =>
+            json({
+              specRevision: 2,
+              decisions: [{ key: "d1", text: "Half a cent rounds up." }],
+              decisionsSha256: "d".repeat(64),
+              confirmation: null,
+              confirmUrl: "/bounties/acme/bty_7?tab=price#decisions",
+            }),
+        ],
+      ],
+    }).fetchMock,
+  );
+  part = await sandboxPart();
+  publish = await within(part).findByRole("button", { name: "Publish" });
+  await waitFor(() => expect(publish.hasAttribute("disabled")).toBe(true));
+  expect(await reasonOn(publish)).toBe(
+    "Confirm the spec's decisions on the Price step first: hidden tests are written to them.",
+  );
+});
+
 test("a version taken from a bounty not approved cannot be published, and says why", async () => {
   vi.stubGlobal(
     "fetch",
@@ -5912,6 +6489,50 @@ test("a bounty whose price is a draft, or that has none, or whose scope is not a
   ).toBe(true);
 });
 
+test("a bounty posted with a duediligence spec says pricing takes it as written", async () => {
+  const postedSpec = {
+    source: "duediligence@0.5.1",
+    confirmed: true,
+    current: true,
+    createdAt: "2026-11-15T00:00:00.000Z",
+  };
+  vi.stubGlobal(
+    "fetch",
+    server([
+      [
+        "GET",
+        "/bounties/bty_7",
+        () => json({ bounty: detail({ postedSpec }) }),
+      ],
+    ]).fetchMock,
+  );
+  window.history.replaceState(null, "", "/bounties/acme/bty_7?tab=price");
+  render(<Shell {...inAcme("admin")} />);
+  const page = await screen.findByTestId("bounty-detail");
+  expect((await within(page).findByTestId("posted-spec")).textContent).toBe(
+    "Its spec came from duediligence 0.5.1, decisions confirmed there; pricing sizes it as written and drafts none.",
+  );
+  cleanup();
+
+  // Edited since: drafted from its text, so nothing is said.
+  vi.stubGlobal(
+    "fetch",
+    server([
+      [
+        "GET",
+        "/bounties/bty_7",
+        () =>
+          json({
+            bounty: detail({ postedSpec: { ...postedSpec, current: false } }),
+          }),
+      ],
+    ]).fetchMock,
+  );
+  render(<Shell {...inAcme("admin")} />);
+  await screen.findByTestId("bounty-detail");
+  expect(screen.queryByTestId("posted-spec")).toBeNull();
+});
+
 /** What a held control's tooltip says, once the span around it is hovered. */
 async function reasonOn(control: HTMLElement) {
   await userEvent.hover(control.parentElement!);
@@ -6036,6 +6657,65 @@ test("a sandbox waits on an approved price: its notice says why, and nothing is 
   );
   // Its price is not held: the scope is approved.
   expect(within(page).queryByTestId("price-held")).toBeNull();
+});
+
+test("an approved price with unconfirmed decisions says so on the Sandbox step, with the way to them", async () => {
+  const decisionsOf = (confirmed: boolean) =>
+    [
+      "GET",
+      "/proposals/bpr_7/decisions",
+      () =>
+        json({
+          specRevision: 2,
+          decisions: [{ key: "d1", text: "Half a cent rounds up." }],
+          decisionsSha256: "d".repeat(64),
+          confirmation: confirmed
+            ? { confirmedBy: "user_1", confirmedAt: stamp }
+            : null,
+          confirmUrl: "/bounties/acme/bty_7?tab=price#decisions",
+        }),
+    ] as [string, string, () => Promise<Response>];
+  const approved: [string, string, () => Promise<Response>] = [
+    "GET",
+    "/bounties/bty_7",
+    () => json({ bounty: detail({ ...SCOPED, proposal: approvedSummary }) }),
+  ];
+  const held = server([approved, decisionsOf(false)]);
+  vi.stubGlobal("fetch", held.fetchMock);
+  window.history.replaceState(null, "", "/bounties/acme/bty_7?tab=sandbox");
+  render(<Shell {...inAcme("member")} />);
+  const page = await screen.findByTestId("bounty-detail");
+  // Before any click: what holds it, and the way to the decisions card.
+  const notice = await within(page).findByTestId("sandbox-decisions-held");
+  expect(notice.getAttribute("role")).toBe("status");
+  expect(notice.textContent).toContain(
+    "Confirm the spec's decisions to continue.",
+  );
+  expect(within(page).queryByTestId("sandbox-held")).toBeNull();
+  const link = within(notice).getByRole("link", {
+    name: "Open the decisions",
+  });
+  expect(link.getAttribute("href")).toBe("?tab=price#decisions");
+  await userEvent.click(link);
+  await waitFor(() =>
+    expect(new URLSearchParams(window.location.search).get("tab")).toBe(
+      "price",
+    ),
+  );
+  cleanup();
+
+  // Confirmed: nothing is said.
+  const confirmed = server([approved, decisionsOf(true)]);
+  vi.stubGlobal("fetch", confirmed.fetchMock);
+  window.history.replaceState(null, "", "/bounties/acme/bty_7?tab=sandbox");
+  render(<Shell {...inAcme("member")} />);
+  const again = await screen.findByTestId("bounty-detail");
+  await waitFor(() =>
+    expect(confirmed.calls.some(({ url }) => url.includes("/decisions"))).toBe(
+      true,
+    ),
+  );
+  expect(within(again).queryByTestId("sandbox-decisions-held")).toBeNull();
 });
 
 test("a held step's notice opens the step that holds it, and is an owner's or admin's alone", async () => {

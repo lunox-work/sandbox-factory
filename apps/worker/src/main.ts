@@ -8,6 +8,7 @@ import {
   createBountyProposalStore,
   createBountySpecStore,
   createConnection,
+  createEvaluatorUsageStore,
   createModelUsageStore,
   createObjectStore,
   createSandboxStore,
@@ -30,6 +31,7 @@ import { meteredAgent } from "./agent/metered.js";
 import { createE2BProvider, e2bClient } from "./evaluation/e2b.js";
 import { createLocalProcessProvider } from "./evaluation/local-process.js";
 import { EVALUATION_JOBS_MAX, limitJobs } from "./evaluation/limit.js";
+import { meteredEvaluation } from "./evaluation/metered.js";
 import { jobIsolation, probeIsolation } from "./evaluation/isolation.js";
 import { createTaskReader } from "./tasks.js";
 import { createAbstractionsAdapter } from "./tools/abstractions.js";
@@ -136,6 +138,13 @@ const evaluation =
           jobSlots,
         )
       : null;
+// Every evaluation job a run creates is written to the evaluator ledger
+// against the run's workspace and the run: what the monthly cap counts.
+const evaluatorUsage = createEvaluatorUsageStore(connection.db);
+const evaluationFor = (run: ClaimedAnalysisRun) =>
+  meteredEvaluation(evaluation, run, evaluatorUsage, (code, error) =>
+    console.error(code, run.id, error instanceof Error ? error.message : ""),
+  );
 const objects = createObjectStore({
   bucket: env.S3_BUCKET,
   region: env.S3_REGION,
@@ -181,7 +190,7 @@ function adapterFor(run: ClaimedAnalysisRun): ToolAdapter {
     case "sandbox_build":
       return createSandboxBuildAdapter({
         agent: agentFor(run),
-        provider: evaluation,
+        provider: evaluationFor(run),
       });
     case "scope":
       return createScopeAdapter(agentFor(run), { packageTypes });
@@ -190,12 +199,12 @@ function adapterFor(run: ClaimedAnalysisRun): ToolAdapter {
     case "sandbox_starter":
       return createStarterAdapter({
         agent: agentFor(run),
-        provider: evaluation,
+        provider: evaluationFor(run),
       });
     case "submission_grade":
-      return createSubmissionGradeAdapter({ provider: evaluation });
+      return createSubmissionGradeAdapter({ provider: evaluationFor(run) });
     case "sandbox_import":
-      return createSandboxImportAdapter({ provider: evaluation });
+      return createSandboxImportAdapter({ provider: evaluationFor(run) });
   }
 }
 const stopClaiming = new AbortController();

@@ -124,8 +124,8 @@ string: exported consts are singular, column properties are camelCase.
   `auth` serves 503 on `/api/*`, so a deploy missing the auth environment
   fails closed.
 - **Every credential is one `Principal`** (`principal.ts`): user,
-  organization, scopes and `via`, one of `session`, `token`, `device` and
-  `oauth`. The guard is `credentials.ts`.
+  organization, scopes and `via`, one of `session`, `token`, `device`,
+  `oauth` and `contributor`. The guard is `credentials.ts`.
   - _Session_: cookie or `bearer()` token, no organization, every scope; roles
     decide, as before.
   - _Workspace API token_: `Authorization: Bearer lnx_…`, table `api_token`
@@ -142,15 +142,27 @@ string: exported consts are singular, column properties are camelCase.
     OAuth provider below; resolves like an API token to its grant's
     organization and scopes, acting as the person who consented. Refused
     (401) once expired, its grant revoked, or that person is no longer owner
-    or admin there. Any other bearer is still Better Auth's session.
+    or admin there. A contributor grant (below) is a contributor credential.
+    Any other bearer is still Better Auth's session.
+  - _Contributor token_: `Authorization: Bearer lnxc_…`, table
+    `contributor_token` (SHA-256 only), a person's own, made, listed and
+    revoked from their session (`/api/v1/me/contributor-tokens`,
+    `api-tokens/contributor.ts`; default 90 days). No organization, no role
+    read; holds `contributions:write` (`CONTRIBUTOR_SCOPES`, never in
+    `API_SCOPES`).
 - **Tokens are deny by default.** A bound credential reaches only routes in
   `apps/api/src/public-api/registry.ts`, matched by Hono pattern, holding the
   scope listed there (`API_SCOPES` in `packages/core/src/scopes.ts`). An
   unlisted route is 403 `not_public`; a missing scope 403
-  `insufficient_scope`. A scope never widens a role. A _self_ route
+  `insufficient_scope`. A scope never widens a role. Each entry has an
+  audience: contributor routes (`/contributions…`, `/invites/claim`) admit
+  only contributor credentials (`lnxc_`, contributor grants), else 403
+  `workspace_credential`; every other route only workspace credentials,
+  else 403 `contributor_credential`; the self route either. A _self_ route
   (`scope: null`) needs none and acts only on the presenting credential:
-  `POST /tokens/self/revoke` (`api-tokens/self.ts`) revokes an API token,
-  or an OAuth access token and its refresh token (the grant stands); the
+  `POST /tokens/self/revoke` (`api-tokens/self.ts`) revokes an API or
+  contributor token, or an OAuth access token and its refresh token (the
+  grant stands); the
   CLIs' `logout` calls it. Token management
   (`/orgs/:orgId/tokens`) is session-only, for owners and admins; tokens
   never manage tokens. Each registry entry names its request and response
@@ -177,6 +189,15 @@ string: exported consts are singular, column properties are camelCase.
   client and organization) and every token. Connected apps,
   `GET /orgs/:orgId/oauth/grants` and `POST …/grants/:id/revoke`, are
   session-only, owners and admins; revoking deletes the grant's tokens.
+  **A contributor grant binds none**: an app asking `contributions:write`
+  (`/mcp/contribute`) gets the contributor branch of the consent page (the
+  person's contributions listed), which sends `contributor`
+  (`CONTRIBUTOR_CONSENT`); the consent and tokens keep `reference_id` null
+  (it is a foreign key to `organization`), only the contributor scope is
+  admitted (`CONTRIBUTOR_SCOPE_ONLY`, `…_REQUIRED`), a workspace grant never
+  holds it (`CONTRIBUTOR_SCOPE_FORBIDDEN`), and the guard keeps only
+  `CONTRIBUTOR_SCOPES` from it. The person lists and revokes them at
+  `/api/v1/me/contributor-grants`.
 - **A session says who is asking, not what they may read.** Every store
   method takes the owner first and puts it in the query. Another owner's id
   returns 404, not 403, so ids cannot be enumerated.
@@ -188,7 +209,8 @@ string: exported consts are singular, column properties are camelCase.
 `apps/api/src/mcp/`: a remote MCP server on the SDK's Web-standard
 Streamable HTTP transport, **stateless** (a server and transport per POST,
 no session id, JSON responses; GET and DELETE answer 405). Endpoints are
-toolsets: `POST /mcp` (all), `/mcp/duediligence`, `/mcp/carveout`
+toolsets: `POST /mcp` (every workspace tool), `/mcp/duediligence`,
+`/mcp/carveout`, and `/mcp/contribute` (the contributor tools)
 (`MCP_TOOLSETS` in `packages/core/src/scopes.ts`, shared with the web app's
 MCP page). Each plugin's toolset carries its skill's whole hosted flow, from
 finding or posting a bounty to the verdict. Read tools are GETs; write tools
@@ -202,35 +224,70 @@ error says to sign in again.
 `get_decisions` reads a spec's decisions (its assumptions, keyed `d1…`,
 hashed) and `confirm_link` returns the web page where a person confirms
 them (`POST …/decisions/confirm`, a web session only; one
-`decision_confirmation` per spec revision and hash). `plan_slice`
+`decision_confirmation` per spec revision and hash). `post_bounty` takes
+`spec` (a duediligence `spec.md`, `confirmed: true` once its `Decided:`
+items were confirmed there): sizing prices that spec without a draft and
+its decisions arrive confirmed (`via: "duediligence"`, see Bounties). Until then, approving
+the price, building or generating a version and publishing are 409
+`decisions_unconfirmed`, checked against the spec the version's task froze;
+a build's run names the confirmed decisions by hash (`decisionsSha256`) and
+quotes them to its agents. `plan_slice`
 (`POST …/repositories/:id/slices`), `start_sandbox`, `cut_slice` (a draft
 version from a slice run) and `prepare` (its build, which writes and
 calibrates hidden tests) post work; `get_handout`
-(`GET …/versions/:vid/handout`) reads the public files and duediligence's
-`hiddenSha256` over the hidden suite, never a hidden test's name or body.
+(`GET …/versions/:vid/handout`) reads the public files, the count of hidden
+tests the judge stages (`stagedHiddenTest`) and their commitment
+`hiddenSha256` with `hiddenSha256Version` (2: recorded by the build as
+`hiddenCommitment`, each test at its staged path; 1: a build without one
+keeps its old hash, every `private/` file as `tests/private/…`), never a
+hidden test's name or body;
+`get_project_files` (`…/handout/files`) pages those files' contents so an
+agent can write the project out.
 `submit_patch`/`judge` (`POST …/versions/:vid/submissions`, a published
 version only) store the files canonically (`submittedFilesText`) and queue a
 `submission_grade` run; `get_verdict` reads duediligence's verdict
 (passed, overfit, incomplete, refused), the counts and the failing
 scenarios' keys; `retry` (`POST …/submissions/:sid/retry`) is a failed
-submission's one retry (`submission.retry_of`, unique). A workspace
+submission's one retry (`submission.retry_of`, unique). The same files
+again answer the submission already made and queue its run when it has
+none (a `run_limit` 409 is `retryable`, with `Retry-After`). A grading run
+that ends without a verdict leaves the submission `errored` with a fixed
+`errorCode` (`SUBMISSION_ERRORS`); retried with its own files, or
+`POST …/submissions/:sid/regrade` (`regrade`, `submissions:write`), its run
+is queued again in place, within the run's attempts, without spending the
+retry. `?dryRun=1` on a `files[]` submission or retry answers the preview a
+zipped folder gets, storing nothing. `create_contributor_invite` wraps
+`POST …/versions/:vid/invites`. A workspace
 that will not connect its repository uploads a public, pseudonymised
 carveout hand-off folder instead (`carveout handoff --platform`,
-`POST …/sandboxes/uploads`, `sandboxes:write`, owners and admins, no MCP
-tool: the body is too large and the receipt stays local): checked for the
-workspace's names, credentials and plain paths, stored by hash, and
+`POST …/sandboxes/uploads`, `sandboxes:write`, owners and admins; the MCP
+tool `upload_handoff` sends nothing: it checks the bounty and answers the
+`carveout login` and `carveout handoff … --platform … --bounty …` commands,
+since the folder is renamed on the maintainer's machine by a receipt that
+stays there): refused 422
+`carveout_too_old` (`minimumVersion`) below `UPLOAD_CARVEOUT_MIN_VERSION`
+for `carveout.version` or the record's `carveoutVersion`/`cutId`, checked
+for the workspace's names, credentials and plain paths, stored by hash, and
 imported by a `sandbox_import` run (origin `upload`). A passing
-submission on such a version comes back to the maintainer's machine as
-its changed files (`GET …/sandboxes/submissions/:sid/files`,
-`submissions:write`, never a hidden test) for `carveout patch --from`.
+submission on such a version (or a generated one) comes back to the
+maintainer's machine as its changed files (`get_submission_files`,
+`GET …/sandboxes/submissions/:sid/files`, `submissions:write`, never a
+hidden test) for `carveout patch --from`.
 Approving,
 publishing, confirming decisions and merging back have no tool. A request needs a
-bearer `lnx_` or `lnxat_` token, else 401 with
-`WWW-Authenticate: Bearer resource_metadata="…/.well-known/oauth-protected-resource/mcp…"`.
+bearer `lnx_`, `lnxc_` or `lnxat_` token, else 401 with
+`WWW-Authenticate: Bearer resource_metadata="…/.well-known/oauth-protected-resource/mcp…", scope="…"`.
+`/mcp/contribute` (`CONTRIBUTOR_TOOLS`, `CONTRIBUTOR_MCP_INSTRUCTIONS`)
+asks for `contributions:write` alone and serves `list_contributions`,
+`get_contribution`, `get_project_files`, `preview_submission` (`?dryRun=1`),
+`submit`, `list_my_submissions`, `get_my_submission`, `retry` and
+`regrade` over `/api/v1/contributions…`; a workspace credential's call is
+refused by the guard, as a contributor credential's on any other endpoint.
 **Every tool wraps one public route**, called in-process with the caller's
 own `Authorization`, so the guard, registry, scopes and `requireMembership`
-decide; a refusal is a tool error carrying the API's `code`. Tools take
-the workspace from `GET /me/orgs`. CloudFront routes `/mcp*` and
+decide; a refusal is a tool error carrying the API's `code`. Workspace
+tools take the workspace from `GET /me/orgs`; contributor tools name a
+version from `GET /contributions`. CloudFront routes `/mcp*` and
 `/.well-known/*` to the API uncached (`infra/cloudfront.tf`).
 
 ## Public API conventions
@@ -240,23 +297,26 @@ registry and scopes in [Auth](#auth):
 
 - **Client floor** (`client-version.ts`): `Lunox-Client-Version:
 <client>/<semver>` below its floor in `MIN_CLIENT_VERSIONS`
-  (`duediligence=0.4.0,carveout=0.2.0`; empty, none) is 426
+  (`duediligence=0.4.0,carveout=0.2.0`; empty, none; production's in
+  `infra/ecs.tf`) is 426
   `{ error, code: "client_too_old", minimumVersion }`, before any
   credential is read, on `/api` and `/mcp*`. No header, another client or
   an unparsable version is served.
 - **Idempotency** (`idempotency.ts`, `idempotency_key`): registry entries
   marked `idempotent` (the creates: bounties, webhooks, runs, builds,
   sandbox start and versions) and `POST .../tokens/cli` take
-  `Idempotency-Key` from a `token`, `oauth` or `device` principal. The
+  `Idempotency-Key` from a `token`, `oauth` or `device` principal (not on
+  contributor routes). The
   first 2xx or 4xx answer is kept 24 h per organization, route pattern and
   key, encrypted, and replayed with `Idempotent-Replayed: true`; another
   request under the key is 422 `idempotency_key_reused`, one still running
   409 `idempotency_key_in_use`; a 5xx or 429 frees the key.
 - **Audit log** (`audit/trail.ts`, `audit_entry`): every POST, PUT, PATCH
-  and DELETE by a `token`, `oauth` or `device` principal, refusals
-  included, and a session's token, grant or webhook management: credential,
-  client, person, method, route pattern, resource id, status, request id
-  (`X-Request-Id`). Never a body, secret or query string.
+  and DELETE by a `token`, `oauth`, `device` or `contributor` principal
+  (a contributor's in the workspace whose version it acted on), refusals
+  included, and a session's token, grant, webhook or contributor
+  management: credential, client, person, method, route pattern, resource
+  id, status, request id (`X-Request-Id`). Never a body, secret or query string.
   `GET /orgs/:orgId/audit` is session-only, owners and admins, cursor-paged.
   Kept 180 days (`AUDIT_RETENTION_DAYS`).
 - **Connect links**: `GET .../github/connect` and `.../jira/connect`
@@ -269,13 +329,33 @@ registry and scopes in [Auth](#auth):
   `apps/api/src/quota.ts`): every model reply the platform pays for (a
   worker agent's turn, `apps/worker/src/agent/metered.ts`; each sizing
   attempt, `BountyExecutor`) writes its input, output and cache tokens
-  against the workspace and run. Once a workspace's tokens this calendar
-  month (UTC) reach `MONTHLY_MODEL_TOKENS_PER_ORG` (default 10,000,000), a
+  against the workspace and run. Once fewer than `MODEL_TOKENS_START_FLOOR`
+  (250,000) of the workspace's `MONTHLY_MODEL_TOKENS_PER_ORG` (default
+  60,000,000; rationale in `quota.ts`) are left this calendar month (UTC), a
   new `scope`, `fixtures`, `sandbox_build` or `sandbox_starter` run, or any
   sizing run but a trim, is refused 429
-  `{ error, code: "quota_exceeded", used, limit, resetsAt }` with
-  `Retry-After`. Admission only: a run under way is never stopped.
-  `GET /orgs/:orgId/usage` reports the month as `modelTokens`.
+  `{ error, code: "quota_exceeded", kind: "model_tokens", used, limit, resetsAt }`
+  with `Retry-After`. Never refused on a run's declared budget. Admission
+  only: a run under way is never stopped.
+- **Evaluator cap** (`packages/db/src/evaluator-usage.ts`,
+  `evaluator_usage`): every evaluation job a run creates writes its seconds
+  (rounded up) when torn down (`apps/worker/src/evaluation/metered.ts`).
+  Once the month's seconds reach `MONTHLY_EVALUATOR_SECONDS_PER_ORG`
+  (default 360,000), a new `sandbox_build`, `sandbox_starter`,
+  `submission_grade` or `sandbox_import` run is refused 429
+  `quota_exceeded` with `kind: "evaluator_seconds"`.
+- **Contributor brakes** (`packages/db/src/grading-attempts.ts`,
+  `grading_attempt`): queueing a grading run writes an attempt. An invited
+  contributor's is refused 429 `rate_limited` (with `scope`, `limit`,
+  `retryAt`, `retryable` and `Retry-After`) past 10 attempts per assignment
+  (`GRADING_ATTEMPTS_PER_ASSIGNMENT_DAY`) or
+  `CONTRIBUTOR_GRADING_RUNS_PER_ORG_DAY` (default 200) per workspace in a
+  rolling day; the submission is kept. Dry runs never count. Every
+  `Retry-After` is measured by the app's clock (`AppOptions.now`, set on
+  the context as `clock`).
+- **Usage**: `GET /orgs/:orgId/usage` reports the month as `modelTokens`,
+  `evaluatorSeconds` (with jobs by kind) and `thisMonth` (grading attempts,
+  contributors' share, uploads); the web app's Usage page shows them.
 
 ### Webhooks
 
@@ -290,9 +370,13 @@ integration credentials.
 - **Events** (`WEBHOOK_EVENT_TYPES`, `emitter.ts`): `run.finished` and
   `proposal.priced` (each proposal a sizing run made) and
   `sandbox.build.finished` from the run change channel; `sandbox.published`
-  from the publish route; `writeback.failed` from `BountyDelivery`. A body is
-  `{ id, type, createdAt, organizationId, data }`, `data` ids and states
-  only. An event's id is derived from what it is about and a delivery is
+  from the publish route; `writeback.failed` from `BountyDelivery`;
+  `submission.graded` (verdict and counts, never a hidden name or scenario
+  key) from the run change channel; `submission.merge_opened` from the merge
+  route; `submission.ci` and `submission.merged` from merge-back's CI
+  read-back. A body is `{ id, type, createdAt, organizationId, data }`,
+  `data` ids and states only; the submission events' `data` is checked
+  against `WEBHOOK_EVENT_DATA_SCHEMAS` before it is enqueued. An event's id is derived from what it is about and a delivery is
   unique per endpoint and event, so each API process hearing a change owes
   one delivery. A change lost to a restart is lost, as for pages.
 - **Sender** (`sender.ts`): a loop in the API process claims due deliveries
@@ -391,6 +475,17 @@ with three tabs, `?tab=scope|price|sandbox`. A new one is written at
 `/sandboxes/:workspace/:versionId?path=`, outside the shell. A repository's
 page is `/o/:slug/repositories/:repoId`; settings are `/o/:slug/settings`.
 
+**Contributors** (`features/contributions/`) have pages under no
+workspace: `/invite#<secret>` claims an invite (signed out, the secret
+waits in session storage, never in the sign-in's callback), `/contributions`
+lists their versions (also home for someone in no workspace, and a rail
+item whenever there is one) with "Tokens for your editor or agent"
+(`ContributorTokens.tsx`: `lnxc_` tokens, contributor-signed-in apps, the
+`/mcp/contribute` command), and `/contributions/:vid` holds the download,
+commands, the folder upload with its dry-run preview, and their verdicts.
+A version's Sandbox tab invites and revokes them
+(`features/sandbox/SandboxContributors.tsx`); its submissions name them.
+
 **Developers** (`features/developers/DevelopersPage.tsx`,
 `/o/:slug/developers[/tokens|apps|mcp|reference|usage]`) is the portal for
 owners and admins; members see a notice. `/developers` opens on the
@@ -438,6 +533,28 @@ and its API (`/proposals/...`); the button reads "Price it".
 and any later source enrich it; none is required. A deployment with a model
 and no integrations sizes the bounties written in it and makes their
 sandboxes.
+
+**A spec confirmed in duediligence is posted with its bounty**
+(`bounties/posted-spec.ts`): `POST .../bounties` with `spec: { document,
+format: "duediligence", confirmed, engine? }` reads `document` with
+duediligence's own `scenarios` and `decisionItems` (`duediligence/api`,
+pinned) into a `SpecDraft` (`specFromDocument` in
+`packages/core/src/pricing/posted-spec.ts`: first tag is the kind, untagged
+`happy`, weight `moderate`, decisions are the assumptions word for word);
+one that does not fit `SPEC_LIMITS` is 422 `invalid_spec` with `problems`
+(`path`, `message`). It is kept in `bounty_posted_spec` with the bounty's
+hash (description defaults to the document), and `confirmed_by` is the
+poster when `confirmed` and the credential acts as a person (session, or a
+token or OAuth grant holding `decisions:confirm`; `confirmed_credential`
+keeps which). A token or grant without that scope still posts, its
+decisions unconfirmed, and the 201 says `confirmation: "skipped_scope"`.
+Sizing takes it as the first revision instead of drafting
+(`bounty_spec.source = duediligence@<version>`, its confirmation written
+with it, `via = 'duediligence'`, `credential` as posted; the Price step's
+confirm records `session`) while the bounty still hashes as
+posted; an edited bounty is drafted from its text. A respec is a new
+revision, so its decisions are confirmed again. The bounty's
+`postedSpec` says source, confirmed and `current`.
 
 **A GitHub issue is imported once** (`bounties/github-issue.ts`):
 `POST .../bounties` with `{ source: { githubIssue } }` reads the issue of a
@@ -571,11 +688,15 @@ counts are kept. `gradingTree` in `grading.ts` builds what a submission is run
 on: the version's files with only editable paths and new TypeScript files
 beside them taken, everything else refused with reasons, and `GRADING_COMMANDS`
 run without `npm run`. Its `taskCodeProblems` is an advisory lint, not a
-boundary: a text match refuses the plain ways task code could reach the mocks
-or the test run, and misses others. Grading must isolate task code by process:
-each hidden test runs in its own process from a fresh copy of the version's
-files, its outcome read from outside, with no other hidden test, credential or
-grading state loaded beside task code.
+boundary: a text match refuses the plain ways task code could reach the mocks,
+the test run or `tests/private`, and misses others. Grading isolates task code
+by job (`EvaluationJob.seal`, `apps/worker/src/evaluation/hidden-runner.ts`):
+after the build and before any task code runs, every hidden test leaves the
+tree; each then runs in its own process from a fresh copy of that sealed tree
+holding it alone, read into memory and deleted by the platform's runner before
+task code loads, its outcome read from outside. Residual: what a test hands
+task code (a function's source, a stack's line numbers), `node:inspector` or
+`/proc/self/mem` past the lint, and Vitest hidden tests, which stay on disk.
 
 **Merge-back (gate 3).** Grading a version sliced from a repository runs on
 its snapshot (`snapshotFits`), and a pass is carried back to the
@@ -585,13 +706,57 @@ build manifest's `engines.carveout` names, `ALIASES_V1` without it): kept lines 
 for byte, added lines are renamed and refused unless they map back, and an
 added import of the harness is refused. The result is the grading run's
 `private/merge-patch.json`; one that cannot be carried is the verdict
-`refused`. `POST …/submissions/:sid/merge`, from a signed-in session only,
+`refused`. Before the patch is kept, the run builds and tests the version in
+the repository's names in a second job, both suites (`repositoryTree` in
+`apps/worker/src/tools/submission-grade.ts`, `submission_grade@4`; passes
+only); a pass that fails there stays `passed` with `carryBack: "failed"`
+and no merge patch, and merge answers 409 `carry_failed`. So does one whose
+carry renames a word the contributor wrote by a pair learned from part of a
+text rule (`carriedWordHazards`, `packages/core/src/sandbox/carried-words.ts`;
+checked before the second job), and one whose carry is refused for the
+carry's own limit, not the contributor's (`carryLimitOf`,
+`packages/core/src/sandbox/carry-limits.ts`: a new file at a path the
+repository holds outside the slice, carveout's stranded name after 0.3.1).
+A version's carried tests
+(below) go back to `tests/public/carried/<repository path>` there. Starter and
+upload versions skip it: the platform holds no repository names for them.
+The verdict is written in the run's fenced commit with its artifacts
+(`RunSettlement` in `packages/db/src/analysis-runs.ts`), so a pass never
+stands without its merge patch unless it is `carryBack: "failed"`.
+`POST …/submissions/:sid/merge`, from a signed-in session only (a merge
+patch that does not parse is 502 `merge_patch_invalid`, logged),
 opens one pull request per submission (`submission_merge`) with
 `PullRequestWriter` (`packages/github/src/pull-requests.ts`), whose token
 `mergeBackWriter` narrows to the one repository and
-`MERGE_BACK_PERMISSIONS`. The version page lists submissions
-(`SandboxSubmissions.tsx`). The repository's CI result is not read back
-yet: the App holds no `checks` or `statuses` read.
+`MERGE_BACK_PERMISSIONS`. It is idempotent: the row is claimed `pending`
+on its unique key before GitHub is asked (a concurrent press gets 409
+`merge_in_progress`, a failure releases the claim), the writer reuses a
+`lunox/<sid>` branch whose head has the same tree and an open pull request
+from it, a branch with other changes is 409 `branch_conflict`, and an
+opened one answers 200 with the same body. Before it, the installation's
+permissions are read from GitHub (`apps/api/src/github/merge-back.ts`);
+missing ones are 409 `app_permissions_missing` with `missing` and
+`acceptUrl`, which `GET …/versions/:vid/merge-back` (session only) also
+answers so the version page (`SandboxSubmissions.tsx`) disables the button
+with the reason. The body `{ "when": "ci_passes" }` (also on one already
+open) asks the platform to merge it once the repository's CI passes.
+**CI read-back** (`apps/api/src/github/merge-ci.ts`): each open merge-back
+pull request (`submission_merge.repo_id`, `pull_request_state`, `ci_*`,
+`merged_*`, `merge_error`) is read back on GitHub's `check_suite`,
+`check_run`, `status` and `pull_request` deliveries (`webhook.ts`, after
+the answer) and by the reconcile sweep for rows not read in four minutes
+(fourteen days after opening): its head's check runs and statuses
+(`summarizeCi`: `failing`, `pending`, `passing`, `none` after ten minutes
+with no checks, `unknown` without `checks:read`/`statuses:read`, which
+never block opening and readiness names in `ciMissing`). On `passing` with
+`ci_passes` it is merged squashed at the head read
+(`PullRequestWriter.merge`); never on any other state; GitHub's refusal
+(branch protection, review) is kept in `merge_error` and it stays open.
+Starter and upload versions have no pull request: `GET
+…/submissions/:sid/files` (and `/files/archive`, a `.zip`) answers a pass's
+changed files, a starter's in the version's own names (its project is
+generated already renamed, so nothing is reversed). The pull request
+carries no hidden suite.
 
 **CI judge.** `POST /api/judge` and `GET /api/judge/:id?workspace=`
 (`apps/api/src/judge/`), outside `/api/v1` as the webhook is, take a pull
@@ -603,8 +768,11 @@ is the repository the published version was sliced from, through a healthy
 installation, and any other refusal reads as not found. Grading takes
 `names: "repository"`: the files are carried forward with `forwardChange`
 on the snapshot, only editable files and files new to the repository are
-judged, and nothing is carried back. The job's own exit is the check; no
-`checks` permission is needed.
+judged, and nothing is carried back. The same files again queue a
+submission that has no run (`run_limit` is `retryable`), and grade an
+errored one again in place with its run's params, as `…/submissions/:sid/regrade`
+does (`regrade_spent` once its run has used its attempts). The job's own exit
+is the check; no `checks` permission is needed.
 
 **Nobody picks the repository.** `POST .../sandboxes` takes `bountyId` and cuts
 from the one repository the live proposal says the work touches
@@ -618,7 +786,11 @@ request: sliced when it has a repository, generated when not.
 snapshots the task from the bounty and its approved proposal (`task_not_ready`
 otherwise) and queues a `sandbox_starter` run, whose agent writes a starter in
 the bounty's vocabulary with a name table applied under the inverse proof
-(`packages/core/src/sandbox/starter.ts`). The contract is Node and
+(`packages/core/src/sandbox/starter.ts`). The same agent writes its hidden
+tests, so an accepted set is calibrated by a reference agent that never
+sees them (`calibration.ts`, `hiddenTests: "withheld"`): tests the reference
+fails are dropped, none expected to fail left holds the build, recorded in
+`build-transform.json` as a sliced build's. The contract is Node and
 TypeScript; another runtime is `stack_unsupported`. A generated version's
 transform, build and replay are refused (`generated_version`); it changes by
 generating a new version. Such runs read no snapshot, so
@@ -655,7 +827,8 @@ and only a draft the build's check refuses goes to the pseudonyms agent
 also refuses an import rule whose relative path reaches no generated file
 (`unresolvedImportRules`), and a mock runtime is named by its public path, so
 a renamed cut module keeps its fixtures. Only the
-vocabulary is renamed by rule; other names that say whose code it is are not.
+vocabulary is renamed by rule; what else says whose code it is goes to the
+agent as hints (below).
 Hidden tests are written by an agent beside the first
 baseline (`hidden-tests.ts`), its first prompt quoting the project and a
 test file per scenario drafted by rule (`hiddenTestScaffold`: the path, the
@@ -663,7 +836,18 @@ imports that resolve from it, the steps as comments); it may
 submit the set its last passing run ran without writing it again. A
 reference agent then calibrates that set on duediligence's rule
 (`calibration.ts`, `duediligence/api` pinned exactly): only tests a
-reference implementation passes stand. The build
+reference implementation passes stand. The repository's own tests
+of the slice are carried as read-only public tests under
+`tests/public/carried/` when the slice asked for them
+(`SliceParams.carryTests`, set on new slices; `POST
+…/repositories/:id/slices` and MCP `plan_slice` take it, default true) and
+they pass twice on the untouched project in a job before the baseline
+(`packages/core/src/sandbox/carried-tests.ts`; `node:test` only, imports
+inside the slice or its stubs, `carriedTestLimits`); the rest are dropped
+with why in the build manifest's `carriedTests`, owners only. `POST
+…/sandboxes/:id/slice` `{ "carryTests": false }` builds the draft without
+them, and its later builds keep that (build param `carryTests: false`);
+the web's Slice section has the checkbox and the counts. The build
 reads the slice, the preparation and the repository's names at once, and
 shows its preview while the baseline runs. Agents run
 at the effort their work needs (`AgentEffort`): `medium` where a
@@ -675,7 +859,28 @@ passed as the build's and starter's `vocabulary`; the organization's name,
 handle and repository owner by their distinctive words too, and the scope, or
 multi-word name, of each workspace or private-registry package the slice imports) and blocks `vocabulary_leaked`,
 and for credentials (`packages/core/src/sandbox/secrets.ts`) and blocks
-`secret_found`, naming file, line and rule, never the value.
+`secret_found`, naming file, line and rule, never the value. Every build
+also scans beyond the vocabulary (`packages/core/src/sandbox/disclosure.ts`
+`scanDisclosure`: addresses, URLs and hosts outside a public allow-list, IPs,
+copyright and author lines, issue keys of the workspace's Jira boards
+(`ticketKeys` param), chat links, `TODO(name)`; text the table wrote is
+public). Generated text (title, summary, spec, decisions, stub and
+walkthrough comments) is redacted; copied source is not rewritten, so its
+findings are pseudonyms-agent hints. The draft's `disclosureAcknowledgements`
+(`PUT .../versions/:vid/disclosure-acknowledgements`, owners and admins,
+session only, each entry with `by`/`at`) settle the rest where the gate's
+`acknowledgedAt` says. Sliced (`build`): the list is in the transform (its
+build redacts and hints by it), what it leaves blocks `disclosure_findings`,
+and a change rebuilds. Starter and upload (`publish`): the build reads no
+list, so its files never depend on it, and records every finding (up to
+`DISCLOSURE_FINDINGS_EVALUATED`) in a `pending_acknowledgement` gate that
+keeps the build ready; the PUT moves neither transform nor evidence, and
+publication checks the list then (`gatesOf`, `openDisclosureFindings`). A
+starter's check still refuses any candidate with a finding (the agent
+renames it); an import records them after the baseline. The round trip also refuses a host or
+address text rule that changes words one for one (`carryHazards`):
+merge-back would learn those words; grading withholds the rest
+(`carriedWordHazards`).
 
 **Slice checks.** A slice (`apps/worker/src/tools/slice.ts`) stubs each cut
 module from its declarations, the repository's own packages included,
@@ -694,7 +899,9 @@ sandbox as a Sandbox click would, as the price's approver: made, cut and
 built, hidden tests included, so a later click finds it there
 (`bounty_has_sandbox`, which the page reads as done). What the cut would
 refuse is refused before the sandbox is made (`cutRefusal`), so none is left
-without a version. A held step, a bounty
+without a version; so are unconfirmed decisions (`decisionsRefusal`, also on
+`POST …/sandboxes/start`), held with nothing made until a person confirms,
+which prompts a pass. A held step, a bounty
 touching no single repository, and a wide slice nobody approved are left for
 a person, and not read again by a timer pass until a prompt or a change; a
 build refused at the cap becomes a pending cut. Organizations are worked on
@@ -705,18 +912,93 @@ table a build still takes. `workspace_setting.prepare_sandboxes` turns it off (`
 
 **Publishing.** `POST .../sandboxes/versions/:vid/publish` (owners and
 admins) freezes the version and makes it `current_version_id` with status
-`published`. It needs a passing build (`not_ready`) and stands on the approval
-its task was taken from (`price_not_approved`). The body names `expiresAt`
-(`expiry_past`); an expired publication no longer holds the approval.
-`POST .../sandboxes/:id/unpublish` returns to `draft`. No public repository
-is pushed and the round-trip and disclosure gates `freezeReadiness` names are
-not run.
+`published`. It needs a passing build (`not_ready`), stands on the approval
+its task was taken from (`price_not_approved`) and on its spec's confirmed
+decisions (`decisions_unconfirmed`), and on the publication gates its build
+recorded (`build-manifest.json` `gates`, read by `gatesOf` into
+`freezeReadiness`): a failed no-change round trip is `round_trip_failed`
+(with `problems`), disclosure findings `disclosure_failed` (with the
+unacknowledged `findings`; for a `pending_acknowledgement` gate, against the
+draft's list now, with `pendingAcknowledgement` and `unrecorded`), evidence of other
+inputs `build_evidence_stale`, a rebuild meanwhile `version_changed`. A
+blocked build (`ready: false`) answers its failing gate, else `not_ready`
+with its `blockers`, before `build_evidence_stale`. A first
+publication records the build run as `roundTripRunId` and `disclosureRunId`.
+A draft built before the gates is `gates_unrecorded` until built again; a
+version published before them republishes `grandfathered` (the response's
+`gates`). The body names `expiresAt` (`expiry_past`); an expired publication
+no longer holds the approval. `POST .../sandboxes/:id/unpublish` returns to
+`draft`. No public repository is pushed.
 
 **Files.** `GET .../sandboxes/versions/:vid/files` lists what the build run
 wrote (`project/`, hidden tests under `private/`, the build's records) and
 `.../files/content?path=` answers one as text, matched against the run's
 artifact rows, never joined into a key; over `SANDBOX_FILE_TEXT_MAX_BYTES` or
 not UTF-8 is `text: null`. Owners and admins only.
+
+**Project download.** `GET …/versions/:vid/archive` (and HEAD) answers the
+handout's public files as one `.zip` under `<sandboxId>-v<n>/`, with
+`Content-Disposition`, a strong `ETag` (`projectSha256`) and
+`private, no-cache`; `GET …/versions/:vid/handout/files?cursor=&maxBytes=`
+pages the same files with contents (UTF-8 or base64) for agents
+(`get_project_files`). Both build from the handout's list only and check
+each file's size and sha256 before serving: a mismatch is 502
+`project_mismatch`, never a partial body; over `PROJECT_ARCHIVE_MAX_BYTES`
+is 409 `project_too_large`. The handout's access (owners and admins; drafts
+too), or an invited contributor's own (below); the answers
+(`apps/api/src/sandbox/handout.ts`, builder `project.ts`, writer `zip.ts`)
+take no access decision.
+
+**Contributors.** Before a marketplace, an owner or admin invites one
+person outside the workspace to the current published version
+(`apps/api/src/sandbox/contributors.ts`, store
+`packages/db/src/contributors.ts`, tables `contributor_invite`,
+`contributor_assignment`). `POST …/versions/:vid/invites`
+(`sandboxes:write`; `not_published` otherwise) answers the `lnxinv_` secret
+once, in `claimUrl` (`<app>/invite#<secret>`; only its SHA-256 is kept),
+default 14 days, 1 claim; `GET …/versions/:vid/contributors`,
+`POST …/invites/:id/revoke`, `POST …/contributors/:id/revoke` (session
+writes audited). The person signs in and `POST /api/v1/invites/claim`
+`{ token }` (session or contributor credential, 10 a person per 15 min per process; revoked,
+expired, spent, unknown, or the version no longer live: one 404
+`invite_unavailable`; a member: 409 `already_member`) makes an assignment,
+never a membership. `/api/v1/contributions[/:vid[/handout|/archive|/handout/files|/submissions[/:sid[/retry|/regrade]]]]`
+sit outside `requireMembership`, in the registry with the contributor
+audience (a session or a contributor credential, `contributions:write`):
+each reads the caller's live assignment to `:vid` (owner = the
+assignment's), else 404, so a revoke ends access at once. A contributor
+reads the version's listing from its `sandbox-task.json` (title, summary
+and tags redacted by every build), the handout (no build run) and its own
+submissions (no run, carry-back, merge or contributor field); one
+first submission per assignment (`already_submitted`), its one retry theirs
+alone (an owner's retry is 409 `contributor_submission`), new work only
+while the version is live (`not_open`). Owners' submission views carry
+`contributor`. The same files are the same submission per person
+(`submission_version_patch_unique`, nulls not distinct). Editors, agents
+and CLIs act as a contributor with an `lnxc_` token or a contributor OAuth
+grant ([Auth](#auth)); MCP at `/mcp/contribute`.
+
+**Folder submissions.** `POST …/submissions/zip` and
+`…/submissions/:sid/retry/zip`, a contributor's (session or contributor
+credential; a binary body in the OpenAPI document) and an owner's (session
+only), take the zipped project folder as the body (`application/zip`, at
+most `SUBMISSION_ZIP_MAX_BYTES`; `apps/api/src/sandbox/folder-upload.ts`,
+reader `unzip.ts`) and compare it with the handout's hashes
+(`folderSubmission`, `packages/core/src/sandbox/folder.ts`): changed
+editable files and new files grading takes are the submission; guide and
+editor files (`isGuidePath`: guides, `.vscode/`, `.idea/`, the extension's
+`.lunox/`) are ignored; `node_modules/`, `.git/`, OS files and build output
+(`isBuildOutput`, carveout's runner records `RUNNER_RECORDS` included) are
+skipped unread. Anything grading would refuse,
+a changed read-only file, or a deleted editable file (the merge patch has
+no deletions) is 422 `folder_refused` with `refused` by path before a
+submission exists; `?dryRun=1` answers `{ preview }` and stores nothing.
+Also `400 invalid_zip`/`unsafe_zip`, `413 zip_too_large`/`entry_too_large`,
+`422 not_the_project`/`wrong_version`/`no_changes`/`too_many_entries`.
+`files[]` submissions drop guide and editor files and build output the same
+way before storing (`withoutGuideFiles`, `withoutBuildOutput`), exactly as
+their `?dryRun=1` preview reports (`no_task_files` when nothing is left), so
+no grading rule changed.
 
 **Provenance.** A version's private source row records the slice's manifest
 and contract hashes, the transform (alias rules, dependency choices, hidden
@@ -741,7 +1023,11 @@ default to 0, 1, 2 and 4 points, four per half step; trimming never goes below
 the base and XL is the cap. A covered scenario (`weight.ts`) is behaviour
 another scenario's code already has, so an exhaustive draft can still be XS.
 Manual resize sets a new base at step zero; respec keeps base and settings
-without a sizing call; reprice starts fresh on the current card.
+without a sizing call; reprice starts fresh on the current card. Each resize
+appends a `proposal_size_label` row in its transaction (size, price and setter
+before, model and rubric sizes, the chosen size, who and when;
+`packages/db/src/proposal-size-labels.ts`): human labels for calibration, read
+on the proposal detail only (`sizeLabels`).
 
 **The rubric sizes a proposal from its draft, and again once its code is
 measured** (`packages/core/src/pricing/rubric.ts`, `rubric-v4`): scenarios by weight plus
@@ -753,10 +1039,35 @@ touches, all of them or none (`unavailable`). Sizing
 stores the assessment (`bounty_proposal.rubric`); when the profiler settles,
 `RubricPricer` (`apps/api/src/pricing/rubric.ts`) re-scores and sets
 `sized_by = 'rubric'` on a proposed proposal, unless a reviewer sized it or
-the rubric is two whole sizes away (`rubricNeedsReview`). An approved proposal
-is not touched. `POST .../proposals/:id/rubric` restores the rubric's size over
+the rubric is two whole sizes away (`rubricNeedsReview`).
+`POST .../proposals/:id/rubric` restores the rubric's size over
 a reviewer's resize. Contention is retried once per profile, then
 `bounty_rubric_contended`.
+
+**Read a band or points change against the invented corpus**
+(`packages/core/test/pricing-corpus/`): 28 made-up tickets, each with a spec,
+profile facts and an expected band that is judgement, not truth. `npm run
+pricing-corpus --workspace sandbox-factory` prints expected against actual,
+spec-only and code-informed; `PRICING_CORPUS_BANDS="XS:0,XS+:4,S:7,..."` tries
+candidate edges on the same points. The core test asserts only each ticket's
+gross `bounds` and reports the disagreement summary.
+
+**An approval is of the price that saw the code**
+(`apps/api/src/pricing/approve-proposal.ts`). `POST .../proposals/:id/approve`
+names `expectedRevision` and, from the web, `expectedPrice`: a price moved
+since is 409 `price_changed` (`previous`, `current`); a moved revision at the
+same price, or with no price named, is `proposal_changed`. While any of the
+proposal's newest profiles is in flight it is 409 `profile_pending` (each
+profile's repository and status); profiles settled under a still-pending
+rubric are re-scored first (`rescore`). A spec with decisions (its
+assumptions) is approved only once a person confirmed exactly those (on
+the Price step, or by posting the spec confirmed from duediligence): else 409
+`decisions_unconfirmed` with `confirmUrl` (`apps/api/src/pricing/decisions.ts`,
+no waiver). A failed or absent profile approves the
+spec's price, and the proposal and the response say `pricedFrom: "spec"`
+(`pricedFromOf`). An approved price is frozen: nothing re-scores it (the
+`RubricPricer` and respec skip it, a profile settled later for a sandbox's
+slice included); a re-price unapproves it, and publishing needs a new approval.
 
 ## Jira
 
@@ -859,7 +1170,9 @@ then `abstractions` and `data_model`, then a `scope` run naming the ones that
 succeeded, then the slice the scope recorded, then `buildComplexityProfile`
 (`packages/core/src/pricing/profile.ts`): `ready`, or `awaiting_approval`
 with the profile when the slice is wider than `AUTO_SLICE_LIMITS`, which
-the rubric reads as measured. The profile is evidence, not a price. A step at the organization's analysis cap waits for the next sweep;
+the rubric reads as measured. A scope or slice found already done (another
+bounty's) is taken on in the same step, so a reused slice settles the
+profile without waiting for a sweep. The profile is evidence, not a price. A step at the organization's analysis cap waits for the next sweep;
 the cap counts agent runs and builds apart. A failed run fails the profile for
 that revision; a re-price asks again.
 
@@ -872,11 +1185,21 @@ views (`packages/db/src/schema/flows.ts`), an operator's SQL prompt.
 
 ## The extension
 
-Reads `sandbox-task.json` from a clone for display and runs the fixed command
-table from `packages/core` in VS Code terminals, only when invoked, in a
-trusted workspace. The API address is a user or application setting; the
-stored token is keyed by origin. Sign-in is not built: the client's
-`getToken` callback is the seam.
+`apps/extension` (CommonJS bundle; only `extension.ts` imports `vscode`,
+logic in `commands.ts`, `contribute.ts`, `workspace.ts`, `zip.ts`). Platform
+address: user/application setting `sandboxFactory.platformUrl` (default
+`https://platform.lunox.work`; workspace values ignored). Commands, category
+**Lunox**:
+
+| Command                                                                                     | Does                                                                                                                                                                                            |
+| ------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Sign in with a contributor token / Sign out                                                 | Pastes an `lnxc_` token (link to `/contributions#contributor-tokens`), checked with `GET /contributions`, kept in `SecretStorage` keyed by origin; never in settings or disk                    |
+| Open contribution                                                                           | Lists contributions, downloads `…/archive`, unpacks it (zip-slip and symlink safe; non-empty folder only on confirm), writes `.lunox/contribution.json` (version, root, platform URL), opens it |
+| Preview submission / Submit                                                                 | Zips the folder (skips `node_modules/`, `.git/`, `.lunox/`, build output), `…/submissions/zip?dryRun=1`, shows files/ignored/refused, confirms, then submits or the one retry                   |
+| Grade again / Refresh submission status / Show submission                                   | Status bar polls `…/submissions/:sid` (grading, passed, `overfit: s3`, refused, errored with Grade again → `…/regrade`)                                                                         |
+| Open project folder, Show task, Install dependencies, Run the walkthrough, Run public tests | Reads `sandbox-task.json` for display; runs core's fixed command table in a terminal, in a trusted workspace only                                                                               |
+
+Device-flow sign-in is not built.
 
 ## Migration notes
 

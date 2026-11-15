@@ -1,17 +1,19 @@
 import { repositoriesForWrite } from "./snapshot-write.js";
 export { snapshotForWrite } from "./snapshot-write.js";
 import { insertProfileIntents } from "./profile-intent.js";
-import type {
-  BountyComplexity,
-  BountySizingResult,
-  CategoryMatch,
-  ContextVersions,
-  ModelComplexity,
-  RateCardSnapshot,
-  PricedComplexity,
-  RubricAssessment,
-  SizingConfidence,
-  StepResult,
+import {
+  pricedFromOf,
+  type BountyComplexity,
+  type BountySizingResult,
+  type CategoryMatch,
+  type ContextVersions,
+  type ModelComplexity,
+  type PricedFrom,
+  type RateCardSnapshot,
+  type PricedComplexity,
+  type RubricAssessment,
+  type SizingConfidence,
+  type StepResult,
 } from "sandbox-factory";
 import { and, desc, eq, gt, inArray, or, sql } from "drizzle-orm";
 
@@ -28,11 +30,13 @@ import {
 } from "./errors.js";
 import { jiraWriteGranted, splitScopes } from "./jira-connections.js";
 import { generateId } from "./mapping.js";
+import { sizeLabelValues } from "./proposal-size-labels.js";
 import { approvalVersion, withdrawalVersion } from "./proposal-version.js";
 import {
   bountyProposal,
   bountyRun,
   bountyWriteback,
+  proposalSizeLabel,
   jiraBoard,
   jiraConnection,
   jiraIssue,
@@ -392,6 +396,8 @@ export interface StoredBountyProposal {
   readonly step: StepResult | null;
   /** The pricing rubric's assessment, or null without a spec. */
   readonly rubric: RubricAssessment | null;
+  /** What the price saw (`pricedFromOf(rubric)`); every read sets it. */
+  readonly pricedFrom?: PricedFrom;
   /**
    * The repositories the work touches, each at the snapshot the spec was
    * drafted beside; empty when it touches none.
@@ -463,6 +469,7 @@ function toDto(row: BountyProposalRow, name: BountyName): StoredBountyProposal {
     specRevision: row.specRevision,
     step: row.step ?? null,
     rubric: row.rubric ?? null,
+    pricedFrom: pricedFromOf(row.rubric ?? null),
     repositories: row.repositories ?? [],
     contextVersions: {
       jira: row.jiraContextVersion ?? null,
@@ -1040,30 +1047,50 @@ export function createBountyProposalStore(db: Database): BountyProposalStore {
       step = null,
     ) {
       const now = new Date();
-      const rows = (await db
-        .update(bountyProposal)
-        .set({
-          complexity,
-          step,
-          stepVersion: step?.stepVersion ?? null,
-          sizedBy: "reviewer",
-          resizedBy,
-          resizedAt: now,
-          amountMinor,
-          currency,
-          revision: expectedRevision + 1,
-          updatedAt: now,
-        })
-        .where(
-          and(
-            eq(bountyProposal.organizationId, organizationId),
-            eq(bountyProposal.id, proposalId),
-            eq(bountyProposal.status, "proposed"),
-            eq(bountyProposal.revision, expectedRevision),
-          ),
-        )
-        .returning()) as BountyProposalRow[];
-      const updated = rows[0];
+      const proposed = and(
+        eq(bountyProposal.organizationId, organizationId),
+        eq(bountyProposal.id, proposalId),
+        eq(bountyProposal.status, "proposed"),
+        eq(bountyProposal.revision, expectedRevision),
+      );
+      // The size it had, locked, is the label's "before": kept with the
+      // resize or not at all (`proposal_size_label`).
+      const updated = await db.transaction(async (tx) => {
+        const [before] = (await tx
+          .select()
+          .from(bountyProposal)
+          .where(proposed)
+          .limit(1)
+          .for("update")) as BountyProposalRow[];
+        if (before === undefined) return undefined;
+        const [row] = (await tx
+          .update(bountyProposal)
+          .set({
+            complexity,
+            step,
+            stepVersion: step?.stepVersion ?? null,
+            sizedBy: "reviewer",
+            resizedBy,
+            resizedAt: now,
+            amountMinor,
+            currency,
+            revision: expectedRevision + 1,
+            updatedAt: now,
+          })
+          .where(proposed)
+          .returning()) as BountyProposalRow[];
+        if (row === undefined) return undefined;
+        await tx.insert(proposalSizeLabel).values(
+          sizeLabelValues(before, {
+            complexity,
+            amountMinor,
+            currency,
+            resizedBy,
+            resizedAt: now,
+          }),
+        );
+        return row;
+      });
       if (updated === undefined) {
         return mutationMiss(db, organizationId, proposalId, expectedRevision);
       }

@@ -39,6 +39,13 @@ import {
   type TaskDescriptor,
 } from "./descriptor.js";
 import {
+  AGENTS_GUIDE_PATH,
+  contributorGuideFiles,
+  TASK_GUIDE_PATH,
+  VSCODE_DIR,
+  type GuidePaths,
+} from "./guide.js";
+import {
   fixtureMockPath,
   fixtureProblems,
   scenarioProblems,
@@ -57,10 +64,24 @@ export const HARNESS_DIR = "sandbox";
 export const MOCKS_DIR = "mocks";
 export const PUBLIC_TESTS_DIR = "tests/public";
 export const PRIVATE_TESTS_DIR = "tests/private";
+/** The repository's own tests a build carries (`carried-tests.ts`), read-only public tests. */
+export const CARRIED_TESTS_DIR = `${PUBLIC_TESTS_DIR}/carried`;
+/** A test `npm test`'s glob runs once built (`*.test.js`): `.test.ts` or `.test.tsx`. */
+export const CARRIED_TEST_FILE = /\.test\.tsx?$/;
 export const MOCK_RUNTIME_PATH = `${HARNESS_DIR}/mock.js`;
 export const AMBIENT_PATH = `${HARNESS_DIR}/ambient.d.ts`;
 export const RUN_PATH = `${HARNESS_DIR}/run.ts`;
 export const ENV_FILE = "sandbox.env";
+/** Where the contributor guide (`guide.ts`) finds what it names. */
+export const GUIDE_PATHS: GuidePaths = {
+  harnessDir: HARNESS_DIR,
+  mocksDir: MOCKS_DIR,
+  publicTestsDir: PUBLIC_TESTS_DIR,
+  envFile: ENV_FILE,
+  runPath: RUN_PATH,
+  mockRuntimePath: MOCK_RUNTIME_PATH,
+  ambientPath: AMBIENT_PATH,
+};
 
 export interface ProjectVersion {
   readonly sandboxId: string;
@@ -96,6 +117,8 @@ export interface ProjectInput {
   readonly sources: readonly ProjectSource[];
   readonly stubs: readonly ProjectStub[];
   readonly spec: SpecDraft | null;
+  /** The confirmed decisions `TASK.md` carries (`disclosableDecisions`). */
+  readonly decisions?: readonly string[];
   readonly dependencies: readonly ResolvedDependency[];
   readonly acceptanceTests: readonly AcceptanceTest[];
   /** Bare specifiers that need no rewrite: Node's modules and packages. */
@@ -115,6 +138,13 @@ export interface ProjectInput {
    * keeps its own: the registry knows it by no other.
    */
   readonly publicNames?: PublicNames;
+  /**
+   * The repository's own tests the build carried (`carriedTestFile`): at
+   * their project paths under `tests/public/carried/`, renamed and with
+   * their imports pointed at the project's files, read-only public tests
+   * like the generated ones.
+   */
+  readonly carriedTests?: readonly { path: string; text: string }[];
 }
 
 export interface PublicNames {
@@ -148,7 +178,7 @@ const DESTRUCTURED_KEY =
  * the name changes, the read around it is kept as written. A destructured
  * shorthand keeps its binding: `{ A }` becomes `{ B: A }`.
  */
-function renameEnvironmentReads(
+export function renameEnvironmentReads(
   text: string,
   renamed: ReadonlyMap<string, string>,
 ): string {
@@ -223,6 +253,7 @@ export interface ProjectBlocker {
     | "starter_invalid"
     | "vocabulary_leaked"
     | "secret_found"
+    | "disclosure_findings"
     | "baseline_failed";
   readonly file: string | null;
   readonly detail: string;
@@ -286,6 +317,45 @@ const NAMED_IMPORT =
 function onCommentLine(text: string, offset: number): boolean {
   const start = text.lastIndexOf("\n", offset - 1) + 1;
   return /^\s*(\/\/|\/\*|\*)/.test(text.slice(start, offset));
+}
+
+/**
+ * The module specifiers a script names (`import`, `export … from`,
+ * `import()`, `require()`), in order, commented-out ones left out: the
+ * imports `replaceScriptImports` walks, one for one.
+ */
+export function scriptImports(text: string): string[] {
+  const found: string[] = [];
+  for (const match of text.matchAll(IMPORT_LITERAL))
+    if (!onCommentLine(text, match.index)) found.push(match[3] ?? "");
+  return found;
+}
+
+/**
+ * `text` with the specifier of each import `scriptImports` lists replaced
+ * by `to(index, specifier)`, everything around it kept as written.
+ */
+export function replaceScriptImports(
+  text: string,
+  to: (index: number, specifier: string) => string,
+): string {
+  let index = 0;
+  return text.replace(
+    IMPORT_LITERAL,
+    (
+      whole,
+      prefix: string,
+      quote: string,
+      specifier: string,
+      offset: number,
+      all: string,
+    ) => {
+      if (onCommentLine(all, offset)) return whole;
+      const replaced = to(index, specifier);
+      index += 1;
+      return `${prefix}${quote}${replaced}${quote}`;
+    },
+  );
 }
 
 export function dirnameOf(path: string): string {
@@ -368,7 +438,7 @@ export function declarationPath(path: string): string {
 }
 
 /** `../lib/x.js` from `sandbox` is `lib/x.js`; null when it leaves the root. */
-function joinRelative(dir: string, specifier: string): string | null {
+export function joinRelative(dir: string, specifier: string): string | null {
   const parts = dir.split("/").filter(Boolean);
   for (const part of specifier.split("/")) {
     if (part === "" || part === ".") continue;
@@ -381,7 +451,7 @@ function joinRelative(dir: string, specifier: string): string | null {
 }
 
 /** The sources a `.js`-style specifier names under NodeNext resolution. */
-function sourceCandidates(path: string): string[] {
+export function sourceCandidates(path: string): string[] {
   if (path.endsWith(".mjs")) return [`${path.slice(0, -4)}.mts`];
   if (path.endsWith(".cjs")) return [`${path.slice(0, -4)}.cts`];
   if (path.endsWith(".js")) {
@@ -708,7 +778,11 @@ const SAFE_COMPILER_KEYS: readonly string[] = [
 
 /**
  * The compiler options a generated project builds with: the source's safe
- * options carried over, Node's ESM resolution, no emitted declarations.
+ * options carried over, Node's ESM resolution, no emitted declarations, and
+ * a source map beside each emitted `.js` so a debugger binds breakpoints in
+ * the `.ts`. Output stays beside its source: the hidden runner, the grading
+ * commands and the public test glob all name the emitted `.js` there, and
+ * a hidden test's map is withheld with it (`hiddenTestFiles`).
  */
 export function projectCompilerOptions(
   options: Readonly<Record<string, unknown>> | undefined,
@@ -725,7 +799,7 @@ export function projectCompilerOptions(
     moduleResolution: "NodeNext",
     rootDir: ".",
     declaration: false,
-    sourceMap: false,
+    sourceMap: true,
     noEmitOnError: true,
     skipLibCheck: true,
     types: [],
@@ -862,7 +936,19 @@ function runScript(entries: readonly string[]): string {
   return `${lines.join("\n")}\n`;
 }
 
-function readme(input: {
+/** The README's pointer to the contributor guide (`guide.ts`), a slice's and a starter's alike. */
+export const README_GUIDE = `Start with [\`${TASK_GUIDE_PATH}\`](${TASK_GUIDE_PATH}): the task, its scenarios, how it is accepted and how to submit it: zip this folder and upload it on your contribution page, or run **Lunox: Submit** in VS Code. [\`${AGENTS_GUIDE_PATH}\`](${AGENTS_GUIDE_PATH}) holds the commands and rules, for you or a coding agent. In VS Code, \`${VSCODE_DIR}/\` hides the build's output beside its source and debugs the walkthrough and the tests with source maps.`;
+/** How the README runs one public test file, in a layout's paths. */
+export function readmeOneTest(
+  paths: Pick<GuidePaths, "envFile" | "publicTestsDir">,
+): string {
+  return `Run one file with \`${SANDBOX_COMMANDS.build} && node --env-file=${paths.envFile} --test ${paths.publicTestsDir}/<name>.test.js\`.`;
+}
+/** How the README runs one public test file. */
+export const README_ONE_TEST = readmeOneTest(GUIDE_PATHS);
+
+/** What a sliced project's README lists. */
+export interface ProjectReadmeInput {
   version: ProjectVersion;
   toolchain: Toolchain;
   editable: readonly string[];
@@ -874,7 +960,17 @@ function readme(input: {
   publicTests: readonly string[];
   fixtures: number;
   walkthrough: boolean;
-}): string {
+}
+
+/**
+ * A sliced project's `README.md`. Paths are the platform's layout unless
+ * given: the worker's carveout engine (`project-generator.ts`) writes the
+ * same README over carveout's harness.
+ */
+export function projectReadme(
+  input: ProjectReadmeInput,
+  paths: GuidePaths = GUIDE_PATHS,
+): string {
   const list = (items: readonly string[], empty: string) =>
     items.length === 0 ? [empty] : items.map((item) => `- \`${item}\``);
   return `${[
@@ -883,6 +979,8 @@ function readme(input: {
     input.version.specSummary,
     "",
     `Task \`${input.version.versionId}\` (version ${input.version.version}, size ${input.version.complexity}).`,
+    "",
+    README_GUIDE,
     "",
     "## Run it",
     "",
@@ -903,7 +1001,7 @@ function readme(input: {
     "",
     "## Mocks",
     "",
-    `Modules outside the task are declared by \`.d.ts\` stubs beside generated \`.js\` runtimes whose values are recording mocks (\`${MOCK_RUNTIME_PATH}\`). Service packages are replaced by mock packages under \`${MOCKS_DIR}/\`. A mock answers any property or call with another mock and records the call; \`mockImplementation(path, fn)\` installs behaviour and \`recordedCalls()\` reads it back. Fixture environment values live in \`${ENV_FILE}\`.`,
+    `Modules outside the task are declared by \`.d.ts\` stubs beside generated \`.js\` runtimes whose values are recording mocks (\`${paths.mockRuntimePath}\`). Service packages are replaced by mock packages under \`${paths.mocksDir}/\`. A mock answers any property or call with another mock and records the call; \`mockImplementation(path, fn)\` installs behaviour and \`recordedCalls()\` reads it back. Fixture environment values live in \`${paths.envFile}\`.`,
     "",
     ...(input.fixtures === 0
       ? []
@@ -913,7 +1011,7 @@ function readme(input: {
         ]),
     ...(input.walkthrough
       ? [
-          `\`${SANDBOX_COMMANDS.dev}\` runs \`${RUN_PATH}\`, a walkthrough of the task's main scenario.`,
+          `\`${SANDBOX_COMMANDS.dev}\` runs \`${paths.runPath}\`, a walkthrough of the task's main scenario.`,
           "",
         ]
       : []),
@@ -948,7 +1046,9 @@ function readme(input: {
     "",
     ...list(input.publicTests, "None."),
     "",
-    "Local results help you iterate. Acceptance is decided by the platform's own run of your pushed commit, including tests that are not in this repository.",
+    paths === GUIDE_PATHS ? README_ONE_TEST : readmeOneTest(paths),
+    "",
+    "Local results help you iterate. Acceptance is decided by the platform's own run of the files you submit, including tests that are not in this project.",
   ].join("\n")}\n`;
 }
 
@@ -1281,6 +1381,29 @@ export function generateProject(input: ProjectInput): GeneratedProject {
     class: "test-public",
     public: true,
   });
+  for (const test of [...(input.carriedTests ?? [])].sort((a, b) =>
+    compare(a.path, b.path),
+  )) {
+    if (
+      !test.path.startsWith(`${CARRIED_TESTS_DIR}/`) ||
+      !CARRIED_TEST_FILE.test(test.path) ||
+      test.path.split("/").some((part) => part === "" || part === "..")
+    ) {
+      blockers.push({
+        code: "test_path_invalid",
+        file: test.path,
+        detail: `Carried tests live under ${CARRIED_TESTS_DIR}/ and end in .test.ts or .test.tsx.`,
+      });
+      continue;
+    }
+    publicTests.push(test.path);
+    add({
+      path: test.path,
+      text: test.text,
+      class: "test-public",
+      public: true,
+    });
+  }
   for (const test of input.acceptanceTests) {
     if (
       !test.path.startsWith(`${PRIVATE_TESTS_DIR}/`) ||
@@ -1388,11 +1511,22 @@ export function generateProject(input: ProjectInput): GeneratedProject {
     .sort(compare);
   add({
     path: ".gitignore",
-    text: `${["node_modules/", ...emitted].join("\n")}\n`,
+    text: `${["node_modules/", ...emitted, "*.map"].join("\n")}\n`,
     class: "config",
     public: true,
   });
   const editable = input.sources.map((source) => source.path).sort(compare);
+  for (const file of contributorGuideFiles({
+    version: input.version,
+    spec: input.spec,
+    ...(input.decisions === undefined ? {} : { decisions: input.decisions }),
+    editable,
+    publicTests,
+    mocks: true,
+    jsx: input.sources.some((source) => source.path.endsWith(".tsx")),
+    paths: GUIDE_PATHS,
+  }))
+    add(file);
   const descriptor: TaskDescriptor = {
     schemaVersion: TASK_DESCRIPTOR_SCHEMA_VERSION,
     sandboxId: input.version.sandboxId,
@@ -1422,7 +1556,7 @@ export function generateProject(input: ProjectInput): GeneratedProject {
   });
   add({
     path: "README.md",
-    text: readme({
+    text: projectReadme({
       version: input.version,
       toolchain,
       editable,

@@ -124,6 +124,9 @@ export interface SpecDraft {
  * `scenarios`, the cap on a stored spec, on purpose: a model asked for an
  * exhaustive list will produce thirty, and a first pass that long is noise,
  * while a spec a reviewer has expanded is allowed to grow past it.
+ * `draftAssumptions` and `assumptions` are the same pair for decisions: a
+ * spec a person wrote and confirmed elsewhere (`posted-spec.ts`) may have
+ * decided more than a model's first pass is asked to.
  */
 export const SPEC_LIMITS = {
   featureChars: 120,
@@ -135,7 +138,8 @@ export const SPEC_LIMITS = {
   draftScenarios: 12,
   scenarios: 40,
   openQuestions: 8,
-  assumptions: 8,
+  draftAssumptions: 8,
+  assumptions: 16,
 } as const;
 
 /**

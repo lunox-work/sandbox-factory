@@ -14,6 +14,7 @@ export const SCOPE_SUMMARY: Record<ApiScope, string> = {
   "bounties:write": "Write, edit and approve bounties",
   "pricing:write": "Size and price bounties (spends model calls)",
   "specs:write": "Change specs",
+  "decisions:confirm": "Confirm a posted spec's decisions as you",
   "sandboxes:write": "Analyse repositories and build sandboxes",
   "submissions:write": "Submit work",
   judge: "Judge submissions",

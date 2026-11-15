@@ -615,13 +615,13 @@ test("worker launch config is optional locally and complete in production", () =
   assert.throws(() => parseEnv({ ...required, MAX_ACTIVE_RUNS_PER_ORG: "0" }));
 });
 
-test("the monthly model-token quota defaults to ten million and parses like the other limits", () => {
-  assert.equal(parseEnv(required).MONTHLY_MODEL_TOKENS_PER_ORG, 10_000_000);
+test("the monthly model-token quota defaults to sixty million and parses like the other limits", () => {
+  assert.equal(parseEnv(required).MONTHLY_MODEL_TOKENS_PER_ORG, 60_000_000);
   // Compose passes an unset variable as "", which is the default too.
   assert.equal(
     parseEnv({ ...required, MONTHLY_MODEL_TOKENS_PER_ORG: "" })
       .MONTHLY_MODEL_TOKENS_PER_ORG,
-    10_000_000,
+    60_000_000,
   );
   assert.equal(
     parseEnv({ ...required, MONTHLY_MODEL_TOKENS_PER_ORG: "250000" })
@@ -633,6 +633,24 @@ test("the monthly model-token quota defaults to ten million and parses like the 
       () => parseEnv({ ...required, MONTHLY_MODEL_TOKENS_PER_ORG: value }),
       /MONTHLY_MODEL_TOKENS_PER_ORG/,
     );
+});
+
+test("the evaluator cap and the contributor grading brake have generous defaults and parse like the other limits", () => {
+  const env = parseEnv(required);
+  assert.equal(env.MONTHLY_EVALUATOR_SECONDS_PER_ORG, 360_000);
+  assert.equal(env.CONTRIBUTOR_GRADING_RUNS_PER_ORG_DAY, 200);
+  const set = parseEnv({
+    ...required,
+    MONTHLY_EVALUATOR_SECONDS_PER_ORG: "3600",
+    CONTRIBUTOR_GRADING_RUNS_PER_ORG_DAY: "",
+  });
+  assert.equal(set.MONTHLY_EVALUATOR_SECONDS_PER_ORG, 3_600);
+  assert.equal(set.CONTRIBUTOR_GRADING_RUNS_PER_ORG_DAY, 200);
+  for (const key of [
+    "MONTHLY_EVALUATOR_SECONDS_PER_ORG",
+    "CONTRIBUTOR_GRADING_RUNS_PER_ORG_DAY",
+  ])
+    assert.throws(() => parseEnv({ ...required, [key]: "0" }), new RegExp(key));
 });
 
 test("public S3 URLs can use a browser-reachable gateway distinct from API storage", () => {

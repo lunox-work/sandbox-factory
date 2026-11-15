@@ -12,7 +12,10 @@
  * of reach, though not what the machine leaves world-readable or its
  * network, and lets everything a job left running be killed and what it
  * left in shared temporary directories be removed; any other worker runs
- * jobs as itself.
+ * jobs as itself. Hidden runs follow `hidden-runner.ts`, as E2B's do: the
+ * seal keeps the hidden tests in the worker and copies the tree to a
+ * pristine directory the worker owns, and each run copies it afresh with
+ * its own test alone, after the identity's leftover processes are killed.
  * Hosted evaluation of contributor code needs a provider that meets
  * Decision 5 of the sandbox plan; this one records itself as
  * `local-process` so no record can mistake it for one, and the worker
@@ -24,6 +27,7 @@ import { constants } from "node:fs";
 import {
   chmod,
   chown,
+  cp,
   mkdir,
   mkdtemp,
   open,
@@ -47,10 +51,12 @@ import type {
   EvaluationJob,
   EvaluationProvider,
 } from "sandbox-factory";
+import { HIDDEN_RUN_DIR, hiddenRunFiles } from "./hidden-runner.js";
 import {
   chownTree,
   ISOLATION_WARNING,
   jobCache,
+  killIdentity,
   sweepIdentity,
 } from "./isolation.js";
 import type { JobIdentity, JobIsolation } from "./isolation.js";
@@ -66,15 +72,16 @@ export interface LocalProcessOptions {
   readonly root?: string;
   /**
    * The npm cache every job shares when jobs run as the worker, outside
-   * any job's directory. A directory of this provider's own under the OS
-   * temp directory by default, made once and not at a name another user
-   * could guess. Isolated jobs use their identity's cache instead.
+   * any job's directory. By default a directory of this provider's own
+   * under `root` (or the OS temp directory), made once, not at a name
+   * another user could guess, and removed by `dispose`. Isolated jobs use
+   * their identity's cache instead.
    */
   readonly npmCache?: string;
   /**
    * The lockfiles kept for each dependency set (`lockfiles.ts`): the
-   * worker's alone, never inside a job's npm cache. A directory of this
-   * provider's own under the OS temp directory by default.
+   * worker's alone, never inside a job's npm cache. By default a directory
+   * of this provider's own beside the default cache, removed by `dispose`.
    */
   readonly lockfiles?: string;
   /** The uids jobs run as; null or absent runs them as the worker. */
@@ -298,9 +305,19 @@ async function readInside(
   }
 }
 
+export interface LocalProcessProvider extends EvaluationProvider {
+  /**
+   * Removes the npm cache and lockfile store this provider made for itself,
+   * never ones its options named, once its jobs are done; a later job makes
+   * them again. A one-off run (a script, a test) calls it on the way out,
+   * or its temporary directories outlive it.
+   */
+  dispose(): Promise<void>;
+}
+
 export function createLocalProcessProvider(
   options: LocalProcessOptions = {},
-): EvaluationProvider {
+): LocalProcessProvider {
   const isolation = options.isolation ?? null;
   if (isolation === null) options.warn?.(ISOLATION_WARNING);
   // The identities' npm caches outlive their sweeps; `jobCache` prunes them.
@@ -308,6 +325,9 @@ export function createLocalProcessProvider(
   const sweep =
     isolation?.sweep ??
     ((identity: JobIdentity) => sweepIdentity(identity, keep));
+  // Not the sweep: mid-job it would remove the job's own directories,
+  // which sit under the shared temporary directory it clears.
+  const killAll = isolation?.kill ?? killIdentity;
   /** Identities no job holds; `limitJobs` keeps demand within them. */
   const free = [...(isolation?.identities ?? [])];
   /**
@@ -322,11 +342,18 @@ export function createLocalProcessProvider(
       `evaluation_job_identity_quarantined: uid ${identity.uid} may still run processes (${String(error)}); it is swept again before another job runs as it`,
     );
   };
+  /** The directories this provider made for itself, which `dispose` removes. */
+  const owned: string[] = [];
+  const ownDirectory = async (prefix: string) => {
+    const made = await mkdtemp(join(options.root ?? tmpdir(), prefix));
+    owned.push(made);
+    return made;
+  };
   let sharedCache: Promise<string> | undefined;
   const npmCacheOf = () =>
     (sharedCache ??= (async () => {
       if (options.npmCache === undefined)
-        return mkdtemp(join(tmpdir(), "sandbox-factory-npm-cache-"));
+        return ownDirectory("sandbox-factory-npm-cache-");
       // Where lockfiles were kept before the store moved out of the cache
       // jobs write; nothing reads it now.
       await rm(join(options.npmCache, "_lockfiles"), {
@@ -340,10 +367,21 @@ export function createLocalProcessProvider(
     (lockfileStore ??= (
       options.lockfiles !== undefined
         ? Promise.resolve(options.lockfiles)
-        : mkdtemp(join(tmpdir(), "sandbox-factory-lockfiles-"))
+        : ownDirectory("sandbox-factory-lockfiles-")
     ).then(createLockfileStore));
   return {
     name: "local-process",
+    async dispose() {
+      // Settled first, so a directory still being made is removed too.
+      await Promise.allSettled([sharedCache, lockfileStore]);
+      sharedCache = undefined;
+      lockfileStore = undefined;
+      await Promise.all(
+        owned
+          .splice(0)
+          .map((made) => rm(made, { recursive: true, force: true })),
+      );
+    },
     async create({ label, signal }) {
       signal.throwIfAborted();
       let held: JobIdentity | null = null;
@@ -455,6 +493,15 @@ export function createLocalProcessProvider(
       let started = false;
       let ranProject = false;
       let destroyed = false;
+      /**
+       * The hidden tests' files the seal took out of the tree, by path; null
+       * until it runs. Every hidden run copies `pristine`, the tree as the
+       * seal left it, to `fresh` and puts back its own test alone
+       * (`hidden-runner.ts`).
+       */
+      let withheld: Map<string, string> | null = null;
+      const pristine = join(directory, "pristine");
+      const fresh = join(directory, "fresh");
       const job: EvaluationJob = {
         id: basename(directory),
         environment: {
@@ -506,7 +553,71 @@ export function createLocalProcessProvider(
           }
           if (identity !== null) await chownTree(work, identity);
         },
+        async seal(paths) {
+          if (withheld !== null) throw new Error("A job is sealed once.");
+          const kept = new Map<string, string>();
+          for (const path of paths) {
+            const target = inside(work, path);
+            const text = await readInside(
+              work,
+              path,
+              identity?.uid ?? process.getuid?.(),
+            );
+            if (text !== null) kept.set(path, text);
+            await rm(target, { force: true });
+          }
+          // Only npm and the compiler have run, so the tree holds nothing
+          // of the job's making; links are copied as links.
+          await cp(work, pristine, { recursive: true, verbatimSymlinks: true });
+          // The worker's: a job running as its own uid can neither read nor
+          // change what every hidden run starts from.
+          if (identity !== null) await chmod(pristine, 0o700);
+          withheld = kept;
+        },
         async exec(command) {
+          if (command.hidden !== undefined) {
+            if (withheld === null)
+              throw new Error("A hidden test runs once the job is sealed.");
+            started = true;
+            ranProject = true;
+            // Nothing an earlier command left running watches this copy.
+            if (identity !== null) await killAll(identity);
+            await rm(fresh, { recursive: true, force: true });
+            await cp(pristine, fresh, {
+              recursive: true,
+              verbatimSymlinks: true,
+            });
+            await rm(join(fresh, HIDDEN_RUN_DIR), {
+              recursive: true,
+              force: true,
+            });
+            const run = hiddenRunFiles(
+              command.hidden,
+              command.argv,
+              withheld.get(command.hidden.entry) ?? null,
+            );
+            for (const file of run.files) {
+              const target = inside(fresh, file.path);
+              await mkdir(dirname(target), { recursive: true });
+              await writeFile(target, file.text, "utf8");
+            }
+            if (identity !== null) {
+              await chownTree(fresh, identity);
+              await chmod(fresh, 0o700);
+            }
+            return runProcess(
+              { ...command, argv: run.argv },
+              {
+                cwd:
+                  command.cwd === undefined || command.cwd === ""
+                    ? fresh
+                    : inside(fresh, command.cwd),
+                env,
+                signal,
+                identity,
+              },
+            );
+          }
           const cwd =
             command.cwd === undefined || command.cwd === ""
               ? work

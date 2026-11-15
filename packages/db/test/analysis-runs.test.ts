@@ -9,11 +9,13 @@ import {
   SCOPE_TOOL_VERSION,
   SLICE_TOOL_VERSION,
   STARTER_TOOL_VERSION,
+  SUBMISSION_GRADE_TOOL_VERSION,
 } from "sandbox-factory";
 import { createAnalysisRunStore } from "../src/analysis-runs.js";
 import { createArtifactStore } from "../src/artifacts.js";
 import type { AnalysisRunRow, ArtifactRow } from "../src/schema.js";
 import { createFakeDb, createSequencedFakeDb } from "./fake-db.js";
+import type { FakeCall } from "./fake-db.js";
 
 const now = new Date("2026-10-02T00:00:00Z");
 const row = (overrides: Partial<AnalysisRunRow> = {}): AnalysisRunRow => ({
@@ -812,6 +814,7 @@ test("a new model run is refused at the monthly token limit, before the spend ca
     {
       ok: false,
       reason: "quota_exceeded",
+      kind: "model_tokens",
       used: 5_000,
       limit: 5_000,
       resetsAt: new Date("2026-12-01T00:00:00.000Z"),
@@ -883,4 +886,395 @@ test("a cached run, and a run that calls no model, are not held to the token lim
   );
   assert.equal(queued.ok && queued.created, true);
   assert.equal(graph.calls[4]?.kind, "insert");
+});
+
+const gradeParams = {
+  deadlineMinutes: 60,
+  grader: "submission" as const,
+  submissionId: "sbm_1",
+  sandboxVersionId: "sbv_1",
+  patchSha256: "a".repeat(64),
+};
+const gradeRow = (overrides: Partial<AnalysisRunRow> = {}) =>
+  row({
+    id: "arn_grade",
+    snapshotId: null,
+    tool: "submission_grade",
+    toolVersion: SUBMISSION_GRADE_TOOL_VERSION,
+    params: gradeParams,
+    ...overrides,
+  });
+const gradeInput = {
+  tool: "submission_grade" as const,
+  params: gradeParams,
+  requestedBy: "user",
+};
+const submissionWrites = (fake: { calls: readonly FakeCall[] }) =>
+  fake.calls.filter(
+    (call) => call.kind === "update" && call.values?.["status"] === "errored",
+  );
+const verdict = {
+  public: { passed: 1, total: 1 },
+  hidden: { passed: 2, total: 2 },
+  verdict: "passed" as const,
+  failedScenarios: [],
+};
+
+test("a grading run's verdict is written in its fenced commit, after its artifacts, or not at all", async () => {
+  const settle = { submission: { id: "sbm_1", result: verdict } };
+  const fake = createSequencedFakeDb([[gradeRow()], [], [{ id: "sbm_1" }]]);
+  assert.equal(
+    await createAnalysisRunStore(fake.db).finish(
+      "owner",
+      "arn_grade",
+      "lease",
+      [item],
+      "log",
+      now,
+      settle,
+    ),
+    true,
+  );
+  assert.deepEqual(
+    fake.calls.map((call) => call.kind),
+    ["update", "insert", "update", "execute"],
+  );
+  assert.deepEqual(fake.calls[2]?.values, {
+    status: "passed",
+    result: verdict,
+    errorCode: null,
+    runId: "arn_grade",
+    updatedAt: now,
+  });
+  // A lost lease commits nothing: no artifacts and no verdict.
+  const lost = createSequencedFakeDb([[]]);
+  assert.equal(
+    await createAnalysisRunStore(lost.db).finish(
+      "owner",
+      "arn_grade",
+      "lease",
+      [item],
+      "log",
+      now,
+      settle,
+    ),
+    false,
+  );
+  assert.deepEqual(
+    lost.calls.map((call) => call.kind),
+    ["update"],
+  );
+  // A failed verdict write rolls the commit back with it.
+  await assert.rejects(
+    createAnalysisRunStore(
+      createSequencedFakeDb([[gradeRow()], [], new Error("verdict refused")])
+        .db,
+    ).finish("owner", "arn_grade", "lease", [item], "log", now, settle),
+    /verdict refused/,
+  );
+  // A grading run that commits with no verdict for its own submission
+  // leaves it errored, never waiting.
+  for (const given of [
+    undefined,
+    { submission: { id: "sbm_9", result: verdict } },
+  ]) {
+    const none = createSequencedFakeDb([[gradeRow()], [], []]);
+    await createAnalysisRunStore(none.db).finish(
+      "owner",
+      "arn_grade",
+      "lease",
+      [item],
+      "log",
+      now,
+      given,
+    );
+    assert.deepEqual(none.calls[2]?.values, {
+      status: "errored",
+      errorCode: "grading_failed",
+      runId: "arn_grade",
+      updatedAt: now,
+    });
+  }
+  // Only a grading run settles one.
+  await assert.rejects(
+    createAnalysisRunStore(createSequencedFakeDb([[row()], []]).db).finish(
+      "owner",
+      "run",
+      "lease",
+      [item],
+      "log",
+      now,
+      settle,
+    ),
+    /Only a grading run/,
+  );
+});
+
+test("a grading run that fails, or runs out of attempts, errors its submission with a fixed reason", async () => {
+  for (const [code, reason] of [
+    ["tool_failed", "grading_failed"],
+    ["evaluation_failed", "grading_failed"],
+    ["tool_timeout", "grading_timed_out"],
+  ] as const) {
+    const fake = createSequencedFakeDb([[gradeRow()], []]);
+    assert.equal(
+      await createAnalysisRunStore(fake.db).fail(
+        "owner",
+        "arn_grade",
+        "lease",
+        code,
+        null,
+        now,
+      ),
+      true,
+    );
+    assert.deepEqual(submissionWrites(fake)[0]?.values, {
+      status: "errored",
+      errorCode: reason,
+      runId: "arn_grade",
+      updatedAt: now,
+    });
+  }
+  // Fenced out, or another tool's run: no submission moves.
+  for (const rows of [[], [row()]]) {
+    const fake = createSequencedFakeDb([rows, []]);
+    await createAnalysisRunStore(fake.db).fail(
+      "owner",
+      "arn_grade",
+      "lease",
+      "tool_failed",
+      null,
+      now,
+    );
+    assert.equal(submissionWrites(fake).length, 0);
+  }
+  // The watchdog: a run queued for another attempt keeps its submission
+  // waiting; one out of attempts errors it as interrupted when its worker
+  // was lost, and as timed out when it ran past its deadline.
+  const expired = createSequencedFakeDb([
+    [
+      gradeRow({ status: "queued", errorCode: "worker_lost" }),
+      gradeRow({
+        id: "arn_grade_2",
+        status: "failed",
+        errorCode: "worker_lost",
+        params: { ...gradeParams, submissionId: "sbm_2" },
+      }),
+      gradeRow({
+        id: "arn_grade_3",
+        status: "failed",
+        errorCode: "tool_timeout",
+        params: { ...gradeParams, submissionId: "sbm_3" },
+      }),
+    ],
+    [],
+    [],
+  ]);
+  assert.equal(
+    await createAnalysisRunStore(expired.db).failExpired("owner", now),
+    3,
+  );
+  assert.deepEqual(
+    submissionWrites(expired).map((call) => call.values),
+    [
+      {
+        status: "errored",
+        errorCode: "grading_timed_out",
+        runId: "arn_grade_3",
+        updatedAt: now,
+      },
+      {
+        status: "errored",
+        errorCode: "grading_interrupted",
+        runId: "arn_grade_2",
+        updatedAt: now,
+      },
+    ],
+  );
+  // The code is the deadline's or the lease's, decided by the row itself,
+  // never the fixed `worker_lost` for both.
+  const expiry = expired.calls.find(
+    (call) => call.kind === "update" && call.values?.["attempt"] !== undefined,
+  );
+  assert.notEqual(expiry?.values?.["errorCode"], "worker_lost");
+  assert.equal(typeof expiry?.values?.["errorCode"], "object");
+});
+
+test("a worker taking a grading run marks its submission running in the same commit", async () => {
+  const fake = createSequencedFakeDb([
+    [gradeRow({ status: "running", organizationId: "owner" })],
+    [],
+  ]);
+  const claimed = await createAnalysisRunStore(fake.db).claimNext("lease", now);
+  assert.equal(claimed?.id, "arn_grade");
+  const running = fake.calls[1];
+  assert.equal(running?.kind, "update");
+  assert.deepEqual(running?.values, { status: "running", updatedAt: now });
+  assert.equal(running?.filtered, true);
+  // Then the run's own change is announced.
+  assert.equal(fake.calls[2]?.kind, "execute");
+  // Any other tool's claim touches no submission.
+  const other = createSequencedFakeDb([
+    [row({ status: "running", snapshotId: null })],
+  ]);
+  await createAnalysisRunStore(other.db).claimNext("lease", now);
+  assert.deepEqual(
+    other.calls.map((call) => call.kind),
+    ["update", "execute"],
+  );
+});
+
+test("a new grading or build run is refused at the evaluator cap, with its kind; other runs are not", async () => {
+  const evaluatorQuota = {
+    monthlySeconds: 600,
+    now: () => new Date("2026-11-12T08:30:00.000Z"),
+  };
+  // Lock, no cached run, then the ledger: refused before the spend cap.
+  const full = createSequencedFakeDb([
+    [{ id: "owner" }],
+    [],
+    [{ seconds: 600 }],
+  ]);
+  assert.deepEqual(
+    await createAnalysisRunStore(full.db, { evaluatorQuota }).enqueue(
+      "owner",
+      null,
+      gradeInput,
+    ),
+    {
+      ok: false,
+      reason: "quota_exceeded",
+      kind: "evaluator_seconds",
+      used: 600,
+      limit: 600,
+      resetsAt: new Date("2026-12-01T00:00:00.000Z"),
+    },
+  );
+  assert.ok(full.calls.every((call) => call.kind === "select"));
+  // graphify creates no job: lock, snapshot, cache, spend cap, insert.
+  const graph = createSequencedFakeDb([
+    [{ id: "owner" }],
+    [{ repoId: "repo" }],
+    [],
+    [],
+    [row()],
+  ]);
+  const queued = await createAnalysisRunStore(graph.db, {
+    evaluatorQuota: { ...evaluatorQuota, monthlySeconds: 1 },
+  }).enqueue("owner", "snapshot", input);
+  assert.equal(queued.ok && queued.created, true);
+});
+
+test("an invited contributor's grading run is braked, a day's attempts at a time, and counted when admitted", async () => {
+  const gradingBrakes = {
+    perAssignmentDaily: 10,
+    perOrganizationDaily: 100,
+    now: () => new Date("2026-11-12T08:30:00.000Z"),
+  };
+  const oldest = new Date("2026-11-11T09:00:00.000Z");
+  // Lock, no cached run, spend cap, the submission's assignment, its count.
+  const braked = createSequencedFakeDb([
+    [{ id: "owner" }],
+    [],
+    [],
+    [{ assignmentId: "cas_1" }],
+    [{ count: 10, oldest }],
+  ]);
+  assert.deepEqual(
+    await createAnalysisRunStore(braked.db, { gradingBrakes }).enqueue(
+      "owner",
+      null,
+      gradeInput,
+    ),
+    {
+      ok: false,
+      reason: "rate_limited",
+      scope: "assignment",
+      limit: 10,
+      retryAt: new Date("2026-11-12T09:00:00.000Z"),
+    },
+  );
+  assert.ok(braked.calls.every((call) => call.kind === "select"));
+  // Under both brakes: queued, and the attempt names the assignment.
+  const admitted = createSequencedFakeDb([
+    [{ id: "owner" }],
+    [],
+    [],
+    [{ assignmentId: "cas_1" }],
+    [{ count: 1, oldest }],
+    [{ count: 1, oldest }],
+    [gradeRow()],
+    [],
+    [],
+  ]);
+  const queued = await createAnalysisRunStore(admitted.db, {
+    gradingBrakes,
+  }).enqueue("owner", null, gradeInput);
+  assert.equal(queued.ok && queued.created, true);
+  const attempt = admitted.calls.find(
+    (call) =>
+      call.kind === "insert" && String(call.values?.["id"]).startsWith("gat_"),
+  );
+  assert.equal(attempt?.values?.["assignmentId"], "cas_1");
+  assert.equal(attempt?.values?.["runId"], "arn_grade");
+});
+
+test("a grading run queued again reopens its errored submission; one out of attempts errors a waiting one", async () => {
+  const again = createSequencedFakeDb([
+    [{ id: "owner" }],
+    [gradeRow({ status: "failed", attempt: 1, errorCode: "tool_failed" })],
+    [],
+    // The submission's assignment: a workspace's own, none.
+    [],
+    [gradeRow({ status: "queued", attempt: 2 })],
+    [],
+    [],
+  ]);
+  const queued = await createAnalysisRunStore(again.db).enqueue(
+    "owner",
+    null,
+    gradeInput,
+  );
+  assert.equal(queued.ok && queued.created, true);
+  // The attempt is counted in the same transaction.
+  const attempt = again.calls[5];
+  assert.equal(attempt?.kind, "insert");
+  assert.match(String(attempt?.values?.["id"]), /^gat_/);
+  assert.deepEqual(
+    { ...attempt?.values, id: undefined },
+    {
+      id: undefined,
+      organizationId: "owner",
+      submissionId: "sbm_1",
+      assignmentId: null,
+      runId: "arn_grade",
+    },
+  );
+  const reopen = again.calls[6];
+  assert.equal(reopen?.kind, "update");
+  assert.equal(reopen?.values?.["status"], "queued");
+  assert.equal(reopen?.values?.["errorCode"], null);
+  assert.equal(reopen?.filtered, true);
+  assert.equal(again.calls[7]?.kind, "execute");
+
+  const spent = createSequencedFakeDb([
+    [{ id: "owner" }],
+    [gradeRow({ status: "failed", attempt: 2, errorCode: "tool_timeout" })],
+    [],
+  ]);
+  const cached = await createAnalysisRunStore(spent.db).enqueue(
+    "owner",
+    null,
+    gradeInput,
+  );
+  assert.equal(cached.ok && cached.created, false);
+  assert.equal(cached.ok && cached.run.status, "failed");
+  assert.deepEqual(
+    submissionWrites(spent)[0]?.values?.["errorCode"],
+    "grading_timed_out",
+  );
+  assert.equal(
+    spent.calls.some((call) => call.kind === "execute"),
+    false,
+  );
 });

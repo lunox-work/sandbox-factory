@@ -1,4 +1,8 @@
 import { approveProposal } from "./approve-proposal.js";
+import {
+  decisionsConfirmUrl,
+  decisionsSha256 as decisionsHash,
+} from "./decisions.js";
 import type { PricingRouteOptions } from "./options.js";
 import { reviewOptions, siteOf, writebackBusy } from "./review-deps.js";
 import {
@@ -15,7 +19,6 @@ import {
   JiraAuthError,
   type JiraIssueSpec,
 } from "@sandbox-factory/jira";
-import { createHash } from "node:crypto";
 import type {
   JiraIssueDto,
   ProposalCategoriesDto,
@@ -24,6 +27,7 @@ import type {
 } from "@sandbox-factory/shared";
 import {
   addIssueSchema,
+  approveProposalSchema,
   boardSelectionSchema,
   confirmDecisionsSchema,
   createRunSchema,
@@ -39,7 +43,6 @@ import type { Context, Hono } from "hono";
 import {
   CATEGORIES,
   checkRespec,
-  decisionsText,
   renderSpecDocument,
   specDecisions,
   priceFor,
@@ -134,17 +137,19 @@ export function mountPricingRoutes<Env extends PricingAppEnv>(
     proposal: NonNullable<Awaited<ReturnType<BountyProposalStore["get"]>>>,
     storedOnly = false,
   ) => {
-    const [live, writebackOperations, activeRun] = await Promise.all([
-      freshProposal(
-        { ...reviewOptions(options), recent: recentIssues, storedOnly },
-        organizationId,
-        proposal,
-      ),
-      options.writebacks === undefined
-        ? []
-        : options.writebacks.listForProposal(organizationId, proposal.id),
-      options.runs.activeForProposal(organizationId, proposal.id),
-    ]);
+    const [live, writebackOperations, activeRun, sizeLabels] =
+      await Promise.all([
+        freshProposal(
+          { ...reviewOptions(options), recent: recentIssues, storedOnly },
+          organizationId,
+          proposal,
+        ),
+        options.writebacks === undefined
+          ? []
+          : options.writebacks.listForProposal(organizationId, proposal.id),
+        options.runs.activeForProposal(organizationId, proposal.id),
+        options.sizeLabels?.list(organizationId, proposal.id) ?? [],
+      ]);
     const { proposal: stored, liveSpec, ...freshness } = live;
     return {
       proposal: stored,
@@ -152,6 +157,8 @@ export function mountPricingRoutes<Env extends PricingAppEnv>(
       freshness,
       writebackOperations,
       activeRun,
+      // The workspace's own read: reviewers' resizes as calibration labels.
+      sizeLabels,
     };
   };
   /** `GET /proposals/:id/profile`'s answer. */
@@ -805,14 +812,20 @@ export function mountPricingRoutes<Env extends PricingAppEnv>(
     current revision's assumptions (`specDecisions`), hashed as
     `decisionsText` writes them; a confirmation names that hash, so one
     made for other decisions reads as none. `confirmUrl` is the bounty's
-    Price step in the web app, where a person confirms: never a token.
+    Price step in the web app, where a person confirms: never a token. A
+    spec posted as confirmed with its bounty carries its poster's
+    confirmation (`via: "duediligence"`) from sizing on.
   */
   const decisionsOf = async (
     organizationId: string,
     proposal: { id: string; bountyId: string; specRevision: number | null },
   ): Promise<ProposalDecisionsResponse> => {
-    const slug = await options.organizationSlug?.(organizationId);
-    const confirmUrl = `${options.appUrl ?? ""}/bounties/${encodeURIComponent(slug ?? organizationId)}/${encodeURIComponent(proposal.bountyId)}?tab=price#decisions`;
+    const confirmUrl = decisionsConfirmUrl(
+      options.appUrl,
+      await options.organizationSlug?.(organizationId),
+      organizationId,
+      proposal.bountyId,
+    );
     const spec =
       proposal.specRevision === null
         ? null
@@ -830,9 +843,7 @@ export function mountPricingRoutes<Env extends PricingAppEnv>(
         confirmUrl,
       };
     const decisions = specDecisions(spec.draft);
-    const decisionsSha256 = createHash("sha256")
-      .update(decisionsText(decisions), "utf8")
-      .digest("hex");
+    const decisionsSha256 = decisionsHash(spec.draft);
     const confirmed =
       (await options.decisions?.get(
         organizationId,
@@ -849,6 +860,9 @@ export function mountPricingRoutes<Env extends PricingAppEnv>(
           ? null
           : {
               confirmedBy: confirmed.confirmedBy,
+              confirmedByName: confirmed.confirmedByName,
+              via: confirmed.via,
+              credential: confirmed.credential,
               confirmedAt: confirmed.confirmedAt,
             },
       confirmUrl,
@@ -918,6 +932,8 @@ export function mountPricingRoutes<Env extends PricingAppEnv>(
       specRevision: parsed.data.specRevision,
       decisionsSha256: parsed.data.decisionsSha256,
       confirmedBy: c.get("user").id,
+      // The Price step's confirm is a person's session alone.
+      credential: "session",
     });
     if (confirmed === null)
       return c.json(
@@ -927,6 +943,8 @@ export function mountPricingRoutes<Env extends PricingAppEnv>(
         },
         409,
       );
+    // An approved proposal held on these decisions can be prepared now.
+    options.onApproved?.();
     return c.json(await decisionsOf(organizationId, proposal));
   });
 
@@ -957,7 +975,7 @@ export function mountPricingRoutes<Env extends PricingAppEnv>(
   });
 
   app.post("/api/v1/orgs/:orgId/proposals/:id/approve", async (c) => {
-    const parsed = proposalMutationSchema.safeParse(
+    const parsed = approveProposalSchema.safeParse(
       await c.req.json().catch(() => null),
     );
     if (!parsed.success)
@@ -978,6 +996,7 @@ export function mountPricingRoutes<Env extends PricingAppEnv>(
       proposalId: c.req.param("id"),
       actorId: c.get("user").id,
       expectedRevision: parsed.data.expectedRevision,
+      expectedPrice: parsed.data.expectedPrice,
     });
     if (result.kind === "success") options.onApproved?.();
     return c.json(

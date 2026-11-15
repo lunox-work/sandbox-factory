@@ -21,6 +21,14 @@
  *
  * The reference itself is evidence, never shipped: it is not part of the
  * version, and only its file paths and summary are recorded.
+ *
+ * A starter's hidden tests (`starter.ts`) are calibrated with them
+ * `withheld`: one agent wrote the starter and its tests together, so the
+ * reference must not learn the tests from their text. Its project has no
+ * hidden test in it, its runs build the project and run the walkthrough and
+ * the public tests only, and the hidden tests run once, on the reference it
+ * submits, in one more job of the worker's own. The rule over the outcomes
+ * is the same `calibrate`.
  */
 
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
@@ -50,7 +58,11 @@ import type {
   AgentToolResult,
 } from "../agent/loop.js";
 import { runAgent } from "../agent/loop.js";
-import { referenceSection, referenceSystemPrompt } from "../agent/prompts.js";
+import {
+  referenceSection,
+  referenceSystemPrompt,
+  starterReferenceSystemPrompt,
+} from "../agent/prompts.js";
 import {
   indexRepository,
   invalidInput,
@@ -78,6 +90,13 @@ export const REFERENCE_RUNS_MAX = 4;
 const RUN_TOOL = "run_reference";
 /** A hidden test's name in a suite result: the worker judges whole files. */
 const FILE_TEST = "(file)";
+
+/**
+ * Whether the reference reads the hidden tests: `in_view` for a sliced
+ * build's, written by an agent of their own (duediligence's brief, which
+ * shows them), `withheld` for a starter's, written beside the code.
+ */
+export type HiddenTestsView = "in_view" | "withheld";
 
 /** What a calibration kept and dropped, for the build's transform. */
 export interface HiddenTestsCalibration {
@@ -310,6 +329,29 @@ function referenceReport(result: CandidateBaseline): string {
   ].join("\n");
 }
 
+/** What a run with the hidden tests withheld says first. */
+const PUBLIC_PASSES =
+  "The project builds, and its walkthrough and public tests pass.";
+const PUBLIC_FAILS = "The project does not pass yet.";
+
+/**
+ * A reference run with the hidden tests withheld, as the agent is told it:
+ * the project's own steps and the output of those that failed. No hidden
+ * test ran, so the baseline's rule about them is left out.
+ */
+function publicReport(result: CandidateBaseline): string {
+  const ok = result.baseline.steps.every(
+    (step) => step.name === "private-test" || step.ok,
+  );
+  const [, ...rest] = result.report.split("\n");
+  return [
+    ok ? PUBLIC_PASSES : PUBLIC_FAILS,
+    ...rest.filter(
+      (line) => !/^Reason: No hidden test (judges|is expected)/.test(line),
+    ),
+  ].join("\n");
+}
+
 /** A run of the reference, as a step: how many hidden tests it passes. */
 function ranReference(verb: string, result: AgentToolResult): string | null {
   const head = result.content.split("\n", 1)[0] ?? "";
@@ -317,6 +359,9 @@ function ranReference(verb: string, result: AgentToolResult): string | null {
     return `${verb} a reference: every hidden test passes`;
   if (/^\d+ hidden tests? do(es)? not pass\.$/.test(head))
     return `${verb} a reference: ${head.slice(0, -1).toLowerCase()}`;
+  if (head === PUBLIC_PASSES)
+    return `${verb} a reference: its public tests pass`;
+  if (head === PUBLIC_FAILS) return `${verb} a reference: it does not pass yet`;
   return null;
 }
 
@@ -327,9 +372,13 @@ export async function calibrateHiddenTests(input: {
     readonly title: string;
     readonly summary: string;
     readonly spec: SpecDraft | null;
+    /** The spec's confirmed decisions, in the project's names; none when unconfirmed. */
+    readonly decisions?: readonly string[] | undefined;
   };
   /** The slice's entry points at the project's paths: the interface. */
   readonly entryPoints: readonly string[];
+  /** `in_view` unless given (`HiddenTestsView`). */
+  readonly hiddenTests?: HiddenTestsView;
   readonly written: WrittenHiddenTests;
   readonly generate: (tests: readonly AcceptanceTest[]) => GeneratedCandidate;
   /** As `writeHiddenTests`' baseline: a candidate's run in a fresh job. */
@@ -347,32 +396,42 @@ export async function calibrateHiddenTests(input: {
   readonly calibration: HiddenTestsCalibration;
 }> {
   const { written } = input;
+  const withheld = input.hiddenTests === "withheld";
   // On the reference every hidden test should pass, guards and all.
   const asPassing = written.tests.map((test) => ({
     ...test,
     expectedBaseline: "pass" as const,
   }));
   const project = input.generate(asPassing);
+  // What the agent reads and its runs build: with the hidden tests
+  // withheld, the project without them.
+  const seen = withheld ? input.generate([]) : project;
   const root = await mkdtemp(join(tmpdir(), "reference-"));
   try {
-    // The developer's project with the hidden tests in it, and the spec
-    // where duediligence's brief says it is.
-    for (const file of project.files) {
+    // The developer's project, with the hidden tests in it unless they are
+    // withheld, and the spec where duediligence's brief says it is.
+    for (const file of seen.files) {
+      if (withheld && !file.public) continue;
       const path = join(root, file.path);
       await mkdir(dirname(path), { recursive: true });
       await writeFile(path, file.text, "utf8");
     }
+    // The confirmed decisions under duediligence's own heading, as its
+    // spec documents carry them (`renderSpecDocument`).
+    const decided = input.task.decisions ?? [];
     await writeFile(
       join(root, "spec.md"),
-      input.task.spec === null
-        ? `# ${input.task.title}\n\n${input.task.summary}\n`
-        : `# ${input.task.title}\n\n${input.task.summary}\n\n${renderGherkin(input.task.spec)}\n`,
+      `${
+        input.task.spec === null
+          ? `# ${input.task.title}\n\n${input.task.summary}\n`
+          : `# ${input.task.title}\n\n${input.task.summary}\n\n${renderGherkin(input.task.spec)}\n`
+      }${decided.length === 0 ? "" : `\nDecided, confirmed by the client:\n\n${decided.map((text) => `- ${text}`).join("\n")}\n`}`,
       "utf8",
     );
     const index = await indexRepository(root, input.signal);
     const sourceDirs = [
       ...new Set(
-        project.files
+        seen.files
           .filter((file) => file.class === "source" && file.public)
           .map((file) => `${dirname(file.path)}/`),
       ),
@@ -398,17 +457,20 @@ export async function calibrateHiddenTests(input: {
     const run = async (
       files: readonly ReferenceFile[],
     ): Promise<{ problems: string[] } | CandidateBaseline> => {
-      const problems = referenceProblems(project.files, files);
+      const problems = referenceProblems(seen.files, files);
       if (problems.length > 0) return { problems };
       runs += 1;
       const result = await input.baseline(
-        withReference(project.files, files),
-        [...project.blockers],
-        asPassing,
+        withReference(seen.files, files),
+        [...seen.blockers],
+        withheld ? [] : asPassing,
       );
       last = { files, result };
       return result;
     };
+    /** What the agent is told of one of its runs. */
+    const told = (result: CandidateBaseline) =>
+      withheld ? publicReport(result) : referenceReport(result);
     const filesProperty = {
       type: "array",
       description:
@@ -423,7 +485,9 @@ export async function calibrateHiddenTests(input: {
     const runTool: AgentTool = {
       name: RUN_TOOL,
       describe: (_call, result) => ranReference("Ran", result),
-      description: `Build the project with these source files in place and run it in a fresh job: install, build, the walkthrough, the public tests and each hidden test, with the output of those that fail. Runs are shared with submit_reference: ${REFERENCE_RUNS_MAX} in all.`,
+      description: withheld
+        ? `Build the project with these source files in place and run it in a fresh job: install, build, the walkthrough and the public tests, with the output of those that fail. The hidden tests run once, on the reference you submit. Runs are shared with submit_reference: ${REFERENCE_RUNS_MAX} in all.`
+        : `Build the project with these source files in place and run it in a fresh job: install, build, the walkthrough, the public tests and each hidden test, with the output of those that fail. Runs are shared with submit_reference: ${REFERENCE_RUNS_MAX} in all.`,
       inputSchema: {
         properties: { files: filesProperty },
         required: ["files"],
@@ -440,7 +504,7 @@ export async function calibrateHiddenTests(input: {
         const result = await run(parsed.data.files);
         if ("problems" in result)
           return { content: result.problems.join("\n"), isError: true };
-        return { content: referenceReport(result) };
+        return { content: told(result) };
       },
     };
     let submitted: {
@@ -454,8 +518,9 @@ export async function calibrateHiddenTests(input: {
         result.accepted === true && submitted !== null
           ? `Submitted a reference of ${submitted.files.length} file(s)`
           : null,
-      description:
-        "Submit the reference. With files: null, the files your last run_reference ran with are submitted as they ran. Otherwise they are run once more. Put each test you left failing in the summary, as `file :: reason`, or say none.",
+      description: withheld
+        ? "Submit the reference. With files: null, the files your last run_reference ran with are submitted as they ran. Otherwise they are run once more. The hidden tests then run on it. Say in the summary what it does, and any part of the spec it does not implement, or none."
+        : "Submit the reference. With files: null, the files your last run_reference ran with are submitted as they ran. Otherwise they are run once more. Put each test you left failing in the summary, as `file :: reason`, or say none.",
       inputSchema: {
         properties: {
           files: {
@@ -466,8 +531,9 @@ export async function calibrateHiddenTests(input: {
           },
           summary: {
             type: "string",
-            description:
-              "What the reference does, and each test left failing with why.",
+            description: withheld
+              ? "What the reference does, and any part of the spec it leaves out with why."
+              : "What the reference does, and each test left failing with why.",
           },
         },
         required: ["files", "summary"],
@@ -501,19 +567,27 @@ export async function calibrateHiddenTests(input: {
         return { content: "Recorded.", accepted: true };
       },
     };
-    input.log("Reference agent started.");
+    input.log(
+      withheld
+        ? "Reference agent started, with the hidden tests withheld."
+        : "Reference agent started.",
+    );
     const outcome = await runAgent({
       model: input.model,
       step: input.step,
       onTurn: input.timing?.turn,
-      system: referenceSystemPrompt(brief),
+      system: withheld
+        ? starterReferenceSystemPrompt(brief)
+        : referenceSystemPrompt(brief),
       prompt: referenceSection({
         title: input.task.title,
         summary: input.task.summary,
         spec: input.task.spec,
+        decisions: input.task.decisions,
         overview: repositoryOverview(index),
         runTool: RUN_TOOL,
         runsMax: REFERENCE_RUNS_MAX,
+        hiddenTests: withheld ? "withheld" : "in_view",
       }),
       tools: [...repositoryTools(index), runTool, submitTool],
       submitTool: "submit_reference",
@@ -522,11 +596,24 @@ export async function calibrateHiddenTests(input: {
       signal: input.signal,
       log: input.log,
     });
-    const reference = submitted as {
+    const submittedReference = submitted as {
       readonly files: readonly ReferenceFile[];
       readonly summary: string;
       readonly result: CandidateBaseline;
     } | null;
+    // Withheld, the hidden tests run now, on the reference as submitted,
+    // in the project that has them: the one run they get.
+    const reference =
+      !withheld || submittedReference === null
+        ? submittedReference
+        : {
+            ...submittedReference,
+            result: await input.baseline(
+              withReference(project.files, submittedReference.files),
+              [...project.blockers],
+              asPassing,
+            ),
+          };
     const ruled = calibrationOf({
       tests: written.tests,
       skeleton: written.baseline,

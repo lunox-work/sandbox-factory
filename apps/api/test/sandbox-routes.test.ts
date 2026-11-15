@@ -1,4 +1,8 @@
-import { GithubAuthError } from "@sandbox-factory/github";
+import {
+  GithubAuthError,
+  type PullRequestInput,
+  PullRequestWriter,
+} from "@sandbox-factory/github";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { test } from "node:test";
@@ -12,11 +16,19 @@ import type {
   StoredSandboxVersion,
   StoredVersionSource,
 } from "@sandbox-factory/db";
-import { OPERATION_POLICY, SLICE_PUBLISHED_REASON } from "sandbox-factory";
+import {
+  DISCLOSURE_FINDINGS_EVALUATED,
+  disclosureGate,
+  disclosureRecords,
+  OPERATION_POLICY,
+  scanDisclosure,
+  SLICE_PUBLISHED_REASON,
+} from "sandbox-factory";
 import type {
   ApprovedTaskSnapshot,
   BoundaryContract,
   SliceManifest,
+  SpecDraft,
 } from "sandbox-factory";
 import {
   approvedTaskHash,
@@ -25,9 +37,12 @@ import {
   type SandboxRouteOptions,
 } from "../src/sandbox/routes.js";
 import type { AuthVariables } from "../src/routes.js";
+import { unzip } from "./zip-reader.js";
 
 const stamp = "2026-10-02T00:00:00.000Z";
 const sha = (text: string) => createHash("sha256").update(text).digest("hex");
+/** The hash a confirmation of the one decision `decisions` adds is bound to. */
+const halfCentHash = sha("d1\tHalf a cent rounds up.\n");
 const manifest: SliceManifest = {
   schemaVersion: 1,
   toolVersion: "slice@1",
@@ -201,6 +216,24 @@ const buildRun: StoredAnalysisRun = {
     transformConfigSha256: "1".repeat(64),
     approvedTaskSha256: "2".repeat(64),
   },
+};
+/** A grading run of `params`, on the version's snapshot. */
+const gradeRunOf = (params: unknown): StoredAnalysisRun => ({
+  ...sliceRun,
+  id: "arn_grade",
+  tool: "submission_grade",
+  toolVersion: "submission_grade@2",
+  status: "queued",
+  params: params as StoredAnalysisRun["params"],
+});
+/** What the CI judge queued `sbm_1` with: a pull request's files. */
+const judgedParams = {
+  deadlineMinutes: 60,
+  grader: "submission",
+  submissionId: "sbm_1",
+  sandboxVersionId: "sbv_1",
+  patchSha256: "a".repeat(64),
+  names: "repository",
 };
 const artifactOf = (
   kind: StoredArtifact["kind"],
@@ -435,8 +468,15 @@ function fixture(
     /** The merge-back store and target; absent, none. */
     merges: unknown;
     mergeBack: unknown;
+    /** Collects each submission webhook event the routes owe. */
+    events: unknown[];
     /** What a grading run `arn_grade` wrote, by path. */
     gradeRun: Record<string, string>;
+    /**
+     * Every grading enqueue finds a run already made, in this status;
+     * unsaid, the first of each submission's makes one.
+     */
+    gradeCached: string;
     /** The stored version's source carries a hidden test. */
     hiddenTests: boolean;
     /** The credential the caller signed in with; a session unless said. */
@@ -479,16 +519,34 @@ function fixture(
     approvedBy: string | null;
     /** The store finds the slice run moved on after the route's check. */
     approvalMoved: boolean;
+    /** A built file's bytes in storage are not the ones the run recorded. */
+    tampered: string;
+    /**
+     * The task's spec decided something (`assumptions`): `unconfirmed`, or
+     * `confirmed` by a person, as the decisions store answers.
+     */
+    decisions: "unconfirmed" | "confirmed";
+    /** `build-manifest.json` among what the build `arn_build` wrote. */
+    buildManifest: unknown;
+    /** More files the build `arn_build` wrote, beside `builtFiles`. */
+    extraBuilt: { path: string; body: string }[];
+    /** Fields the stored version's source has beside the rest. */
+    sourcePatch: Partial<StoredVersionSource>;
   }> = {},
 ) {
-  const published: { versionId: string; actor: string; expiresAt: string }[] =
-    [];
+  const published: {
+    versionId: string;
+    actor: string;
+    expiresAt: string;
+    evidence?: unknown;
+  }[] = [];
   const manifestText = JSON.stringify(overrides.manifest ?? manifest);
   const contractText = JSON.stringify(overrides.contract ?? contract);
   const created: unknown[] = [];
   const patches: unknown[] = [];
   const builds: unknown[] = [];
   const enqueued: unknown[] = [];
+  const gradeRuns = new Set<string>();
   const removed: string[] = [];
   const linked: { id: string; sourceRepoId: string }[] = [];
   const requested: unknown[] = [];
@@ -530,6 +588,39 @@ function fixture(
               ? { ...source, buildRunId: buildRun.id }
               : source,
   };
+  if (overrides.decisions !== undefined)
+    stored.source = {
+      ...stored.source,
+      approvedTask: {
+        ...stored.source.approvedTask,
+        spec: {
+          proposalId: "bpr_1",
+          specRevision: 2,
+          specHash: "s".repeat(64),
+          draft: {
+            ...(source.approvedTask.spec?.draft as SpecDraft),
+            assumptions: ["Half a cent rounds up."],
+          },
+        },
+      },
+    } as typeof stored.source;
+  if (overrides.sourcePatch !== undefined)
+    stored.source = {
+      ...stored.source,
+      ...overrides.sourcePatch,
+    } as typeof stored.source;
+  const built = [
+    ...builtFiles,
+    ...(overrides.extraBuilt ?? []),
+    ...(overrides.buildManifest === undefined
+      ? []
+      : [
+          {
+            path: "build-manifest.json",
+            body: JSON.stringify(overrides.buildManifest),
+          },
+        ]),
+  ];
   const objects = new Map<string, Buffer>([
     [
       "runs/arn_slice/lease/slice-manifest.json",
@@ -541,7 +632,7 @@ function fixture(
     ],
     ["runs/arn_fixtures/lease/fixture-set.json", Buffer.from(fixtureSetText)],
     ["runs/arn_fixtures_bad/lease/fixture-set.json", Buffer.from("not json")],
-    ...builtFiles.map(
+    ...built.map(
       ({ path, body }) =>
         [`runs/arn_build/lease/${path}`, Buffer.from(body)] as const,
     ),
@@ -710,6 +801,8 @@ function fixture(
         id: string,
         actor: string,
         expiresAt: Date,
+        _now?: Date,
+        evidence?: unknown,
       ) => {
         if (owner !== "org_1" || id !== "sbv_1")
           return { ok: false, reason: "not-found" };
@@ -721,6 +814,7 @@ function fixture(
           versionId: id,
           actor,
           expiresAt: expiresAt.toISOString(),
+          ...(evidence === undefined ? {} : { evidence }),
         });
         return {
           ok: true,
@@ -753,39 +847,57 @@ function fixture(
     },
     runs: {
       get: async (owner: string, id: string) =>
-        owner === "org_1" && id === "arn_slice"
-          ? { ...sliceRun, status: overrides.sliceStatus ?? "succeeded" }
-          : owner === "org_1" && id === "arn_build"
-            ? {
-                ...buildRun,
-                status: overrides.previewing === true ? "running" : "succeeded",
-              }
-            : owner === "org_1" && id === "arn_other"
-              ? { ...sliceRun, id: "arn_other" }
-              : owner === "org_1" && id === "arn_graph"
-                ? { ...sliceRun, id: "arn_graph", tool: "graphify" }
-                : owner === "org_1" && id === "arn_fixtures"
-                  ? fixturesRunOf(id, "arn_slice")
-                  : owner === "org_1" && id === "arn_fixtures_bad"
+        owner === "org_1" && id === "arn_grade"
+          ? { ...gradeRunOf(judgedParams), status: "failed" }
+          : owner === "org_1" && id === "arn_slice"
+            ? { ...sliceRun, status: overrides.sliceStatus ?? "succeeded" }
+            : owner === "org_1" && id === "arn_build"
+              ? {
+                  ...buildRun,
+                  status:
+                    overrides.previewing === true ? "running" : "succeeded",
+                }
+              : owner === "org_1" && id === "arn_other"
+                ? { ...sliceRun, id: "arn_other" }
+                : owner === "org_1" && id === "arn_graph"
+                  ? { ...sliceRun, id: "arn_graph", tool: "graphify" }
+                  : owner === "org_1" && id === "arn_fixtures"
                     ? fixturesRunOf(id, "arn_slice")
-                    : owner === "org_1" && id === "arn_fixtures_gone"
+                    : owner === "org_1" && id === "arn_fixtures_bad"
                       ? fixturesRunOf(id, "arn_slice")
-                      : owner === "org_1" && id === "arn_fixtures_running"
-                        ? fixturesRunOf(id, "arn_slice", "running")
-                        : owner === "org_1" && id === "arn_fixtures_elsewhere"
-                          ? fixturesRunOf(id, "arn_other")
-                          : null,
+                      : owner === "org_1" && id === "arn_fixtures_gone"
+                        ? fixturesRunOf(id, "arn_slice")
+                        : owner === "org_1" && id === "arn_fixtures_running"
+                          ? fixturesRunOf(id, "arn_slice", "running")
+                          : owner === "org_1" && id === "arn_fixtures_elsewhere"
+                            ? fixturesRunOf(id, "arn_other")
+                            : null,
       enqueue: async (_owner: string, snapshotId: string, input: unknown) => {
         enqueued.push({ snapshotId, ...(input as object) });
         if (overrides.quota === true) return quotaRefusal;
-        return overrides.limit === true
-          ? { ok: false, reason: "run_limit" }
-          : {
-              ok: true,
-              created: true,
-              run: buildRun,
-              obsoleteLogKey: "logs/old.log",
-            };
+        if (overrides.limit === true) return { ok: false, reason: "run_limit" };
+        const { tool, params } = input as { tool?: string; params: unknown };
+        if (tool === "submission_grade") {
+          // Cached by its parameters, as the store does.
+          const key = JSON.stringify(params);
+          const cached =
+            overrides.gradeCached !== undefined || gradeRuns.has(key);
+          gradeRuns.add(key);
+          return {
+            ok: true,
+            created: !cached,
+            run: {
+              ...gradeRunOf(params),
+              status: cached ? (overrides.gradeCached ?? "queued") : "queued",
+            },
+          };
+        }
+        return {
+          ok: true,
+          created: true,
+          run: buildRun,
+          obsoleteLogKey: "logs/old.log",
+        };
       },
     },
     artifacts: {
@@ -799,7 +911,7 @@ function fixture(
                 objectKey: `runs/arn_grade/${path}`,
               }))
             : runId === "arn_build" && overrides.previewing !== true
-              ? builtFiles.map(({ path, body }) => ({
+              ? built.map(({ path, body }) => ({
                   ...artifactOf("build_manifest", path, body),
                   runId,
                   objectKey: `runs/arn_build/lease/${path}`,
@@ -830,6 +942,13 @@ function fixture(
     ...(overrides.mergeBack === undefined
       ? {}
       : { mergeBack: overrides.mergeBack as never }),
+    ...(overrides.events === undefined
+      ? {}
+      : {
+          onSubmissionEvent: (...event: unknown[]) => {
+            overrides.events?.push(event);
+          },
+        }),
     previews: {
       preview: async (owner: string, runId: string) =>
         overrides.previewing === true &&
@@ -852,6 +971,8 @@ function fixture(
     repos: { list: async () => workspaceRepos },
     organizationNames: async (owner: string) =>
       owner === "org_1" ? ["Acme Corp", "acme"] : [],
+    ticketKeys: async (owner: string) =>
+      owner === "org_1" ? ["PAY", "OPS", "PAY"] : [],
     bounties: {
       get: async (owner: string, id: string) =>
         (overrides.held === undefined && overrides.bounty !== true) ||
@@ -992,6 +1113,34 @@ function fixture(
             },
           },
         }),
+    ...(overrides.decisions === undefined
+      ? {}
+      : {
+          decisions: {
+            get: async (
+              owner: string,
+              proposalId: string,
+              revision: number,
+              sha256: string,
+            ) =>
+              overrides.decisions === "confirmed" &&
+              owner === "org_1" &&
+              proposalId === "bpr_1" &&
+              revision === 2 &&
+              sha256 === halfCentHash
+                ? {
+                    id: "dcf_1",
+                    proposalId,
+                    specRevision: revision,
+                    decisionsSha256: sha256,
+                    confirmedBy: "user_1",
+                    confirmedAt: stamp,
+                  }
+                : null,
+          },
+          decisionsConfirmUrl: async (owner: string, bountyId: string) =>
+            `https://app.test/bounties/${owner}/${bountyId}?tab=price#decisions`,
+        }),
     ensureWorker: async () => {
       launches++;
     },
@@ -1015,19 +1164,25 @@ function fixture(
   });
   for (const [path, body] of Object.entries(overrides.gradeRun ?? {}))
     objects.set(`runs/arn_grade/${path}`, Buffer.from(body));
+  if (overrides.tampered !== undefined)
+    objects.set(
+      `runs/arn_build/lease/${overrides.tampered}`,
+      Buffer.from("export const sum = 2;\n"),
+    );
   mountSandboxRoutes(app, options);
   const request = (
     method: string,
     path: string,
     body?: unknown,
     org = "org_1",
+    headers: Record<string, string> = {},
   ) =>
     app.request(`/api/v1/orgs/${org}/sandboxes${path}`, {
       method,
       ...(body === undefined
-        ? {}
+        ? { headers }
         : {
-            headers: { "Content-Type": "application/json" },
+            headers: { ...headers, "Content-Type": "application/json" },
             body: JSON.stringify(body),
           }),
     });
@@ -1037,6 +1192,12 @@ function fixture(
     patches,
     builds,
     enqueued,
+    /** How many grading runs the store made, not found cached. */
+    gradeRuns: () => gradeRuns.size,
+    /** Whether the store refuses at the active-run limit from now on. */
+    limit: (on: boolean) => {
+      overrides.limit = on;
+    },
     removed,
     published,
     announced,
@@ -1160,6 +1321,404 @@ test("an admin publishes a version whose build passed, and unpublishes the sandb
     404,
   );
   assert.equal((await f.request("POST", "/sbx_9/unpublish")).status, 404);
+});
+
+/* The gates a version is published on, as its build recorded them. */
+
+const passingGates = {
+  roundTrip: { status: "passed", files: 1, problems: [] },
+  disclosure: { status: "passed", scannedBy: "build", names: 3, blocking: 0 },
+};
+const builtSource: Partial<StoredVersionSource> = {
+  buildRunId: "arn_build",
+  harnessSha256: "h".repeat(64),
+  toolchainDigest: "t".repeat(64),
+};
+const gatedManifest = (gates: unknown) => ({
+  manifestSha256: source.manifestSha256,
+  transformConfigSha256: source.transformConfigSha256,
+  approvedTaskSha256: source.approvedTaskSha256,
+  baseline: { ok: true },
+  ...(gates === undefined ? {} : { gates }),
+});
+const until = { expiresAt: "2026-10-09T00:00:00.000Z" };
+const publishOf = async (overrides: Parameters<typeof fixture>[1]) => {
+  const f = fixture("owner", { sourcePatch: builtSource, ...overrides });
+  const response = await f.request("POST", "/versions/sbv_1/publish", until);
+  return {
+    f,
+    status: response.status,
+    body: (await response.json()) as Record<string, unknown>,
+  };
+};
+
+test("publishing records the round trip and disclosure gates its build passed", async () => {
+  const { f, status, body } = await publishOf({
+    buildManifest: gatedManifest(passingGates),
+  });
+  assert.equal(status, 200, JSON.stringify(body));
+  assert.deepEqual(body["gates"], { status: "passed", reason: null });
+  // The build run proved both; the store records them as it freezes.
+  assert.deepEqual(f.published[0]?.evidence, {
+    buildRunId: "arn_build",
+    roundTripRunId: "arn_build",
+    disclosureRunId: "arn_build",
+  });
+  // A generated version has nothing to carry back to: not a failure.
+  const generated = await publishOf({
+    buildManifest: gatedManifest({
+      ...passingGates,
+      roundTrip: { status: "not_applicable", files: 0, problems: [] },
+    }),
+  });
+  assert.equal(generated.status, 200);
+});
+
+test("publishing is refused, naming the gate, when a build's round trip or disclosure scan failed", async () => {
+  const problems = [
+    { path: "src/app.ts", reason: "It has 3 lines and the repository's 4." },
+  ];
+  const roundTrip = await publishOf({
+    buildManifest: gatedManifest({
+      ...passingGates,
+      roundTrip: { status: "failed", files: 1, problems },
+    }),
+  });
+  assert.equal(roundTrip.status, 409);
+  assert.equal(roundTrip.body["code"], "round_trip_failed");
+  assert.equal(roundTrip.body["gate"], "round_trip");
+  assert.deepEqual(roundTrip.body["problems"], problems);
+  assert.deepEqual(roundTrip.f.published, []);
+  const disclosure = await publishOf({
+    buildManifest: gatedManifest({
+      ...passingGates,
+      disclosure: {
+        status: "failed",
+        scannedBy: "build",
+        names: 3,
+        blocking: 2,
+        total: 3,
+        acknowledged: 1,
+        findings: [
+          {
+            kind: "url",
+            file: "src/app.ts",
+            line: 2,
+            value: "https://wiki.acme.internal/a",
+            term: "wiki.acme.internal",
+            acknowledged: false,
+          },
+          {
+            kind: "url",
+            file: "src/app.ts",
+            line: 3,
+            value: "https://docs.stripe.com/api",
+            term: "docs.stripe.com",
+            acknowledged: true,
+          },
+          {
+            kind: "email",
+            file: "src/app.ts",
+            line: 4,
+            value: "jo@acme.io",
+            term: "acme.io",
+            acknowledged: false,
+          },
+        ],
+      },
+    }),
+  });
+  assert.equal(disclosure.status, 409);
+  assert.equal(disclosure.body["code"], "disclosure_failed");
+  assert.equal(disclosure.body["gate"], "disclosure");
+  assert.equal(disclosure.body["blocking"], 2);
+  // What no owner acknowledged, by file, line, kind and value.
+  assert.deepEqual(disclosure.body["findings"], [
+    {
+      kind: "url",
+      file: "src/app.ts",
+      line: 2,
+      value: "https://wiki.acme.internal/a",
+    },
+    { kind: "email", file: "src/app.ts", line: 4, value: "jo@acme.io" },
+  ]);
+  assert.deepEqual(disclosure.f.published, []);
+  // A build from before the scan beyond the vocabulary lists none.
+  const vocabularyOnly = await publishOf({
+    buildManifest: gatedManifest({
+      ...passingGates,
+      disclosure: {
+        status: "failed",
+        scannedBy: "build",
+        names: 3,
+        blocking: 1,
+      },
+    }),
+  });
+  assert.equal(vocabularyOnly.body["code"], "disclosure_failed");
+  assert.deepEqual(vocabularyOnly.body["findings"], []);
+  // Evidence of another build's inputs is stale, whatever its gates say.
+  const stale = await publishOf({
+    buildManifest: {
+      ...gatedManifest(passingGates),
+      approvedTaskSha256: "9".repeat(64),
+    },
+  });
+  assert.equal(stale.status, 409);
+  assert.equal(stale.body["code"], "build_evidence_stale");
+  // A manifest that cannot be read publishes nothing.
+  const unreadable = await publishOf({});
+  assert.equal(unreadable.status, 502);
+  assert.equal(unreadable.body["code"], "artifacts_unavailable");
+});
+
+/*
+  An uploaded or generated draft's findings wait for publication: its build
+  read no acknowledgement, recorded every finding, and stayed ready.
+*/
+
+/** A hand-off folder whose code links a public SaaS docs page. */
+const docsFolder = [
+  {
+    path: "src/billing.ts",
+    text: "// Charges follow https://docs.stripe.com/api/charges\nexport const charge = (cents: number) => cents;\n",
+  },
+  { path: "src/cart.ts", text: "export const cart = 1;\n" },
+];
+/** The disclosure gate an import or starter build records for `files`. */
+const pendingGate = (files: { path: string; text: string }[]) => {
+  const found = scanDisclosure(files);
+  return disclosureGate([], 0, "upload", {
+    findings: disclosureRecords(found, [], DISCLOSURE_FINDINGS_EVALUATED),
+    total: found.length,
+    unacknowledged: found.length,
+    acknowledgedAt: "publish",
+  });
+};
+const pendingSource = (
+  origin: "upload" | "starter",
+): Partial<StoredVersionSource> => ({
+  ...builtSource,
+  origin,
+  sliceRunId: null,
+  manifestSha256: null,
+  starterRunId: "arn_build",
+});
+const pendingManifest = (gate: unknown) => ({
+  ...gatedManifest({
+    roundTrip: { status: "not_applicable", files: 0, problems: [] },
+    disclosure: gate,
+  }),
+  manifestSha256: null,
+  ready: true,
+  blockers: [],
+});
+
+for (const origin of ["upload", "starter"] as const)
+  test(`${origin === "upload" ? "an uploaded" : "a generated"} draft's findings are acknowledged at publication, with no build again`, async () => {
+    const gate = pendingGate(docsFolder);
+    assert.equal(gate.status, "pending_acknowledgement");
+    const refused = await publishOf({
+      sourcePatch: pendingSource(origin),
+      buildManifest: pendingManifest(gate),
+    });
+    assert.equal(refused.status, 409, JSON.stringify(refused.body));
+    assert.equal(refused.body["code"], "disclosure_failed");
+    assert.equal(refused.body["pendingAcknowledgement"], true);
+    assert.equal(refused.body["blocking"], 1);
+    assert.equal(refused.body["unrecorded"], 0);
+    assert.deepEqual(refused.body["findings"], [
+      {
+        kind: "url",
+        file: "src/billing.ts",
+        line: 1,
+        value: "https://docs.stripe.com/api/charges",
+      },
+    ]);
+    assert.deepEqual(refused.f.published, []);
+    // The owner acknowledges it: stored with who and when, the transform
+    // and the build's evidence untouched, nothing queued.
+    const f = fixture("owner", { sourcePatch: pendingSource(origin) });
+    const path = "/versions/sbv_1/disclosure-acknowledgements";
+    const acknowledgements = [
+      { kind: "host", value: "docs.stripe.com", note: "Public API docs." },
+    ];
+    const put = await f.request("PUT", path, { acknowledgements });
+    assert.equal(put.status, 200, await put.clone().text());
+    assert.deepEqual([f.builds, f.enqueued], [[], []]);
+    const [patch] = f.patches as {
+      disclosureAcknowledgements: { by: string; at: string }[];
+    }[];
+    assert.deepEqual(Object.keys(patch ?? {}), ["disclosureAcknowledgements"]);
+    assert.equal(patch?.disclosureAcknowledgements[0]?.by, "user_1");
+    assert.ok(patch?.disclosureAcknowledgements[0]?.at);
+    // Published as it stands, the list read at publication.
+    const published = await publishOf({
+      sourcePatch: {
+        ...pendingSource(origin),
+        disclosureAcknowledgements: patch?.disclosureAcknowledgements as never,
+      },
+      buildManifest: pendingManifest(gate),
+    });
+    assert.equal(published.status, 200, JSON.stringify(published.body));
+    assert.deepEqual(published.f.published[0]?.evidence, {
+      buildRunId: "arn_build",
+      roundTripRunId: "arn_build",
+      disclosureRunId: "arn_build",
+    });
+    // A list that misses one still holds it; so do findings past the record.
+    const partial = await publishOf({
+      sourcePatch: {
+        ...pendingSource(origin),
+        disclosureAcknowledgements: [
+          { kind: "host", value: "stripe.com", by: "user_1", at: stamp },
+        ],
+      },
+      buildManifest: pendingManifest(
+        pendingGate([
+          ...docsFolder,
+          { path: "src/ops.ts", text: "// Ask ops@halcyon.io first.\n" },
+        ]),
+      ),
+    });
+    assert.equal(partial.body["code"], "disclosure_failed");
+    assert.deepEqual(
+      (partial.body["findings"] as { value: string }[]).map(
+        (item) => item.value,
+      ),
+      ["ops@halcyon.io"],
+    );
+    const overflow = await publishOf({
+      sourcePatch: {
+        ...pendingSource(origin),
+        disclosureAcknowledgements: [
+          { kind: "host", value: "stripe.com", by: "user_1", at: stamp },
+        ],
+      },
+      buildManifest: pendingManifest({ ...gate, total: 4 }),
+    });
+    assert.equal(overflow.body["code"], "disclosure_failed");
+    assert.deepEqual(overflow.body["findings"], []);
+    assert.equal(overflow.body["unrecorded"], 3);
+  });
+
+test("a blocked build answers what blocked it before its stale transform", async () => {
+  // The transform a blocked build wrote never settles on the draft, so its
+  // evidence names a different transform than the draft's.
+  const blockedManifest = (gates: unknown, blockers: unknown[]) => ({
+    ...gatedManifest(gates),
+    transformConfigSha256: "8".repeat(64),
+    ready: false,
+    blockers,
+  });
+  const disclosure = await publishOf({
+    buildManifest: blockedManifest(
+      {
+        ...passingGates,
+        disclosure: {
+          status: "failed",
+          scannedBy: "build",
+          names: 3,
+          blocking: 1,
+          findings: [
+            {
+              kind: "email",
+              file: "src/app.ts",
+              line: 4,
+              value: "jo@acme.io",
+              term: "acme.io",
+              acknowledged: false,
+            },
+          ],
+        },
+      },
+      [
+        {
+          code: "disclosure_findings",
+          file: "src/app.ts",
+          detail: "An address.",
+        },
+      ],
+    ),
+  });
+  assert.equal(disclosure.status, 409);
+  assert.equal(disclosure.body["code"], "disclosure_failed");
+  assert.deepEqual(disclosure.body["findings"], [
+    { kind: "email", file: "src/app.ts", line: 4, value: "jo@acme.io" },
+  ]);
+  // Blocked by something no gate names: not ready, with its blockers.
+  const blocked = await publishOf({
+    buildManifest: blockedManifest(passingGates, [
+      { code: "baseline_failed", file: null, detail: "Tests did not run." },
+    ]),
+  });
+  assert.equal(blocked.status, 409);
+  assert.equal(blocked.body["code"], "not_ready");
+  assert.deepEqual(blocked.body["blockers"], [
+    { code: "baseline_failed", file: null, detail: "Tests did not run." },
+  ]);
+  assert.deepEqual(blocked.f.published, []);
+});
+
+test("a draft built before the gates is built again; a version published before them stands", async () => {
+  const draft = await publishOf({ buildManifest: gatedManifest(undefined) });
+  assert.equal(draft.status, 409);
+  assert.equal(draft.body["code"], "gates_unrecorded");
+  assert.deepEqual(draft.f.published, []);
+  const frozen = await publishOf({
+    frozen: true,
+    buildManifest: gatedManifest(undefined),
+  });
+  assert.equal(frozen.status, 200);
+  assert.deepEqual(frozen.body["gates"], {
+    status: "grandfathered",
+    reason:
+      "First published before the publication gates; its build recorded none.",
+  });
+  assert.equal(frozen.f.published[0]?.evidence, undefined);
+});
+
+test("a spec's decisions gate its builds and its publication until a person confirms them", async () => {
+  const unconfirmed = fixture("owner", { decisions: "unconfirmed" });
+  const build = await unconfirmed.request("POST", "/versions/sbv_1/build");
+  assert.equal(build.status, 409);
+  const refusal = (await build.json()) as Record<string, unknown>;
+  assert.equal(refusal["code"], "decisions_unconfirmed");
+  assert.equal(
+    refusal["confirmUrl"],
+    "https://app.test/bounties/org_1/bty_1?tab=price#decisions",
+  );
+  assert.deepEqual(unconfirmed.enqueued, []);
+  const publish = await publishOf({
+    decisions: "unconfirmed",
+    buildManifest: gatedManifest(passingGates),
+  });
+  assert.equal(publish.status, 409);
+  assert.equal(publish.body["code"], "decisions_unconfirmed");
+  assert.deepEqual(publish.f.published, []);
+  // Confirmed, the build names the decisions it quotes by their hash.
+  const confirmed = fixture("owner", { decisions: "confirmed" });
+  assert.equal(
+    (await confirmed.request("POST", "/versions/sbv_1/build")).status,
+    202,
+  );
+  const queued = confirmed.enqueued[0] as { params: Record<string, unknown> };
+  assert.equal(queued.params["decisionsSha256"], halfCentHash);
+  assert.equal(
+    (
+      await publishOf({
+        decisions: "confirmed",
+        buildManifest: gatedManifest(passingGates),
+      })
+    ).status,
+    200,
+  );
+  // A spec with no decisions needs nothing, and names none.
+  const plain = fixture();
+  await plain.request("POST", "/versions/sbv_1/build");
+  const params = (plain.enqueued[0] as { params: Record<string, unknown> })
+    .params;
+  assert.equal("decisionsSha256" in params, false);
 });
 
 test("a bounty's sandbox is created by admins, cut from the repository its sizing touches, and listed for members", async () => {
@@ -1742,6 +2301,149 @@ test("a version's files are for admins, and empty until it is built", async () =
   );
 });
 
+test("owners acknowledge a sliced draft's disclosure findings: the list rehashes the transform and keeps who and when", async () => {
+  const f = fixture();
+  const path = "/versions/sbv_1/disclosure-acknowledgements";
+  const list = [
+    { kind: "host", value: "stripe.com", note: "Public API docs." },
+    { kind: "email", value: "jo@acme.io" },
+  ];
+  const response = await f.request("PUT", path, { acknowledgements: list });
+  assert.equal(response.status, 200);
+  const patch = f.patches[0] as {
+    disclosureAcknowledgements: {
+      kind: string;
+      value: string;
+      note: string | null;
+      by: string;
+      at: string;
+    }[];
+    expectedTransformConfigSha256: string;
+    transformConfigSha256: string;
+  };
+  assert.deepEqual(
+    patch.disclosureAcknowledgements.map(({ kind, value, note, by }) => ({
+      kind,
+      value,
+      note,
+      by,
+    })),
+    [
+      {
+        kind: "host",
+        value: "stripe.com",
+        note: "Public API docs.",
+        by: "user_1",
+      },
+      { kind: "email", value: "jo@acme.io", note: null, by: "user_1" },
+    ],
+  );
+  assert.ok(patch.disclosureAcknowledgements.every((item) => item.at !== ""));
+  assert.equal(patch.expectedTransformConfigSha256, "1".repeat(64));
+  // Part of the transform: a changed list is a different build.
+  assert.equal(
+    patch.transformConfigSha256,
+    transformConfigHash({
+      aliasRules: [],
+      dependencyChoices: {},
+      acceptanceTests: [],
+      disclosureAcknowledgements: patch.disclosureAcknowledgements as never,
+    }),
+  );
+  assert.notEqual(
+    patch.transformConfigSha256,
+    transformConfigHash({
+      aliasRules: [],
+      dependencyChoices: {},
+      acceptanceTests: [],
+    }),
+  );
+  // An entry already held keeps who made it and when; the same list again
+  // changes nothing.
+  const held = {
+    kind: "host" as const,
+    value: "stripe.com",
+    note: "Public API docs.",
+    by: "user_2",
+    at: "2026-10-01T00:00:00.000Z",
+  };
+  const again = fixture("owner", {
+    sourcePatch: { disclosureAcknowledgements: [held] },
+  });
+  const same = await again.request("PUT", path, {
+    acknowledgements: [
+      { kind: "host", value: "stripe.com", note: "Public API docs." },
+    ],
+  });
+  assert.equal(same.status, 200);
+  assert.deepEqual(again.patches, []);
+  const added = await again.request("PUT", path, { acknowledgements: list });
+  assert.equal(added.status, 200);
+  assert.deepEqual(
+    (again.patches[0] as unknown as { disclosureAcknowledgements: unknown[] })
+      .disclosureAcknowledgements[0],
+    held,
+  );
+  // An empty list takes them all back.
+  const cleared = await again.request("PUT", path, { acknowledgements: [] });
+  assert.equal(cleared.status, 200);
+  assert.deepEqual(
+    (again.patches[1] as unknown as { disclosureAcknowledgements: unknown[] })
+      .disclosureAcknowledgements,
+    [],
+  );
+  // Owners and admins only; a valid, unrepeated list; this workspace's draft.
+  assert.equal(
+    (await fixture("member").request("PUT", path, { acknowledgements: list }))
+      .status,
+    403,
+  );
+  for (const body of [
+    null,
+    { acknowledgements: [{ kind: "name", value: "x" }] },
+    { acknowledgements: [list[1], list[1]] },
+  ]) {
+    const invalid = await f.request("PUT", path, body);
+    assert.equal(invalid.status, 400);
+    assert.equal(
+      ((await invalid.json()) as { code: string }).code,
+      "acknowledgements_invalid",
+    );
+  }
+  assert.equal(
+    (
+      await f.request("PUT", "/versions/sbv_x/disclosure-acknowledgements", {
+        acknowledgements: list,
+      })
+    ).status,
+    404,
+  );
+  assert.equal(
+    (await f.request("PUT", path, { acknowledgements: list }, "org_2")).status,
+    404,
+  );
+  const frozen = await fixture("owner", { frozen: true }).request("PUT", path, {
+    acknowledgements: list,
+  });
+  assert.equal(frozen.status, 409);
+  assert.equal(((await frozen.json()) as { code: string }).code, "frozen");
+  // A draft change keeps the list in the transform it rehashes.
+  const changed = await again.request("PATCH", "/versions/sbv_1", {
+    dependencyChoices: { pg: "approved-package" },
+  });
+  assert.equal(changed.status, 200);
+  assert.equal(
+    (again.patches[2] as unknown as { transformConfigSha256: string })
+      .transformConfigSha256,
+    transformConfigHash({
+      aliasRules: [],
+      dependencyChoices: { pg: "approved-package" },
+      acceptanceTests: [],
+      disclosureAcknowledgements: [held],
+    }),
+  );
+});
+
 test("draft changes rehash the transform and recompute the scope; frozen versions refuse", async () => {
   const f = fixture();
   const titled = await f.request("PATCH", "/versions/sbv_1", {
@@ -1851,6 +2553,8 @@ test("a build queues a run carrying every hash and records it on the draft", asy
       approvedTaskSha256: "2".repeat(64),
       // The organization's names, then its repository's, once each.
       vocabulary: ["acme-corp", "acme", "ghr-1"],
+      // Its Jira projects' keys, once each and sorted.
+      ticketKeys: ["OPS", "PAY"],
     },
     requestedBy: "user_1",
     maxActive: 3,
@@ -2137,12 +2841,16 @@ function starterFixture(
     inFlight: boolean;
     /** What the bounty's sources hold, as `heldContext` reads it. */
     context: unknown;
+    /** The spec decided something; confirmed by a person, or not. */
+    decisions: "unconfirmed" | "confirmed";
   }> = {},
 ) {
   const enqueued: { snapshotId: string | null; input: unknown }[] = [];
   const created: { sandboxId: string; input: unknown }[] = [];
   const patches: unknown[] = [];
   const removed: string[] = [];
+  /** The bounties a sandbox was made for. */
+  const made: string[] = [];
   let launches = 0;
   const bare = { ...sandbox, sourceRepoId: null };
   const stored = {
@@ -2154,10 +2862,13 @@ function starterFixture(
       create: async (
         owner: string,
         input: { bountyId: string; sourceRepoId: string | null },
-      ) => ({
-        ok: true,
-        sandbox: { ...bare, organizationId: owner, ...input },
-      }),
+      ) => {
+        made.push(input.bountyId);
+        return {
+          ok: true,
+          sandbox: { ...bare, organizationId: owner, ...input },
+        };
+      },
       get: async (owner: string, id: string) =>
         owner === "org_1" && id === "sbx_1" && overrides.sandbox !== null
           ? { ...bare, ...overrides.sandbox }
@@ -2278,10 +2989,31 @@ function starterFixture(
           ? {
               revision,
               specHash: "s".repeat(64),
-              draft: source.approvedTask.spec?.draft,
+              draft:
+                overrides.decisions === undefined
+                  ? source.approvedTask.spec?.draft
+                  : {
+                      ...(source.approvedTask.spec?.draft as SpecDraft),
+                      assumptions: ["Half a cent rounds up."],
+                    },
             }
           : null,
     },
+    ...(overrides.decisions === undefined
+      ? {}
+      : {
+          decisions: {
+            get: async (
+              _owner: string,
+              _proposalId: string,
+              _revision: number,
+              sha256: string,
+            ) =>
+              overrides.decisions === "confirmed" && sha256 === halfCentHash
+                ? { id: "dcf_1" }
+                : null,
+          },
+        }),
     ensureWorker: async () => {
       launches++;
     },
@@ -2319,6 +3051,7 @@ function starterFixture(
     created,
     patches,
     removed,
+    made,
     launches: () => launches,
   };
 }
@@ -2407,6 +3140,46 @@ test("a sandbox with no repository has a version generated from its bounty, by a
   );
   assert.deepEqual(f.removed, ["logs/old.log"]);
   assert.equal(f.launches(), 1);
+});
+
+test("starting a sandbox on unconfirmed decisions is refused before anything is made", async () => {
+  // A proposal approved before decisions were asked for: no sandbox, no
+  // draft and no run, rather than a sandbox left with a refused version.
+  const unconfirmed = starterFixture("owner", { decisions: "unconfirmed" });
+  const refused = await unconfirmed.request("POST", "/start", {
+    bountyId: "bty_1",
+  });
+  assert.equal(refused.status, 409);
+  const body = (await refused.json()) as Record<string, unknown>;
+  assert.equal(body["code"], "decisions_unconfirmed");
+  assert.match(String(body["error"]), /before starting the sandbox/);
+  assert.match(String(body["confirmUrl"]), /\?tab=price#decisions$/);
+  assert.deepEqual(unconfirmed.made, []);
+  assert.deepEqual(unconfirmed.created, []);
+  assert.deepEqual(unconfirmed.enqueued, []);
+  const confirmed = starterFixture("owner", { decisions: "confirmed" });
+  const started = await confirmed.request("POST", "/start", {
+    bountyId: "bty_1",
+  });
+  assert.equal(started.status, 201);
+  assert.deepEqual(confirmed.made, ["bty_1"]);
+});
+
+test("a version is generated only once its spec's decisions are confirmed, and its run names them", async () => {
+  const unconfirmed = starterFixture("owner", { decisions: "unconfirmed" });
+  const refused = await unconfirmed.request("POST", "/sbx_1/starter");
+  assert.equal(refused.status, 409);
+  const body = (await refused.json()) as Record<string, unknown>;
+  assert.equal(body["code"], "decisions_unconfirmed");
+  // With no page configured, the bounty's own path still says where.
+  assert.match(String(body["confirmUrl"]), /\?tab=price#decisions$/);
+  assert.deepEqual(unconfirmed.enqueued, []);
+  const confirmed = starterFixture("owner", { decisions: "confirmed" });
+  assert.equal((await confirmed.request("POST", "/sbx_1/starter")).status, 202);
+  const queued = confirmed.enqueued[0]?.input as {
+    params: Record<string, unknown>;
+  };
+  assert.equal(queued.params["decisionsSha256"], halfCentHash);
 });
 
 test("a generated version follows the stack of the repositories its work touches, else of any", async () => {
@@ -3199,6 +3972,44 @@ test("a ready slice is cut into a draft from the bounty and built", async () => 
   );
 });
 
+test("a version may be sliced without the repository's own tests, and its later builds keep that until asked again", async () => {
+  const carryOf = (f: ReturnType<typeof fixture>) =>
+    (f.enqueued.at(-1) as { params: { carryTests?: boolean } }).params
+      .carryTests;
+  // Asked: the build leaves them out; no body, or `true`: it carries what
+  // its slice offers.
+  const off = fixture("owner", { profile: {}, bounty: true });
+  assert.equal(
+    (await off.request("POST", "/sbx_1/slice", { carryTests: false })).status,
+    201,
+  );
+  assert.equal(carryOf(off), false);
+  const on = fixture("owner", { profile: {}, bounty: true });
+  assert.equal((await on.request("POST", "/sbx_1/slice")).status, 201);
+  assert.equal(carryOf(on), undefined);
+  for (const body of [{ carryTests: "no" }, { carry: false }]) {
+    const bad = fixture("owner", { profile: {}, bounty: true });
+    assert.equal((await bad.request("POST", "/sbx_1/slice", body)).status, 400);
+    assert.equal(bad.enqueued.length, 0);
+  }
+  // Unasked, a draft whose last build left them out leaves them out again.
+  const params = buildRun.params as unknown as Record<string, unknown>;
+  params["carryTests"] = false;
+  try {
+    const kept = fixture("owner", { profile: {}, bounty: true, built: true });
+    assert.equal((await kept.request("POST", "/sbx_1/slice")).status, 201);
+    assert.equal(carryOf(kept), false);
+    const back = fixture("owner", { profile: {}, bounty: true, built: true });
+    assert.equal(
+      (await back.request("POST", "/sbx_1/slice", { carryTests: true })).status,
+      201,
+    );
+    assert.equal(carryOf(back), undefined);
+  } finally {
+    delete params["carryTests"];
+  }
+});
+
 test("two cuts of one slice at once make one draft and one build", async () => {
   // Both read the sandbox's versions before either cut: the cutter's pass
   // and a person's slice, racing.
@@ -3485,11 +4296,369 @@ test("a built version's handout lists its public files and commits to its hidden
       files: [],
       hiddenTests: 0,
       hiddenSha256: null,
+      hiddenSha256Version: 2,
     },
   );
   assert.equal(
     (await fixture().request("GET", "/versions/sbv_x/handout")).status,
     404,
+  );
+});
+
+/** duediligence's commitment manifest over `[path, text]` pairs, hashed. */
+function commitmentOf(entries: readonly [string, string][]): string {
+  const hex = (text: string) => createHash("sha256").update(text).digest("hex");
+  const lines = [...entries]
+    .sort(([a], [b]) => Buffer.compare(Buffer.from(a), Buffer.from(b)))
+    .map(([path, text]) => `${hex(text)}  ${path}\n`);
+  const kept = entries.map(([path]) => path).sort();
+  return hex(
+    `${lines.join("")}${hex(JSON.stringify(kept))}  calibration.kept\n`,
+  );
+}
+
+const handoutOf = async (f: ReturnType<typeof fixture>) => {
+  const response = await f.request("GET", "/versions/sbv_1/handout");
+  return {
+    status: response.status,
+    body: (await response.json()) as {
+      hiddenTests: number;
+      hiddenSha256: string | null;
+      hiddenSha256Version: number;
+      code?: string;
+    },
+  };
+};
+const nameTable = {
+  path: "private/pseudonym.lunox",
+  body: '{"rules":[],"schemaVersion":1}',
+};
+const hiddenText = "test('hidden', () => {});\n";
+
+test("a build manifest that is not JSON answers artifacts_unavailable, not a 500", async () => {
+  const errors: unknown[][] = [];
+  const original = console.error;
+  console.error = (...args: unknown[]) => errors.push(args);
+  try {
+    const { status, body } = await handoutOf(
+      fixture("admin", {
+        built: true,
+        extraBuilt: [{ path: "build-manifest.json", body: "{not json" }],
+      }),
+    );
+    assert.equal(status, 502);
+    assert.equal(body.code, "artifacts_unavailable");
+  } finally {
+    console.error = original;
+  }
+  assert.deepEqual(errors, [["handout_manifest_unreadable", "sbv_1"]]);
+});
+
+test("a build made before commitments keeps its handout hash, the name table in it, but counts its tests alone", async () => {
+  // A sliced build of then: its name table under private/ was hashed as a
+  // hidden test. The hash a contributor noted stays; the count is fixed.
+  const { status, body } = await handoutOf(
+    fixture("admin", {
+      built: true,
+      extraBuilt: [nameTable],
+      buildManifest: { files: [] },
+    }),
+  );
+  assert.equal(status, 200);
+  assert.equal(body.hiddenTests, 1);
+  assert.equal(body.hiddenSha256Version, 1);
+  assert.equal(
+    body.hiddenSha256,
+    commitmentOf([
+      ["tests/private/hidden.test.ts", hiddenText],
+      ["tests/private/pseudonym.lunox", nameTable.body],
+    ]),
+  );
+});
+
+test("a build's recorded commitment is the handout's hash, over its hidden tests alone, in its layout", async () => {
+  // The platform's layout: the recorded hash, the name table not counted.
+  const recorded = commitmentOf([["tests/private/hidden.test.ts", hiddenText]]);
+  const platform = await handoutOf(
+    fixture("admin", {
+      built: true,
+      extraBuilt: [nameTable],
+      buildManifest: {
+        files: [],
+        hiddenCommitment: {
+          version: 2,
+          hiddenTests: 1,
+          hiddenSha256: recorded,
+        },
+      },
+    }),
+  );
+  assert.equal(platform.status, 200);
+  assert.deepEqual(
+    [
+      platform.body.hiddenTests,
+      platform.body.hiddenSha256,
+      platform.body.hiddenSha256Version,
+    ],
+    [1, recorded, 2],
+  );
+  // An upload's layout stages tests at their folder paths: a `.spec.ts`
+  // beside the code counts too, and its hash is the recorded one.
+  const folderLayout = {
+    harnessDir: "carveout",
+    mocksDir: "carveout/mocks",
+    mockRuntimePath: "carveout/mock.js",
+    envFile: "carveout/sandbox.env",
+    harnessRoots: ["carveout", "node_modules"],
+    configFiles: {},
+    commands: [],
+    tests: {
+      publicDir: null,
+      privateDir: null,
+      files: [],
+      run: {
+        "node:test": { argv: ["node", "--test"], emitted: true },
+        vitest: null,
+      },
+    },
+  };
+  const uploaded = commitmentOf([
+    ["hidden.test.ts", hiddenText],
+    ["src/rounding.spec.ts", "it('rounds');\n"],
+  ]);
+  const upload = await handoutOf(
+    fixture("admin", {
+      built: true,
+      extraBuilt: [
+        nameTable,
+        { path: "private/src/rounding.spec.ts", body: "it('rounds');\n" },
+      ],
+      buildManifest: {
+        files: [],
+        layout: folderLayout,
+        hiddenCommitment: {
+          version: 2,
+          hiddenTests: 2,
+          hiddenSha256: uploaded,
+        },
+      },
+    }),
+  );
+  assert.deepEqual(
+    [upload.body.hiddenTests, upload.body.hiddenSha256],
+    [2, uploaded],
+  );
+  // Artifacts that no longer match what the build recorded are not vouched for.
+  const lost = await handoutOf(
+    fixture("admin", {
+      built: true,
+      buildManifest: {
+        files: [],
+        hiddenCommitment: {
+          version: 2,
+          hiddenTests: 2,
+          hiddenSha256: recorded,
+        },
+      },
+    }),
+  );
+  assert.equal(lost.status, 502);
+  assert.equal(lost.body.code, "artifacts_unavailable");
+});
+
+test("a built version's project downloads as one zip of the handout's files, never a hidden test", async () => {
+  const f = fixture("admin", { built: true });
+  const handout = (await (
+    await f.request("GET", "/versions/sbv_1/handout")
+  ).json()) as { files: { path: string; sizeBytes: number; sha256: string }[] };
+  const response = await f.request("GET", "/versions/sbv_1/archive");
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("Content-Type"), "application/zip");
+  assert.equal(
+    response.headers.get("Content-Disposition"),
+    'attachment; filename="sbx_1-v1.zip"',
+  );
+  assert.equal(response.headers.get("Cache-Control"), "private, no-cache");
+  const etag = response.headers.get("ETag") ?? "";
+  assert.match(etag, /^"[a-f0-9]{64}"$/);
+  const bytes = new Uint8Array(await response.arrayBuffer());
+  assert.equal(Number(response.headers.get("Content-Length")), bytes.length);
+  const entries = unzip(bytes);
+  // One folder, holding exactly the handout's files, byte for byte.
+  assert.deepEqual(
+    entries.map(({ name }) => name),
+    ["sbx_1-v1/huge.json", "sbx_1-v1/logo.png", "sbx_1-v1/src/index.ts"],
+  );
+  assert.deepEqual(
+    entries
+      .map(({ name, bytes: body }) => ({
+        path: name.slice("sbx_1-v1/".length),
+        sizeBytes: body.length,
+        sha256: createHash("sha256").update(body).digest("hex"),
+      }))
+      .sort((a, b) => a.path.localeCompare(b.path)),
+    [...handout.files].sort((a, b) => a.path.localeCompare(b.path)),
+  );
+  const all = Buffer.from(bytes).toString("latin1");
+  assert.equal(all.includes("hidden"), false);
+
+  // The same project again: unchanged, so not sent again.
+  const again = await f.request(
+    "GET",
+    "/versions/sbv_1/archive",
+    undefined,
+    "org_1",
+    {
+      "If-None-Match": `W/${etag}`,
+    },
+  );
+  assert.equal(again.status, 304);
+  assert.equal(again.headers.get("ETag"), etag);
+  assert.equal((await again.arrayBuffer()).byteLength, 0);
+  // HEAD names it without packing it.
+  const head = await f.request("HEAD", "/versions/sbv_1/archive");
+  assert.equal(head.status, 200);
+  assert.equal(head.headers.get("ETag"), etag);
+  assert.equal(head.headers.get("Content-Type"), "application/zip");
+  assert.equal((await head.arrayBuffer()).byteLength, 0);
+});
+
+test("the archive is the handout's: owners and admins, a committed build, and the bytes it recorded", async () => {
+  const status = async (
+    f: ReturnType<typeof fixture>,
+    path = "/versions/sbv_1/archive",
+  ) => {
+    const response = await f.request("GET", path);
+    const body = (await response.json()) as { code?: string };
+    return [response.status, body.code ?? null];
+  };
+  assert.deepEqual(await status(fixture("member", { built: true })), [
+    403,
+    null,
+  ]);
+  assert.deepEqual(await status(fixture("admin")), [409, "not_built"]);
+  assert.deepEqual(
+    await status(fixture("admin", { built: true }), "/versions/sbv_x/archive"),
+    [404, null],
+  );
+  // Another workspace's version is not found.
+  assert.equal(
+    (
+      await fixture("admin", { built: true }).request(
+        "GET",
+        "/versions/sbv_1/archive",
+        undefined,
+        "org_2",
+      )
+    ).status,
+    404,
+  );
+  // A file in storage that is not the one recorded: refused whole, logged.
+  const logged: unknown[][] = [];
+  const original = console.error;
+  console.error = (...args: unknown[]) => logged.push(args);
+  try {
+    assert.deepEqual(
+      await status(
+        fixture("admin", { built: true, tampered: "project/src/index.ts" }),
+      ),
+      [502, "project_mismatch"],
+    );
+    assert.deepEqual(
+      await status(
+        fixture("admin", { built: true, tampered: "project/src/index.ts" }),
+        "/versions/sbv_1/handout/files",
+      ),
+      [502, "project_mismatch"],
+    );
+  } finally {
+    console.error = original;
+  }
+  assert.deepEqual(logged[0], [
+    "project_project_mismatch",
+    "sbv_1",
+    "src/index.ts",
+  ]);
+});
+
+test("the handout's files read as pages of contents, text as text and the rest as base64", async () => {
+  const f = fixture("admin", { built: true });
+  const response = await f.request("GET", "/versions/sbv_1/handout/files");
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("Cache-Control"), "no-store");
+  const page = (await response.json()) as {
+    versionId: string;
+    root: string;
+    sha256: string;
+    total: number;
+    files: {
+      path: string;
+      encoding: string | null;
+      content: string | null;
+      omitted: string | null;
+    }[];
+    nextCursor: string | null;
+  };
+  assert.equal(page.versionId, "sbv_1");
+  assert.equal(page.root, "sbx_1-v1");
+  assert.equal(page.total, 3);
+  assert.equal(page.nextCursor, null);
+  const archive = await f.request("GET", "/versions/sbv_1/archive");
+  assert.equal(archive.headers.get("ETag"), `"${page.sha256}"`);
+  assert.deepEqual(
+    page.files.map(({ path, encoding, content, omitted }) => ({
+      path,
+      encoding,
+      content,
+      omitted,
+    })),
+    [
+      {
+        path: "huge.json",
+        encoding: null,
+        content: null,
+        omitted: "too_large",
+      },
+      {
+        path: "logo.png",
+        encoding: "base64",
+        content: Buffer.from("\u0000PNG").toString("base64"),
+        omitted: null,
+      },
+      {
+        path: "src/index.ts",
+        encoding: "utf8",
+        content: "export const sum = 1;\n",
+        omitted: null,
+      },
+    ],
+  );
+  assert.equal(JSON.stringify(page).includes("hidden"), false);
+  const code = async (query: string) => {
+    const refused = await f.request(
+      "GET",
+      `/versions/sbv_1/handout/files?${query}`,
+    );
+    return [
+      refused.status,
+      ((await refused.json()) as { code?: string }).code ?? null,
+    ];
+  };
+  assert.deepEqual(await code("cursor=nonsense"), [400, "invalid_cursor"]);
+  assert.deepEqual(await code("cursor=000000000000.1"), [409, "cursor_stale"]);
+  assert.deepEqual(await code(`cursor=${page.sha256.slice(0, 12)}.9`), [
+    400,
+    "invalid_cursor",
+  ]);
+  assert.deepEqual(await code("maxBytes=10"), [400, null]);
+  assert.equal(
+    (
+      await fixture("member", { built: true }).request(
+        "GET",
+        "/versions/sbv_1/handout/files",
+      )
+    ).status,
+    403,
   );
 });
 
@@ -3503,6 +4672,8 @@ function submissionsFake(
     | "is_retry"
     | "retry_used"
     | "same_patch",
+  /** `sbm_1` as `get` reads it: errored, or queued; passed unless said. */
+  read?: "errored" | "queued",
 ) {
   const made: unknown[] = [];
   const stored = (overrides: object = {}) => ({
@@ -3524,6 +4695,14 @@ function submissionsFake(
     updatedAt: stamp,
     ...overrides,
   });
+  const readOf = () =>
+    read === undefined
+      ? stored()
+      : stored({
+          status: read,
+          result: null,
+          errorCode: read === "errored" ? "grading_interrupted" : null,
+        });
   let seen = false;
   let retried = false;
   return {
@@ -3549,7 +4728,7 @@ function submissionsFake(
         };
       },
       get: async (owner: string, id: string) =>
-        owner === "org_1" && id === "sbm_1" ? stored() : null,
+        owner === "org_1" && id === "sbm_1" ? readOf() : null,
       list: async (owner: string) => (owner === "org_1" ? [stored()] : []),
       retry: async (
         owner: string,
@@ -3559,6 +4738,14 @@ function submissionsFake(
         made.push({ owner, retryOf: id, ...input });
         if (retryReason !== undefined)
           return { ok: false, reason: retryReason };
+        // An errored submission with its own files: graded again in place.
+        if (read === "errored" && input.patchSha256 === "a".repeat(64))
+          return {
+            ok: true,
+            created: false,
+            regrade: true,
+            submission: readOf(),
+          };
         const created = !retried;
         retried = true;
         return {
@@ -3613,12 +4800,7 @@ test("a failed submission is retried once with new files, graded against the sam
   });
   const again = await f.request("POST", "/submissions/sbm_1/retry", { files });
   assert.equal(again.status, 200);
-  assert.equal(
-    f.enqueued.filter(
-      (run) => (run as { tool: string }).tool === "submission_grade",
-    ).length,
-    1,
-  );
+  assert.equal(f.gradeRuns(), 1);
   // Another workspace's submission, or none, is not found before anything is stored.
   assert.equal(
     (await f.request("POST", "/submissions/sbm_x/retry", { files })).status,
@@ -3707,12 +4889,7 @@ test("files submitted against a version are stored, hashed and graded once; the 
     files: [...files].reverse(),
   });
   assert.equal(again.status, 200);
-  assert.equal(
-    f.enqueued.filter(
-      (run) => (run as { tool: string }).tool === "submission_grade",
-    ).length,
-    1,
-  );
+  assert.equal(f.gradeRuns(), 1);
 
   const read = (await (
     await f.request("GET", "/submissions/sbm_1")
@@ -3741,6 +4918,129 @@ test("files submitted against a version are stored, hashed and graded once; the 
   };
   assert.equal(listed.submissions.length, 1);
   assert.equal((await f.request("GET", "/submissions/sbm_x")).status, 404);
+});
+
+test("a submission refused at the active-run limit is queued by the same files sent again", async () => {
+  const submissions = submissionsFake();
+  const f = fixture("admin", { submissions: submissions.store, limit: true });
+  const files = [{ path: "src/a.ts", text: "a" }];
+  const first = await f.request("POST", "/versions/sbv_1/submissions", {
+    files,
+  });
+  // Kept, and told it may send the same files again.
+  assert.equal(first.status, 409);
+  assert.equal(first.headers.get("retry-after"), "60");
+  const refused = (await first.json()) as { code: string; retryable: boolean };
+  assert.deepEqual([refused.code, refused.retryable], ["run_limit", true]);
+  assert.equal(f.gradeRuns(), 0);
+  f.limit(false);
+  // The row exists with no run: the same files queue its run.
+  const again = await f.request("POST", "/versions/sbv_1/submissions", {
+    files,
+  });
+  assert.equal(again.status, 202);
+  assert.equal(f.gradeRuns(), 1);
+  assert.equal(
+    (f.enqueued.at(-1) as { params: { submissionId: string } }).params
+      .submissionId,
+    "sbm_1",
+  );
+  // Once it has a run, the same files find it: no second run.
+  const third = await f.request("POST", "/versions/sbv_1/submissions", {
+    files,
+  });
+  assert.equal(third.status, 200);
+  assert.equal(f.gradeRuns(), 1);
+  // One submission throughout: each request found the row it made.
+  assert.equal(submissions.made.length, 3);
+});
+
+test("an errored submission is graded again in place, with the run it had, its retry kept", async () => {
+  const errored = () => submissionsFake(undefined, undefined, "errored").store;
+  const viaRetry = fixture("admin", { submissions: errored() });
+  const read = (await (
+    await viaRetry.request("GET", "/submissions/sbm_1")
+  ).json()) as { submission: { status: string; errorCode: string | null } };
+  assert.deepEqual(
+    [read.submission.status, read.submission.errorCode],
+    ["errored", "grading_interrupted"],
+  );
+  // Retried with its own files (the fake's `sbm_1` holds "a" * 64 as its
+  // hash, so the store answers `regrade`), or asked to grade it again.
+  const ownFiles = {
+    async retry(...args: Parameters<ReturnType<typeof errored>["retry"]>) {
+      const [owner, id, input] = args;
+      return errored().retry(owner, id, {
+        ...input,
+        patchSha256: "a".repeat(64),
+      });
+    },
+  };
+  for (const [f, path, body] of [
+    [
+      fixture("admin", { submissions: { ...errored(), ...ownFiles } }),
+      "/submissions/sbm_1/retry",
+      { files: [{ path: "src/a.ts", text: "a" }] },
+    ],
+    [
+      fixture("admin", { submissions: errored() }),
+      "/submissions/sbm_1/regrade",
+      undefined,
+    ],
+  ] as const) {
+    const response = await f.request("POST", path, body);
+    assert.equal(response.status, 202, path);
+    // The run it had, again: the CI judge's files keep their names, and
+    // no new submission is made.
+    assert.deepEqual(f.enqueued.at(-1), {
+      snapshotId: "rsn_1",
+      tool: "submission_grade",
+      params: judgedParams,
+      requestedBy: "user_1",
+      maxActive: 3,
+    });
+    assert.equal(f.gradeRuns(), 1);
+  }
+  // A run out of attempts is not queued again; the retry is still there.
+  const spent = await fixture("admin", {
+    submissions: errored(),
+    gradeCached: "failed",
+  }).request("POST", "/submissions/sbm_1/regrade");
+  assert.equal(spent.status, 409);
+  assert.equal(
+    ((await spent.json()) as { code: string }).code,
+    "regrade_spent",
+  );
+  // Already queued again (a second click): answered as it stands.
+  assert.equal(
+    (
+      await fixture("admin", {
+        submissions: errored(),
+        gradeCached: "queued",
+      }).request("POST", "/submissions/sbm_1/regrade")
+    ).status,
+    200,
+  );
+  // Only an errored submission; owners and admins; the workspace's own.
+  const passed = await fixture("admin", {
+    submissions: submissionsFake().store,
+  }).request("POST", "/submissions/sbm_1/regrade");
+  assert.equal(passed.status, 409);
+  assert.equal(((await passed.json()) as { code: string }).code, "not_errored");
+  for (const [role, path, status] of [
+    ["member", "/submissions/sbm_1/regrade", 403],
+    ["admin", "/submissions/sbm_x/regrade", 404],
+  ] as const)
+    assert.equal(
+      (await fixture(role, { submissions: errored() }).request("POST", path))
+        .status,
+      status,
+    );
+  assert.equal(
+    (await fixture("admin").request("POST", "/submissions/sbm_1/regrade"))
+      .status,
+    404,
+  );
 });
 
 test("submissions are refused when invalid, against a draft, for members, or where none are taken", async () => {
@@ -3796,49 +5096,212 @@ test("submissions are refused when invalid, against a draft, for members, or whe
   );
 });
 
-/** A merge-back store and a GitHub writer that record what they are asked. */
-function mergeBackFake(target: "ok" | "gone" | "forbidden" | "down" = "ok") {
+/**
+ * GitHub's side of `acme/shop` for a real `PullRequestWriter`: the base
+ * commit, the merge-back's branch, commits by tree, open pull requests.
+ * Each answer waits a tick, so two requests interleave as they would.
+ * `fail` answers one request (method and path) with a status, once.
+ */
+function githubRepository() {
+  const state = {
+    branch: undefined as string | undefined,
+    commits: { c0ffee: "tree0" } as Record<string, string>,
+    pulls: [] as { number: number; html_url: string }[],
+    writes: [] as string[],
+    fail: undefined as { route: string; status: number } | undefined,
+  };
+  const reply = (body: unknown, status = 200) =>
+    new Response(JSON.stringify(body), {
+      status,
+      headers: { "content-type": "application/json" },
+    });
+  const fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    await new Promise((resolve) => setImmediate(resolve));
+    const method = init?.method ?? "GET";
+    const path = new URL(String(input)).pathname.replace(
+      "/repos/acme/shop",
+      "",
+    );
+    const body = (
+      typeof init?.body === "string" ? JSON.parse(init.body) : {}
+    ) as Record<string, string>;
+    if (state.fail?.route === `${method} ${path}`) {
+      const status = state.fail.status;
+      state.fail = undefined;
+      return reply({ message: "failed" }, status);
+    }
+    if (method === "POST") state.writes.push(path);
+    const commit = /^\/git\/commits\/(\w+)$/.exec(path);
+    if (commit !== null) {
+      const tree = state.commits[commit[1] ?? ""];
+      return tree === undefined
+        ? reply({}, 404)
+        : reply({ sha: commit[1], tree: { sha: tree } });
+    }
+    if (path === "/git/trees") return reply({ sha: "tree1" }, 201);
+    if (path === "/git/commits") {
+      state.commits["beef"] = body["tree"] ?? "";
+      return reply({ sha: "beef" }, 201);
+    }
+    if (path === "/git/ref/heads/lunox/sbm_1")
+      return state.branch === undefined
+        ? reply({}, 404)
+        : reply({ object: { sha: state.branch } });
+    if (path === "/git/refs") {
+      if (state.branch !== undefined) return reply({}, 422);
+      state.branch = body["sha"];
+      return reply({}, 201);
+    }
+    if (path === "/pulls" && method === "GET") return reply(state.pulls);
+    if (path === "/pulls") {
+      if (state.pulls.length > 0) return reply({}, 422);
+      const pull = {
+        number: 7,
+        html_url: "https://github.com/acme/shop/pull/7",
+      };
+      state.pulls.push(pull);
+      return reply(pull, 201);
+    }
+    return reply({}, 404);
+  }) as typeof globalThis.fetch;
+  return {
+    state,
+    writer: new PullRequestWriter({
+      token: () => Promise.resolve("ghs_write"),
+      fetch,
+    }),
+  };
+}
+
+/**
+ * A merge-back store keeping the real one's rules (one row per submission,
+ * claimed pending, finished opened, released for a retry; only opened rows
+ * read back) and a target over `githubRepository`, or a writer that fails.
+ */
+function mergeBackFake(
+  target:
+    "ok" | "gone" | "forbidden" | "down" | "missing" | "ci_missing" = "ok",
+  options: { finishFails?: number } = {},
+) {
+  const github = githubRepository();
   const opened: unknown[] = [];
   const recorded: unknown[] = [];
-  const merges = new Map<string, unknown>();
+  const asked: unknown[] = [];
+  const rows = new Map<
+    string,
+    { status: "pending" | "opened"; claimed: boolean; merge: object }
+  >();
+  let finishFails = options.finishFails ?? 0;
+  const read = (id: string) => {
+    const row = rows.get(id);
+    return row?.status === "opened" ? row.merge : null;
+  };
   return {
+    github,
     opened,
     recorded,
+    asked,
+    rows,
     merges: {
-      get: async (_owner: string, id: string) => merges.get(id) ?? null,
+      get: async (_owner: string, id: string) => read(id),
       list: async (_owner: string, ids: readonly string[]) =>
-        ids.flatMap((id) => (merges.has(id) ? [merges.get(id)] : [])),
-      record: async (owner: string, input: { submissionId: string }) => {
-        recorded.push({ owner, ...input });
-        const merge = { id: "smg_1", ...input, createdAt: stamp };
-        merges.set(input.submissionId, merge);
-        return merge;
+        ids.flatMap((id) => read(id) ?? []),
+      claim: async (
+        _owner: string,
+        input: { submissionId: string; branch: string },
+      ) => {
+        const row = rows.get(input.submissionId);
+        if (row?.status === "opened")
+          return { status: "opened", merge: row.merge };
+        if (row?.claimed === true) return { status: "busy" };
+        rows.set(input.submissionId, {
+          status: "pending",
+          claimed: true,
+          merge: { id: "smg_1", ...input, createdAt: stamp, ...unread },
+        });
+        return { status: "claimed" };
+      },
+      finish: async (owner: string, id: string, done: object) => {
+        if (finishFails > 0) {
+          finishFails -= 1;
+          throw new Error("the database went away");
+        }
+        const row = rows.get(id);
+        if (row === undefined) throw new Error("no claim");
+        recorded.push({ owner, submissionId: id, ...done });
+        row.status = "opened";
+        row.claimed = false;
+        row.merge = { ...row.merge, ...done };
+        return row.merge;
+      },
+      release: async (_owner: string, id: string) => {
+        const row = rows.get(id);
+        if (row !== undefined) row.claimed = false;
+      },
+      setMergeWhen: async (_owner: string, id: string, when: string) => {
+        const row = rows.get(id);
+        const merge = row?.merge as { pullRequestState?: string } | undefined;
+        if (row?.status !== "opened" || merge?.pullRequestState !== "open")
+          return null;
+        row.merge = { ...row.merge, mergeWhen: when };
+        return row.merge;
       },
     },
     mergeBack: {
-      target: async (owner: string, repoId: string) =>
-        target === "gone" || owner !== "org_1" || repoId !== "ghr_1"
+      target: async (
+        owner: string,
+        repoId: string,
+        how: { fresh?: boolean } = {},
+      ) => {
+        asked.push(how.fresh === true ? "fresh" : "stored");
+        return target === "gone" || owner !== "org_1" || repoId !== "ghr_1"
           ? null
           : {
               fullName: "acme/shop",
               defaultBranch: "main",
+              missingPermissions:
+                target === "missing"
+                  ? ["contents:write", "pull_requests:write"]
+                  : [],
+              acceptUrl:
+                "https://github.com/organizations/acme/settings/installations/9",
+              ciMissingPermissions:
+                target === "ci_missing" ? ["checks:read", "statuses:read"] : [],
+              ciReader: null,
               writer: {
-                open: async (input: unknown) => {
+                open: async (input: PullRequestInput) => {
                   opened.push(input);
                   if (target === "forbidden")
                     throw new GithubAuthError(403, "refused");
                   if (target === "down") throw new Error("down");
-                  return {
-                    number: 7,
-                    url: "https://github.com/acme/shop/pull/7",
-                    commitSha: "beef",
-                  };
+                  return github.writer.open(input);
                 },
               },
-            },
+            };
+      },
     },
   };
 }
+
+/** What an opened merge-back holds before anything is read back. */
+const unread = {
+  pullRequestState: "open",
+  ciState: "pending",
+  ciSummary: null,
+  ciHeadSha: null,
+  ciCheckedAt: null,
+  mergedCommitSha: null,
+  mergedAt: null,
+  mergeError: null,
+};
+const unreadDto = {
+  when: "open",
+  pullRequestState: "open",
+  ci: { state: "pending", summary: null, headSha: null, checkedAt: null },
+  mergedCommitSha: null,
+  mergedAt: null,
+  mergeError: null,
+};
 
 const carried = JSON.stringify({
   schemaVersion: 1,
@@ -3868,11 +5331,13 @@ const passedSubmission = (overrides: object = {}) => {
 
 test("a passing submission is merged back as one pull request on the version's commit, from a signed-in session", async () => {
   const back = mergeBackFake();
+  const events: unknown[] = [];
   const f = fixture("admin", {
     submissions: passedSubmission(),
     merges: back.merges,
     mergeBack: back.mergeBack,
     gradeRun: { "private/merge-patch.json": carried },
+    events,
   });
   const first = await f.request("POST", "/submissions/sbm_1/merge");
   assert.equal(first.status, 201);
@@ -3884,7 +5349,23 @@ test("a passing submission is merged back as one pull request on the version's c
     pullRequestUrl: "https://github.com/acme/shop/pull/7",
     branch: "lunox/sbm_1",
     createdAt: stamp,
+    ...unreadDto,
   });
+  // The workspace is told, once.
+  assert.deepEqual(events, [
+    [
+      "org_1",
+      "submission.merge_opened",
+      "sbm_1:7",
+      {
+        submissionId: "sbm_1",
+        sandboxVersionId: "sbv_1",
+        pullRequestNumber: 7,
+        pullRequestUrl: "https://github.com/acme/shop/pull/7",
+        when: "open",
+      },
+    ],
+  ]);
   const asked = back.opened[0] as Record<string, unknown>;
   assert.deepEqual(
     {
@@ -3908,18 +5389,34 @@ test("a passing submission is merged back as one pull request on the version's c
   assert.deepEqual(back.recorded[0], {
     owner: "org_1",
     submissionId: "sbm_1",
-    repositoryFullName: "acme/shop",
-    branch: "lunox/sbm_1",
     commitSha: "beef",
     pullRequestNumber: 7,
     pullRequestUrl: "https://github.com/acme/shop/pull/7",
-    openedBy: "user_1",
   });
+  assert.deepEqual(back.rows.get("sbm_1")?.merge, {
+    id: "smg_1",
+    submissionId: "sbm_1",
+    repositoryFullName: "acme/shop",
+    branch: "lunox/sbm_1",
+    openedBy: "user_1",
+    repoId: "ghr_1",
+    mergeWhen: "open",
+    createdAt: stamp,
+    ...unread,
+    commitSha: "beef",
+    pullRequestNumber: 7,
+    pullRequestUrl: "https://github.com/acme/shop/pull/7",
+  });
+  // The merge read the installation's permissions from GitHub.
+  assert.deepEqual(back.asked, ["fresh"]);
 
-  // Again: the pull request already opened, and no second one.
+  // Again: the pull request already opened, the same body, and no second one.
   const again = await f.request("POST", "/submissions/sbm_1/merge");
   assert.equal(again.status, 200);
+  assert.deepEqual(await again.json(), body);
   assert.equal(back.opened.length, 1);
+  assert.equal(back.github.state.pulls.length, 1);
+  assert.equal(events.length, 1, "told once");
   // Read back on the submission and in the version's list.
   const read = (await (
     await f.request("GET", "/submissions/sbm_1")
@@ -3976,6 +5473,24 @@ test("merge-back is refused for a token, a member, a submission that did not pas
     }),
     [409, "not_passed"],
   );
+  // Passed, but its carry failed in the repository's names: nothing opens,
+  // even were a patch somehow kept.
+  const unopened = back();
+  assert.deepEqual(
+    await code({
+      ...ready(unopened),
+      submissions: passedSubmission({
+        result: {
+          public: { passed: 1, total: 1 },
+          hidden: { passed: 2, total: 2 },
+          verdict: "passed",
+          carryBack: "failed",
+        },
+      }),
+    }),
+    [409, "carry_failed"],
+  );
+  assert.deepEqual(unopened.opened, []);
   // A generated version's grading run carries nothing back.
   assert.deepEqual(await code({ ...ready(), gradeRun: {} }), [
     409,
@@ -3997,11 +5512,231 @@ test("merge-back is refused for a token, a member, a submission that did not pas
     502,
     "github_failed",
   ]);
+  assert.deepEqual(await code(ready(mergeBackFake("missing"))), [
+    409,
+    "app_permissions_missing",
+  ]);
   const missing = await fixture("admin", ready()).request(
     "POST",
     "/submissions/sbm_x/merge",
   );
   assert.equal(missing.status, 404);
+});
+
+const mergeReady = (back: ReturnType<typeof mergeBackFake>) =>
+  fixture("admin", {
+    submissions: passedSubmission(),
+    merges: back.merges,
+    mergeBack: back.mergeBack,
+    gradeRun: { "private/merge-patch.json": carried },
+  });
+
+test("merge pressed twice at once opens one pull request; the second is told it is in progress", async () => {
+  const back = mergeBackFake();
+  const f = mergeReady(back);
+  const [first, second] = await Promise.all([
+    f.request("POST", "/submissions/sbm_1/merge"),
+    f.request("POST", "/submissions/sbm_1/merge"),
+  ]);
+  assert.deepEqual([first?.status, second?.status].sort(), [201, 409]);
+  const refused = (await (first?.status === 409 ? first : second)?.json()) as {
+    code: string;
+  };
+  assert.equal(refused.code, "merge_in_progress");
+  assert.equal(back.opened.length, 1);
+  assert.equal(back.github.state.pulls.length, 1);
+  assert.deepEqual(
+    back.github.state.writes.filter((path) => path === "/pulls"),
+    ["/pulls"],
+  );
+  // Pressed again once it finished: the same pull request, 200.
+  const after = await f.request("POST", "/submissions/sbm_1/merge");
+  assert.equal(after.status, 200);
+  const body = (await after.json()) as {
+    submission: { merge: { pullRequestNumber: number } };
+  };
+  assert.equal(body.submission.merge.pullRequestNumber, 7);
+});
+
+test("a merge whose record failed, or whose GitHub call failed half-way, resumes on the next press from what GitHub has", async () => {
+  // GitHub opened the pull request; recording it failed.
+  const back = mergeBackFake("ok", { finishFails: 1 });
+  const f = mergeReady(back);
+  const failed = await f.request("POST", "/submissions/sbm_1/merge");
+  assert.equal(failed.status, 500);
+  assert.equal(back.github.state.pulls.length, 1);
+  assert.equal(back.rows.get("sbm_1")?.status, "pending");
+  assert.equal(back.rows.get("sbm_1")?.claimed, false);
+  const writes = back.github.state.writes.length;
+  const retried = await f.request("POST", "/submissions/sbm_1/merge");
+  assert.equal(retried.status, 201);
+  // The branch and pull request were reused: only the content-addressed
+  // tree was asked for again.
+  assert.deepEqual(back.github.state.writes.slice(writes), ["/git/trees"]);
+  assert.equal(back.github.state.pulls.length, 1);
+  assert.equal(back.recorded.length, 1);
+
+  // The branch was made; opening the pull request failed.
+  const half = mergeBackFake();
+  half.github.state.fail = { route: "POST /pulls", status: 500 };
+  const g = mergeReady(half);
+  const down = await g.request("POST", "/submissions/sbm_1/merge");
+  assert.equal(down.status, 502);
+  assert.equal(((await down.json()) as { code: string }).code, "github_failed");
+  assert.equal(half.github.state.branch, "beef");
+  const resumed = await g.request("POST", "/submissions/sbm_1/merge");
+  assert.equal(resumed.status, 201);
+  assert.equal(
+    half.github.state.writes.filter((path) => path === "/git/refs").length,
+    1,
+  );
+  assert.equal(half.github.state.pulls.length, 1);
+});
+
+test("a merge onto a branch someone pushed other work to is refused, and nothing is overwritten", async () => {
+  const back = mergeBackFake();
+  back.github.state.branch = "f00d";
+  back.github.state.commits["f00d"] = "tree9";
+  const response = await mergeReady(back).request(
+    "POST",
+    "/submissions/sbm_1/merge",
+  );
+  assert.equal(response.status, 409);
+  const body = (await response.json()) as { code: string; error: string };
+  assert.equal(body.code, "branch_conflict");
+  assert.match(body.error, /already exists/);
+  assert.equal(back.github.state.branch, "f00d");
+  assert.deepEqual(back.github.state.writes, ["/git/trees"]);
+  // Released: once the branch is dealt with, pressing again proceeds.
+  assert.equal(back.rows.get("sbm_1")?.claimed, false);
+});
+
+test("a damaged merge patch is refused with a fixed code and a log line, and nothing is claimed or opened", async () => {
+  for (const damaged of [
+    "{not json",
+    JSON.stringify({ schemaVersion: 1, commitSha: "c0ffee" }),
+    JSON.stringify({ commitSha: "c0ffee", files: [{ path: "a.ts" }] }),
+    JSON.stringify(null),
+  ]) {
+    const back = mergeBackFake();
+    const f = fixture("admin", {
+      submissions: passedSubmission(),
+      merges: back.merges,
+      mergeBack: back.mergeBack,
+      gradeRun: { "private/merge-patch.json": damaged },
+    });
+    const logged: unknown[][] = [];
+    const original = console.error;
+    console.error = (...args: unknown[]) => logged.push(args);
+    let response: Response;
+    try {
+      response = await f.request("POST", "/submissions/sbm_1/merge");
+    } finally {
+      console.error = original;
+    }
+    assert.equal(response.status, 502, damaged);
+    assert.equal(
+      ((await response.json()) as { code: string }).code,
+      "merge_patch_invalid",
+    );
+    assert.deepEqual(logged, [["merge_patch_invalid", "sbm_1"]]);
+    assert.equal(back.rows.get("sbm_1"), undefined);
+    assert.equal(back.opened.length, 0);
+  }
+});
+
+test("a merge the GitHub App lacks permissions for is refused before anything is claimed, naming them and where to accept them", async () => {
+  const back = mergeBackFake("missing");
+  const response = await mergeReady(back).request(
+    "POST",
+    "/submissions/sbm_1/merge",
+  );
+  assert.equal(response.status, 409);
+  assert.deepEqual(await response.json(), {
+    error:
+      "The GitHub App has not been granted what merge-back needs on this installation. An installation admin accepts its new permissions on GitHub.",
+    code: "app_permissions_missing",
+    missing: ["contents:write", "pull_requests:write"],
+    acceptUrl: "https://github.com/organizations/acme/settings/installations/9",
+  });
+  assert.equal(back.rows.size, 0);
+  assert.deepEqual(back.opened, []);
+});
+
+test("a version's merge-back readiness says why a merge would be refused before the button is pressed", async () => {
+  const read = async (
+    overrides: Parameters<typeof fixture>[1],
+    path = "/versions/sbv_1/merge-back",
+    role = "admin",
+  ) => {
+    const response = await fixture(role, overrides).request("GET", path);
+    return [response.status, await response.json()] as const;
+  };
+  const with_ = (back: ReturnType<typeof mergeBackFake>) => ({
+    merges: back.merges,
+    mergeBack: back.mergeBack,
+  });
+  const ready = mergeBackFake();
+  assert.deepEqual(await read(with_(ready)), [
+    200,
+    {
+      mergeBack: {
+        code: null,
+        error: null,
+        missing: [],
+        acceptUrl: null,
+        ciMissing: [],
+      },
+    },
+  ]);
+  // CI read-back's permissions are named, with where to accept them, and
+  // never block opening a pull request.
+  assert.deepEqual(await read(with_(mergeBackFake("ci_missing"))), [
+    200,
+    {
+      mergeBack: {
+        code: null,
+        error: null,
+        missing: [],
+        acceptUrl:
+          "https://github.com/organizations/acme/settings/installations/9",
+        ciMissing: ["checks:read", "statuses:read"],
+      },
+    },
+  ]);
+  // A page read trusts the stored permissions; only a merge asks GitHub.
+  assert.deepEqual(ready.asked, ["stored"]);
+  assert.deepEqual(await read(with_(mergeBackFake("missing"))), [
+    200,
+    {
+      mergeBack: {
+        code: "app_permissions_missing",
+        error:
+          "The GitHub App has not been granted what merge-back needs on this installation. An installation admin accepts its new permissions on GitHub.",
+        missing: ["contents:write", "pull_requests:write"],
+        acceptUrl:
+          "https://github.com/organizations/acme/settings/installations/9",
+        ciMissing: [],
+      },
+    },
+  ]);
+  const code = async (...args: Parameters<typeof read>) => {
+    const [status, body] = await read(...args);
+    return [status, (body as { mergeBack?: { code: string } }).mergeBack?.code];
+  };
+  assert.deepEqual(await code(with_(mergeBackFake("gone"))), [
+    200,
+    "repository_unavailable",
+  ]);
+  assert.deepEqual(
+    await code(with_(mergeBackFake()), "/versions/sbv_x/merge-back"),
+    [200, "not_sliced"],
+  );
+  assert.deepEqual(await code({}), [200, "merge_unavailable"]);
+  assert.deepEqual(await code(with_(mergeBackFake()), undefined, "member"), [
+    403,
+    undefined,
+  ]);
 });
 
 test("a build and a generated version are refused with 429 once the month's model tokens are spent", async () => {
@@ -4021,4 +5756,168 @@ test("a build and a generated version are refused with 429 once the month's mode
     assert.match(body.error, /monthly model-token limit/, path);
     assert.ok(Number(response.headers.get("retry-after")) > 0, path);
   }
+});
+
+test("a merge asked to merge when CI passes is recorded so; refused while CI cannot be read; asked of one already open, recorded once", async () => {
+  const back = mergeBackFake();
+  const events: unknown[] = [];
+  const f = fixture("admin", {
+    submissions: passedSubmission(),
+    merges: back.merges,
+    mergeBack: back.mergeBack,
+    gradeRun: { "private/merge-patch.json": carried },
+    events,
+  });
+  const opened = await f.request("POST", "/submissions/sbm_1/merge", {
+    when: "ci_passes",
+  });
+  assert.equal(opened.status, 201);
+  const body = (await opened.json()) as {
+    submission: { merge: { when: string; ci: { state: string } } };
+  };
+  assert.equal(body.submission.merge.when, "ci_passes");
+  assert.equal(body.submission.merge.ci.state, "pending");
+  assert.equal(
+    (back.rows.get("sbm_1")?.merge as { mergeWhen: string }).mergeWhen,
+    "ci_passes",
+  );
+  assert.match(
+    String((back.opened[0] as { body: string }).body),
+    /merges it \(squashed\) once this repository's CI passes/,
+  );
+  assert.equal(
+    ((events[0] as unknown[])[3] as { when: string }).when,
+    "ci_passes",
+  );
+  // Asked again, either way: the same submission, nothing new.
+  for (const when of ["ci_passes", "open"]) {
+    const again = await f.request("POST", "/submissions/sbm_1/merge", { when });
+    assert.equal(again.status, 200);
+  }
+  assert.equal(back.opened.length, 1);
+
+  // An installation without checks/statuses read: merging on CI is
+  // refused before anything is claimed; opening alone still works.
+  const blind = mergeBackFake("ci_missing");
+  const g = mergeReady(blind);
+  const refused = await g.request("POST", "/submissions/sbm_1/merge", {
+    when: "ci_passes",
+  });
+  assert.equal(refused.status, 409);
+  assert.deepEqual(await refused.json(), {
+    error:
+      "The GitHub App cannot read this repository's CI (checks and statuses: read), so it could never see it pass. An installation admin accepts its new permissions on GitHub, or open the pull request alone.",
+    code: "ci_permissions_missing",
+    missing: ["checks:read", "statuses:read"],
+    acceptUrl: "https://github.com/organizations/acme/settings/installations/9",
+  });
+  assert.equal(blind.rows.size, 0);
+  assert.equal(
+    (await g.request("POST", "/submissions/sbm_1/merge", { when: "open" }))
+      .status,
+    201,
+  );
+  // ...and asked later of that open one, refused the same way.
+  const later = await g.request("POST", "/submissions/sbm_1/merge", {
+    when: "ci_passes",
+  });
+  assert.equal(later.status, 409);
+  assert.equal(
+    ((await later.json()) as { code: string }).code,
+    "ci_permissions_missing",
+  );
+
+  // One opened alone, then asked to merge when CI passes: recorded.
+  const plain = mergeBackFake();
+  const h = mergeReady(plain);
+  await h.request("POST", "/submissions/sbm_1/merge");
+  const upgraded = await h.request("POST", "/submissions/sbm_1/merge", {
+    when: "ci_passes",
+  });
+  assert.equal(upgraded.status, 200);
+  assert.equal(
+    ((await upgraded.json()) as { submission: { merge: { when: string } } })
+      .submission.merge.when,
+    "ci_passes",
+  );
+  assert.equal(plain.opened.length, 1);
+  // Merged or closed meanwhile, or a repository gone: refused.
+  const row = plain.rows.get("sbm_1");
+  if (row !== undefined)
+    row.merge = { ...row.merge, mergeWhen: "open", pullRequestState: "merged" };
+  const ended = await h.request("POST", "/submissions/sbm_1/merge", {
+    when: "ci_passes",
+  });
+  assert.equal(ended.status, 409);
+  assert.equal(
+    ((await ended.json()) as { code: string }).code,
+    "pull_request_ended",
+  );
+  const gone = mergeBackFake();
+  const k = mergeReady(gone);
+  await k.request("POST", "/submissions/sbm_1/merge");
+  const goneRow = gone.rows.get("sbm_1");
+  if (goneRow !== undefined)
+    goneRow.merge = { ...goneRow.merge, repoId: "ghr_gone" };
+  const unavailable = await k.request("POST", "/submissions/sbm_1/merge", {
+    when: "ci_passes",
+  });
+  assert.equal(
+    ((await unavailable.json()) as { code: string }).code,
+    "repository_unavailable",
+  );
+  // Raced to merged between the read and the write.
+  const raced = mergeBackFake();
+  const r = mergeReady(raced);
+  await r.request("POST", "/submissions/sbm_1/merge");
+  raced.merges.setMergeWhen = async () => null;
+  assert.equal(
+    (
+      (await (
+        await r.request("POST", "/submissions/sbm_1/merge", {
+          when: "ci_passes",
+        })
+      ).json()) as { code: string }
+    ).code,
+    "pull_request_ended",
+  );
+  // One opened before CI read-back (no repository recorded) is not followed.
+  const old = mergeBackFake();
+  const o = mergeReady(old);
+  await o.request("POST", "/submissions/sbm_1/merge");
+  const oldRow = old.rows.get("sbm_1");
+  if (oldRow !== undefined) oldRow.merge = { ...oldRow.merge, repoId: null };
+  assert.equal(
+    (
+      (await (
+        await o.request("POST", "/submissions/sbm_1/merge", {
+          when: "ci_passes",
+        })
+      ).json()) as { code: string }
+    ).code,
+    "pull_request_ended",
+  );
+});
+
+test("a merge body that is not one of its forms is refused 400 before anything is read", async () => {
+  const back = mergeBackFake();
+  const f = mergeReady(back);
+  for (const body of [{ when: "later" }, { when: "open", extra: 1 }, [1]]) {
+    const response = await f.request("POST", "/submissions/sbm_1/merge", body);
+    assert.equal(response.status, 400);
+    assert.equal(
+      ((await response.json()) as { code: string }).code,
+      "invalid_merge",
+    );
+  }
+  const broken = await f.request(
+    "POST",
+    "/submissions/sbm_1/merge",
+    undefined,
+    "org_1",
+    { "Content-Type": "application/json" },
+  );
+  // No body at all is the default.
+  assert.equal(broken.status, 201);
+  assert.equal(back.opened.length, 1);
 });

@@ -35,7 +35,12 @@ build's artifacts, hidden tests among them, are owners' and admins' only.
 the checked-in fixture without GitHub, database or AWS credentials: archive
 validation, import resolution of every kind, graph direction, artifact
 upload, identical graph, `abstractions.json` and `data-model.json` bytes
-from two checkout paths, and a slice of the resulting graph. Unit tests
+from two checkout paths, and a slice of the resulting graph. It then runs
+the round trip (`scripts/roundtrip.mjs`; on the host, `npm run worker:roundtrip`,
+no Python needed): slice and build with pseudonyms, the contributor's npm
+commands on `project/` alone, grading, the reversed check and carry-back; its
+default build must hash to `GOLDEN_DIGEST`, `ROUNDTRIP_GENERATOR=carveout`
+runs it on the carveout engine, `ROUNDTRIP_KEEP=1` keeps its folder. Unit tests
 inject subprocesses and storage; real PostgreSQL tests exercise concurrent
 claims, spend limits and stale leases.
 
@@ -45,7 +50,10 @@ Runs are `analysis_run` rows cached by `(snapshot, tool, version, canonical
 params hash)`; the same inputs are one run. Each attempt owns a unique lease
 and storage prefix, so a late worker cannot overwrite its successor, and
 completion inserts artifacts and changes status in one fenced transaction
-(`packages/db/src/analysis-runs.ts`, modelled in `docs/specs/RunLease.tla`).
+(`packages/db/src/analysis-runs.ts`, modelled in `docs/specs/RunLease.tla`);
+a grading run's verdict is written in that transaction too, and a grading
+run that fails, or that the watchdog fails out of attempts, errors its
+submission in the transaction that ends it.
 A heartbeat runs every 15 seconds, the lease lasts 60 seconds, and the
 default deadline is 30 minutes. A watchdog retries lost workers twice;
 manual retries share that limit. SIGTERM stops new claims and allows the
@@ -203,13 +211,27 @@ the result in a fresh job, every hidden test expected to pass. duediligence's
 `verdict` decides passed, overfit, incomplete or refused; the submission
 records counts, that verdict and the scenario keys (`s1`, from the hidden
 test's file name) of failing hidden tests, never a hidden test's name, body
-or output. Its files are read from the key the submission row names.
+or output. The verdict is handed to the run's commit (`settleSubmission`,
+`RunSettlement`), never written before it: a lost lease or failed upload
+leaves neither the verdict nor `private/merge-patch.json`, and the
+submission `errored` once the run has ended. Its files are read from the key the submission row names;
+guide and editor files and build output never reach it (the API drops them
+before storing, `withoutGuideFiles`, `withoutBuildOutput`).
 Before anything runs, carveout's `gainedIntegrity` refuses a file that
 gains a way to pass without the code. On a version sliced from a
 repository the run is on its snapshot, and a pass is carried back
 (`reverseSubmission`) to `private/merge-patch.json`, or refused when it
 cannot be, under the renaming the build was made with (`src/tools/engines.ts`:
 carveout's when its manifest has `engines.carveout`, else `ALIASES_V1`).
+The patch is kept only once `repositoryTree` (the version in the
+repository's names with the carried files in place) passes the same
+baseline in a second job, and only when the carry renamed no word the
+contributor wrote by a pair learned from part of a text rule
+(`carriedWordHazards`, checked first); otherwise the result is
+`carryBack: "failed"` with no patch. A carry refused for the carry's own
+limit (`carryLimitOf`: a new file at a path the repository holds outside
+the slice, carveout's stranded name after 0.3.1) is `carryBack: "failed"`
+too, not `refused`. A submission is `running` from the claim of its run.
 
 A version's build manifest may record a `layout` (`GradingLayout`,
 `packages/core/src/sandbox/layout.ts`); none is the platform's own
@@ -218,12 +240,27 @@ layouts grades byte for byte as before. On another layout `gradingTree`
 keeps its harness roots and configuration files, and the baseline runs in
 two jobs (`runLayoutBaseline` in `src/tools/sandbox-build.ts`): the public
 files with the layout's commands, then the public files with the hidden
-tests, each hidden test twice by `layoutTestArgv`, every run marked `fresh`
-(E2B runs it in a fresh copy, as it does the platform's hidden-test argv).
+tests, sealed after the build, each hidden test twice by `hiddenTestRun`.
+Grading stages every `private/` artifact `stagedHiddenTest` names (a
+TypeScript test file, never `pseudonym.lunox`), which is what the handout
+counts and commits to.
+
+Project generator (`src/tools/project-generator.ts`): `sandbox_build`
+writes the project with core's `generateProject` unless the adapter is
+created with `projectGenerator: "carveout"` (off by default, not wired to
+an env var): carveout's `generateProject` (`carveout/api`), then
+`platformLayers` (public names, fixture defaults, walkthrough,
+`tests/public/spec.test.ts`, carried and hidden tests, source maps,
+package version and npm pin, guide, descriptor, README). The manifest
+records `engines.projectGenerator: "carveout"` and the layout
+(`carveoutLayout`: carveout's harness, `carveout.env` and commands, the
+platform's `tests/{public,private}`, `tests` a harness root); the build's
+baseline runs in one job with carveout's commands (`ProjectRun`), grading
+and the reversed check on the layout.
 
 ### Import
 
-A `sandbox_import` run (`src/tools/sandbox-import.ts`, `sandbox_import@1`)
+A `sandbox_import` run (`src/tools/sandbox-import.ts`, `sandbox_import@2`)
 makes an uploaded carveout hand-off folder the draft its params name. It
 reads the stored upload (`uploadObjectKey`, under the run's own workspace),
 checks its hash and the record's (`carveout.json`), and writes the folder
@@ -233,7 +270,13 @@ included files that are not tests) and a `build-manifest.json` with the
 file classes, the folder's layout (`carveout/api` `folderLayout`, plus the
 descriptor), `engines.carveout` (the worker's release, which read the
 layout) and `upload: { recordSha256, carveoutVersion }`. Its baseline runs
-on that layout and every acceptance test must fail on it. It calls no
+on that layout and every acceptance test must fail on it. After it, the
+folder's public files are scanned beyond the names (`scanDisclosure`, with
+`params.ticketKeys`): every finding is recorded in a `pending_acknowledgement`
+gate (`acknowledgedAt: "publish"`), not a blocker, and no acknowledgement is
+read, so publication checks the draft's list and the upload is never rebuilt;
+the descriptor's title, summary and tags are redacted of every finding
+(`redactDisclosure`). It calls no
 model, reads no source, and records its build as a starter's
 (`recordStarterOutput`): the import run is the version's starter and build.
 
@@ -319,8 +362,13 @@ package per mocked package under `mocks/` by its renamed name (imports and
 (`sandbox/mock.js`, `sandbox/run.ts`), public tests under `tests/public`,
 hidden tests under `tests/private`, `package.json` pinning the approved
 packages, `tsconfig.json`, `.nvmrc`, `.npmrc`, `sandbox.env` with fixture
-values for every environment variable the slice reads, `README.md` and
-`sandbox-task.json`. The local contract is `npm ci`, `npm run dev`,
+values for every environment variable the slice reads, `README.md`,
+`sandbox-task.json` and the contributor guide
+(`packages/core/src/sandbox/guide.ts`: `TASK.md` with the renamed spec as
+Gherkin and its confirmed decisions when both scans pass them
+(`disclosableDecisions`) and the zipped-folder upload as the way to submit,
+`AGENTS.md`, `CLAUDE.md`, `.vscode/`); it compiles with source maps
+beside the emitted `.js`. The local contract is `npm ci`, `npm run dev`,
 `npm run build`, `npm test` on Node 22+, fixed in `packages/core`. Only
 registry versions are installed: a dependency pinned to a URL, a path or an
 alias is `dependency_unresolved`. A package installs by its real name only
@@ -333,7 +381,26 @@ on what carveout's scan or the platform's before it finds
 (`src/tools/vocabulary-check.ts`), and for
 credentials (`packages/core/src/sandbox/secrets.ts`) and blocks `secret_found`
 by file, line and rule, never the value. Starters are scanned the same way.
-`.gitignore` names only public files' output.
+`.gitignore` names only public files' output, and `*.map`. A starter's
+project carries the same guide.
+
+A slice requested with `carryTests` (new slices; `SliceParams`) has the
+repository's own tests of it carried as read-only public tests under
+`tests/public/carried/<renamed repository path>`
+(`packages/core/src/sandbox/carried-tests.ts`): the walk's tests importing
+the slice (`manifest.cuts.inbound`), `.test.ts(x)` on `node:test` whose
+imports are Node modules, installed or mocked packages, slice files or
+stubbed modules, at most `carriedTestLimits` (default 20 files, 256 KiB);
+renamed by the table at their repository path, screened as public files,
+then tried in a job of their own before the baseline (`trialCarriedTests`:
+compiled with `noEmitOnError` off, each run twice with a 60 s limit). Only
+those passing both runs are kept; the build manifest's `carriedTests`
+records kept and dropped with the reason (`CARRIED_TEST_DROPS`), owners
+only, and `buildSummary` its counts. A build with `carryTests: false` (an
+owner's `POST …/sandboxes/:id/slice`, kept by the draft's later builds)
+carries none, as does a slice without it. The reversed check puts each
+back at `tests/public/carried/<repository path>` in the repository's names
+(`repositoryTree`).
 
 A sliced draft with no fixtures, hidden tests or pseudonyms has each written
 by an agent during the build (`fixtures.ts` via `writeFixtures`,
@@ -350,6 +417,11 @@ A smaller set is run through its baseline again; none expected to fail left
 is no set. The reference is never part of the version; the transform's
 `hiddenTests.calibration` records the engine, kept, dropped with reasons,
 the reference's paths and summary, and its usage.
+The run's `decisionsSha256` names the spec's decisions a person confirmed
+(`src/tools/decisions.ts` checks it against the frozen spec, else
+`tool_failed`); both agents are then told them, renamed with the spec, as
+"Decided, confirmed by the client" (the reference also in `spec.md`), and
+the starter agent likewise. A run without it quotes none as confirmed.
 A set an agent could not settle leaves the draft without, and the build
 goes on. An older preparation run's set and table (`preparedRunId`, below)
 are taken first.
@@ -383,8 +455,8 @@ fails every build `evaluation_failed` before anything is generated.
   failed cut fails the job. The execution record's `egressCut` says
   whether it happened. Each command has its own timeout and output cap,
   then whatever the job's user left running is killed; a command cut
-  short by the budget fails the job. Each hidden test runs in a fresh copy
-  of the job's files as they stood before the first. The worker needs
+  short by the budget fails the job. The provider's own copies of the
+  sealed tree run as root (below). The worker needs
   `E2B_API_KEY` with this provider and refuses to start without it.
 - `local-process` (`src/evaluation/local-process.ts`): a temporary
   directory and child processes with a scrubbed environment. It is the
@@ -392,11 +464,32 @@ fails every build `evaluation_failed` before anything is generated.
   `EVALUATION_PROVIDER=local-process` (the compose file sets it) and
   refused at startup with `NODE_ENV=production`.
 
+Both providers seal a job after its build (`seal`,
+`src/evaluation/hidden-runner.ts`): every hidden test's files leave the tree,
+their text stays in the worker, and the tree is copied out of the job's reach
+(root's in E2B, the worker's when local jobs run as their own uid). Each
+hidden run (`EvaluationCommand.hidden`) starts from a fresh copy with its own
+test alone, loaded from memory by the platform's runner
+(`.sandbox-hidden/<name>.test.mjs`) before task code runs.
+
 Outputs: `build-manifest.json` (every generated file hashed and classified
 public or private; harness, test and project hashes; the toolchain and its
-digest; `engines.carveout`, the release that renamed it; the evaluator
+digest; `engines.carveout`, the release that renamed it, and
+`engines.projectGenerator` when not the platform's generator; the evaluator
 environment; import rewrites, renames, dependencies, blockers and the
-baseline report), `baseline.json`, `project/<path>` for
+baseline report; `gates`, the publication gates: `roundTrip`, the unchanged
+project read back through the table at each file's repository path equal to
+the slice's source but for the generator's specifier and `process.env`
+edits, and no host or address text rule merge-back would learn words from
+(`noChangeRoundTrip`, `carryHazards`; `not_applicable` for a starter or
+upload), and
+`disclosure`, the vocabulary and credential findings and the
+`scanDisclosure` `findings` (each marked `acknowledged` as the build read
+it), `total` and `acknowledged`; a starter's or upload's has
+`acknowledgedAt: "publish"`, all findings and status
+`pending_acknowledgement` when any, settled at publication; `hiddenCommitment`,
+the handout's `hiddenSha256` version 2 over the hidden tests at their staged
+paths, `hiddenCommitmentOf`), `baseline.json`, `project/<path>` for
 every public file including the lockfile, `private/<path>` for hidden
 tests, and `private/pseudonym.lunox` (kind `pseudonyms`), the alias rules
 the public files were renamed by; the private sandbox is `project/` read
@@ -419,6 +512,9 @@ token the provider reports; default 4,000,000) or `AGENT_MAX_TURNS` turns
 80 % of either. No answer is `agent_incomplete`. Every turn's tokens are
 written to the `model_usage` ledger against the run (`src/agent/metered.ts`),
 which the API's monthly quota counts; nothing here stops a run for it.
+Likewise every evaluation job a run creates writes its seconds to the
+`evaluator_usage` ledger when torn down (`src/evaluation/metered.ts`),
+which the API's monthly evaluator cap counts.
 
 The agents read only through tools: `list_files`, `read_file` (numbered
 lines, capped) and `search` (a literal, case-insensitive match, never a
@@ -486,11 +582,25 @@ fresh job and shows the agent the failing steps' output, and
 `submit_starter` is accepted when the baseline passes. A public file, the
 listing in the README and descriptor included, that still carries a
 workspace name (`params.vocabulary`) fails the check as `vocabulary_leaked`
-does a build. Once the runs are spent, the last answer is kept as a build
-that is not ready. Outputs:
+does a build, and so does any `scanDisclosure` finding (`params.ticketKeys`;
+no acknowledgement is read, so the agent's files never depend on the
+draft's list, and the final scan records what is left as pending, for
+publication: `starterDisclosureGate`); the listing, spec and decisions are redacted
+first, so the bounty's own links never fail it. Once the runs are spent, the last answer is kept as a build
+that is not ready. An accepted answer's hidden tests are then calibrated
+as a sliced build's are (`calibrateHiddenTests` with `hiddenTests:
+"withheld"`): the reference agent reads the renamed project without them,
+the spec and the confirmed decisions, its runs build the project and run
+the walkthrough and public tests, and the hidden tests run once on the
+reference it submits. Tests it fails are dropped (the set, project and
+baseline keep the rest); none expected to fail left holds the build (not
+ready, the baseline's reasons saying so, the agent's set kept as
+diagnostic). Outputs:
 `starter-set.json` (the answer, its pseudonyms, the stack and the usage;
-its hash is the version's `starterSha256`) and the same `build-manifest.json`,
-`baseline.json`, `project/` and `private/` files a build writes. After the
+its hash is the version's `starterSha256`), `build-transform.json` (the
+hidden tests and `hiddenTests.calibration`, as a build's) and the same
+`build-manifest.json`, `baseline.json`, `project/` and `private/` files a
+build writes. After the
 run commits, the pseudonyms become the version's `aliasRules` and the
 starter, its hidden tests, scope and transform are recorded on the draft
 while it still points at the run.

@@ -14,6 +14,13 @@ export const API_SCOPES = [
   "bounties:write",
   "pricing:write",
   "specs:write",
+  /**
+   * Record a spec's decisions as confirmed by the credential's person: a
+   * spec posted `confirmed: true` with its bounty. Without it the spec is
+   * posted with its decisions unconfirmed (`confirmation: "skipped_scope"`),
+   * so a grant made before the scope keeps posting.
+   */
+  "decisions:confirm",
   "sandboxes:write",
   "submissions:write",
   "judge",
@@ -26,8 +33,35 @@ export function isApiScope(value: string): value is ApiScope {
   return (API_SCOPES as readonly string[]).includes(value);
 }
 
+/**
+ * What a contributor credential holds: an invited contributor's own
+ * versions (`/api/v1/contributions`), never a workspace's. Kept apart from
+ * `API_SCOPES` so no workspace token, CLI client or workspace OAuth grant
+ * can hold it, and a contributor credential holds nothing else.
+ */
+export const CONTRIBUTOR_SCOPES = ["contributions:write"] as const;
+
+export type ContributorScope = (typeof CONTRIBUTOR_SCOPES)[number];
+
+/** The one contributor scope: list, read, download and submit. */
+export const CONTRIBUTOR_SCOPE: ContributorScope = "contributions:write";
+
+/** Any scope a credential may carry: a workspace's, or a contributor's. */
+export type CredentialScope = ApiScope | ContributorScope;
+
+export function isContributorScope(value: string): value is ContributorScope {
+  return (CONTRIBUTOR_SCOPES as readonly string[]).includes(value);
+}
+
 /** The prefix every workspace API token carries, so a leaked one is findable. */
 export const API_TOKEN_PREFIX = "lnx_";
+
+/**
+ * The prefix on a contributor token: a person's own, bound to no
+ * workspace, reaching only the contributor routes. Not `lnx_…`, so a
+ * bearer value still names its kind.
+ */
+export const CONTRIBUTOR_TOKEN_PREFIX = "lnxc_";
 
 /**
  * The prefixes on OAuth access and refresh tokens the platform issues to
@@ -44,8 +78,17 @@ export const OAUTH_REFRESH_TOKEN_PREFIX = "lnxrt_";
 export const OFFLINE_ACCESS_SCOPE = "offline_access";
 
 /**
- * The scope every MCP endpoint asks for; each also asks for the scopes its
- * own write tools need (`toolsetScopes` in the API).
+ * What the OAuth consent page sends as the chosen workspace when the
+ * person signs in as a contributor instead: the grant then binds no
+ * workspace (its `reference_id` stays empty) and holds only
+ * `CONTRIBUTOR_SCOPES`. See the API's `oauth/provider.ts`.
+ */
+export const CONTRIBUTOR_CONSENT = "contributor";
+
+/**
+ * The scope every workspace MCP endpoint asks for; each also asks for the
+ * scopes its own write tools need (`toolsetScopes` in the API). The
+ * contributor endpoint asks for `CONTRIBUTOR_SCOPES` alone.
  */
 export const MCP_DEFAULT_SCOPES = [
   "workspace:read",
@@ -62,6 +105,7 @@ export const CLI_CLIENTS = {
     "workspace:read",
     "bounties:write",
     "specs:write",
+    "decisions:confirm",
     "sandboxes:write",
     "submissions:write",
     "judge",
@@ -82,9 +126,14 @@ export function cliScopes(client: CliClient): readonly ApiScope[] {
   return CLI_CLIENTS[client];
 }
 
+/** The MCP endpoint for invited contributors, over their own credential. */
+export const MCP_CONTRIBUTOR_PATH = "/mcp/contribute";
+
 /**
- * The tools each MCP endpoint serves, by path: `/mcp` serves every tool,
- * and each plugin's endpoint what its skill's hosted mode names. The API
+ * The tools each MCP endpoint serves, by path: `/mcp` serves every
+ * workspace tool, and each plugin's endpoint what its skill's hosted mode
+ * names. `/mcp/contribute` serves the contributor tools, a set of their
+ * own (some share a workspace tool's name, never its route). The API
  * registers them (`apps/api/src/mcp/tools.ts`, which checks every name is a
  * tool) and the web app's MCP page lists them.
  */
@@ -114,10 +163,15 @@ export const MCP_TOOLSETS = {
     "cut_slice",
     "prepare",
     "get_handout",
+    "get_project_files",
+    "upload_handoff",
+    "create_contributor_invite",
     "submit_patch",
     "judge",
     "retry",
+    "regrade",
     "get_verdict",
+    "get_submission_files",
     "connect_github",
     "connect_jira",
   ],
@@ -132,6 +186,7 @@ export const MCP_TOOLSETS = {
     "import_github_issue",
     "import_jira_issue",
     "size_bounty",
+    "respec",
     "get_decisions",
     "confirm_link",
     "list_sandboxes",
@@ -139,9 +194,13 @@ export const MCP_TOOLSETS = {
     "start_sandbox",
     "prepare",
     "get_handout",
+    "get_project_files",
+    "create_contributor_invite",
     "judge",
     "retry",
+    "regrade",
     "get_verdict",
+    "get_submission_files",
   ],
   // A slice is cut for a bounty with an approved proposal and built before
   // it is handed out, so carveout reaches the bounty, its sizing and
@@ -156,6 +215,7 @@ export const MCP_TOOLSETS = {
     "confirm_link",
     "post_bounty",
     "import_github_issue",
+    "import_jira_issue",
     "size_bounty",
     "list_repositories",
     "get_snapshot",
@@ -166,10 +226,30 @@ export const MCP_TOOLSETS = {
     "start_sandbox",
     "cut_slice",
     "prepare",
+    "upload_handoff",
     "get_handout",
+    "get_project_files",
+    "create_contributor_invite",
     "submit_patch",
+    "judge",
     "retry",
+    "regrade",
     "get_verdict",
+    "get_submission_files",
+  ],
+  // An invited contributor's own tools: their versions, each one's
+  // project, and their submissions. No workspace tool is here, and no
+  // workspace credential reaches these.
+  [MCP_CONTRIBUTOR_PATH]: [
+    "list_contributions",
+    "get_contribution",
+    "get_project_files",
+    "preview_submission",
+    "submit",
+    "list_my_submissions",
+    "get_my_submission",
+    "retry",
+    "regrade",
   ],
 } as const satisfies Readonly<Record<string, readonly string[]>>;
 

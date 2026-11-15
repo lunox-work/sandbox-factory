@@ -370,6 +370,31 @@ export const proposalFreshnessSchema = z.enum([
   "unknown",
 ]);
 
+/**
+ * A reviewer's resize kept as a human label for calibrating sizing: the
+ * size and price before it (and what set them), what the model and the
+ * rubric said then, and what the reviewer chose, by whom and when. On the
+ * owner's proposal detail only (`sizeLabels`).
+ */
+export const proposalSizeLabelDtoSchema = z.object({
+  id: z.string().min(1),
+  /** The proposal revision resized, and the spec revision it sized. */
+  proposalRevision: z.number().int().positive(),
+  specRevision: z.number().int().positive().nullable(),
+  modelComplexity: modelComplexitySchema,
+  modelConfidence: sizingConfidenceSchema,
+  rubricComplexity: pricedComplexitySchema.nullable(),
+  fromComplexity: bountyComplexitySchema,
+  fromSizedBy: proposalSizedBySchema,
+  fromAmountMinor: minorAmountSchema.nullable(),
+  complexity: bountyComplexitySchema,
+  amountMinor: minorAmountSchema,
+  currency: z.string().length(3),
+  /** The reviewer; null once their account is gone. */
+  resizedBy: z.string().nullable(),
+  resizedAt: z.iso.datetime(),
+});
+
 export const bountyProposalDtoSchema = z.object({
   id: z.string().min(1),
   organizationId: z.string().min(1),
@@ -434,6 +459,12 @@ export const bountyProposalDtoSchema = z.object({
    * proposal with no spec, and on one sized before the rubric.
    */
   rubric: rubricAssessmentSchema.nullable().default(null),
+  /**
+   * What the price saw (`pricedFromOf`): `code` once the rubric beside it
+   * measured every repository the work touches, `spec` otherwise. An
+   * approval of a `spec` price never saw the code.
+   */
+  pricedFrom: z.enum(["spec", "code"]).optional(),
   decidedAt: z.iso.datetime().nullable(),
   decidedBy: z.string().nullable(),
   decisionDeliveryPolicy: z.enum(["off", "requested"]).nullable(),
@@ -445,6 +476,20 @@ export const bountyProposalDtoSchema = z.object({
 
 export const proposalMutationSchema = z.object({
   expectedRevision: z.number().int().positive(),
+});
+/** A size and what it prices to: what a person agrees to. */
+export const proposalPriceSchema = z.object({
+  complexity: pricedComplexitySchema,
+  amountMinor: minorAmountSchema,
+  currency: z.string().length(3),
+});
+/**
+ * An approval names the revision the person saw and, from the web, the
+ * price on screen: a different price now is `price_changed`. Without a
+ * price the current one is approved, at that revision.
+ */
+export const approveProposalSchema = proposalMutationSchema.extend({
+  expectedPrice: proposalPriceSchema.optional(),
 });
 /**
  * A reviewer's size. Whole sizes only: it sets the base, and the step
@@ -530,7 +575,9 @@ export type BountyRunPlannedIssue = z.infer<typeof bountyRunPlannedIssueSchema>;
 export type BountyRunDto = z.infer<typeof bountyRunDtoSchema>;
 export type BountyRunProgressDto = z.infer<typeof bountyRunProgressSchema>;
 export type BountyProposalDto = z.infer<typeof bountyProposalDtoSchema>;
+export type ProposalSizeLabelDto = z.infer<typeof proposalSizeLabelDtoSchema>;
 export type RubricAssessmentDto = z.infer<typeof rubricAssessmentSchema>;
 export type ProposalFreshnessDto = z.infer<typeof proposalFreshnessDtoSchema>;
 export type ProposalLiveSpecDto = z.infer<typeof proposalLiveSpecSchema>;
+export type ProposalPriceDto = z.infer<typeof proposalPriceSchema>;
 export type BountyWritebackDto = z.infer<typeof bountyWritebackDtoSchema>;

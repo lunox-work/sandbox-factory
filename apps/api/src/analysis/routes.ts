@@ -471,6 +471,10 @@ export function mountAnalysisRoutes(
           entryPoints,
           budget: body.data.budget,
           includeInferred: body.data.includeInferred,
+          carryTests: body.data.carryTests,
+          ...(body.data.carriedTestLimits === undefined
+            ? {}
+            : { carriedTestLimits: body.data.carriedTestLimits }),
         },
         requestedBy,
         maxActive,

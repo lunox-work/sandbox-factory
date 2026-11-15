@@ -28,6 +28,7 @@ import {
   runtimeKindOf,
   runtimePath,
   SANDBOX_BUILD_RUN_VERSION,
+  specGherkin,
   SANDBOX_RUN_ARGV,
   SANDBOX_TOOLCHAIN,
   toolOfParams,
@@ -720,6 +721,7 @@ test("freeze needs matching evidence for every gate, and replay never substitute
   assert.deepEqual(freezeReadiness(source, evidence), {
     ready: true,
     reasons: [],
+    failed: [],
   });
   const stale = freezeReadiness(
     {
@@ -742,6 +744,15 @@ test("freeze needs matching evidence for every gate, and replay never substitute
   );
   assert.equal(stale.ready, false);
   assert.equal(stale.reasons.length, 9);
+  // Each failing gate once, in order: publication refuses with the first.
+  assert.deepEqual(stale.failed, [
+    "build_evidence",
+    "baseline",
+    "harness",
+    "round_trip",
+    "disclosure",
+    "approval",
+  ]);
   const noBuild = freezeReadiness(
     { ...source, buildRunId: null },
     { ...evidence, disclosureBlocking: 2 },
@@ -1213,7 +1224,7 @@ test("the generated project is standalone: rewritten imports, stubs beside mocks
   );
   assert.match(
     byPath.get(".gitignore")?.text ?? "",
-    /^node_modules\/\nsandbox\/run\.js\nsrc\/app\.js\ntests\/public\/interface\.test\.js\ntests\/public\/spec\.test\.js\n$/,
+    /^node_modules\/\nsandbox\/run\.js\nsrc\/app\.js\ntests\/public\/interface\.test\.js\ntests\/public\/spec\.test\.js\n\*\.map\n$/,
   );
   // A hidden test's path never reaches a file the contributor reads.
   for (const file of result.files.filter((item) => item.public))
@@ -1261,6 +1272,9 @@ test("the generated project is standalone: rewritten imports, stubs beside mocks
   assert.match(readme, /# Fix the widget/);
   assert.match(readme, /`@lib\/alias` → `\.\.\/lib\/alias\.js`/);
   assert.match(readme, /zod@\^4\.0\.0/);
+  // There is no push: a submission is the files the contributor sends.
+  assert.match(readme, /run of the files you submit/);
+  assert.doesNotMatch(readme, /pushed commit/);
   // Deterministic.
   assert.deepEqual(project().files, result.files);
   // Sorted.
@@ -1268,6 +1282,221 @@ test("the generated project is standalone: rewritten imports, stubs beside mocks
     result.files.map((f) => f.path),
     [...result.files.map((f) => f.path)].sort(),
   );
+});
+
+test("the project carries the contributor guide: TASK.md, AGENTS.md, CLAUDE.md and .vscode, with source maps on", () => {
+  const result = project();
+  const text = (path: string) =>
+    result.files.find((file) => file.path === path)?.text ?? "";
+  for (const path of [
+    "TASK.md",
+    "AGENTS.md",
+    "CLAUDE.md",
+    ".vscode/launch.json",
+    ".vscode/settings.json",
+    ".vscode/tasks.json",
+  ]) {
+    const file = result.files.find((item) => item.path === path);
+    assert.equal(file?.class, "config", path);
+    assert.equal(file?.public, true, path);
+    // Never a hidden test's name or folder.
+    assert.doesNotMatch(file?.text ?? "", /tests\/private|fix\.test/, path);
+  }
+  const tsconfig = JSON.parse(text("tsconfig.json")) as {
+    compilerOptions: Record<string, unknown>;
+  };
+  assert.equal(tsconfig.compilerOptions["sourceMap"], true);
+  assert.equal(tsconfig.compilerOptions["outDir"], undefined);
+  // The spec written out as Gherkin, each scenario under its key.
+  const task = text("TASK.md");
+  assert.match(task, /^# Task: Fix the widget\n\nMake it work\.\n/);
+  assert.ok(
+    task.includes(
+      [
+        "```gherkin",
+        "Feature: Widget",
+        "",
+        "  Background:",
+        "    Given a widget exists",
+        "",
+        "  # s1",
+        '  Scenario: It "works"',
+        "    Given a thing",
+        "    Then it works",
+        "```",
+      ].join("\n"),
+    ),
+    task,
+  );
+  assert.match(task, /keyed to one scenario above \(`s1`\)/);
+  assert.match(
+    task,
+    /## What you may change\n\nOnly these files are the task:\n\n- `src\/app\.ts`\n/,
+  );
+  assert.match(task, /`mocks\/`, the `\.d\.ts` stubs/);
+  // Uploading the zipped folder (or the extension) comes first; an agent's
+  // ways are the contributor MCP server and a contributor token.
+  assert.match(
+    task,
+    /## Submit\n\nZip this folder and upload it on your contribution page, or run \*\*Lunox: Submit\*\* in VS Code/,
+  );
+  assert.match(task, /a changed read-only file is named so you can revert it/);
+  assert.match(task, /a deleted task file cannot be submitted yet/);
+  assert.match(task, /`\.vscode\/` are for you: a submission leaves them out/);
+  assert.match(task, /`\.vscode\/` and `\.lunox\/` are left out/);
+  assert.ok(
+    task.indexOf("upload it on your contribution page") <
+      task.indexOf("`/mcp/contribute`"),
+    "the upload is the first way named",
+  );
+  assert.match(
+    task,
+    /`\/mcp\/contribute`: `preview_submission`.*`submit` takes this version's id \(`sbv_1`\).*`get_my_submission` reads the verdict/,
+  );
+  assert.match(
+    task,
+    /`lnxc_…`.*`POST \/api\/v1\/contributions\/sbv_1\/submissions\/zip` with the zipped folder/,
+  );
+  // The workspace tools are not a contributor's.
+  assert.doesNotMatch(task, /submit_patch|get_verdict|\/orgs\//);
+  assert.match(task, /upload the folder again on your contribution page/);
+  assert.match(task, /retried once/);
+  assert.match(task, /does not spend the retry/);
+  assert.doesNotMatch(task, /push(ed)? commit/);
+  const agents = text("AGENTS.md");
+  assert.match(agents, /`TASK\.md`: read it first/);
+  assert.match(
+    agents,
+    /npm run build && node --env-file=sandbox\.env --test tests\/public\/<name>\.test\.js/,
+  );
+  assert.match(agents, /mockImplementation\(path, fn\)/);
+  assert.match(agents, /do not add `@types\/node`/);
+  assert.equal(text("CLAUDE.md"), "@AGENTS.md\n");
+  const readme = text("README.md");
+  assert.match(readme, /\[`TASK\.md`\]\(TASK\.md\)/);
+  assert.match(readme, /\[`AGENTS\.md`\]\(AGENTS\.md\)/);
+  assert.match(
+    readme,
+    /how to submit it: zip this folder and upload it on your contribution page, or run \*\*Lunox: Submit\*\* in VS Code\./,
+  );
+  assert.match(readme, /Run one file with `npm run build && node/);
+  const settings = JSON.parse(text(".vscode/settings.json")) as Record<
+    string,
+    unknown
+  >;
+  assert.deepEqual(settings["files.exclude"], {
+    "**/*.js": { when: "$(basename).ts" },
+    "**/*.mjs": { when: "$(basename).mts" },
+    "**/*.cjs": { when: "$(basename).cts" },
+    "**/*.js.map": true,
+    "**/*.mjs.map": true,
+    "**/*.cjs.map": true,
+  });
+  assert.equal(settings["typescript.tsdk"], "node_modules/typescript/lib");
+  const launch = JSON.parse(text(".vscode/launch.json")) as {
+    configurations: {
+      name: string;
+      program?: string;
+      runtimeArgs: string[];
+      preLaunchTask: string;
+      sourceMaps: boolean;
+    }[];
+  };
+  assert.deepEqual(
+    launch.configurations.map((item) => [
+      item.name,
+      item.program ?? null,
+      item.runtimeArgs.join(" "),
+    ]),
+    [
+      [
+        "Walkthrough (npm run dev)",
+        "${workspaceFolder}/sandbox/run.js",
+        "--env-file=sandbox.env --enable-source-maps",
+      ],
+      [
+        "Public tests (npm test)",
+        null,
+        "--env-file=sandbox.env --enable-source-maps --test tests/public/**/*.test.js",
+      ],
+      [
+        "Test file in the editor",
+        null,
+        "--env-file=sandbox.env --enable-source-maps --test ${relativeFileDirname}/${fileBasenameNoExtension}.js",
+      ],
+    ],
+  );
+  const tasks = JSON.parse(text(".vscode/tasks.json")) as {
+    tasks: { label: string; script: string }[];
+  };
+  // Every launch builds first, by a task that exists.
+  for (const item of launch.configurations) {
+    assert.equal(item.sourceMaps, true);
+    assert.ok(tasks.tasks.some((task) => task.label === item.preLaunchTask));
+  }
+  assert.deepEqual(
+    tasks.tasks.map((item) => item.script),
+    ["build", "test", "dev"],
+  );
+  // No spec: the task is its summary; a fence outlasts backticks in the text.
+  const bare = project({ spec: null });
+  assert.match(
+    bare.files.find((file) => file.path === "TASK.md")?.text ?? "",
+    /The approved spec names no scenarios; the summary above is the task\.\n[\s\S]*\(`s1`, `s2`…\)/,
+  );
+  assert.equal(
+    specGherkin({
+      feature: "F",
+      background: [],
+      scenarios: [
+        {
+          id: "s2",
+          kind: "edge" as never,
+          title: "a ``` fence",
+          steps: [],
+          origin: "draft",
+        },
+      ],
+      openQuestions: [],
+      assumptions: [],
+    }),
+    "Feature: F\n\n  # s2\n  Scenario: a ``` fence\n",
+  );
+  const fenced = project({
+    spec: {
+      feature: "F",
+      background: [],
+      scenarios: [
+        {
+          id: "s1",
+          kind: "edge" as never,
+          title: "a ``` fence",
+          steps: [],
+          origin: "draft",
+        },
+      ],
+      openQuestions: [],
+      assumptions: [],
+    },
+  });
+  assert.match(
+    fenced.files.find((file) => file.path === "TASK.md")?.text ?? "",
+    /````gherkin\n[\s\S]*\n````\n/,
+  );
+});
+
+test("TASK.md carries confirmed decisions it is given, under the scenarios, and none otherwise", () => {
+  const task = (decisions?: readonly string[]) =>
+    project(decisions === undefined ? {} : { decisions }).files.find(
+      (file) => file.path === "TASK.md",
+    )?.text ?? "";
+  const decided = task(["Half a cent rounds up.", "Refunds  are\nfree."]);
+  assert.match(
+    decided,
+    /```\n\n## Decided\n\nWhere the ticket was silent, the spec decided these, and the client confirmed each\. .*\n\n- Half a cent rounds up\.\n- Refunds are free\.\n\n## Accepted when/,
+  );
+  for (const none of [task(), task([])])
+    assert.doesNotMatch(none, /## Decided/);
 });
 
 test("a barrel's runtime forwards to the modules its stub forwards to, never to a package", () => {

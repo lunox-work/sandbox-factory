@@ -15,7 +15,7 @@ import { auditEntry, user } from "./schema.js";
 /** How long an entry is kept. */
 export const AUDIT_RETENTION_DAYS = 180;
 
-export type AuditVia = "session" | "token" | "oauth" | "device";
+export type AuditVia = "session" | "token" | "oauth" | "device" | "contributor";
 
 export interface NewAuditEntry {
   readonly via: AuditVia;

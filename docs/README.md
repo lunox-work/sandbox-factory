@@ -23,8 +23,20 @@ product proposals and historical explainers are optional design context.
 - Five context builders describe a repository snapshot: Graphify,
   abstractions, data model, documents and brief. Scope and fixtures agents
   propose; slice, build and baseline decide. Sandbox versions are sliced from
-  a repository or generated from the bounty's text, built, and published to
-  a date.
+  a repository (with the repository's own tests of the slice that pass on
+  it, as read-only public tests), generated from the bounty's text, or
+  uploaded as a carveout folder, built, and published to a date behind gates: confirmed decisions,
+  the no-change round trip and the disclosure scan (workspace names,
+  credentials, addresses, hosts, authors, ticket keys, chat links).
+- Submissions are graded with both suites, each hidden test in its own
+  sealed process; a sliced version's pass is carried back, checked again in
+  the repository's names, and merged back as a pull request that can merge
+  itself once the repository's CI passes. Projects download as a `.zip` or
+  in pages. See [Sandboxes](./architecture.md#sandboxes).
+- Model tokens and evaluator seconds are metered per workspace and month,
+  and contributors' gradings braked per day (429 `quota_exceeded` /
+  `rate_limited`; `GET /orgs/:orgId/usage`). See
+  [Public API conventions](./architecture.md#public-api-conventions).
 - The available evaluator is opt-in `local-process`, for development; it is
   not an isolation boundary. With the default provider `none`, builds fail
   closed.
@@ -39,10 +51,14 @@ product proposals and historical explainers are optional design context.
   writebacks. Owners and admins manage tokens and connected apps at
   `/o/:slug/developers`. Not built: the portal's webhook, CI and audit
   pages. See [Public API conventions](./architecture.md#public-api-conventions).
-- The VS Code extension can run a local task. Its sign-in flow is not built.
-- Not built: contributor submission, adjudication, escrow, payouts,
-  reputation, merge-back, Slack and knowledge integrations. See the
-  [roadmap](./roadmap.md).
+- The VS Code extension signs in with a contributor token, opens a
+  contribution, runs it, and previews and submits it with the verdict in the
+  status bar. Device-flow sign-in is not built.
+- Invited contributors claim one published version from an invite link
+  and submit their zipped project folder from its page, or over the API
+  ([Sandboxes](./architecture.md#sandboxes)). Not built: a
+  marketplace, adjudication, escrow, payouts, reputation, Slack and
+  knowledge integrations. See the [roadmap](./roadmap.md).
 
 ## Read by task
 
@@ -79,7 +95,7 @@ The full import rules are in [architecture](./architecture.md#dependency-directi
 | `apps/api`               | `@sandbox-factory/api`      | Hono API and background orchestration                                               |
 | `apps/web`               | `@sandbox-factory/web`      | React dashboard                                                                     |
 | `apps/worker`            | `@sandbox-factory/worker`   | Private analysis, scope/fixture agents and sandbox builds                           |
-| `apps/extension`         | `sandbox-factory-vscode`    | VS Code task commands                                                               |
+| `apps/extension`         | `sandbox-factory-vscode`    | VS Code contributor commands                                                        |
 | `tooling/tsconfig`       | `@sandbox-factory/tsconfig` | Shared compiler settings                                                            |
 | `tooling/coverage-guard` | `@sandbox-factory/coverage` | Detect source files omitted from coverage                                           |
 

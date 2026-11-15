@@ -361,13 +361,18 @@ test("a mint GitHub never answers is a network error, and is bounded", async () 
 test("a probe reads the installation with the App's JWT", async () => {
   const fetch = fakeFetch((request) =>
     request.url.endsWith("/app/installations/9")
-      ? json({ id: 9, suspended_at: "2026-09-30T12:00:00Z" })
+      ? json({
+          id: 9,
+          suspended_at: "2026-09-30T12:00:00Z",
+          permissions: { contents: "write", metadata: "read" },
+        })
       : json({}, 404),
   );
   const tokens = tokensWith(fetch);
 
   assert.deepEqual(await tokens.probe("9"), {
     suspendedAt: "2026-09-30T12:00:00Z",
+    permissions: { contents: "write", metadata: "read" },
   });
   assert.equal(fetch.calls[0]?.method, "GET");
   assert.match(
@@ -381,7 +386,10 @@ test("a probe reads the installation with the App's JWT", async () => {
 test("a probe of a live installation reports it unsuspended", async () => {
   const tokens = tokensWith(fakeFetch(() => json({ id: 9 })));
 
-  assert.deepEqual(await tokens.probe("9"), { suspendedAt: null });
+  assert.deepEqual(await tokens.probe("9"), {
+    suspendedAt: null,
+    permissions: {},
+  });
 });
 
 test("a probe refused with 401 is the App's credential, other failures keep their type", async () => {

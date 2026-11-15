@@ -11,6 +11,7 @@ import {
   grantTokenSource,
   installationClient,
   mergeBackWriter,
+  mergeCiReader,
   noteGrantFailure,
   userClientFor,
 } from "../src/github/credential.js";
@@ -272,4 +273,45 @@ test("a merge-back writer's token reaches one repository, with write to contents
   assert.throws(() => mergeBackWriter(tokens, "9", "acme/shop"), /numeric/);
   // Constructed without an injected fetch, as the server does.
   assert.ok(mergeBackWriter(tokens, "9", "42"));
+});
+
+test("CI is read back with a token for the one repository and checks/statuses read alone", async () => {
+  const minted: unknown[] = [];
+  const tokens = installationTokens((async (
+    input: string | URL | Request,
+    init?: RequestInit,
+  ) => {
+    if (String(input).endsWith("/app/installations/9/access_tokens")) {
+      minted.push(JSON.parse(String(init?.body)) as unknown);
+      return new Response(
+        JSON.stringify({
+          token: "ghs_ci",
+          expires_at: new Date(NOW + 3_600_000).toISOString(),
+        }),
+        { status: 201, headers: { "Content-Type": "application/json" } },
+      );
+    }
+    throw new Error(`unexpected ${String(input)}`);
+  }) as typeof globalThis.fetch);
+  const seen: string[] = [];
+  const reader = mergeCiReader(tokens, "9", "42", (async (
+    _input: string | URL | Request,
+    init?: RequestInit,
+  ) => {
+    seen.push(new Headers(init?.headers).get("authorization") ?? "");
+    return new Response(JSON.stringify({ check_runs: [] }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+  }) as typeof globalThis.fetch);
+  assert.deepEqual(await reader.checkRuns("acme/shop", "beef"), []);
+  assert.deepEqual(minted, [
+    {
+      repository_ids: [42],
+      permissions: { checks: "read", statuses: "read", metadata: "read" },
+    },
+  ]);
+  assert.deepEqual(seen, ["Bearer ghs_ci"]);
+  assert.throws(() => mergeCiReader(tokens, "9", "acme/shop"), /numeric/);
+  assert.ok(mergeCiReader(tokens, "9", "42"));
 });

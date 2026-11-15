@@ -11,6 +11,8 @@
 
 import { z } from "zod";
 
+import { MERGE_CI_STATES, MERGE_WHEN } from "./sandbox.js";
+
 /** The events an endpoint may take; `ping` is sent on request only. */
 export const WEBHOOK_EVENT_TYPES = [
   "run.finished",
@@ -18,6 +20,10 @@ export const WEBHOOK_EVENT_TYPES = [
   "sandbox.build.finished",
   "sandbox.published",
   "writeback.failed",
+  "submission.graded",
+  "submission.merge_opened",
+  "submission.ci",
+  "submission.merged",
 ] as const;
 
 export const WEBHOOK_PING = "ping";
@@ -124,6 +130,65 @@ export const webhookDeliveryListSchema = z.object({
 export const webhookDeliveryResponseSchema = z.object({
   delivery: webhookDeliveryDtoSchema,
 });
+
+const countsSchema = z.object({
+  passed: z.number().int().nonnegative(),
+  total: z.number().int().nonnegative(),
+});
+const pullRequestSchema = {
+  submissionId: z.string().min(1),
+  sandboxVersionId: z.string().min(1),
+  pullRequestNumber: z.number().int().positive(),
+  pullRequestUrl: z.string().min(1),
+};
+
+/**
+ * `submission.graded`: a grading run ended with a verdict or an error.
+ * Counts only, never a hidden test's name or a scenario key.
+ */
+export const submissionGradedDataSchema = z.strictObject({
+  submissionId: z.string().min(1),
+  sandboxVersionId: z.string().min(1),
+  runId: z.string().min(1),
+  status: z.enum(["passed", "failed", "errored"]),
+  verdict: z.enum(["passed", "overfit", "incomplete", "refused"]).nullable(),
+  public: countsSchema.nullable(),
+  hidden: countsSchema.nullable(),
+  carryBack: z.enum(["failed"]).nullable(),
+});
+/** `submission.merge_opened`: its merge-back pull request was opened. */
+export const submissionMergeOpenedDataSchema = z.strictObject({
+  ...pullRequestSchema,
+  when: z.enum(MERGE_WHEN),
+});
+/** `submission.ci`: the pull request's CI state changed (or its head did). */
+export const submissionCiDataSchema = z.strictObject({
+  ...pullRequestSchema,
+  state: z.enum(MERGE_CI_STATES),
+  headSha: z.string().nullable(),
+  total: z.number().int().nonnegative(),
+  passed: z.number().int().nonnegative(),
+  failed: z.number().int().nonnegative(),
+  pending: z.number().int().nonnegative(),
+});
+/** `submission.merged`: merged by the platform (`ci_passes`) or on GitHub. */
+export const submissionMergedDataSchema = z.strictObject({
+  ...pullRequestSchema,
+  mergedCommitSha: z.string().nullable(),
+  by: z.enum(["platform", "github"]),
+});
+
+/** The `data` each event type is checked against before it is enqueued. */
+export const WEBHOOK_EVENT_DATA_SCHEMAS = {
+  "submission.graded": submissionGradedDataSchema,
+  "submission.merge_opened": submissionMergeOpenedDataSchema,
+  "submission.ci": submissionCiDataSchema,
+  "submission.merged": submissionMergedDataSchema,
+} as const;
+export type SubmissionEventType = keyof typeof WEBHOOK_EVENT_DATA_SCHEMAS;
+export type SubmissionEventData<T extends SubmissionEventType> = z.infer<
+  (typeof WEBHOOK_EVENT_DATA_SCHEMAS)[T]
+>;
 
 export type WebhookEventType = z.infer<typeof webhookEventTypeSchema>;
 export type WebhookEvent = z.infer<typeof webhookEventSchema>;

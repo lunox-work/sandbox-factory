@@ -61,6 +61,7 @@ the pre-push hook runs. Keep them identical.
 CI then does what `verify` does not: it runs against a **Postgres service
 container and a SeaweedFS fixture**, runs the bounty concurrency suite
 sequentially after `npm test` (see [development.md](./development.md#container-dependencies)),
+then the [flow test](./development.md#flow-test),
 asserts the database-backed tests ran rather than skipped, and asserts the
 build recorded its commit. Turbo passes the database URL and test S3 endpoint
 into the test tasks and their cache keys.
@@ -88,7 +89,8 @@ into the test tasks and their cache keys.
 
 The `Worker image smoke` job builds the pinned ARM64 worker image and runs the
 real Graphify fixture pipeline without credentials, so a Python regression
-cannot merge while only the Node tests pass. Worker image tags are immutable;
+cannot merge while only the Node tests pass, then the bounty round trip
+([roundtrip.mjs](../apps/worker/scripts/roundtrip.mjs)). Worker image tags are immutable;
 a rollback dispatch reuses the existing worker image. Deployment
 prerequisites are in the [worker README](../apps/worker/README.md#deployment-order).
 

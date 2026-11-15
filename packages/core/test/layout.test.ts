@@ -6,7 +6,9 @@ import {
   SANDBOX_IMPORT_TOOL_VERSION,
   gradingTree,
   hiddenArtifactPath,
+  hiddenTestFiles,
   hiddenTestPath,
+  hiddenTestRun,
   isSandboxBuildParams,
   isSandboxImportParams,
   layoutOf,
@@ -16,6 +18,7 @@ import {
   publicVocabularyLeaks,
   readsSource,
   slotOf,
+  stagedHiddenTest,
   snapshotFits,
   taskCodeProblems,
   testRunnerOf,
@@ -232,6 +235,76 @@ test("task code may not reach a layout's mock runtime or harness", () => {
   );
 });
 
+test("a hidden test's files are withheld whole, and its run says what goes back", () => {
+  assert.deepEqual(hiddenTestFiles("tests/private/s1-a.test.ts"), [
+    "tests/private/s1-a.test.ts",
+    "tests/private/s1-a.test.ts.map",
+    "tests/private/s1-a.test.js",
+    "tests/private/s1-a.test.js.map",
+    "tests/private/s1-a.test.d.ts",
+    "tests/private/s1-a.test.d.ts.map",
+  ]);
+  // node:test's emitted module is loaded from memory, by the very argv
+  // grading always ran.
+  assert.deepEqual(
+    hiddenTestRun(PLATFORM_LAYOUT, "tests/private/fix.test.ts"),
+    {
+      argv: privateTestArgv("tests/private/fix.test.ts"),
+      hidden: { entry: "tests/private/fix.test.js", load: "memory" },
+    },
+  );
+  assert.equal(
+    hiddenTestRun(PLATFORM_LAYOUT, "tests/private/fix.test.ts", "vitest"),
+    null,
+  );
+  // Vitest reads its own source, and a CommonJS file is no ES module: both
+  // go back on disk.
+  assert.deepEqual(
+    hiddenTestRun(CARVEOUT, "apps/shop/src/cart.accept.test.ts", "vitest")
+      ?.hidden,
+    { entry: "apps/shop/src/cart.accept.test.ts", load: "disk" },
+  );
+  assert.deepEqual(
+    hiddenTestRun(CARVEOUT, "apps/shop/src/cart.accept.test.cts")?.hidden,
+    { entry: "apps/shop/src/cart.accept.test.cjs", load: "disk" },
+  );
+  assert.deepEqual(
+    hiddenTestRun(CARVEOUT, "apps/shop/src/cart.accept.test.ts")?.argv,
+    layoutTestArgv(CARVEOUT, "apps/shop/src/cart.accept.test.ts"),
+  );
+});
+
+test("task code may not name the hidden tests' directory, however it spells it", () => {
+  const named =
+    "Task code must not name tests/private; the hidden tests are not task code's to read.";
+  for (const text of [
+    'const dir = "tests/private";',
+    "const dir = 'tests\\private';",
+    'const dir = "tests/" + "private";',
+    'const dir = "tests" + "/private";',
+    'const dir = join(root, "tests", "private");',
+    "const dir = `${root}/tests/private`;",
+  ])
+    assert.deepEqual(
+      taskCodeProblems("src/cart/total.ts", text),
+      [named],
+      text,
+    );
+  // Honest words and paths stay clear, as does a layout with no such
+  // directory.
+  for (const text of [
+    'const visibility = "private";',
+    "// Unit tests / private helpers live elsewhere.",
+    'const out = join(root, "tests", "public");',
+    'import { readdirSync } from "node:fs";\nexport const names = readdirSync("templates");',
+  ])
+    assert.deepEqual(taskCodeProblems("src/cart/total.ts", text), [], text);
+  assert.deepEqual(
+    taskCodeProblems("src/cart.ts", 'const dir = "tests/private";', CARVEOUT),
+    [],
+  );
+});
+
 test("pathProblem is the grading tree's path rule", () => {
   assert.equal(pathProblem("src/a.ts"), null);
   assert.match(pathProblem("") ?? "", /empty/);
@@ -283,4 +356,42 @@ test("publicVocabularyLeaks blocks on either scan's leaks", () => {
     publicVocabularyLeaks([{ path: "src/a.ts", text: "x\n" }], ["acme"]),
     [],
   );
+});
+
+test("stagedHiddenTest: the hidden tests a judge stages and a handout counts, in either layout", () => {
+  // The platform's: under tests/private/, the name table beside them not one.
+  assert.equal(
+    stagedHiddenTest(PLATFORM_LAYOUT, "private/s1-a.test.ts"),
+    "tests/private/s1-a.test.ts",
+  );
+  assert.equal(
+    stagedHiddenTest(PLATFORM_LAYOUT, "private/pseudonym.lunox"),
+    null,
+  );
+  // An upload's: each at its folder path, any TypeScript test file.
+  for (const path of [
+    "src/a.spec.ts",
+    "src/a.test.mts",
+    "lib/b.spec.tsx",
+    "tests/private/c.test.ts",
+  ])
+    assert.equal(stagedHiddenTest(CARVEOUT, `private/${path}`), path);
+  // Not a test, not private, or the grading run's patch: none.
+  for (const path of [
+    "private/merge-patch.json",
+    "private/notes.md",
+    "private/src/a.test.js",
+    "project/src/a.test.ts",
+    "build-manifest.json",
+  ])
+    assert.equal(stagedHiddenTest(CARVEOUT, path), null, path);
+  // The inverse of where a build keeps one.
+  for (const [layout, path] of [
+    [PLATFORM_LAYOUT, "tests/private/s1-a.test.ts"],
+    [CARVEOUT, "tests/private/c.test.ts"],
+  ] as const)
+    assert.equal(
+      stagedHiddenTest(layout, hiddenArtifactPath(layout, path)),
+      path,
+    );
 });

@@ -26,6 +26,7 @@ import type { ErrorHandler } from "hono";
 import { NotFoundError, RepositoryInUseError } from "@sandbox-factory/db";
 import type {
   ApiTokenStore,
+  ContributorTokenStore,
   AuditStore,
   IdempotencyStore,
   EmailStore,
@@ -36,6 +37,7 @@ import type {
   WorkspaceSetupStore,
 } from "@sandbox-factory/db";
 
+import { mountContributorTokenRoutes } from "./api-tokens/contributor.js";
 import { mountApiTokenRoutes } from "./api-tokens/routes.js";
 import { mountSelfRevokeRoute } from "./api-tokens/self.js";
 import { mountAuditRoutes } from "./audit/routes.js";
@@ -51,7 +53,10 @@ import {
 import { mountOAuthGrantRoutes } from "./oauth/grants.js";
 import { isBound } from "./principal.js";
 import { buildOpenApiDocument } from "./public-api/openapi.js";
-import { MONTHLY_MODEL_TOKENS_DEFAULT } from "./quota.js";
+import {
+  MONTHLY_EVALUATOR_SECONDS_DEFAULT,
+  MONTHLY_MODEL_TOKENS_DEFAULT,
+} from "./quota.js";
 import { mountUsageRoutes } from "./usage/routes.js";
 import {
   mountWebhookRoutes,
@@ -135,7 +140,11 @@ export interface AppOptions {
     | (Omit<GithubRouteOptions, "roleOf"> &
         Pick<
           GithubWebhookOptions,
-          "webhookSecret" | "background" | "onBackgroundError" | "log"
+          | "webhookSecret"
+          | "background"
+          | "onBackgroundError"
+          | "log"
+          | "mergeCi"
         >)
     | undefined;
   /** Commercial routes. Rate-card reads remain mounted without model config. */
@@ -193,17 +202,27 @@ export interface AppOptions {
    */
   oauthGrants?: OAuthGrantStore | undefined;
   /**
+   * Contributor tokens (`lnxc_…`), a person's own. Without it every one is
+   * refused and their routes are not mounted.
+   */
+  contributorTokens?: ContributorTokenStore | undefined;
+  /**
    * Public origin of the API (`BETTER_AUTH_URL`), which OAuth discovery
    * and MCP's sign-in challenges name. Without it neither is mounted.
    */
   publicUrl?: string | undefined;
-  /** Run counts and model tokens for `/usage`; not mounted without it. */
+  /** Run counts, model tokens and evaluator seconds for `/usage`; not mounted without it. */
   usage?: UsageStore | undefined;
   /**
    * `MONTHLY_MODEL_TOKENS_PER_ORG`, which `/usage` reports the month's
    * tokens against; `MONTHLY_MODEL_TOKENS_DEFAULT` when absent.
    */
   monthlyModelTokens?: number | undefined;
+  /**
+   * `MONTHLY_EVALUATOR_SECONDS_PER_ORG`, which `/usage` reports the month's
+   * evaluator seconds against; `MONTHLY_EVALUATOR_SECONDS_DEFAULT` when absent.
+   */
+  monthlyEvaluatorSeconds?: number | undefined;
   /**
    * The audit log: what machine credentials changed, and credential and
    * webhook management. Without it nothing is recorded and `/audit` is not
@@ -251,9 +270,11 @@ export function createApp({
   originVerify,
   apiTokens,
   oauthGrants,
+  contributorTokens,
   publicUrl,
   usage,
   monthlyModelTokens = MONTHLY_MODEL_TOKENS_DEFAULT,
+  monthlyEvaluatorSeconds = MONTHLY_EVALUATOR_SECONDS_DEFAULT,
   audit,
   webhooks,
   idempotencyKeys,
@@ -261,6 +282,9 @@ export function createApp({
   now,
 }: AppOptions): Hono<AppEnv> {
   const app = new Hono<AppEnv>();
+  // The app's clock, for what a route measures without options of its own
+  // (`Retry-After`, `quota.ts`).
+  const clock = now ?? (() => new Date());
 
   // Must stay first: a request that bypassed the CDN should cost one string
   // comparison and never reach CORS, auth or the database. `/health` is exempt
@@ -274,6 +298,10 @@ export function createApp({
       return next();
     });
   }
+  app.use("*", async (c, next) => {
+    c.set("clock", clock);
+    await next();
+  });
 
   app.use(
     "/api/*",
@@ -396,6 +424,7 @@ export function createApp({
       auth,
       apiTokens,
       oauthGrants,
+      contributorTokens,
       resourceMetadata:
         publicUrl === undefined ? undefined : resourceMetadataUrl(publicUrl),
       roleOf:
@@ -408,7 +437,19 @@ export function createApp({
   );
 
   /** A bound credential ends itself: a client's logout. */
-  mountSelfRevokeRoute(app, { tokens: apiTokens, grants: oauthGrants });
+  mountSelfRevokeRoute(app, {
+    tokens: apiTokens,
+    grants: oauthGrants,
+    contributorTokens,
+  });
+
+  /** A person's own contributor tokens and contributor OAuth grants. */
+  if (contributorTokens !== undefined)
+    mountContributorTokenRoutes(app, {
+      tokens: contributorTokens,
+      grants: oauthGrants,
+      now,
+    });
 
   /**
    * Who am I? `id` is the account: permanent, and what anything durable must
@@ -689,6 +730,7 @@ export function createApp({
         usage,
         now,
         monthlyTokenLimit: monthlyModelTokens,
+        monthlyEvaluatorSeconds,
       });
     if (audit !== undefined) mountAuditRoutes(app, { audit });
     if (webhooks !== undefined) mountWebhookRoutes(app, { now, ...webhooks });
@@ -858,7 +900,14 @@ export function createApp({
       });
     }
     if (settings !== undefined) mountSettingsRoutes(app, settings);
-    if (sandbox !== undefined) mountSandboxRoutes(app, sandbox);
+    // A claim reads the claimer's role here, from the store the
+    // membership guard above reads: a member claims nothing.
+    if (sandbox !== undefined)
+      mountSandboxRoutes(app, {
+        roleOf: (userId, organizationId) =>
+          organizations.roleOf(userId, organizationId),
+        ...sandbox,
+      });
     else
       app.all("/api/v1/orgs/:orgId/sandboxes/*", (c) =>
         c.json(

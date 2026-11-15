@@ -11,11 +11,17 @@
  * - Open dynamic client registration, public clients included, as MCP
  *   clients need. Clients cannot be managed from a session; people manage
  *   grants, not clients.
- * - **A grant binds one organization.** The consent page sends the chosen
- *   workspace in `ORGANIZATION_HEADER`; `consentReferenceId` admits it only
- *   for an owner or admin there and stores it as the consent's and every
- *   token's `reference_id`. The API's credential guard reads the token
- *   back into a `Principal` (`credentials.ts`).
+ * - **A grant binds one organization**, or none for a contributor. The
+ *   consent page sends the chosen workspace in `ORGANIZATION_HEADER`;
+ *   `consentReferenceId` admits it only for an owner or admin there and
+ *   stores it as the consent's and every token's `reference_id`. Sent
+ *   `CONTRIBUTOR_CONSENT` instead, the person signs in as an invited
+ *   contributor: the grant holds `contributions:write` and nothing else and
+ *   binds no workspace (`reference_id` stays empty: it is a foreign key to
+ *   `organization`, so it cannot carry a marker). A workspace grant never
+ *   holds the contributor scope. The API's credential guard reads the token
+ *   back into a `Principal` (`credentials.ts`), a contributor grant as a
+ *   contributor credential.
  * - Tokens carry prefixes (`lnxat_`, `lnxrt_`) and are stored as the same
  *   SHA-256 the API looks them up by. Sign-in itself is unchanged: the
  *   login page is the web app's, which offers Google, GitHub and Atlassian.
@@ -26,6 +32,11 @@ import { oauthProvider } from "@better-auth/oauth-provider";
 import { APIError } from "better-auth";
 import {
   API_SCOPES,
+  CONTRIBUTOR_CONSENT,
+  CONTRIBUTOR_SCOPES,
+  isApiScope,
+  isContributorScope,
+  MCP_TOOLSETS,
   OAUTH_ACCESS_TOKEN_PREFIX,
   OAUTH_REFRESH_TOKEN_PREFIX,
   OFFLINE_ACCESS_SCOPE,
@@ -43,11 +54,15 @@ export const CONSENT_PATH = "/oauth/consent";
 /** An access token's life; a client refreshes rather than holds one long. */
 export const ACCESS_TOKEN_SECONDS = 15 * 60;
 
-/** Every scope a client may ask for: the API's, and refresh. */
-export const OAUTH_SCOPES = [...API_SCOPES, OFFLINE_ACCESS_SCOPE];
+/** Every scope a client may ask for: the API's, a contributor's, and refresh. */
+export const OAUTH_SCOPES = [
+  ...API_SCOPES,
+  ...CONTRIBUTOR_SCOPES,
+  OFFLINE_ACCESS_SCOPE,
+];
 
 /** The MCP endpoints, each a toolset; see `mcp/`. */
-export const MCP_PATHS = ["/mcp", "/mcp/duediligence", "/mcp/carveout"];
+export const MCP_PATHS = Object.keys(MCP_TOOLSETS);
 
 export type RoleOf = (
   userId: string,
@@ -108,17 +123,23 @@ function refuse(message: string, code: string): APIError {
 }
 
 /**
- * The organization a consent binds, read from the consent request.
+ * The organization a consent binds, read from the consent request; or no
+ * reference for a contributor's.
  *
  * The plugin asks for it twice in that request (storing the consent, then
  * issuing the code) and once on every authorization request, where no
- * workspace is chosen yet: undefined then finds no consent, so the person
- * is sent to the consent page. On the consent request itself a workspace
- * is required, and only one the person owns or administers is accepted.
+ * workspace is chosen yet: undefined then finds only a consent given
+ * without a reference (a contributor's, which covers a client asking for
+ * the contributor scope again), so a workspace's is always asked anew. On
+ * the consent request itself a choice is required: a workspace the person
+ * owns or administers, with API scopes only; or `CONTRIBUTOR_CONSENT`, with
+ * the contributor scope and no API scope (`scopes` is what the person
+ * approved).
  */
 export async function consentOrganization(
   userId: string | undefined,
   roleOf: RoleOf | undefined,
+  scopes: readonly string[] = [],
 ): Promise<string | undefined> {
   const context = tryGetCurrentAuthEndpointContext();
   const chosen = context?.headers?.get(ORGANIZATION_HEADER)?.trim();
@@ -128,6 +149,24 @@ export async function consentOrganization(
     }
     return undefined;
   }
+  if (chosen === CONTRIBUTOR_CONSENT) {
+    if (userId === undefined || !scopes.some(isContributorScope))
+      throw refuse(
+        "Signing in as a contributor grants the contributions scope.",
+        "CONTRIBUTOR_SCOPE_REQUIRED",
+      );
+    if (scopes.some(isApiScope))
+      throw refuse(
+        "A contributor grant reaches your contributions only; a workspace's scopes need a workspace.",
+        "CONTRIBUTOR_SCOPE_ONLY",
+      );
+    return undefined;
+  }
+  if (scopes.some(isContributorScope))
+    throw refuse(
+      "The contributions scope is granted signing in as a contributor, never with a workspace.",
+      "CONTRIBUTOR_SCOPE_FORBIDDEN",
+    );
   const role =
     userId === undefined || roleOf === undefined
       ? undefined
@@ -160,7 +199,8 @@ export function oauthProviderPlugin({
     postLogin: {
       page: consentPage,
       shouldRedirect: () => false,
-      consentReferenceId: ({ user }) => consentOrganization(user.id, roleOf),
+      consentReferenceId: ({ user, scopes }) =>
+        consentOrganization(user.id, roleOf, scopes),
     },
     allowDynamicClientRegistration: true,
     allowUnauthenticatedClientRegistration: true,

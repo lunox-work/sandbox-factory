@@ -26,7 +26,11 @@ import {
 } from "./context.js";
 import { stackDtoSchema, stackInputSchema } from "./stack.js";
 import { proposalProfileResponseSchema } from "./profile.js";
-import { proposalSpecResponseSchema } from "./spec.js";
+import {
+  postedSpecSchema,
+  postedSpecSummarySchema,
+  proposalSpecResponseSchema,
+} from "./spec.js";
 import { proposalDetailResponseSchema } from "./web-api.js";
 
 /**
@@ -192,6 +196,11 @@ export const bountyDtoSchema = bountySummaryDtoSchema.extend({
   sourceUrl: z.string().nullable().optional(),
   createdBy: z.string().nullable(),
   stages: bountyStagesSchema,
+  /**
+   * The spec posted with it (`createBountySchema`'s `spec`), in brief; null
+   * for a bounty posted without one. Optional, so an older API still parses.
+   */
+  postedSpec: postedSpecSummarySchema.nullable().optional(),
 });
 
 /** One version of a bounty's scope: its text from then until the next. */
@@ -231,6 +240,12 @@ export const bountyLiveSchema = z.object({
 export const bountyResponseSchema = z.object({
   bounty: bountyDtoSchema,
   live: bountyLiveSchema.nullable().optional(),
+  /**
+   * On a bounty posted with `spec.confirmed`: `skipped_scope` when the
+   * credential lacks `decisions:confirm`, so its decisions were posted
+   * unconfirmed for a person to confirm. Absent otherwise.
+   */
+  confirmation: z.enum(["skipped_scope"]).optional(),
 });
 
 /**
@@ -323,11 +338,16 @@ export const syncBountyContextResponseSchema = z.object({
 const titleSchema = z.string().trim().min(1).max(BOUNTY_LIMITS.title);
 const descriptionSchema = z.string().max(BOUNTY_LIMITS.description);
 
-/** A bounty written here. Only the title is required. */
+/**
+ * A bounty written here. Only the title is required. With `spec`, a spec
+ * confirmed elsewhere is posted with it (`postedSpecSchema`); its
+ * description, when none is given, is the spec's document.
+ */
 export const createBountySchema = z.strictObject({
   title: titleSchema,
   description: descriptionSchema.default(""),
   stack: stackInputSchema.default([]),
+  spec: postedSpecSchema.optional(),
 });
 
 /** `https://github.com/<owner>/<repo>/issues/<number>`. */

@@ -5,14 +5,31 @@
  * for, and which grants a workspace has given.
  *
  * A grant is one consent row: a person, a client and an organization
- * (`reference_id`), with the scopes approved. Owner first, as every store:
- * each method but `findAccessToken` takes the organization and puts it in
- * its `WHERE`; `findAccessToken` is the one that establishes it, as
- * `ApiTokenStore.findByHash` does, the hash of a random token being the
- * capability.
+ * (`reference_id`), with the scopes approved. A **contributor grant** names
+ * no organization (`reference_id` null: the plugin's consent "given
+ * without a reference"): the person signed in as an invited contributor,
+ * and it reaches only their own contributions. Null rather than a marker
+ * string because `reference_id` is a foreign key to `organization`.
+ *
+ * Owner first, as every store: each method but `findAccessToken` takes the
+ * grant's owner (`GrantOwner`: an organization, or a contributor's own
+ * person) and puts it in its `WHERE`; `findAccessToken` is the one that
+ * establishes it, as `ApiTokenStore.findByHash` does, the hash of a random
+ * token being the capability.
  */
 
-import { and, desc, eq, isNull, lt, ne, or, sql } from "drizzle-orm";
+import {
+  and,
+  desc,
+  eq,
+  isNull,
+  lt,
+  ne,
+  or,
+  sql,
+  type AnyColumn,
+  type SQL,
+} from "drizzle-orm";
 
 import type { Database } from "./errors.js";
 import {
@@ -28,7 +45,8 @@ export interface ResolvedOAuthAccessToken {
   readonly id: string;
   readonly clientId: string;
   readonly grantId: string;
-  readonly organizationId: string;
+  /** The workspace the grant binds; null for a contributor grant. */
+  readonly organizationId: string | null;
   readonly user: {
     readonly id: string;
     readonly email: string;
@@ -51,6 +69,13 @@ export interface OAuthGrant {
   readonly lastUsedAt: Date | null;
 }
 
+/**
+ * Whose grant: an organization's (its id, the grant's `reference_id`), or
+ * one contributor's own (`{ contributor: userId }`: no reference, that
+ * person's).
+ */
+export type GrantOwner = string | { readonly contributor: string };
+
 export interface OAuthGrantStore {
   /**
    * The unrevoked access token with this hash, while its grant stands and
@@ -59,29 +84,26 @@ export interface OAuthGrantStore {
   findAccessToken(hash: string): Promise<ResolvedOAuthAccessToken | undefined>;
   /** Records a use at `at` unless one was recorded since `staleBefore`. */
   touch(
-    organizationId: string,
+    owner: GrantOwner,
     grantId: string,
     at: Date,
     staleBefore: Date,
   ): Promise<void>;
-  /** The organization's grants, most recently approved first. */
-  list(organizationId: string): Promise<OAuthGrant[]>;
+  /** The owner's grants, most recently approved first. */
+  list(owner: GrantOwner): Promise<OAuthGrant[]>;
   /**
    * Ends a grant: its access and refresh tokens are deleted and the
    * consent with them, so the client must ask again. Undefined when the
-   * organization holds no such grant.
+   * owner holds no such grant.
    */
-  revoke(
-    organizationId: string,
-    grantId: string,
-  ): Promise<OAuthGrant | undefined>;
+  revoke(owner: GrantOwner, grantId: string): Promise<OAuthGrant | undefined>;
   /**
    * Ends one access token and the refresh token it was issued with, and
    * nothing else: the grant stands, so the app may sign in again without a
    * new consent. What a client's logout calls with the token it holds.
-   * False when the organization holds no such token.
+   * False when the owner holds no such token.
    */
-  revokeAccessToken(organizationId: string, tokenId: string): Promise<boolean>;
+  revokeAccessToken(owner: GrantOwner, tokenId: string): Promise<boolean>;
 }
 
 /** At most this many listed, as for API tokens. */
@@ -132,9 +154,22 @@ function selectGrants(executor: Pick<Database, "select">) {
     .innerJoin(user, eq(user.id, oauthConsent.userId));
 }
 
+/**
+ * The rows `owner` holds in a table with `reference_id` and `user_id`: the
+ * organization's, or the contributor's own unreferenced ones.
+ */
+function ownedBy(
+  table: { referenceId: AnyColumn; userId: AnyColumn },
+  owner: GrantOwner,
+): SQL | undefined {
+  return typeof owner === "string"
+    ? eq(table.referenceId, owner)
+    : and(isNull(table.referenceId), eq(table.userId, owner.contributor));
+}
+
 export function createOAuthGrantStore(db: Database): OAuthGrantStore {
-  const oneGrant = (owner: string, grantId: string) =>
-    and(eq(oauthConsent.referenceId, owner), eq(oauthConsent.id, grantId));
+  const oneGrant = (owner: GrantOwner, grantId: string) =>
+    and(ownedBy(oauthConsent, owner), eq(oauthConsent.id, grantId));
 
   return {
     async findAccessToken(hash) {
@@ -152,14 +187,15 @@ export function createOAuthGrantStore(db: Database): OAuthGrantStore {
           grantLastUsedAt: oauthConsent.lastUsedAt,
         })
         .from(oauthAccessToken)
-        // The grant: same client, person and organization. A token whose
-        // consent is gone, or that names no organization, finds none.
+        // The grant: same client, person and organization, or both
+        // unreferenced (a contributor grant). A token whose consent is gone
+        // finds none.
         .innerJoin(
           oauthConsent,
           and(
             eq(oauthConsent.clientId, oauthAccessToken.clientId),
             eq(oauthConsent.userId, oauthAccessToken.userId),
-            eq(oauthConsent.referenceId, oauthAccessToken.referenceId),
+            sql`${oauthConsent.referenceId} is not distinct from ${oauthAccessToken.referenceId}`,
           ),
         )
         .innerJoin(
@@ -175,7 +211,7 @@ export function createOAuthGrantStore(db: Database): OAuthGrantStore {
           ),
         )
         .limit(1);
-      if (row === undefined || row.organizationId === null) return undefined;
+      if (row === undefined) return undefined;
       return {
         id: row.id,
         clientId: row.clientId,
@@ -205,7 +241,7 @@ export function createOAuthGrantStore(db: Database): OAuthGrantStore {
 
     async list(owner) {
       const rows = await selectGrants(db)
-        .where(eq(oauthConsent.referenceId, owner))
+        .where(ownedBy(oauthConsent, owner))
         .orderBy(desc(oauthConsent.updatedAt), desc(oauthConsent.id))
         .limit(LIST_LIMIT);
       return rows.map(toGrant);
@@ -224,7 +260,7 @@ export function createOAuthGrantStore(db: Database): OAuthGrantStore {
             and(
               eq(oauthAccessToken.clientId, row.clientId),
               eq(oauthAccessToken.userId, row.userId),
-              eq(oauthAccessToken.referenceId, owner),
+              ownedBy(oauthAccessToken, owner),
             ),
           );
         await tx
@@ -233,7 +269,7 @@ export function createOAuthGrantStore(db: Database): OAuthGrantStore {
             and(
               eq(oauthRefreshToken.clientId, row.clientId),
               eq(oauthRefreshToken.userId, row.userId),
-              eq(oauthRefreshToken.referenceId, owner),
+              ownedBy(oauthRefreshToken, owner),
             ),
           );
         await tx.delete(oauthConsent).where(oneGrant(owner, grantId));
@@ -248,7 +284,7 @@ export function createOAuthGrantStore(db: Database): OAuthGrantStore {
           .set({ revoked: sql`coalesce(${oauthAccessToken.revoked}, now())` })
           .where(
             and(
-              eq(oauthAccessToken.referenceId, owner),
+              ownedBy(oauthAccessToken, owner),
               eq(oauthAccessToken.id, tokenId),
             ),
           )
@@ -263,7 +299,7 @@ export function createOAuthGrantStore(db: Database): OAuthGrantStore {
             })
             .where(
               and(
-                eq(oauthRefreshToken.referenceId, owner),
+                ownedBy(oauthRefreshToken, owner),
                 eq(oauthRefreshToken.id, token.refreshId),
               ),
             );

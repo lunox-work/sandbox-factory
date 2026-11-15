@@ -31,7 +31,8 @@
   "scripts": {
     "build": "rm -rf dist tsconfig.tsbuildinfo && tsc -p tsconfig.json",
     "lint": "tsc -p tsconfig.test.json --noEmit",
-    "test": "rm -rf dist-test && tsc -p tsconfig.test.json && node --experimental-test-coverage --test-coverage-lines=90 --test-coverage-branches=90 --test-coverage-functions=90 --test-coverage-include=\"dist-test/src/**\" --test-coverage-exclude=\"dist-test/test/**\" --test dist-test/test/*.test.js > dist-test/coverage.txt; status=$?; cat dist-test/coverage.txt; [ $status -eq 0 ] && assert-all-covered dist-test/src dist-test/coverage.txt index.js"
+    "test": "rm -rf dist-test && tsc -p tsconfig.test.json && node --experimental-test-coverage --test-coverage-lines=90 --test-coverage-branches=90 --test-coverage-functions=90 --test-coverage-include=\"dist-test/src/**\" --test-coverage-exclude=\"dist-test/test/**\" --test dist-test/test/*.test.js > dist-test/coverage.txt; status=$?; cat dist-test/coverage.txt; [ $status -eq 0 ] && assert-all-covered dist-test/src dist-test/coverage.txt index.js",
+    "pricing-corpus": "rm -rf dist-test && tsc -p tsconfig.test.json && node dist-test/test/pricing-corpus/print.js"
   },
   "devDependencies": {
     "@sandbox-factory/coverage": "*",
@@ -41,7 +42,19 @@
     "fast-check": "^4.10.2",
     "typescript": "^7.0.2"
   },
-  "keywords": [],
+  "keywords": [
+    "sandbox-factory",
+    "lunox",
+    "bounties",
+    "pricing",
+    "sizing",
+    "handles",
+    "sandbox",
+    "hidden-tests",
+    "carveout",
+    "coding-agents",
+    "typescript"
+  ],
   "dependencies": {
     "carveout": "0.3.1"
   }

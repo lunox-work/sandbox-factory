@@ -10,7 +10,8 @@
  * - **User-to-server tokens** for the connect flow, where they prove which
  *   installations the person linking one may see.
  *
- * Read-only but for merge-back's pull request (`pull-requests.ts`), and
+ * Read-only but for merge-back's pull request (`pull-requests.ts`: opened,
+ * and merged when its CI passes, read back by `pull-request-ci.ts`), and
  * `fetch` only: no octokit, no JWT library. Node-only, unlike
  * `packages/jira`, because the App's key and webhook secret exist only in the
  * API and the worker; see this package's tsconfig.
@@ -35,9 +36,30 @@ export {
 } from "./errors.js";
 export { REQUEST_TIMEOUT_MS } from "./http.js";
 export { InstallationTokens } from "./installation-tokens.js";
-export { MERGE_BACK_PERMISSIONS, PullRequestWriter } from "./pull-requests.js";
+export {
+  BranchConflictError,
+  MERGE_BACK_PERMISSIONS,
+  missingPermissions,
+  PullRequestWriter,
+} from "./pull-requests.js";
+export {
+  CI_READ_PERMISSIONS,
+  PullRequestCiReader,
+  summarizeCi,
+} from "./pull-request-ci.js";
 export type {
+  CheckRunSummary,
+  CiState,
+  CiSummary,
+  CommitStatusSummary,
+  PullRequestCiReaderOptions,
+} from "./pull-request-ci.js";
+export type {
+  CommitSummary,
+  MergeOutcome,
   OpenedPullRequest,
+  PullRequestRead,
+  PullRequestSummary,
   PullRequestInput,
   PullRequestWriterOptions,
 } from "./pull-requests.js";

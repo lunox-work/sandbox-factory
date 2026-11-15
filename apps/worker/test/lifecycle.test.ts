@@ -579,6 +579,56 @@ test("known losing attempts clean artifacts and logs", async () => {
   await executeRun(run, { ...state, tool, source, fetchSource });
   assert.equal(state.bytes.size, 0);
 });
+test("a grading run's verdict is handed to its fenced commit, and to nothing else", async () => {
+  const result = {
+    public: { passed: 1, total: 1 },
+    hidden: { passed: 2, total: 2 },
+    verdict: "passed" as const,
+    failedScenarios: [],
+  };
+  const grading: ToolAdapter = {
+    ...tool,
+    run: async (input) => {
+      input.inputs.settleSubmission?.("sbm_1", result);
+      return tool.run(input);
+    },
+  };
+  for (const outcome of ["commit", "lease_lost", "upload_failed"] as const) {
+    const state = stores();
+    const settled: unknown[] = [];
+    state.runs.finish = async (...args: unknown[]) => {
+      settled.push(args[6]);
+      state.calls.push("finish");
+      return outcome === "commit";
+    };
+    if (outcome === "upload_failed")
+      state.objects.put = async () => {
+        throw new Error("S3 down");
+      };
+    await executeRun(run, {
+      ...state,
+      // Only a read: a verdict reaches no submission outside the commit.
+      submissions: { get: async () => null },
+      tool: grading,
+      source,
+      fetchSource,
+    });
+    // A failed upload never reaches the commit, so no verdict is written;
+    // a lost lease is fenced out of it, verdict and artifacts together.
+    assert.deepEqual(
+      settled,
+      outcome === "upload_failed"
+        ? []
+        : [{ submission: { id: "sbm_1", result } }],
+    );
+    assert.deepEqual(
+      state.calls,
+      outcome === "upload_failed" ? ["upload_failed"] : ["finish"],
+    );
+    // Uncommitted, the merge patch it would rest on is not kept either.
+    if (outcome !== "commit") assert.equal(state.bytes.size, 0);
+  }
+});
 test("failed sources, tool errors and upload errors are classified without sensitive details", async () => {
   for (const stage of ["source", "tool", "upload"] as const) {
     const state = stores();

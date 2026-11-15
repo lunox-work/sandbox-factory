@@ -19,7 +19,9 @@ import {
 } from "sandbox-factory";
 import type {
   AliasRule,
+  DisclosureAcknowledgement,
   EvaluationCommand,
+  HiddenTestRun,
   GeneratedFile,
   EvaluationExecResult,
   EvaluationProvider,
@@ -40,10 +42,12 @@ import {
   quotedProject,
 } from "../src/tools/hidden-tests.js";
 import { unresolvedImportRules } from "../src/tools/pseudonyms.js";
+import { hiddenSha256 } from "duediligence/api";
 import {
   BUILD_TRANSFORM_PATH,
   buildArtifactKind,
   createSandboxBuildAdapter,
+  hiddenCommitmentOf,
   nearestCompilerOptions,
   packageVocabulary,
   privateTestOutcome,
@@ -91,6 +95,10 @@ function fakeProvider(
 ) {
   const calls: string[][] = [];
   const staged: string[] = [];
+  /** Each seal: the paths withheld and how many commands had run. */
+  const seals: { paths: readonly string[]; after: number }[] = [];
+  /** Each hidden run's `hidden`, in order. */
+  const hidden: HiddenTestRun[] = [];
   let destroyed = 0;
   const provider: EvaluationProvider = {
     name: "fake",
@@ -108,6 +116,7 @@ function fakeProvider(
         },
         async exec(command: EvaluationCommand) {
           calls.push([...command.argv]);
+          if (command.hidden !== undefined) hidden.push(command.hidden);
           const scripted = script(command.argv);
           if (scripted instanceof Error) throw scripted;
           return {
@@ -127,13 +136,23 @@ function fakeProvider(
               : options.lockfile
             : null;
         },
+        async seal(paths) {
+          seals.push({ paths, after: calls.length });
+        },
         async destroy() {
           destroyed += 1;
         },
       };
     },
   };
-  return { provider, calls, staged, destroyed: () => destroyed };
+  return {
+    provider,
+    calls,
+    staged,
+    seals,
+    hidden,
+    destroyed: () => destroyed,
+  };
 }
 
 async function versionFor(
@@ -144,6 +163,12 @@ async function versionFor(
     stale: boolean;
     fixtures: VersionFixtures | null;
     slice: SliceOutput;
+    /** What the spec decided where the ticket was silent. */
+    assumptions: string[];
+    /** The bounty's title and summary, when not the widget's. */
+    listing: { title: string; summary: string };
+    /** Disclosure findings an owner said may be public. */
+    acknowledgements: DisclosureAcknowledgement[];
   }> = {},
 ): Promise<StoredVersionWithSource> {
   const { artifacts, manifest, contract } = overrides.slice ?? (await slice());
@@ -167,8 +192,8 @@ async function versionFor(
       id: "sbv_1",
       sandboxId: "sbx_1",
       version: 1,
-      title: "Fix the widget",
-      specSummary: "Make it work.",
+      title: overrides.listing?.title ?? "Fix the widget",
+      specSummary: overrides.listing?.summary ?? "Make it work.",
       complexity: "M",
       tags: ["typescript"],
       testSummary: [],
@@ -195,8 +220,8 @@ async function versionFor(
       contextVersions: { jira: null, github: null },
       approvedTask: {
         schemaVersion: 1,
-        title: "Fix the widget",
-        summary: "Make it work.",
+        title: overrides.listing?.title ?? "Fix the widget",
+        summary: overrides.listing?.summary ?? "Make it work.",
         spec: {
           proposalId: "bpr_1",
           specRevision: 1,
@@ -214,7 +239,7 @@ async function versionFor(
               },
             ],
             openQuestions: [],
-            assumptions: [],
+            assumptions: overrides.assumptions ?? [],
           },
         },
         pricing: null,
@@ -243,6 +268,9 @@ async function versionFor(
       buildRunId: null,
       roundTripRunId: null,
       disclosureRunId: null,
+      ...(overrides.acknowledgements === undefined
+        ? {}
+        : { disclosureAcknowledgements: overrides.acknowledgements }),
       approvedBy: null,
       approvedAt: null,
       createdAt: stamp,
@@ -262,6 +290,7 @@ async function versionFor(
             acceptanceTests: source.acceptanceTests,
             fixtures: source.fixtures,
             starterSha256: source.starterSha256,
+            disclosureAcknowledgements: source.disclosureAcknowledgements,
           }),
         ),
       ),
@@ -287,6 +316,8 @@ async function runBuild(
     slice: SliceOutput;
     /** The build's calibration; off unless a test is about it. */
     calibration: "reference" | "off";
+    /** The engine that writes the project; the platform's unless a test says. */
+    projectGenerator: "platform" | "carveout";
   }> = {},
 ) {
   const { artifacts, objects } = options.slice ?? (await slice());
@@ -355,6 +386,9 @@ async function runBuild(
     provider,
     ...(options.agent === undefined ? {} : { agent: options.agent }),
     calibration: options.calibration ?? "off",
+    ...(options.projectGenerator === undefined
+      ? {}
+      : { projectGenerator: options.projectGenerator }),
     now: () => new Date(stamp),
   });
   const files = await adapter.run(input);
@@ -513,6 +547,20 @@ test("a build produces a standalone project, hidden tests apart, a verified base
     ),
   );
   assert.deepEqual(manifest.blockers, []);
+  // Both publication gates: the unchanged project, its import rewrite
+  // included, carries back to the source, and no public file names the
+  // workspace.
+  assert.deepEqual(manifest.gates?.roundTrip.status, "passed");
+  assert.deepEqual(manifest.gates?.roundTrip.problems, []);
+  assert.ok((manifest.gates?.roundTrip.files ?? 0) > 0);
+  assert.deepEqual(
+    [
+      manifest.gates?.disclosure.status,
+      manifest.gates?.disclosure.scannedBy,
+      manifest.gates?.disclosure.blocking,
+    ],
+    ["passed", "build", 0],
+  );
   assert.equal(manifest.sandboxVersionId, "sbv_1");
   assert.equal(manifest.sourceCommitSha, "a".repeat(40));
   assert.equal(manifest.evaluator?.provider, "fake");
@@ -583,6 +631,10 @@ test("a build produces a standalone project, hidden tests apart, a verified base
     await read("project/tests/public/spec.test.ts"),
     /makeService describes a thing/,
   );
+  // TASK.md writes the spec out as the table renamed it.
+  const task = await read("project/TASK.md");
+  assert.match(task, /makeService describes a thing/);
+  assert.doesNotMatch(task, /createService/);
   assert.match(
     await read("project/tests/public/interface.test.ts"),
     /module\["run"\]/,
@@ -608,6 +660,25 @@ test("a build produces a standalone project, hidden tests apart, a verified base
     ],
   );
   assert.ok(fake.staged.includes("tests/private/fix.test.ts"));
+  // The hidden test's files leave the tree once it is built, before the
+  // walkthrough runs task code, and each run loads it from memory.
+  assert.deepEqual(fake.seals, [
+    {
+      paths: [
+        "tests/private/fix.test.d.ts",
+        "tests/private/fix.test.d.ts.map",
+        "tests/private/fix.test.js",
+        "tests/private/fix.test.js.map",
+        "tests/private/fix.test.ts",
+        "tests/private/fix.test.ts.map",
+      ],
+      after: 3,
+    },
+  ]);
+  assert.deepEqual(fake.hidden, [
+    { entry: "tests/private/fix.test.js", load: "memory" },
+    { entry: "tests/private/fix.test.js", load: "memory" },
+  ]);
   assert.equal(fake.destroyed(), 1);
   assert.deepEqual(manifest.baseline?.privateTests, [
     {
@@ -1151,6 +1222,272 @@ test("a credential in a public file blocks the build before any job runs, naming
     },
   ]);
   assert.equal(JSON.stringify(leaked.manifest).includes(key), false);
+});
+
+/**
+ * The fixture with one file's text changed, and its slice's manifest
+ * naming the new bytes, as a slice of that source would.
+ */
+async function sourceWith(
+  path: string,
+  edit: (text: string) => string,
+): Promise<{ sourceDir: string; slice: SliceOutput }> {
+  const sourceDir = await mkdtemp(join(tmpdir(), "build-source-"));
+  await cp(fixture, sourceDir, { recursive: true });
+  const text = edit(await readFile(join(sourceDir, path), "utf8"));
+  await writeFile(join(sourceDir, path), text);
+  const sliced = await slice();
+  const manifest = {
+    ...sliced.manifest,
+    included: sliced.manifest.included.map((file) =>
+      file.path === path ? { ...file, sha256: sha(text) } : file,
+    ),
+  };
+  const bytes = Buffer.from(JSON.stringify(manifest));
+  const objects = new Map(sliced.objects);
+  const artifacts = sliced.artifacts.map((artifact) => {
+    if (artifact.kind !== "slice_manifest") return artifact;
+    objects.set(artifact.objectKey, bytes);
+    return { ...artifact, sha256: sha(bytes), sizeBytes: bytes.byteLength };
+  });
+  return { sourceDir, slice: { ...sliced, artifacts, objects, manifest } };
+}
+
+/** A runbook link and an author's address in a copied file's comment. */
+const RUNBOOK_HEADER = [
+  "/**",
+  " * Runbook: https://wiki.halcyon.internal/runbooks/app",
+  " * @author jo.doe@halcyon.io",
+  " */",
+  "",
+].join("\n");
+/** A bounty whose title and summary say where it came from. */
+const TRACKED = {
+  title: "Fix the widget (PAY-7)",
+  summary:
+    "Reported by ops@halcyon.io; see https://status.halcyon.io/incidents/1.",
+};
+
+test("what the table leaves beyond the vocabulary blocks the build before any job runs, and the bounty's addresses never reach a generated file", async () => {
+  const { sourceDir, slice: sliced } = await sourceWith(
+    "src/app.ts",
+    (text) => RUNBOOK_HEADER + text,
+  );
+  const fake = fakeProvider();
+  const blocked = await runBuild(fake.provider, {
+    sourceDir,
+    slice: sliced,
+    version: await versionFor({
+      slice: sliced,
+      aliasRules: named,
+      listing: TRACKED,
+    }),
+    params: { ticketKeys: ["PAY"] },
+  });
+  assert.equal(blocked.manifest.ready, false);
+  assert.equal(blocked.manifest.baseline, null);
+  assert.equal(fake.calls.length, 0);
+  assert.deepEqual(blocked.manifest.blockers, [
+    {
+      code: "disclosure_findings",
+      file: "src/app.ts",
+      detail:
+        "Text that may say whose code this is appears at src/app.ts:2 (url https://wiki.halcyon.internal/runbooks/app), src/app.ts:3 (email jo.doe@halcyon.io), src/app.ts:3 (author jo.doe@halcyon.io). Rename it with a pseudonym text rule, or acknowledge it on the version if it may be public.",
+    },
+  ]);
+  const gate = blocked.manifest.gates?.disclosure;
+  assert.equal(gate?.status, "failed");
+  assert.equal(gate?.blocking, 3);
+  assert.equal(gate?.total, 3);
+  assert.equal(gate?.acknowledged, 0);
+  assert.deepEqual(
+    gate?.findings?.map((finding) => [finding.kind, finding.term]),
+    [
+      ["url", "wiki.halcyon.internal"],
+      ["email", "halcyon.io"],
+      ["author", "jo.doe@halcyon.io"],
+    ],
+  );
+  assert.ok(
+    blocked.messages.includes(
+      "The disclosure scan finds 3 item(s) in public files, 3 not acknowledged.",
+    ),
+    blocked.messages.join("\n"),
+  );
+  // The bounty's ticket, address and link are redacted from every file the
+  // build writes from it, wherever they would have gone.
+  const readme = await blocked.read("project/README.md");
+  const task = await blocked.read("project/TASK.md");
+  const descriptor = await blocked.read("project/sandbox-task.json");
+  assert.match(readme, /# Fix the widget \(\[ticket\]\)/);
+  assert.match(readme, /Reported by \[email removed\]; see \[link removed\]\./);
+  for (const text of [readme, task, descriptor]) {
+    assert.doesNotMatch(text, /halcyon|PAY-7/);
+  }
+  // The build's summary carries the findings for the owner to act on.
+  const summary = blocked.files.find(
+    (file) => file.path === "build-manifest.json",
+  )?.meta as { disclosure?: { findings?: unknown[] } } | null;
+  assert.equal(summary?.disclosure?.findings?.length, 3);
+});
+
+test("a text rule that renames them, or an owner's acknowledgement, lets the build through, recorded in the gate", async () => {
+  const { sourceDir, slice: sliced } = await sourceWith(
+    "src/app.ts",
+    (text) => RUNBOOK_HEADER + text,
+  );
+  const script = (argv: readonly string[]) =>
+    runsHiddenTest(argv) ? TAP_FAILED : {};
+  // Renamed by text rules whose public names carry back.
+  const renamed = await runBuild(fakeProvider(script).provider, {
+    sourceDir,
+    slice: sliced,
+    version: await versionFor({
+      slice: sliced,
+      aliasRules: [
+        ...named,
+        {
+          before: "wiki.halcyon.internal",
+          after: "wiki.example",
+          kind: "text",
+          paths: [],
+        },
+        {
+          before: "jo.doe@halcyon.io",
+          after: "dev@example.com",
+          kind: "text",
+          paths: [],
+        },
+      ],
+    }),
+  });
+  assert.deepEqual(renamed.manifest.blockers, []);
+  assert.equal(renamed.manifest.ready, true);
+  assert.equal(renamed.manifest.gates?.disclosure.status, "passed");
+  assert.equal(renamed.manifest.gates?.disclosure.total, 0);
+  assert.equal(renamed.manifest.gates?.roundTrip.status, "passed");
+  const app = await renamed.read("project/src/app.ts");
+  assert.match(app, /https:\/\/wiki\.example\/runbooks\/app/);
+  assert.match(app, /@author dev@example\.com/);
+  // A host renamed word for word would carry a contributor's added line
+  // back wrongly: the round trip says so, and holds publication.
+  const wordForWord = await runBuild(fakeProvider(script).provider, {
+    sourceDir,
+    slice: sliced,
+    version: await versionFor({
+      slice: sliced,
+      aliasRules: [
+        ...named,
+        {
+          before: "wiki.halcyon.internal",
+          after: "docs.example.com",
+          kind: "text",
+          paths: [],
+        },
+        {
+          before: "jo.doe@halcyon.io",
+          after: "dev@example.com",
+          kind: "text",
+          paths: [],
+        },
+      ],
+    }),
+  });
+  assert.equal(wordForWord.manifest.gates?.disclosure.status, "passed");
+  assert.equal(wordForWord.manifest.gates?.roundTrip.status, "failed");
+  assert.match(
+    wordForWord.manifest.gates?.roundTrip.problems[0]?.reason ?? "",
+    /docs -> wiki, example -> halcyon, com -> internal/,
+  );
+  // Left as they are, and acknowledged by an owner.
+  const acknowledged = await runBuild(fakeProvider(script).provider, {
+    sourceDir,
+    slice: sliced,
+    version: await versionFor({
+      slice: sliced,
+      aliasRules: named,
+      acknowledgements: [
+        { kind: "host", value: "halcyon.internal", note: "a public wiki" },
+        { kind: "email", value: "jo.doe@halcyon.io" },
+        { kind: "author", value: "jo.doe@halcyon.io" },
+      ],
+    }),
+  });
+  assert.deepEqual(acknowledged.manifest.blockers, []);
+  const gate = acknowledged.manifest.gates?.disclosure;
+  assert.equal(gate?.status, "passed");
+  assert.equal(gate?.blocking, 0);
+  assert.equal(gate?.acknowledged, 3);
+  assert.deepEqual(
+    gate?.findings?.map((finding) => finding.acknowledged),
+    [true, true, true],
+  );
+});
+
+test("the pseudonyms agent is given what the scan finds in the slice as hints, and the check shows what is left", async () => {
+  const { sourceDir, slice: sliced } = await sourceWith(
+    "src/app.ts",
+    (text) => RUNBOOK_HEADER + text,
+  );
+  const model = scripted([
+    turn([
+      call("check_pseudonyms", {
+        aliases: [
+          { before: "Widget", after: "Gadget", kind: "identifier" },
+          { before: "widget", after: "gadget", kind: "text" },
+        ],
+      }),
+    ]),
+    turn([
+      call("submit_pseudonyms", {
+        aliases: [
+          { before: "Widget", after: "Gadget", kind: "identifier" },
+          { before: "widget", after: "gadget", kind: "text" },
+          {
+            before: "wiki.halcyon.internal",
+            after: "wiki.example",
+            kind: "text",
+          },
+          {
+            before: "jo.doe@halcyon.io",
+            after: "dev@example.com",
+            kind: "text",
+          },
+        ],
+        summary: "Renames the product, the wiki and the author.",
+      }),
+    ]),
+  ]);
+  const version = await versionFor({
+    slice: sliced,
+    fixtures: {
+      ...given,
+      scenario: `console.log("demo");\n// The widget walkthrough, for ${PSEUDONYM_PLACEHOLDERS.join(", ")}.\n`,
+    },
+  });
+  const built = await runBuild(
+    fakeProvider((argv) => (runsHiddenTest(argv) ? TAP_FAILED : {})).provider,
+    {
+      sourceDir,
+      slice: sliced,
+      version,
+      params: { vocabulary: ["Widget"] },
+      agent: { model, limits },
+    },
+  );
+  const prompt = model.prompts[0] ?? "";
+  assert.match(prompt, /The disclosure scan finds these in the slice/);
+  assert.match(prompt, /wiki\.halcyon\.internal \(url; at src\/app\.ts:2\)/);
+  assert.match(prompt, /halcyon\.io \(email; at src\/app\.ts:3\)/);
+  // The check lists what is still there without refusing the table for it.
+  const checked = model.results[0]?.[0];
+  assert.match(checked?.content ?? "", /Still in the public files/);
+  assert.match(
+    checked?.content ?? "",
+    /src\/app\.ts:2 url https:\/\/wiki\.halcyon\.internal\/runbooks\/app/,
+  );
+  assert.deepEqual(built.manifest.blockers, []);
+  assert.equal(built.manifest.gates?.disclosure.status, "passed");
 });
 
 test("a mocked package and an environment variable go by the names the table gives them", async () => {
@@ -1883,6 +2220,42 @@ test("a hidden test that disagrees with itself across two runs is flaky, and the
   );
 });
 
+test("the hidden commitment is duediligence's hash at tests/private/, the same manifest at an upload's folder paths, none for no test", () => {
+  const a = 'test("a", () => {});\n';
+  const b = 'test("b", () => {});\n';
+  // Byte order, not code-unit order, for the lines; JS order for kept ids.
+  const platform = {
+    "tests/private/s2-b.test.ts": b,
+    "tests/private/s1-a.test.ts": a,
+  };
+  assert.deepEqual(
+    hiddenCommitmentOf(
+      Object.entries(platform).map(([path, text]) => ({
+        path,
+        sha256: sha256(text),
+      })),
+    ),
+    {
+      version: 2,
+      hiddenTests: 2,
+      hiddenSha256: hiddenSha256(platform, Object.keys(platform).sort()),
+    },
+  );
+  const folder = hiddenCommitmentOf([
+    { path: "src/price.spec.ts", sha256: sha256(b) },
+    { path: "lib/rate.test.ts", sha256: sha256(a) },
+  ]);
+  const manifest =
+    `${sha256(a)}  lib/rate.test.ts\n${sha256(b)}  src/price.spec.ts\n` +
+    `${sha256(JSON.stringify(["lib/rate.test.ts", "src/price.spec.ts"]))}  calibration.kept\n`;
+  assert.equal(folder.hiddenSha256, sha256(manifest));
+  assert.deepEqual(hiddenCommitmentOf([]), {
+    version: 2,
+    hiddenTests: 0,
+    hiddenSha256: null,
+  });
+});
+
 test("a draft with no pseudonyms has a table drafted by rule, checked as the build applies it, and it settles with the build", async () => {
   const fake = fakeProvider((argv) => (runsHiddenTest(argv) ? TAP_FAILED : {}));
   // No turns: an agent asked for anything would keep nothing.
@@ -1909,11 +2282,28 @@ test("a draft with no pseudonyms has a table drafted by rule, checked as the bui
   );
   // The project is renamed by the table, which the private side keeps.
   assert.doesNotMatch(await built.read("project/README.md"), /widget/i);
+  assert.doesNotMatch(await built.read("project/TASK.md"), /widget/i);
   const transform = JSON.parse(await built.read(BUILD_TRANSFORM_PATH)) as {
     aliasRules: AliasRule[];
     pseudonyms: { usage: { turns: number } };
   };
   assert.deepEqual(transform.aliasRules, rules);
+  // The handout's commitment, recorded: duediligence's own hash over the
+  // hidden tests at tests/private/, the name table beside them left out.
+  const hidden = built.manifest.files.filter(
+    (record) => record.class === "test-private",
+  );
+  assert.ok(hidden.length > 0);
+  const suite: Record<string, string> = {};
+  for (const record of hidden)
+    suite[record.path] = await built.read(
+      `private/${record.path.slice("tests/private/".length)}`,
+    );
+  assert.deepEqual(built.manifest.hiddenCommitment, {
+    version: 2,
+    hiddenTests: hidden.length,
+    hiddenSha256: hiddenSha256(suite, Object.keys(suite).sort()),
+  });
   // Drafted by rule, the table cost no turn.
   assert.equal(transform.pseudonyms.usage.turns, 0);
   const transformConfigSha256 = sha256(
@@ -2397,6 +2787,10 @@ test("the hidden-tests prompt quotes the project most needed first, within its r
     file("sandbox/mock.js", "harness"),
     file("package-lock.json", "config"),
     file("package.json", "config"),
+    file("TASK.md", "config"),
+    file("AGENTS.md", "config"),
+    file("CLAUDE.md", "config"),
+    file(".vscode/launch.json", "config"),
     { ...file("tests/private/a.test.ts", "test-private"), public: false },
   ]);
   assert.deepEqual(
@@ -2879,6 +3273,73 @@ test("hidden tests a reference passes are calibrated and kept, with the referenc
   );
 });
 
+test("confirmed decisions are quoted to the hidden-tests and reference agents, renamed, and carried in TASK.md when safe to show", async () => {
+  const assumptions = ["Each thing keeps its retries count."];
+  const decisionsSha256 = sha256("d1\tEach thing keeps its retries count.\n");
+  const build = async (
+    params: Record<string, unknown>,
+    assumed = assumptions,
+  ) => {
+    const model = scripted([
+      turn([call("run_hidden_tests", { tests: [hiddenTest] })]),
+      turn([call("submit_hidden_tests", { tests: null, summary: "One." })]),
+      turn([call("run_reference", { files: [referenceFile] })]),
+      turn([call("submit_reference", { files: null, summary: "Ref.\nnone" })]),
+    ]);
+    const built = await runBuild(referenceProvider().provider, {
+      version: await versionFor({
+        acceptance: false,
+        aliasRules: named,
+        fixtures: given,
+        assumptions: assumed,
+      }),
+      agent: { model, limits },
+      calibration: "reference",
+      params,
+    });
+    return { built, model, task: await built.read("project/TASK.md") };
+  };
+  const confirmed = await build({ decisionsSha256 });
+  assert.equal(confirmed.built.manifest.ready, true);
+  // In the project's names, as the table renamed the spec.
+  for (const prompt of confirmed.model.prompts.slice(0, 2))
+    assert.match(
+      prompt,
+      /Decided, confirmed by the client:\\n- Each thing keeps its attempts count\./,
+    );
+  assert.match(
+    confirmed.task,
+    /## Decided\n\n.*\n\n- Each thing keeps its attempts count\.\n/,
+  );
+  // Not confirmed (no hash named): quoted as nothing, shown to no one.
+  const unconfirmed = await build({});
+  for (const prompt of unconfirmed.model.prompts)
+    assert.doesNotMatch(prompt, /confirmed by the client/);
+  assert.doesNotMatch(unconfirmed.task, /## Decided/);
+  // A decision still in the workspace's names is kept from TASK.md, never
+  // leaked; the agents, which are private, still hold the tests to it.
+  const leaking = await build(
+    {
+      decisionsSha256: sha256("d1\tZorblax keeps its retries count.\n"),
+      vocabulary: ["Zorblax"],
+    },
+    ["Zorblax keeps its retries count."],
+  );
+  assert.equal(leaking.built.manifest.ready, true);
+  assert.doesNotMatch(leaking.task, /## Decided|Zorblax/);
+  assert.ok(
+    leaking.built.messages.some((line) =>
+      /TASK\.md leaves out the 1 confirmed decision/.test(line),
+    ),
+  );
+  assert.match(leaking.model.prompts[0] ?? "", /confirmed by the client/);
+  // A hash of other decisions: the task moved under the run.
+  await assert.rejects(
+    build({ decisionsSha256: "0".repeat(64) }),
+    /tool_failed/,
+  );
+});
+
 test("a hidden test the reference cannot pass is dropped, and the build is the baseline of the set kept", async () => {
   const fake = referenceProvider();
   const stubborn = {
@@ -2962,5 +3423,358 @@ test("with no reference, no hidden test stands, and the build stays diagnostic",
     built.messages.some((line) =>
       line.startsWith("Calibration kept no hidden test that should fail"),
     ),
+  );
+});
+
+/**
+ * The fixture's slice with its request's `params` (asking for its tests by
+ * default), and test files beside its source that the walk saw import
+ * `src/app.ts`.
+ */
+async function sliceCarrying(
+  tests: Record<string, string>,
+  params: Record<string, unknown> = { carryTests: true },
+): Promise<{ sourceDir: string; slice: SliceOutput }> {
+  const sourceDir = await mkdtemp(join(tmpdir(), "build-carried-"));
+  await cp(fixture, sourceDir, { recursive: true });
+  for (const [path, text] of Object.entries(tests)) {
+    await mkdir(join(sourceDir, path, ".."), { recursive: true });
+    await writeFile(join(sourceDir, path), text);
+  }
+  const sliced = await slice();
+  const manifest = {
+    ...sliced.manifest,
+    params: { ...sliced.manifest.params, ...params },
+    cuts: {
+      ...sliced.manifest.cuts,
+      inbound: [
+        ...sliced.manifest.cuts.inbound,
+        ...Object.keys(tests).map((from) => ({
+          from,
+          to: "src/app.ts",
+          relation: "imports",
+          specifier: "../src/app.js",
+          location: "L2",
+          targetSymbol: null,
+        })),
+      ],
+    },
+  };
+  const bytes = Buffer.from(JSON.stringify(manifest));
+  const objects = new Map(sliced.objects);
+  const artifacts = sliced.artifacts.map((artifact) => {
+    if (artifact.kind !== "slice_manifest") return artifact;
+    objects.set(artifact.objectKey, bytes);
+    return { ...artifact, sha256: sha(bytes), sizeBytes: bytes.byteLength };
+  });
+  return {
+    sourceDir,
+    slice: { ...sliced, artifacts, objects, manifest: manifest as never },
+  };
+}
+
+const NODE_TEST = 'import { test } from "node:test";\n';
+const appTest = (name: string, more = "") =>
+  `${NODE_TEST}import { run } from "../src/app.js";\n${more}test(${JSON.stringify(name)}, () => void run);\n`;
+const CARRIED_TESTS = {
+  "test/app.test.ts": appTest(
+    "runs",
+    'import { createService } from "../lib/service.js";\n',
+  ),
+  "test/fails.test.ts": appTest("fails"),
+  "test/types.test.ts": appTest("types"),
+  "test/slow.test.ts": appTest("slow"),
+  "test/flaky.test.ts": appTest("flaky"),
+  "test/vitest.test.ts":
+    'import { it } from "vitest";\nimport { run } from "../src/app.js";\nit("runs", () => void run);\n',
+  "test/jest.test.ts":
+    'import { run } from "../src/app.js";\ndescribe("run", () => it("runs", () => expect(run).toBeDefined()));\n',
+  "test/outside.test.ts": appTest(
+    "outside",
+    'import { cli } from "../consumers/cli.js";\n',
+  ),
+};
+/** The trial's answers: tsc names one file, and each test runs as its name says. */
+function carriedScript() {
+  let flaky = 0;
+  return (argv: readonly string[]): Partial<EvaluationExecResult> => {
+    const file = argv.at(-1) ?? "";
+    if (argv.includes("--noEmitOnError"))
+      return {
+        exitCode: 2,
+        stdout:
+          "tests/public/carried/test/types.test.ts(2,10): error TS2305: Module '\"../../../../src/app.js\"' has no exported member 'gone'.\nsrc/elsewhere.ts(1,1): error TS1000: Not a carried test.\n",
+      };
+    if (!runsHiddenTest(argv)) return {};
+    if (!file.includes("tests/public/carried/")) return TAP_FAILED;
+    if (file.endsWith("/fails.test.js")) return TAP_FAILED;
+    if (file.endsWith("/slow.test.js"))
+      return { exitCode: null, timedOut: true };
+    if (file.endsWith("/flaky.test.js"))
+      return (flaky += 1) === 1
+        ? TAP_PASSED
+        : {
+            ...TAP_PASSED,
+            stdout: TAP_PASSED.stdout.replace(/passes/g, "other"),
+          };
+    return TAP_PASSED;
+  };
+}
+
+test("a slice asking for its tests carries those that pass twice on the untouched project, and records the rest with why", async () => {
+  const { sourceDir, slice: sliced } = await sliceCarrying(CARRIED_TESTS);
+  const fake = fakeProvider(carriedScript());
+  const { manifest, read, messages, files } = await runBuild(fake.provider, {
+    slice: sliced,
+    sourceDir,
+    version: await versionFor({ slice: sliced }),
+  });
+  assert.equal(manifest.ready, true, JSON.stringify(manifest.blockers));
+  assert.deepEqual(manifest.carriedTests?.kept, [
+    { path: "tests/public/carried/test/app.test.ts", from: "test/app.test.ts" },
+  ]);
+  assert.deepEqual(
+    manifest.carriedTests?.dropped.map(({ from, reason }) => [from, reason]),
+    [
+      ["test/fails.test.ts", "baseline_failed"],
+      ["test/flaky.test.ts", "flaky"],
+      ["test/jest.test.ts", "runner"],
+      ["test/outside.test.ts", "outside_slice"],
+      ["test/slow.test.ts", "timed_out"],
+      ["test/types.test.ts", "compile_failed"],
+      ["test/vitest.test.ts", "runner"],
+    ],
+  );
+  assert.match(
+    manifest.carriedTests?.dropped.find(
+      ({ reason }) => reason === "compile_failed",
+    )?.detail ?? "",
+    /TS2305/,
+  );
+  assert.deepEqual(manifest.carriedTests?.limits, {
+    maxFiles: 20,
+    maxBytes: 256 * 1024,
+    timeoutMs: 60_000,
+  });
+  // The kept test is a public test, its imports pointed at the project's
+  // files from where it now sits; the dropped ones are nowhere.
+  assert.ok(
+    manifest.files.some(
+      (file) =>
+        file.path === "tests/public/carried/test/app.test.ts" &&
+        file.class === "test-public" &&
+        file.public,
+    ),
+  );
+  assert.ok(
+    !files.some((file) =>
+      /carried\/test\/(?:fails|flaky|slow|types|vitest|jest|outside)/.test(
+        file.path,
+      ),
+    ),
+  );
+  const carried = await read("project/tests/public/carried/test/app.test.ts");
+  assert.match(carried, /from "\.\.\/\.\.\/\.\.\/\.\.\/src\/app\.js"/);
+  assert.match(carried, /from "\.\.\/\.\.\/\.\.\/\.\.\/lib\/service\.js"/);
+  const descriptor = JSON.parse(await read("project/sandbox-task.json")) as {
+    publicTests: string[];
+  };
+  assert.ok(
+    descriptor.publicTests.includes("tests/public/carried/test/app.test.ts"),
+  );
+  // Two jobs: the carried tests' own, then the baseline's. The trial
+  // compiles with noEmitOnError off and runs each test that compiled
+  // twice, the failing one once; the baseline runs the kept one with the
+  // public suite.
+  assert.equal(fake.destroyed(), 2);
+  const tried = fake.calls
+    .filter((argv) => (argv.at(-1) ?? "").includes("tests/public/carried/"))
+    .map((argv) =>
+      (argv.at(-1) ?? "").replace("tests/public/carried/test/", ""),
+    );
+  assert.deepEqual(tried, [
+    "app.test.js",
+    "fails.test.js",
+    "flaky.test.js",
+    "slow.test.js",
+    "app.test.js",
+    "flaky.test.js",
+  ]);
+  assert.ok(
+    messages.includes(
+      "Carried 1 of the repository's own test(s) as public tests; 7 left out.",
+    ),
+    messages.join("\n"),
+  );
+});
+
+test("the slice's limit leaves the rest out, and a test naming the workspace is dropped, not the build", async () => {
+  const { sourceDir, slice: sliced } = await sliceCarrying(
+    {
+      "test/app.test.ts": appTest("runs"),
+      "test/brand.test.ts": appTest("Widgetco runs"),
+      "test/zz.test.ts": appTest("last"),
+    },
+    { carryTests: true, carriedTestLimits: { maxFiles: 2, maxBytes: 100_000 } },
+  );
+  const fake = fakeProvider(carriedScript());
+  const { manifest } = await runBuild(fake.provider, {
+    slice: sliced,
+    sourceDir,
+    version: await versionFor({ slice: sliced }),
+    params: { vocabulary: ["Widgetco"] },
+  });
+  assert.equal(manifest.ready, true, JSON.stringify(manifest.blockers));
+  assert.deepEqual(
+    manifest.carriedTests?.kept.map(({ from }) => from),
+    ["test/app.test.ts"],
+  );
+  assert.deepEqual(
+    manifest.carriedTests?.dropped.map(({ from, reason }) => [from, reason]),
+    [
+      ["test/brand.test.ts", "disclosure"],
+      ["test/zz.test.ts", "limit"],
+    ],
+  );
+  assert.match(
+    manifest.carriedTests?.dropped[0]?.detail ?? "",
+    /names the workspace/,
+  );
+  assert.deepEqual(manifest.carriedTests?.limits, {
+    maxFiles: 2,
+    maxBytes: 100_000,
+    timeoutMs: 60_000,
+  });
+});
+
+test("an old slice, or a build asked to leave them out, carries no test and runs one job; a blocked build tries none", async () => {
+  for (const [params, buildParams] of [
+    [{}, {}],
+    [{ carryTests: false }, {}],
+    [{ carryTests: true }, { carryTests: false }],
+  ] as const) {
+    const { sourceDir, slice: sliced } = await sliceCarrying(
+      { "test/app.test.ts": appTest("runs") },
+      params,
+    );
+    const fake = fakeProvider(carriedScript());
+    const { manifest } = await runBuild(fake.provider, {
+      slice: sliced,
+      sourceDir,
+      version: await versionFor({ slice: sliced }),
+      params: buildParams,
+    });
+    assert.equal(manifest.carriedTests, undefined, JSON.stringify(params));
+    assert.equal(fake.destroyed(), 1);
+    assert.ok(!fake.calls.some((argv) => argv.includes("--noEmitOnError")));
+  }
+  const { sourceDir, slice: sliced } = await sliceCarrying({
+    "test/app.test.ts": appTest("runs"),
+  });
+  const fake = fakeProvider(carriedScript());
+  const { manifest } = await runBuild(fake.provider, {
+    slice: sliced,
+    sourceDir,
+    version: await versionFor({ slice: sliced, blocked: true }),
+  });
+  assert.deepEqual(manifest.carriedTests?.kept, []);
+  assert.deepEqual(
+    manifest.carriedTests?.dropped.map(({ reason }) => reason),
+    ["untried"],
+  );
+  assert.equal(fake.destroyed(), 0);
+});
+
+test("a project that does not install for the trial keeps no carried test", async () => {
+  const { sourceDir, slice: sliced } = await sliceCarrying({
+    "test/app.test.ts": appTest("runs"),
+  });
+  let prepares = 0;
+  const fake = fakeProvider((argv) =>
+    argv.includes("--package-lock-only") && (prepares += 1) === 1
+      ? { exitCode: 1 }
+      : carriedScript()(argv),
+  );
+  const { manifest } = await runBuild(fake.provider, {
+    slice: sliced,
+    sourceDir,
+    version: await versionFor({ slice: sliced }),
+  });
+  assert.deepEqual(manifest.carriedTests?.kept, []);
+  assert.deepEqual(manifest.carriedTests?.dropped, [
+    {
+      from: "test/app.test.ts",
+      reason: "baseline_failed",
+      detail: "The project did not install to try it.",
+    },
+  ]);
+  assert.equal(manifest.ready, true, JSON.stringify(manifest.blockers));
+});
+
+test("on the carveout engine, the build writes carveout's harness, runs carveout's commands and records the engine and its layout", async () => {
+  const { sourceDir, slice: sliced } = await sliceCarrying({
+    "test/app.test.ts": appTest("runs"),
+  });
+  const fixtures: VersionFixtures = {
+    fixtureRunId: "arn_fixtures",
+    fixtures: [
+      {
+        module: "lib/service.ts",
+        symbol: "createService",
+        member: null,
+        call: "call",
+        implementation: "() => ({ describe: () => ({ id: 1 }) })",
+        reason: "a service that describes",
+      },
+    ],
+    scenario:
+      'import { run } from "../src/app.js";\nconsole.log(run({ name: "demo", retries: 1, nested: { enabled: true } }));\n',
+  };
+  const fake = fakeProvider(carriedScript());
+  const { manifest, read } = await runBuild(fake.provider, {
+    slice: sliced,
+    sourceDir,
+    version: await versionFor({ slice: sliced, fixtures }),
+    projectGenerator: "carveout",
+  });
+  assert.equal(manifest.ready, true, JSON.stringify(manifest.blockers));
+  assert.deepEqual(manifest.engines, {
+    carveout: CARVEOUT_VERSION,
+    projectGenerator: "carveout",
+  });
+  assert.equal(manifest.layout?.harnessDir, "carveout");
+  assert.equal(manifest.layout?.tests.privateDir, "tests/private");
+  assert.deepEqual(manifest.carriedTests?.kept, [
+    { path: "tests/public/carried/test/app.test.ts", from: "test/app.test.ts" },
+  ]);
+  // carveout's harness, the platform's hidden test kept privately.
+  assert.match(await read("project/carveout/test.js"), /Generated by carveout/);
+  assert.match(await read("project/carveout/run.ts"), /run\(\{ name: "demo"/);
+  assert.match(
+    await read("project/lib/service.js"),
+    /import \{ createMock, fixture \} from "\.\.\/carveout\/mock\.js";/,
+  );
+  assert.match(await read("private/fix.test.ts"), /./);
+  assert.ok(manifest.files.some((file) => file.path === "TASK.md"));
+  // Every command is carveout's: the carried test's trial, the walkthrough,
+  // the public suite and each hidden test, by the hidden runner.
+  const ran = fake.calls.map((argv) => argv.join(" "));
+  const one =
+    "node --env-file=carveout.env --import=./carveout/assets.js --test --test-reporter=tap --test-reporter-destination=stdout";
+  assert.ok(
+    ran.includes(`${one} tests/public/carried/test/app.test.js`),
+    ran.join("\n"),
+  );
+  assert.ok(
+    ran.includes(
+      "node --env-file=carveout.env --import=./carveout/assets.js carveout/run.js",
+    ),
+  );
+  assert.ok(ran.includes("node carveout/test.js"));
+  assert.ok(ran.includes(`${one} tests/private/fix.test.js`));
+  assert.ok(!ran.some((line) => line.includes("sandbox.env")));
+  assert.deepEqual(
+    fake.hidden.map((run) => run.entry),
+    ["tests/private/fix.test.js", "tests/private/fix.test.js"],
   );
 });

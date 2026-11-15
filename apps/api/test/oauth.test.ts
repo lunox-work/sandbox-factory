@@ -330,6 +330,8 @@ test("the protected-resource documents name the server and what to ask for", asy
       "workspace:read",
       "bounties:write",
       "pricing:write",
+      // post_bounty records a confirmed spec's decisions only with it.
+      "decisions:confirm",
       "sandboxes:write",
       "submissions:write",
       "offline_access",

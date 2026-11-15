@@ -42,27 +42,30 @@ import {
   SANDBOX_FILE_TEXT_MAX_BYTES,
   sandboxFileContentSchema,
   sandboxFileListSchema,
-  sandboxHandoutSchema,
-  createSubmissionSchema,
   createUploadSchema,
   submissionFilesResponseSchema,
   uploadResponseSchema,
   UPLOAD_BODY_MAX_BYTES,
+  mergeBackStatusResponseSchema,
+  mergeSubmissionSchema,
   submissionListSchema,
   submissionResponseSchema,
-  type SubmissionDto,
+  type MergeBackStatusDto,
   sandboxListSchema,
   sandboxResponseSchema,
   sandboxSliceResponseSchema,
   sandboxVersionListSchema,
   sandboxVersionResponseSchema,
+  sliceSandboxSchema,
   sliceVersionResponseSchema,
+  setDisclosureAcknowledgementsSchema,
   startSandboxResponseSchema,
   updateSandboxVersionSchema,
 } from "@sandbox-factory/shared";
 import type { Context, Hono } from "hono";
 import { inWebSession } from "../analysis/routes.js";
 import {
+  canonicalJson,
   replayOf,
   resolveScope,
   stepHeldBy,
@@ -74,13 +77,11 @@ import { connectedRepositories } from "../bounties/held-context.js";
 import type { AuthVariables } from "../http-context.js";
 import { textOf } from "../object-text.js";
 import { setRetryAfter } from "../quota.js";
-import { hiddenSha256 } from "duediligence/api";
 import { createHash } from "node:crypto";
 import {
   layoutOf,
   organizationNames,
   parseSubmittedFiles,
-  submittedFilesText,
   uploadObjectKey,
   workspaceVocabulary,
   type SandboxBuildManifest,
@@ -88,11 +89,26 @@ import {
 import { generateId } from "@sandbox-factory/db";
 import { bodyLimit } from "hono/body-limit";
 import { changedSubmissionFiles, checkUpload } from "./uploads.js";
+import {
+  archiveResponse,
+  handoutFilesResponse,
+  handoutResponse,
+} from "./handout.js";
+import { mountContributorRoutes } from "./contributors.js";
+import { zip } from "./zip.js";
+import {
+  gradeSubmission,
+  receiveFiles,
+  RETRY_REFUSALS,
+  submissionOf,
+  type SubmissionContributor,
+} from "./submission-service.js";
+import { folderBodyLimit, receiveFolder } from "./folder-upload.js";
 import type {
   StoredSubmission,
   StoredSubmissionMerge,
 } from "@sandbox-factory/db";
-import { GithubAuthError } from "@sandbox-factory/github";
+import { BranchConflictError, GithubAuthError } from "@sandbox-factory/github";
 
 const sandboxDto = ({ organizationId: _owner, ...dto }: StoredSandbox) => dto;
 /**
@@ -126,6 +142,7 @@ const sourceDto = (source: StoredVersionSource, hideTests: boolean) => ({
   buildRunId: source.buildRunId,
   roundTripRunId: source.roundTripRunId,
   disclosureRunId: source.disclosureRunId,
+  disclosureAcknowledgements: source.disclosureAcknowledgements ?? [],
   approvedBy: source.approvedBy,
   approvedAt: source.approvedAt,
   createdAt: source.createdAt,
@@ -172,7 +189,48 @@ export async function touchedSource(
   return touched.length === 1 && only !== undefined ? only.repoId : null;
 }
 
-/** A store refusal to make a sandbox or link its repository. */
+export { matchesEtag } from "./handout.js";
+
+/**
+ * A grading run's `private/merge-patch.json`, or null when it is not
+ * JSON of that shape: a base commit and whole files by path.
+ */
+export function mergePatchOf(bytes: Uint8Array): {
+  commitSha: string;
+  files: { path: string; text: string }[];
+} | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(Buffer.from(bytes).toString("utf8"));
+  } catch {
+    return null;
+  }
+  const { commitSha, files } = (parsed ?? {}) as {
+    commitSha?: unknown;
+    files?: unknown;
+  };
+  if (
+    typeof commitSha !== "string" ||
+    !/^[0-9a-f]{4,64}$/.test(commitSha) ||
+    !Array.isArray(files) ||
+    !files.every(
+      (file: unknown) =>
+        typeof file === "object" &&
+        file !== null &&
+        typeof (file as { path?: unknown }).path === "string" &&
+        (file as { path: string }).path !== "" &&
+        typeof (file as { text?: unknown }).text === "string",
+    )
+  )
+    return null;
+  return {
+    commitSha,
+    files: (files as { path: string; text: string }[]).map(
+      ({ path, text }) => ({ path, text }),
+    ),
+  };
+}
+
 function sandboxRefused(
   c: Context,
   reason:
@@ -361,6 +419,21 @@ export function mountSandboxRoutes(
     const owner = c.get("member").organizationId;
     const refusal = await held(owner, body.data.bountyId);
     if (refusal !== null) return c.json(refusal, 409);
+    // Its first version would be refused on unconfirmed decisions: refused
+    // here, before the sandbox is made, so nothing is left half made.
+    const proposalId = await options.proposals.liveForBounty(
+      owner,
+      body.data.bountyId,
+    );
+    const undecided = await service.decisionsRefusal(
+      owner,
+      body.data.bountyId,
+      proposalId === null
+        ? null
+        : await options.proposals.get(owner, proposalId),
+      "starting the sandbox",
+    );
+    if (undecided !== null) return failed(c, undecided);
     const made = await options.sandboxes.create(owner, {
       bountyId: body.data.bountyId,
       sourceRepoId: await touchedSource(options, owner, body.data.bountyId),
@@ -500,7 +573,23 @@ export function mountSandboxRoutes(
     if (sandbox === null) return c.json({ error: "Not found." }, 404);
     const refusal = await held(owner, sandbox.bountyId);
     if (refusal !== null) return c.json(refusal, 409);
-    const sliced = await service.slice(owner, c.get("user").id, sandbox, now());
+    // The body is optional: none reads as `{}`.
+    const text = await c.req.text().catch(() => "");
+    let json: unknown = null;
+    try {
+      json = text.trim() === "" ? {} : JSON.parse(text);
+    } catch {
+      // Not JSON: refused below.
+    }
+    const body = sliceSandboxSchema.safeParse(json);
+    if (!body.success) return c.json({ error: "Invalid slice request." }, 400);
+    const sliced = await service.slice(
+      owner,
+      c.get("user").id,
+      sandbox,
+      now(),
+      body.data,
+    );
     if (!sliced.ok) return failed(c, sliced);
     return c.json(
       sliceVersionResponseSchema.parse({
@@ -734,6 +823,8 @@ export function mountSandboxRoutes(
                 dependencyChoices,
                 acceptanceTests,
                 fixtures,
+                disclosureAcknowledgements:
+                  current.source.disclosureAcknowledgements,
               }),
               scope,
             }
@@ -746,11 +837,100 @@ export function mountSandboxRoutes(
   });
 
   /**
+   * The disclosure findings an owner or admin says may be public, the
+   * draft's whole list replaced; an entry keeps who made it and when while
+   * its note stands. A sliced draft's list is part of its transform (its
+   * build redacts generated prose and stub comments by it and blocks on
+   * the findings no entry covers), so a change clears the build's evidence
+   * and the draft is built again. An uploaded or generated draft's build
+   * read no list, so its files never depend on it: the list is stored with
+   * the transform and the evidence untouched, and publication checks it
+   * against the findings the build recorded (`gatesOf`), no build again.
+   * Session only, as publishing is: not in the public registry, so no
+   * token or agent acknowledges a finding for a person.
+   */
+  app.put(`${base}/versions/:vid/disclosure-acknowledgements`, async (c) => {
+    if (!isAtLeastAdmin(c.get("member").role))
+      return c.json(
+        {
+          error: "Only owners and admins can acknowledge disclosure findings.",
+        },
+        403,
+      );
+    const owner = c.get("member").organizationId;
+    const body = setDisclosureAcknowledgementsSchema.safeParse(
+      await c.req.json().catch(() => null),
+    );
+    if (!body.success)
+      return c.json(
+        {
+          error: "Invalid acknowledgements.",
+          code: "acknowledgements_invalid",
+        },
+        400,
+      );
+    const current = await options.sandboxes.getVersion(
+      owner,
+      c.req.param("vid"),
+    );
+    if (current === null) return c.json({ error: "Not found." }, 404);
+    const refusal = await versionHeld(owner, current.version.sandboxId);
+    if (refusal !== null) return c.json(refusal, 409);
+    // Acknowledged at publication: neither the transform nor the evidence moves.
+    const atPublish = current.source.sliceRunId === null;
+    const at = now();
+    const actor = c.get("user").id;
+    const before = current.source.disclosureAcknowledgements ?? [];
+    const keyOf = (item: { kind: string; value: string }) =>
+      `${item.kind}\u0000${item.value}`;
+    const kept = new Map(before.map((item) => [keyOf(item), item]));
+    const acknowledgements = body.data.acknowledgements.map((item) => {
+      const note =
+        item.note === undefined || item.note === "" ? null : item.note;
+      const earlier = kept.get(keyOf(item));
+      return earlier !== undefined && (earlier.note ?? null) === note
+        ? earlier
+        : {
+            kind: item.kind,
+            value: item.value,
+            note,
+            by: actor,
+            at: at.toISOString(),
+          };
+    });
+    // The same list again changes nothing, and clears no evidence.
+    if (canonicalJson(acknowledgements) === canonicalJson(before))
+      return c.json(versionResponse(current, true, !inWebSession(c)));
+    const result = await options.sandboxes.updateDraft(
+      owner,
+      current.version.id,
+      atPublish
+        ? { disclosureAcknowledgements: acknowledgements }
+        : {
+            expectedTransformConfigSha256: current.source.transformConfigSha256,
+            disclosureAcknowledgements: acknowledgements,
+            transformConfigSha256: transformConfigHash({
+              aliasRules: current.source.aliasRules,
+              dependencyChoices: current.source.dependencyChoices,
+              acceptanceTests: current.source.acceptanceTests,
+              fixtures: current.source.fixtures,
+              disclosureAcknowledgements: acknowledgements,
+            }),
+          },
+      at,
+    );
+    if (!result.ok) return refused(c, result.reason);
+    return c.json(versionResponse(result, true, !inWebSession(c)));
+  });
+
+  /**
    * Publishes a version: approves and freezes it, and makes it the
    * sandbox's published version until the date given, which must be
    * ahead. Only a version whose build passed, of a bounty whose proposal is
-   * approved. No public repository is pushed yet; publication marks the
-   * version contributors are to get.
+   * approved, whose spec's decisions are confirmed and whose build's
+   * publication gates passed (`service.publication`), which a first
+   * publication records on its source. No public repository is pushed
+   * yet; publication marks the version contributors are to get.
    */
   app.post(`${base}/versions/:vid/publish`, async (c) => {
     if (!isAtLeastAdmin(c.get("member").role))
@@ -783,32 +963,48 @@ export function mountSandboxRoutes(
         ? null
         : await versionHeld(owner, publishing.version.sandboxId);
     if (refusal !== null) return c.json(refusal, 409);
+    // Its spec's decisions confirmed, and the gates its build recorded.
+    const gated =
+      publishing === null
+        ? null
+        : await service.publication(owner, c.get("user").id, publishing, at);
+    if (gated !== null && !gated.ok) return failed(c, gated);
     const result = await options.sandboxes.publishVersion(
       owner,
       c.req.param("vid"),
       c.get("user").id,
       expiresAt,
       at,
+      gated?.evidence,
     );
     if (!result.ok)
-      return result.reason === "not_ready"
+      return result.reason === "build_changed"
         ? c.json(
             {
-              error: "Only a version whose build passed can be published.",
-              code: "not_ready",
+              error:
+                "The version was built again while it was being published. Reload it and publish again.",
+              code: "version_changed",
             },
             409,
           )
-        : result.reason === "price_not_approved"
+        : result.reason === "not_ready"
           ? c.json(
               {
-                error:
-                  "This version was not built from an approved price, so it cannot be published.",
-                code: "price_not_approved",
+                error: "Only a version whose build passed can be published.",
+                code: "not_ready",
               },
               409,
             )
-          : c.json({ error: "Not found." }, 404);
+          : result.reason === "price_not_approved"
+            ? c.json(
+                {
+                  error:
+                    "This version was not built from an approved price, so it cannot be published.",
+                  code: "price_not_approved",
+                },
+                409,
+              )
+            : c.json({ error: "Not found." }, 404);
     options.onPublished?.(owner, {
       sandboxId: result.sandbox.id,
       versionId: result.version.version.id,
@@ -821,6 +1017,7 @@ export function mountSandboxRoutes(
         sandbox: sandboxDto(result.sandbox),
         version: result.version.version,
         source: sourceDto(result.version.source, !inWebSession(c)),
+        ...(gated?.gates === undefined ? {} : { gates: gated.gates }),
       }),
     );
   });
@@ -982,244 +1179,223 @@ export function mountSandboxRoutes(
   });
 
   /*
-    The handout: the public project a developer clones, as the build
-    committed it (`project/…`, at its project path), and of the hidden
-    tests only their count and duediligence's commitment hash over them
-    (each file at `tests/private/…`, every file a kept test). No hidden
-    test's path or body leaves here, so an agent may read it.
+    The handout, its archive and its pages of files (`handout.ts`): owners
+    and admins, drafts too, as the version page shows them. An invited
+    contributor reads the same answers for their version from
+    `contributors.ts`.
   */
+  const readsHandout = (c: Context<{ Variables: AuthVariables }>) =>
+    isAtLeastAdmin(c.get("member").role)
+      ? undefined
+      : c.json(
+          { error: "Only owners and admins can read a version's handout." },
+          403,
+        );
   app.get(`${base}/versions/:vid/handout`, async (c) => {
-    if (!isAtLeastAdmin(c.get("member").role))
-      return c.json(
-        { error: "Only owners and admins can read a version's handout." },
-        403,
-      );
-    const owner = c.get("member").organizationId;
-    const stored = await options.sandboxes.getVersion(
-      owner,
+    const denied = readsHandout(c);
+    if (denied !== undefined) return denied;
+    return handoutResponse(
+      c,
+      options,
+      c.get("member").organizationId,
       c.req.param("vid"),
     );
-    if (stored === null) return c.json({ error: "Not found." }, 404);
-    const runId = stored.source.buildRunId;
-    const run = runId === null ? null : await options.runs.get(owner, runId);
-    // Only what a run committed: a running build's preview may change.
-    const files =
-      run === null ? [] : await options.artifacts.list(owner, run.id);
-    const hidden = files.filter((file) => file.path.startsWith("private/"));
-    let hash: string | null = null;
-    if (hidden.length > 0) {
-      const map: Record<string, Uint8Array> = {};
-      for (const file of hidden) {
-        const bytes = await options.objects.get(file.objectKey);
-        if (bytes === undefined)
-          return c.json(
-            {
-              error: "The hidden tests could not be read.",
-              code: "artifacts_unavailable",
-            },
-            502,
-          );
-        map[`tests/private/${file.path.slice("private/".length)}`] = bytes;
-      }
-      hash = hiddenSha256(map, Object.keys(map).sort());
-    }
-    c.header("Cache-Control", "no-store");
-    return c.json(
-      sandboxHandoutSchema.parse({
-        versionId: stored.version.id,
-        run: run === null ? null : { id: run.id, status: run.status },
-        files: files
-          .filter((file) => file.path.startsWith("project/"))
-          .map(({ path, sizeBytes, sha256 }) => ({
-            path: path.slice("project/".length),
-            sizeBytes,
-            sha256,
-          })),
-        hiddenTests: hidden.length,
-        hiddenSha256: hash,
-      }),
+  });
+  app.get(`${base}/versions/:vid/archive`, async (c) => {
+    const denied = readsHandout(c);
+    if (denied !== undefined) return denied;
+    return archiveResponse(
+      c,
+      options,
+      c.get("member").organizationId,
+      c.req.param("vid"),
+    );
+  });
+  app.get(`${base}/versions/:vid/handout/files`, async (c) => {
+    const denied = readsHandout(c);
+    if (denied !== undefined) return denied;
+    return handoutFilesResponse(
+      c,
+      options,
+      c.get("member").organizationId,
+      c.req.param("vid"),
     );
   });
 
   /*
-    Submissions against a published (frozen) version: the files are stored
-    as `submittedFilesText` writes them, hashed, and graded by a
-    `submission_grade` run. The same files against the same version are the
-    submission already made. Owners and admins for now; contributors with
-    the marketplace.
+    Submissions against a published (frozen) version, by the workspace's
+    owners and admins (`submission-service.ts`). The same files against the
+    same version, from the same person, are the submission already made.
+    An invited contributor submits from `contributors.ts`; their
+    submissions are listed here with who made them.
   */
-  const submissionOf = (
+  /** Who each of a version's invited contributors is, by assignment. */
+  const contributorsOf = async (owner: string, versionId: string) =>
+    new Map(
+      (
+        (await options.contributors?.listAssignments(owner, versionId)) ?? []
+      ).map((assignment) => [
+        assignment.id,
+        {
+          assignmentId: assignment.id,
+          userId: assignment.user.id,
+          name: assignment.user.name,
+          email: assignment.user.email,
+        },
+      ]),
+    );
+  const contributorOf = async (
+    owner: string,
     stored: StoredSubmission,
-    merge: StoredSubmissionMerge | null = null,
-  ): SubmissionDto => ({
-    id: stored.id,
-    sandboxVersionId: stored.sandboxVersionId,
-    status: stored.status,
-    verdict: stored.result?.verdict ?? null,
-    public: stored.result?.public ?? null,
-    hidden: stored.result?.hidden ?? null,
-    failedScenarios: [...(stored.result?.failedScenarios ?? [])],
-    refused: [...(stored.result?.refused ?? [])],
-    runId: stored.runId,
-    retryOf: stored.retryOf,
-    merge:
-      merge === null
-        ? null
-        : {
-            pullRequestNumber: merge.pullRequestNumber,
-            pullRequestUrl: merge.pullRequestUrl,
-            branch: merge.branch,
-            createdAt: merge.createdAt,
-          },
-    createdAt: stored.createdAt,
-    updatedAt: stored.updatedAt,
-  });
+  ): Promise<SubmissionContributor> =>
+    stored.assignmentId === null
+      ? null
+      : ((await contributorsOf(owner, stored.sandboxVersionId)).get(
+          stored.assignmentId,
+        ) ?? null);
   /**
-   * The checks a write of submitted files shares: the caller's role, the
-   * deployment, the body. The files are stored by their hash, under the
-   * version, before the submission row names them.
+   * The caller's role, then the shared checks and storage of the files:
+   * `files[]` JSON, or the zipped project folder (`folder-upload.ts`).
    */
   const submittedFiles = async (
     c: Context<{ Variables: AuthVariables }>,
     versionOf: (owner: string) => Promise<string | null>,
+    receive: typeof receiveFiles = receiveFiles,
   ) => {
     if (!isAtLeastAdmin(c.get("member").role))
       return {
         response: c.json({ error: "Only owners and admins can submit." }, 403),
       };
-    if (options.submissions === undefined || options.objects.put === undefined)
-      return {
-        response: c.json(
-          {
-            error: "Submissions are not taken on this deployment.",
-            code: "submissions_unavailable",
-          },
-          503,
-        ),
-      };
-    const parsed = createSubmissionSchema.safeParse(
-      await c.req.json().catch(() => null),
-    );
-    if (!parsed.success)
-      return {
-        response: c.json(
-          { error: "Invalid submission.", code: "invalid_submission" },
-          400,
-        ),
-      };
     const owner = c.get("member").organizationId;
-    const versionId = await versionOf(owner);
-    if (versionId === null)
-      return { response: c.json({ error: "Not found." }, 404) };
-    const text = submittedFilesText(parsed.data.files);
-    const patchSha256 = createHash("sha256").update(text, "utf8").digest("hex");
-    const patchKey = `submissions/${owner}/${versionId}/${patchSha256}.json`;
-    await options.objects.put(patchKey, Buffer.from(text, "utf8"));
+    const received = await receive(c, options, owner, () => versionOf(owner));
+    if ("response" in received) return received;
     return {
-      store: options.submissions,
+      store: received.store,
       owner,
-      versionId,
-      input: { submittedBy: c.get("user").id, patchKey, patchSha256 },
+      versionId: received.versionId,
+      input: {
+        submittedBy: c.get("user").id,
+        patchKey: received.patchKey,
+        patchSha256: received.patchSha256,
+      },
     };
   };
-  /** Queues a new submission's grading run, and answers with it. */
   const graded = async (
     c: Context<{ Variables: AuthVariables }>,
     owner: string,
     made: { submission: StoredSubmission; created: boolean },
-  ) => {
-    if (made.created) {
-      // A version sliced from a repository is graded on its snapshot, so
-      // a pass can be carried back to the commit it was cut at.
-      const version = await options.sandboxes.getVersion(
-        owner,
-        made.submission.sandboxVersionId,
-      );
-      const queued = await options.runs.enqueue(
-        owner,
-        version?.source.sourceSnapshotId ?? null,
-        {
-          tool: "submission_grade",
-          params: {
-            deadlineMinutes: 60,
-            grader: "submission",
-            submissionId: made.submission.id,
-            sandboxVersionId: made.submission.sandboxVersionId,
-            patchSha256: made.submission.patchSha256,
-          },
-          requestedBy: c.get("user").id,
-          maxActive: options.maxActive ?? 3,
-        },
-      );
-      if (!queued.ok)
-        return c.json(
-          {
-            error: "The active analysis limit has been reached.",
-            code: "run_limit",
-          },
-          409,
-        );
-      await options.ensureWorker().catch(() => options.onLaunchError?.());
-    }
-    return c.json(
-      submissionResponseSchema.parse({
-        submission: submissionOf(made.submission),
-      }),
-      made.created ? 202 : 200,
-    );
-  };
-  app.post(`${base}/versions/:vid/submissions`, async (c) => {
-    const files = await submittedFiles(c, async () => c.req.param("vid"));
-    if ("response" in files) return files.response;
-    const created = await files.store.create(files.owner, {
-      sandboxVersionId: files.versionId,
-      ...files.input,
+    regrade = false,
+  ) =>
+    gradeSubmission(c, options, owner, made, {
+      regrade,
+      requestedBy: c.get("user").id,
+      answer: async (submission, status) =>
+        c.json(
+          submissionResponseSchema.parse({
+            submission: submissionOf(
+              submission,
+              null,
+              await contributorOf(owner, submission),
+            ),
+          }),
+          status,
+        ),
     });
-    if (!created.ok)
-      return created.reason === "not_frozen"
-        ? c.json(
-            {
-              error: "Only a published version takes submissions.",
-              code: "not_frozen",
-            },
-            409,
-          )
-        : c.json({ error: "Not found." }, 404);
-    return graded(c, files.owner, created);
-  });
+  const submitToVersion =
+    (receive: typeof receiveFiles) =>
+    async (c: Context<{ Variables: AuthVariables }>) => {
+      const files = await submittedFiles(
+        c,
+        async () => c.req.param("vid") ?? null,
+        receive,
+      );
+      if ("response" in files) return files.response;
+      const created = await files.store.create(files.owner, {
+        sandboxVersionId: files.versionId,
+        ...files.input,
+      });
+      if (!created.ok)
+        return created.reason === "not_frozen"
+          ? c.json(
+              {
+                error: "Only a published version takes submissions.",
+                code: "not_frozen",
+              },
+              409,
+            )
+          : c.json({ error: "Not found." }, 404);
+      return graded(c, files.owner, created);
+    };
+  app.post(`${base}/versions/:vid/submissions`, submitToVersion(receiveFiles));
+  // The same as a zipped project folder; session only (not in the public
+  // registry). An invited contributor's twin also takes their contributor
+  // credential.
+  app.post(
+    `${base}/versions/:vid/submissions/zip`,
+    folderBodyLimit,
+    submitToVersion(receiveFolder),
+  );
   /*
     One retry of a failed or errored submission, against the same version.
     What the contributor was told is the first one's scenario keys
-    (`failedScenarios`), never a hidden test.
+    (`failedScenarios`), never a hidden test. An errored one retried with
+    its own files is graded again in place, its retry kept. An invited
+    contributor's submission is theirs to retry (`contributor_submission`).
   */
-  const RETRY_REFUSALS = {
-    not_finished: "The submission has no verdict yet.",
-    passed: "The submission passed; there is nothing to retry.",
-    is_retry: "A retry is not retried.",
-    retry_used: "The submission's one retry was already made.",
-    same_patch: "These files were already submitted against the version.",
-  } as const;
-  app.post(`${base}/submissions/:sid/retry`, async (c) => {
-    const files = await submittedFiles(
-      c,
-      async (owner) =>
-        (await options.submissions?.get(owner, c.req.param("sid")))
-          ?.sandboxVersionId ?? null,
-    );
-    if ("response" in files) return files.response;
-    const made = await files.store.retry(
-      files.owner,
-      c.req.param("sid"),
-      files.input,
-    );
-    if (!made.ok)
-      return made.reason === "not-found"
-        ? c.json({ error: "Not found." }, 404)
-        : c.json(
-            { error: RETRY_REFUSALS[made.reason], code: made.reason },
-            409,
-          );
-    return graded(c, files.owner, made);
+  const retrySubmission =
+    (receive: typeof receiveFiles) =>
+    async (c: Context<{ Variables: AuthVariables }>) => {
+      const sid = c.req.param("sid") ?? "";
+      const files = await submittedFiles(
+        c,
+        async (owner) =>
+          (await options.submissions?.get(owner, sid))?.sandboxVersionId ??
+          null,
+        receive,
+      );
+      if ("response" in files) return files.response;
+      const made = await files.store.retry(files.owner, sid, files.input);
+      if (!made.ok)
+        return made.reason === "not-found"
+          ? c.json({ error: "Not found." }, 404)
+          : c.json(
+              { error: RETRY_REFUSALS[made.reason], code: made.reason },
+              409,
+            );
+      return graded(c, files.owner, made, made.regrade === true);
+    };
+  app.post(`${base}/submissions/:sid/retry`, retrySubmission(receiveFiles));
+  app.post(
+    `${base}/submissions/:sid/retry/zip`,
+    folderBodyLimit,
+    retrySubmission(receiveFolder),
+  );
+  /*
+    An errored submission graded again with its own files: its run could
+    not finish, which is the platform's failure, not the contributor's, so
+    its one retry is not spent. The same as retrying it with the same files,
+    for a caller that does not hold them (the web app).
+  */
+  app.post(`${base}/submissions/:sid/regrade`, async (c) => {
+    if (!isAtLeastAdmin(c.get("member").role))
+      return c.json(
+        { error: "Only owners and admins can grade a submission again." },
+        403,
+      );
+    if (options.submissions === undefined)
+      return c.json({ error: "Not found." }, 404);
+    const owner = c.get("member").organizationId;
+    const found = await options.submissions.get(owner, c.req.param("sid"));
+    if (found === null) return c.json({ error: "Not found." }, 404);
+    if (found.status !== "errored")
+      return c.json(
+        {
+          error: "Only a submission that could not be graded is graded again.",
+          code: "not_errored",
+        },
+        409,
+      );
+    return graded(c, owner, { submission: found, created: false }, true);
   });
   app.get(`${base}/submissions/:sid`, async (c) => {
     if (!isAtLeastAdmin(c.get("member").role))
@@ -1227,18 +1403,18 @@ export function mountSandboxRoutes(
         { error: "Only owners and admins can read a submission." },
         403,
       );
-    const found = await options.submissions?.get(
-      c.get("member").organizationId,
-      c.req.param("sid"),
-    );
+    const owner = c.get("member").organizationId;
+    const found = await options.submissions?.get(owner, c.req.param("sid"));
     if (found === undefined || found === null)
       return c.json({ error: "Not found." }, 404);
-    const merge =
-      (await options.merges?.get(c.get("member").organizationId, found.id)) ??
-      null;
+    const merge = (await options.merges?.get(owner, found.id)) ?? null;
     return c.json(
       submissionResponseSchema.parse({
-        submission: submissionOf(found, merge),
+        submission: submissionOf(
+          found,
+          merge,
+          await contributorOf(owner, found),
+        ),
       }),
     );
   });
@@ -1249,8 +1425,8 @@ export function mountSandboxRoutes(
         403,
       );
     const owner = c.get("member").organizationId;
-    const listed =
-      (await options.submissions?.list(owner, c.req.param("vid"))) ?? [];
+    const versionId = c.req.param("vid");
+    const listed = (await options.submissions?.list(owner, versionId)) ?? [];
     const merges = new Map(
       (
         (await options.merges?.list(
@@ -1259,10 +1435,19 @@ export function mountSandboxRoutes(
         )) ?? []
       ).map((merge) => [merge.submissionId, merge]),
     );
+    const contributors = listed.some((item) => item.assignmentId !== null)
+      ? await contributorsOf(owner, versionId)
+      : new Map<string, NonNullable<SubmissionContributor>>();
     return c.json(
       submissionListSchema.parse({
         submissions: listed.map((item) =>
-          submissionOf(item, merges.get(item.id) ?? null),
+          submissionOf(
+            item,
+            merges.get(item.id) ?? null,
+            item.assignmentId === null
+              ? null
+              : (contributors.get(item.assignmentId) ?? null),
+          ),
         ),
       }),
     );
@@ -1401,21 +1586,37 @@ export function mountSandboxRoutes(
   });
 
   /*
-    A passing submission's changed files on an uploaded version, for
-    `carveout patch --from`, which applies them on the maintainer's machine
-    with the receipt: built only from what the submission stored, less what
-    is the version's own text and anything at a hidden test's path. A
-    version sliced from a connected repository is merged back through its
-    pull request instead, and its carried-back patch stays private.
+    A passing submission's changed files on a version with no repository
+    to merge back to, built only from what the submission stored, less what
+    is the version's own text and anything at a hidden test's path. On an
+    uploaded version, for `carveout patch --from`, which applies them on the
+    maintainer's machine with the receipt. On a generated (starter) one, as
+    they are: a starter has no other names to carry back to, since its
+    project was generated already renamed and the version's files, which
+    the workspace reads, are those names. A version sliced from a connected
+    repository is merged back through its pull request instead, and its
+    carried-back patch stays private. `…/files/archive` is the same files
+    as a `.zip`, which the web saves.
   */
-  app.get(`${base}/submissions/:sid/files`, async (c) => {
+  async function takeBack(
+    c: Context<{ Variables: AuthVariables }>,
+    submissionId: string,
+  ): Promise<
+    | Response
+    | {
+        found: StoredSubmission;
+        origin: "upload" | "starter";
+        upload: { recordSha256: string; carveoutVersion: string } | null;
+        files: { path: string; text: string }[];
+      }
+  > {
     if (!isAtLeastAdmin(c.get("member").role))
       return c.json(
         { error: "Only owners and admins can read a submission's files." },
         403,
       );
     const owner = c.get("member").organizationId;
-    const found = await options.submissions?.get(owner, c.req.param("sid"));
+    const found = await options.submissions?.get(owner, submissionId);
     if (found === undefined || found === null)
       return c.json({ error: "Not found." }, 404);
     if (found.status !== "passed" || found.result?.verdict !== "passed")
@@ -1431,11 +1632,15 @@ export function mountSandboxRoutes(
       found.sandboxVersionId,
     );
     if (stored === null) return c.json({ error: "Not found." }, 404);
-    if (stored.source.origin !== "upload" || stored.source.buildRunId === null)
+    const origin = stored.source.origin;
+    if (
+      (origin !== "upload" && origin !== "starter") ||
+      stored.source.buildRunId === null
+    )
       return c.json(
         {
           error:
-            "Only a submission on an uploaded version is taken back this way; a version sliced from a connected repository is merged back by its pull request.",
+            "Only a submission on an uploaded or generated version is taken back this way; a version sliced from a connected repository is merged back by its pull request.",
           code: "not_uploaded",
         },
         409,
@@ -1469,26 +1674,60 @@ export function mountSandboxRoutes(
       SandboxBuildManifest,
       "files" | "layout" | "upload"
     >;
-    if (manifest.upload === undefined) return unreadable();
+    if (
+      !Array.isArray(manifest.files) ||
+      (origin === "upload" && manifest.upload === undefined)
+    )
+      return unreadable();
     const publicText = new Map<string, string | null>();
     for (const file of submitted)
       publicText.set(file.path, await textOfArtifact(`project/${file.path}`));
+    return {
+      found,
+      origin,
+      upload: origin === "upload" ? (manifest.upload ?? null) : null,
+      files: changedSubmissionFiles({
+        submitted,
+        publicText: (path) => publicText.get(path) ?? null,
+        hiddenPaths: new Set(
+          manifest.files
+            .filter((file) => file.class === "test-private")
+            .map((file) => file.path),
+        ),
+        privateDir: layoutOf(manifest).tests.privateDir,
+      }),
+    };
+  }
+  app.get(`${base}/submissions/:sid/files`, async (c) => {
+    const taken = await takeBack(c, c.req.param("sid"));
+    if (taken instanceof Response) return taken;
     c.header("Cache-Control", "no-store");
     return c.json(
       submissionFilesResponseSchema.parse({
-        submission: submissionOf(found),
-        upload: manifest.upload,
-        files: changedSubmissionFiles({
-          submitted,
-          publicText: (path) => publicText.get(path) ?? null,
-          hiddenPaths: new Set(
-            manifest.files
-              .filter((file) => file.class === "test-private")
-              .map((file) => file.path),
-          ),
-          privateDir: layoutOf(manifest).tests.privateDir,
-        }),
+        submission: submissionOf(taken.found),
+        origin: taken.origin,
+        upload: taken.upload,
+        files: taken.files,
       }),
+    );
+  });
+  app.get(`${base}/submissions/:sid/files/archive`, async (c) => {
+    const taken = await takeBack(c, c.req.param("sid"));
+    if (taken instanceof Response) return taken;
+    const archive = await zip(
+      taken.files.map((file) => ({
+        name: file.path,
+        bytes: Buffer.from(file.text, "utf8"),
+      })),
+    );
+    c.header("Cache-Control", "no-store");
+    c.header("Content-Type", "application/zip");
+    c.header(
+      "Content-Disposition",
+      `attachment; filename="${taken.found.id}-files.zip"`,
+    );
+    return c.body(
+      Buffer.concat(archive.chunks.map((chunk) => Buffer.from(chunk))),
     );
   });
 
@@ -1497,16 +1736,114 @@ export function mountSandboxRoutes(
     repository's names by its grading run (`private/merge-patch.json`),
     becomes a pull request on the commit the version was cut at. A
     person's act in the web app: no token reaches it. One per submission.
+
+    Safe to press twice and to retry after any failure: the merge row is
+    claimed (`pending`) before GitHub is asked, on the submission's unique
+    key, so a second click while the first is out is told so
+    (`merge_in_progress`) rather than opening a second pull request; a
+    failure releases the claim; and the writer reuses the branch and pull
+    request an earlier attempt made (`PullRequestWriter.open`). One opened
+    already is answered 200 with the same body each time.
+
+    `{ "when": "ci_passes" }` also asks the platform to merge it once the
+    repository's CI passes on it (`github/merge-ci.ts`): refused 409
+    `ci_permissions_missing` while the App cannot read CI back, since it
+    would never merge; asked of one already open, it is recorded and the
+    same submission answered 200. The default, `open`, leaves the merge to
+    the repository's people.
   */
   const MERGE_REFUSALS = {
     not_passed: "Only a passing submission is merged back.",
+    carry_failed:
+      "The submission passed, but carried back to the repository's names it did not build and pass the tests there, so it is not merged back.",
     not_sliced:
       "Only a submission on a version sliced from a repository is merged back.",
     repository_unavailable:
       "The repository is gone, or its GitHub installation is not healthy.",
+    app_permissions_missing:
+      "The GitHub App has not been granted what merge-back needs on this installation. An installation admin accepts its new permissions on GitHub.",
     merge_forbidden:
       "The GitHub App cannot write to this repository. Accept its new permissions (contents and pull requests: write) on the installation.",
+    merge_in_progress:
+      "This submission's pull request is being opened now. Try again in a moment.",
+    branch_conflict:
+      "The submission's branch already exists on GitHub with other changes, so nothing was overwritten. Delete or rename that branch, then try again.",
+    ci_permissions_missing:
+      "The GitHub App cannot read this repository's CI (checks and statuses: read), so it could never see it pass. An installation admin accepts its new permissions on GitHub, or open the pull request alone.",
+    pull_request_ended: "The pull request was merged or closed already.",
   } as const;
+  const MERGE_UNAVAILABLE = "Merge-back is not available on this deployment.";
+
+  /** The repository a version was sliced from; null for any other. */
+  async function sourceRepoOf(owner: string, versionId: string) {
+    const stored = await options.sandboxes.getVersion(owner, versionId);
+    const sandbox =
+      stored === null
+        ? null
+        : await options.sandboxes.get(owner, stored.version.sandboxId);
+    const repoId = sandbox?.sourceRepoId ?? null;
+    return stored === null || repoId === null ? null : { stored, repoId };
+  }
+
+  /*
+    Whether a version's passing submissions can be merged back now, for
+    the web to say why before the button is pressed: the refusal a merge
+    would answer, never a GitHub call it would make. Session only (it is
+    not in the public API's registry).
+  */
+  app.get(`${base}/versions/:vid/merge-back`, async (c) => {
+    if (!isAtLeastAdmin(c.get("member").role))
+      return c.json({ error: "Only owners and admins can merge back." }, 403);
+    const status = (
+      code: MergeBackStatusDto["code"],
+      error: string | null,
+      extra: {
+        missing?: readonly string[];
+        ciMissing?: readonly string[];
+        acceptUrl?: string;
+      } = {},
+    ) =>
+      c.json(
+        mergeBackStatusResponseSchema.parse({
+          mergeBack: {
+            code,
+            error,
+            missing: [...(extra.missing ?? [])],
+            acceptUrl: extra.acceptUrl ?? null,
+            ciMissing: [...(extra.ciMissing ?? [])],
+          },
+        }),
+      );
+    c.header("Cache-Control", "no-store");
+    if (options.merges === undefined || options.mergeBack === undefined)
+      return status("merge_unavailable", MERGE_UNAVAILABLE);
+    const owner = c.get("member").organizationId;
+    const source = await sourceRepoOf(owner, c.req.param("vid"));
+    if (source === null) return status("not_sliced", MERGE_REFUSALS.not_sliced);
+    const target = await options.mergeBack.target(owner, source.repoId);
+    if (target === null)
+      return status(
+        "repository_unavailable",
+        MERGE_REFUSALS.repository_unavailable,
+      );
+    const ciMissing = target.ciMissingPermissions;
+    if (target.missingPermissions.length > 0)
+      return status(
+        "app_permissions_missing",
+        MERGE_REFUSALS.app_permissions_missing,
+        {
+          missing: target.missingPermissions,
+          ciMissing,
+          acceptUrl: target.acceptUrl,
+        },
+      );
+    return status(
+      null,
+      null,
+      ciMissing.length === 0 ? {} : { ciMissing, acceptUrl: target.acceptUrl },
+    );
+  });
+
   app.post(`${base}/submissions/:sid/merge`, async (c) => {
     const refuse = (code: keyof typeof MERGE_REFUSALS) =>
       c.json({ error: MERGE_REFUSALS[code], code }, 409);
@@ -1529,41 +1866,88 @@ export function mountSandboxRoutes(
       options.mergeBack === undefined
     )
       return c.json(
-        {
-          error: "Merge-back is not available on this deployment.",
-          code: "merge_unavailable",
-        },
+        { error: MERGE_UNAVAILABLE, code: "merge_unavailable" },
         503,
       );
+    const merges = options.merges;
+    const mergeBack = options.mergeBack;
+    // No body is the default, as before `when` existed.
+    const raw = await c.req.text();
+    const body = mergeSubmissionSchema.safeParse(
+      raw.trim() === ""
+        ? {}
+        : (() => {
+            try {
+              return JSON.parse(raw) as unknown;
+            } catch {
+              return null;
+            }
+          })(),
+    );
+    if (!body.success)
+      return c.json(
+        {
+          error:
+            'Send { "when": "open" } or { "when": "ci_passes" }, or nothing.',
+          code: "invalid_merge",
+        },
+        400,
+      );
+    const when = body.data.when;
     const owner = c.get("member").organizationId;
     const found = await options.submissions.get(owner, c.req.param("sid"));
     if (found === null) return c.json({ error: "Not found." }, 404);
     if (found.status !== "passed" || found.result?.verdict !== "passed")
       return refuse("not_passed");
-    const existing = await options.merges.get(owner, found.id);
-    if (existing !== null)
-      return c.json(
+    // Its grading run checked the carry in the repository's names and
+    // kept no merge patch: there is nothing safe to open.
+    if (found.result.carryBack === "failed") return refuse("carry_failed");
+    const contributor = await contributorOf(owner, found);
+    const answer = (merge: StoredSubmissionMerge, status: 200 | 201 = 200) =>
+      c.json(
         submissionResponseSchema.parse({
-          submission: submissionOf(found, existing),
+          submission: submissionOf(found, merge, contributor),
         }),
+        status,
       );
+    /** The refusal when CI cannot be read back to merge on; null when it can. */
+    const ciRefused = (target: {
+      ciMissingPermissions: readonly string[];
+      acceptUrl: string;
+    }) =>
+      when === "ci_passes" && target.ciMissingPermissions.length > 0
+        ? c.json(
+            {
+              error: MERGE_REFUSALS.ci_permissions_missing,
+              code: "ci_permissions_missing",
+              missing: [...target.ciMissingPermissions],
+              acceptUrl: target.acceptUrl,
+            },
+            409,
+          )
+        : null;
+    const existing = await merges.get(owner, found.id);
+    if (existing !== null) {
+      if (when === "open" || existing.mergeWhen === "ci_passes")
+        return answer(existing);
+      // Asked to merge one already open once its CI passes.
+      if (existing.pullRequestState !== "open" || existing.repoId === null)
+        return refuse("pull_request_ended");
+      const target = await mergeBack.target(owner, existing.repoId);
+      if (target === null) return refuse("repository_unavailable");
+      const refused = ciRefused(target);
+      if (refused !== null) return refused;
+      const updated = await merges.setMergeWhen(owner, found.id, "ci_passes");
+      return updated === null ? refuse("pull_request_ended") : answer(updated);
+    }
     const artifact =
       found.runId === null
         ? undefined
         : (await options.artifacts.list(owner, found.runId)).find(
             (file) => file.path === "private/merge-patch.json",
           );
-    const stored = await options.sandboxes.getVersion(
-      owner,
-      found.sandboxVersionId,
-    );
-    const sandbox =
-      stored === null
-        ? null
-        : await options.sandboxes.get(owner, stored.version.sandboxId);
-    const repoId = sandbox?.sourceRepoId ?? null;
-    if (artifact === undefined || stored === null || repoId === null)
-      return refuse("not_sliced");
+    const source = await sourceRepoOf(owner, found.sandboxVersionId);
+    if (artifact === undefined || source === null) return refuse("not_sliced");
     const bytes = await options.objects.get(artifact.objectKey);
     if (bytes === undefined)
       return c.json(
@@ -1573,14 +1957,50 @@ export function mountSandboxRoutes(
         },
         502,
       );
-    const patch = JSON.parse(Buffer.from(bytes).toString("utf8")) as {
-      commitSha: string;
-      files: { path: string; text: string }[];
-    };
-    const target = await options.mergeBack.target(owner, repoId);
+    const patch = mergePatchOf(bytes);
+    if (patch === null) {
+      // The grading run wrote it; a patch that does not parse is a fault
+      // to look into, never something to open a pull request from.
+      console.error("merge_patch_invalid", found.id);
+      return c.json(
+        {
+          error: "The carried-back patch is damaged, so nothing was opened.",
+          code: "merge_patch_invalid",
+        },
+        502,
+      );
+    }
+    // A merge reads the installation's permissions from GitHub, not the
+    // stored copy: its first sign of a missing one is otherwise a 403 from
+    // GitHub halfway through.
+    const target = await mergeBack.target(owner, source.repoId, {
+      fresh: true,
+    });
     if (target === null) return refuse("repository_unavailable");
-    const title = stored.source.approvedTask.title;
+    if (target.missingPermissions.length > 0)
+      return c.json(
+        {
+          error: MERGE_REFUSALS.app_permissions_missing,
+          code: "app_permissions_missing",
+          missing: [...target.missingPermissions],
+          acceptUrl: target.acceptUrl,
+        },
+        409,
+      );
+    const refused = ciRefused(target);
+    if (refused !== null) return refused;
     const branch = `lunox/${found.id}`;
+    const claim = await merges.claim(owner, {
+      submissionId: found.id,
+      repositoryFullName: target.fullName,
+      branch,
+      openedBy: c.get("user").id,
+      repoId: source.repoId,
+      mergeWhen: when,
+    });
+    if (claim.status === "opened") return answer(claim.merge);
+    if (claim.status === "busy") return refuse("merge_in_progress");
+    const title = source.stored.source.approvedTask.title;
     let opened;
     try {
       opened = await target.writer.open({
@@ -1593,11 +2013,17 @@ export function mountSandboxRoutes(
         body: [
           `Carried back from sandbox submission \`${found.id}\`, which passed the version's public tests (${found.result.public.passed}/${found.result.public.total}) and hidden tests (${found.result.hidden.passed}/${found.result.hidden.total}).`,
           "",
-          `Based on ${patch.commitSha}; GitHub shows whether it still merges onto ${target.defaultBranch}. This repository's own CI is the last gate.`,
+          when === "ci_passes"
+            ? `Based on ${patch.commitSha}. The platform merges it (squashed) once this repository's CI passes on it and ${target.defaultBranch}'s protection allows; never on failing CI.`
+            : `Based on ${patch.commitSha}; GitHub shows whether it still merges onto ${target.defaultBranch}. This repository's own CI is the last gate.`,
         ].join("\n"),
         files: patch.files,
       });
     } catch (error) {
+      // Released, so pressing again resumes from what GitHub already has.
+      await merges.release(owner, found.id);
+      if (error instanceof BranchConflictError)
+        return refuse("branch_conflict");
       if (error instanceof GithubAuthError) return refuse("merge_forbidden");
       return c.json(
         {
@@ -1607,21 +2033,32 @@ export function mountSandboxRoutes(
         502,
       );
     }
-    const merge = await options.merges.record(owner, {
-      submissionId: found.id,
-      repositoryFullName: target.fullName,
-      branch,
-      commitSha: opened.commitSha,
-      pullRequestNumber: opened.number,
-      pullRequestUrl: opened.url,
-      openedBy: c.get("user").id,
-    });
-    return c.json(
-      submissionResponseSchema.parse({
-        submission: submissionOf(found, merge),
-      }),
-      201,
+    let merge;
+    try {
+      merge = await merges.finish(owner, found.id, {
+        commitSha: opened.commitSha,
+        pullRequestNumber: opened.number,
+        pullRequestUrl: opened.url,
+      });
+    } catch (error) {
+      // The pull request is open on GitHub; the next press finds and
+      // records it.
+      await merges.release(owner, found.id).catch(() => undefined);
+      throw error;
+    }
+    options.onSubmissionEvent?.(
+      owner,
+      "submission.merge_opened",
+      `${found.id}:${merge.pullRequestNumber}`,
+      {
+        submissionId: found.id,
+        sandboxVersionId: found.sandboxVersionId,
+        pullRequestNumber: merge.pullRequestNumber,
+        pullRequestUrl: merge.pullRequestUrl,
+        when: merge.mergeWhen,
+      },
     );
+    return answer(merge, 201);
   });
 
   /** What a replay would use. Never the current branch head. */
@@ -1642,4 +2079,10 @@ export function mountSandboxRoutes(
       ),
     );
   });
+
+  /*
+    Invited contributors: the workspace's invites and contributors under
+    this base, and a contributor's own routes outside it.
+  */
+  mountContributorRoutes(app, options);
 }

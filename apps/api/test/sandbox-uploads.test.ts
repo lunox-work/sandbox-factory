@@ -10,7 +10,13 @@ import { test } from "node:test";
 import { Hono } from "hono";
 import type { StoredVersionSource } from "@sandbox-factory/db";
 import { UPLOAD_LIMITS } from "@sandbox-factory/shared";
-import { submittedFilesText, uploadObjectKey } from "sandbox-factory";
+import {
+  disclosureGate,
+  disclosureRecords,
+  scanDisclosure,
+  submittedFilesText,
+  uploadObjectKey,
+} from "sandbox-factory";
 import { admit } from "../src/credentials.js";
 import type { AuthVariables } from "../src/routes.js";
 import {
@@ -18,12 +24,13 @@ import {
   type SandboxRouteOptions,
 } from "../src/sandbox/routes.js";
 import { changedSubmissionFiles, checkUpload } from "../src/sandbox/uploads.js";
+import { unzip } from "./zip-reader.js";
 
 const stamp = "2026-11-12T00:00:00.000Z";
 const sha = (text: string) => createHash("sha256").update(text).digest("hex");
 
 const record = (overrides: object = {}) =>
-  `${JSON.stringify({ schemaVersion: 1, carveoutVersion: "0.4.0", publicScrubbed: true, lockfile: true, request: { public: true }, ...overrides }, null, 2)}\n`;
+  `${JSON.stringify({ schemaVersion: 1, carveoutVersion: "0.4.0", cutId: "c0ffee42-0000-4000-8000-000000000001", publicScrubbed: true, lockfile: true, request: { public: true }, ...overrides }, null, 2)}\n`;
 const ACCEPT = {
   path: "src/price.accept.test.ts",
   text: 'import { test } from "node:test";\ntest("a tenth off", () => {});\n',
@@ -36,6 +43,8 @@ function uploadBody(
     record?: string;
     acceptanceTests?: unknown[];
     recordSha256?: string;
+    /** The carveout release that uploads it; 0.4.0 unless said. */
+    version?: string;
   } = {},
 ) {
   const recordText = overrides.record ?? record();
@@ -53,7 +62,7 @@ function uploadBody(
   return {
     bountyId: "bty_1",
     carveout: {
-      version: "0.4.0",
+      version: overrides.version ?? "0.4.0",
       recordSha256: overrides.recordSha256 ?? sha(recordText),
     },
     files,
@@ -521,6 +530,48 @@ test("an admin's upload is stored by its hash, imported by a sandbox_import run,
   assert.equal(await codeOf(twice), "bounty_has_sandbox");
 });
 
+test("a folder linking a public docs page is stored and imported, its link left for an owner to acknowledge at publication", async () => {
+  const docs = {
+    path: "src/billing.ts",
+    text: "// Charges follow https://docs.stripe.com/api/charges\nexport const charge = (cents: number) => cents;\n",
+  };
+  const f = fixture();
+  const response = await f.request(
+    "POST",
+    "/uploads",
+    uploadBody({ extra: [docs] }),
+  );
+  // Only names and credentials refuse an upload: the link is no refusal.
+  assert.equal(response.status, 202, await response.clone().text());
+  const params = f.enqueued[0]?.input.params ?? {};
+  const stored = f.objects.get(
+    uploadObjectKey(
+      "org_1",
+      String(params["sandboxVersionId"]),
+      String(params["uploadSha256"]),
+    ),
+  );
+  assert.ok(stored !== undefined);
+  const folder = JSON.parse(Buffer.from(stored).toString("utf8")) as {
+    files: { path: string; text: string }[];
+  };
+  assert.ok(folder.files.some((file) => file.text === docs.text));
+  // What its import's disclosure scan records: pending, not a blocker.
+  const found = scanDisclosure(folder.files);
+  assert.deepEqual(
+    found.map(({ kind, file, value }) => [kind, file, value]),
+    [["url", "src/billing.ts", "https://docs.stripe.com/api/charges"]],
+  );
+  const gate = disclosureGate([], 0, "upload", {
+    findings: disclosureRecords(found, []),
+    total: found.length,
+    unacknowledged: found.length,
+    acknowledgedAt: "publish",
+  });
+  assert.equal(gate.status, "pending_acknowledgement");
+  assert.equal(gate.blocking, 0);
+});
+
 test("an upload is for owners and admins of the bounty's own workspace, on an approved scope and price, with no repository", async () => {
   const body = uploadBody();
   assert.equal(
@@ -758,6 +809,66 @@ test("an upload that is not a public folder, names the workspace or holds a cred
   assert.deepEqual(f.enqueued, []);
 });
 
+test("an upload from, or of a folder cut by, a carveout before 0.4.0 is refused 422 naming the minimum, before anything is stored", async () => {
+  const f = fixture();
+  const refusal = async (body: unknown) => {
+    const response = await f.request("POST", "/uploads", body);
+    return {
+      status: response.status,
+      body: (await response.json()) as {
+        code: string;
+        error: string;
+        files?: string[];
+        minimumVersion?: string;
+      },
+    };
+  };
+  // The uploading release: told to upgrade first, whatever else is wrong.
+  for (const version of ["0.3.1", "0.4.0-rc.1"]) {
+    const old = await refusal(
+      uploadBody({ version, record: record({ publicScrubbed: false }) }),
+    );
+    assert.deepEqual(
+      [old.status, old.body.code, old.body.minimumVersion, old.body.files],
+      [422, "carveout_too_old", "0.4.0", undefined],
+      version,
+    );
+    assert.match(old.body.error, /carveout 0\.4\.0 or later/);
+    assert.match(
+      old.body.error,
+      new RegExp(version.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
+    );
+  }
+  // The release that cut the folder, or a record from before receipts.
+  for (const recordText of [
+    record({ carveoutVersion: "0.3.1" }),
+    record({ carveoutVersion: undefined }),
+    record({ carveoutVersion: "next" }),
+    record({ cutId: undefined }),
+  ]) {
+    const cut = await refusal(uploadBody({ record: recordText }));
+    assert.deepEqual(
+      [cut.status, cut.body.code, cut.body.minimumVersion, cut.body.files],
+      [422, "carveout_too_old", "0.4.0", ["carveout.json"]],
+      recordText,
+    );
+    assert.match(cut.body.error, /cut by an older carveout/);
+  }
+  // Newer releases are taken.
+  assert.ok(
+    "recordSha256" in
+      checkUpload(
+        uploadBody({
+          version: "0.10.0",
+          record: record({ carveoutVersion: "1.0.0" }),
+        }) as never,
+        [],
+      ),
+  );
+  assert.deepEqual(f.enqueued, []);
+  assert.equal(f.objects.size, 1 + Object.keys(BUILD).length);
+});
+
 test("an upload over the workspace's monthly tokens or its active runs is refused, and its stored files removed", async () => {
   const quota = fixture("owner", { quota: true });
   const refused = await quota.request("POST", "/uploads", uploadBody());
@@ -850,14 +961,22 @@ test("files are given back only for a passing submission on an uploaded version,
     assert.equal(response.status, 409);
     assert.equal(await codeOf(response), "not_passed");
   }
-  for (const origin of ["slice", "starter"] as const) {
-    const response = await fixture("owner", { origin }).request(
-      "GET",
-      "/submissions/sbm_up/files",
-    );
-    assert.equal(response.status, 409);
-    assert.equal(await codeOf(response), "not_uploaded");
-  }
+  // A sliced version is merged back by its pull request instead.
+  const sliced = await fixture("owner", { origin: "slice" }).request(
+    "GET",
+    "/submissions/sbm_up/files",
+  );
+  assert.equal(sliced.status, 409);
+  assert.equal(await codeOf(sliced), "not_uploaded");
+  assert.equal(
+    (
+      await fixture("owner", { origin: "slice" }).request(
+        "GET",
+        "/submissions/sbm_up/files/archive",
+      )
+    ).status,
+    409,
+  );
   const unreadable = await fixture("owner", {
     build: { "project/src/price.ts": "x" },
   }).request("GET", "/submissions/sbm_up/files");
@@ -866,6 +985,53 @@ test("files are given back only for a passing submission on an uploaded version,
     build: { "build-manifest.json": "{}" },
   }).request("GET", "/submissions/sbm_up/files");
   assert.equal(noUpload.status, 502);
+  const noFiles = await fixture("owner", {
+    origin: "starter",
+    build: { "build-manifest.json": "{}" },
+  }).request("GET", "/submissions/sbm_up/files");
+  assert.equal(noFiles.status, 502);
+});
+
+test("a passing submission on a generated (starter) version gives back what it changed in the version's own names, and as a .zip", async () => {
+  const f = fixture("owner", { origin: "starter" });
+  const response = await f.request("GET", "/submissions/sbm_up/files");
+  assert.equal(response.status, 200);
+  const answer = (await response.json()) as {
+    origin: string;
+    upload: unknown;
+    files: { path: string; text: string }[];
+  };
+  // No receipt and nothing to reverse: the starter was generated already
+  // in these names, which are the version's files the workspace reads.
+  assert.equal(answer.origin, "starter");
+  assert.equal(answer.upload, null);
+  assert.deepEqual(
+    answer.files.map((file) => file.path),
+    ["src/helper.ts", "src/price.ts"],
+  );
+  const archive = await f.request("GET", "/submissions/sbm_up/files/archive");
+  assert.equal(archive.status, 200);
+  assert.equal(archive.headers.get("Content-Type"), "application/zip");
+  assert.equal(archive.headers.get("Cache-Control"), "no-store");
+  assert.match(
+    archive.headers.get("Content-Disposition") ?? "",
+    /attachment; filename="sbm_up-files\.zip"/,
+  );
+  const entries = unzip(new Uint8Array(await archive.arrayBuffer()));
+  assert.deepEqual(
+    entries.map((entry) => [entry.name, entry.bytes.toString("utf8")]),
+    answer.files.map((file) => [file.path, file.text]),
+  );
+  // Refused as the JSON is: a member, or a submission that did not pass.
+  assert.equal(
+    (
+      await fixture("member", { origin: "starter" }).request(
+        "GET",
+        "/submissions/sbm_up/files/archive",
+      )
+    ).status,
+    403,
+  );
 });
 
 test("a token reaches the upload with sandboxes:write and the files with submissions:write only", () => {

@@ -8,7 +8,10 @@
  * JSON Schema cannot say, a transform or a date object, is left open
  * rather than guessed. Definitions zod emits for shared or recursive
  * schemas are hoisted into `components.schemas`, so every `$ref` resolves
- * against this document.
+ * against this document. A file body (a zipped folder) is bytes of its
+ * media type. Each operation's security names the credential its audience
+ * takes: `apiToken` (workspace), `contributorToken`, or either for a self
+ * route.
  */
 
 import { z } from "zod";
@@ -116,6 +119,13 @@ function successResponse(
         "A browser step: follow `Location` while signed in as the acting person.",
       headers: { Location: { schema: { type: "string", format: "uri" } } },
     };
+  if ("file" in response)
+    return {
+      description: "A file to save, with `ETag` and `Content-Disposition`.",
+      content: {
+        [response.file]: { schema: { type: "string", format: "binary" } },
+      },
+    };
   return {
     description: "Success.",
     content: {
@@ -131,6 +141,44 @@ function successResponse(
   };
 }
 
+/** The security requirement: which credential kind, with which scope. */
+function security(route: PublicRoute): Json[] {
+  const scopes = route.scope === null ? [] : [route.scope];
+  const audience = route.audience ?? "workspace";
+  return audience === "any"
+    ? [{ apiToken: scopes }, { contributorToken: scopes }]
+    : [
+        {
+          [audience === "contributor" ? "contributorToken" : "apiToken"]:
+            scopes,
+        },
+      ];
+}
+
+/** The request body: JSON from its schema, or a file's bytes. */
+function requestBody(route: PublicRoute, id: string, components: Json): Json {
+  const { request } = route;
+  if (request === null) return {};
+  return {
+    requestBody: {
+      required: true,
+      content:
+        "file" in request
+          ? { [request.file]: { schema: { type: "string", format: "binary" } } }
+          : {
+              "application/json": {
+                schema: jsonSchema(
+                  request,
+                  "input",
+                  `${id}_request`,
+                  components,
+                ),
+              },
+            },
+    },
+  };
+}
+
 function operation(route: PublicRoute, components: Json): Json {
   const id = operationId(route);
   const errors = (description: string) => ({
@@ -142,7 +190,8 @@ function operation(route: PublicRoute, components: Json): Json {
     summary: route.summary,
     tags: [route.tag],
     ...(route.scope === null ? {} : { "x-required-scope": route.scope }),
-    security: [{ apiToken: route.scope === null ? [] : [route.scope] }],
+    "x-audience": route.audience ?? "workspace",
+    security: security(route),
     parameters: [
       ...pathParameters(route.path).map((name) => ({
         name,
@@ -164,23 +213,7 @@ function operation(route: PublicRoute, components: Json): Json {
           ]
         : []),
     ],
-    ...(route.request === null
-      ? {}
-      : {
-          requestBody: {
-            required: true,
-            content: {
-              "application/json": {
-                schema: jsonSchema(
-                  route.request,
-                  "input",
-                  `${id}_request`,
-                  components,
-                ),
-              },
-            },
-          },
-        }),
+    ...requestBody(route, id, components),
     responses: {
       [String(route.response.status)]: successResponse(route, id, components),
       // A browser step that also answers JSON to an API client.
@@ -243,7 +276,7 @@ export function buildOpenApiDocument(
       title: "Lunox platform API",
       version,
       description:
-        "Workspace API tokens (`Authorization: Bearer lnx_…`) reach these routes, each with the scope it names. A token belongs to one workspace: any other workspace's id answers 404. Routes not listed here are refused to tokens.",
+        "Workspace API tokens (`Authorization: Bearer lnx_…`) and workspace OAuth grants reach the workspace routes, each with the scope it names; a token belongs to one workspace, and any other workspace's id answers 404. Contributor tokens (`Bearer lnxc_…`) and contributor OAuth grants reach only the Contributions routes (`x-audience: contributor`), never a workspace's. Routes not listed here are refused to tokens.",
     },
     paths,
     components: {
@@ -253,6 +286,12 @@ export function buildOpenApiDocument(
           scheme: "bearer",
           description:
             "A workspace API token, `lnx_` and 40 characters, made by an owner or admin.",
+        },
+        contributorToken: {
+          type: "http",
+          scheme: "bearer",
+          description:
+            "A contributor token, `lnxc_` and 40 characters, made by an invited contributor on their Contributions page; bound to no workspace.",
         },
       },
       schemas: components,

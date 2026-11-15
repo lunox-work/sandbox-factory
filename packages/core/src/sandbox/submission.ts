@@ -23,6 +23,28 @@ export const SUBMISSION_STATUSES = [
 ] as const;
 export type SubmissionStatus = (typeof SUBMISSION_STATUSES)[number];
 
+/**
+ * Why a submission is `errored`: its grading run ended without a verdict.
+ * A fixed reason, never the run's log, a step or a hidden test: timed out
+ * (the run's deadline), interrupted (its worker was lost on every attempt)
+ * or failed (anything else, such as the evaluation job). None is the
+ * contributor's doing, so it is graded again with the same files without
+ * spending the submission's one retry.
+ */
+export const SUBMISSION_ERRORS = [
+  "grading_failed",
+  "grading_timed_out",
+  "grading_interrupted",
+] as const;
+export type SubmissionError = (typeof SUBMISSION_ERRORS)[number];
+
+/** The reason a submission is told for the code its grading run failed with. */
+export function submissionErrorOf(code: string | null): SubmissionError {
+  if (code === "tool_timeout") return "grading_timed_out";
+  if (code === "worker_lost") return "grading_interrupted";
+  return "grading_failed";
+}
+
 /** How many of one suite's tests passed, out of how many ran. */
 export interface SuiteCount {
   readonly passed: number;
@@ -60,6 +82,16 @@ export interface SubmissionResult {
     readonly path: string;
     readonly reason: string;
   }[];
+  /**
+   * `failed`: the submission passed, but carried back to the repository's
+   * names it did not build and pass both suites there, or its carry renamed
+   * a word the contributor wrote that the name table does not rename
+   * (`carriedWordHazards`), so it is not merged back. The contributor's work stands as passed; only the merge is
+   * withheld. Absent when it carried, or when nothing is carried back (a
+   * version with no repository, an upload, a pull request already in the
+   * repository's names), and on a result graded before the check.
+   */
+  readonly carryBack?: "failed";
 }
 
 /**

@@ -12,13 +12,66 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { hiddenTestFiles, privateTestArgv } from "sandbox-factory";
 import {
   createLocalProcessProvider,
   runProcess,
 } from "../src/evaluation/local-process.js";
 import { createLockfileStore } from "../src/evaluation/lockfiles.js";
+import { privateTestOutcome, tapPoints } from "../src/tools/sandbox-build.js";
 
 const limits = { timeoutMs: 10_000, maxOutputBytes: 64 * 1024 };
+
+test("a provider's own npm cache and lockfile store go when it is disposed; named ones stay", async () => {
+  const root = await mkdtemp(join(tmpdir(), "local-eval-"));
+  const owned = async () =>
+    (await readdir(root)).filter((name) => name.startsWith("sandbox-factory-"));
+  const cacheOf = async (
+    provider: ReturnType<typeof createLocalProcessProvider>,
+  ) => {
+    const job = await provider.create({
+      label: "cache",
+      signal: new AbortController().signal,
+    });
+    // A manifest, so the lockfile store is asked for too.
+    await job.stage([{ path: "package.json", text: "{}" }]);
+    const result = await job.exec({
+      argv: ["node", "-e", "console.log(process.env.npm_config_cache)"],
+      limits,
+    });
+    await job.destroy();
+    return result.stdout.trim();
+  };
+  try {
+    const provider = createLocalProcessProvider({ root });
+    const cache = await cacheOf(provider);
+    // Made beside the jobs, not loose in the OS temporary directory.
+    assert.ok(
+      cache.startsWith(join(root, "sandbox-factory-npm-cache-")),
+      cache,
+    );
+    assert.equal((await owned()).length, 2, (await owned()).join(", "));
+    await provider.dispose();
+    assert.deepEqual(await owned(), []);
+    // A later job makes them again, and a second dispose removes those.
+    assert.notEqual(await cacheOf(provider), cache);
+    await provider.dispose();
+    await provider.dispose();
+    assert.deepEqual(await owned(), []);
+
+    const npmCache = join(root, "npm");
+    const lockfiles = join(root, "lockfiles");
+    await mkdir(npmCache);
+    await mkdir(lockfiles);
+    const named = createLocalProcessProvider({ root, npmCache, lockfiles });
+    assert.equal(await cacheOf(named), npmCache);
+    await named.dispose();
+    await access(npmCache);
+    await access(lockfiles);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
 
 test("a local job stages files, runs scrubbed processes, reads results and tears down", async () => {
   const root = await mkdtemp(join(tmpdir(), "local-eval-"));
@@ -585,4 +638,156 @@ test("a worker that cannot isolate jobs says so once", () => {
   createLocalProcessProvider({ warn: (line) => warnings.push(line) });
   assert.equal(warnings.length, 1);
   assert.match(warnings[0] ?? "", /^evaluation_jobs_not_isolated: /);
+});
+
+test("a sealed job runs each hidden test alone, from the tree as it stood before task code ran, never on disk", async () => {
+  const root = await mkdtemp(join(tmpdir(), "local-eval-"));
+  try {
+    const job = await createLocalProcessProvider({ root }).create({
+      label: "sealed",
+      signal: new AbortController().signal,
+    });
+    const hiddenTest = (name: string, doubled: number) =>
+      [
+        'import { test } from "node:test";',
+        'import assert from "node:assert/strict";',
+        'import { double } from "../../src/double.js";',
+        `test("${name}", () => assert.equal(double(${doubled / 2}), ${doubled}));`,
+      ].join("\n");
+    await job.stage([
+      { path: "package.json", text: '{ "type": "module" }\n' },
+      { path: "sandbox.env", text: "MODE=test\n" },
+      {
+        path: "src/double.js",
+        text: [
+          'import { readdirSync, readFileSync } from "node:fs";',
+          "const tryIt = (f) => { try { return f(); } catch (error) { return error.code; } };",
+          "export function double(x) {",
+          '  const found = { dir: tryIt(() => readdirSync("tests/private")), s1: tryIt(() => readFileSync("tests/private/s1.test.js", "utf8")), s2: tryIt(() => readFileSync("tests/private/s2.test.js", "utf8")) };',
+          '  console.error("FOUND " + JSON.stringify(found));',
+          "  return x * 2;",
+          "}",
+        ].join("\n"),
+      },
+      // As the build leaves them: source and emitted JavaScript.
+      { path: "tests/private/s1.test.ts", text: "// s1 source" },
+      { path: "tests/private/s1.test.js", text: hiddenTest("s1 doubles", 4) },
+      { path: "tests/private/s2.test.js", text: hiddenTest("s2 doubles", 8) },
+    ]);
+    const s1 = {
+      argv: privateTestArgv("tests/private/s1.test.ts"),
+      hidden: { entry: "tests/private/s1.test.js", load: "memory" as const },
+      limits,
+    };
+    await assert.rejects(job.exec(s1), /sealed/);
+    await job.seal([
+      ...hiddenTestFiles("tests/private/s1.test.ts"),
+      ...hiddenTestFiles("tests/private/s2.test.ts"),
+    ]);
+    await assert.rejects(job.seal([]), /sealed once/);
+    // Task code after the seal (the walkthrough, the public suite) finds no
+    // hidden test, and what it changes never reaches a hidden run.
+    const walkthrough = await job.exec({
+      argv: [
+        "node",
+        "--input-type=module",
+        "-e",
+        'import { writeFileSync } from "node:fs"; import { double } from "./src/double.js"; double(1); writeFileSync("src/double.js", "export const double = () => 0;\\n");',
+      ],
+      limits,
+    });
+    assert.equal(walkthrough.exitCode, 0, walkthrough.stderr);
+    assert.match(
+      walkthrough.stderr,
+      /FOUND \{"dir":\[\],"s1":"ENOENT","s2":"ENOENT"\}/,
+    );
+    for (const [run, point] of [
+      [s1, "ok 1 - s1 doubles"],
+      [
+        {
+          argv: privateTestArgv("tests/private/s2.test.ts"),
+          hidden: {
+            entry: "tests/private/s2.test.js",
+            load: "memory" as const,
+          },
+          limits,
+        },
+        "ok 1 - s2 doubles",
+      ],
+    ] as const) {
+      const result = await job.exec(run);
+      assert.equal(
+        privateTestOutcome(result, result.stdout),
+        "pass",
+        result.stdout,
+      );
+      assert.deepEqual(tapPoints(result.stdout), [point]);
+      assert.match(
+        result.stdout,
+        /FOUND \{"dir":\[\],"s1":"ENOENT","s2":"ENOENT"\}/,
+      );
+    }
+    await job.destroy();
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("an isolated job kills what its identity left running before each hidden run, from a pristine copy only the worker can reach", async () => {
+  const root = await mkdtemp(join(tmpdir(), "local-eval-"));
+  const signal = new AbortController().signal;
+  const self = { uid: process.getuid?.() ?? 0, gid: process.getgid?.() ?? 0 };
+  const events: string[] = [];
+  try {
+    const job = await createLocalProcessProvider({
+      root,
+      isolation: {
+        identities: [self],
+        cacheRoot: join(root, "jobs"),
+        sweep: async () => {
+          events.push("sweep");
+        },
+        kill: async () => {
+          events.push("kill");
+        },
+      },
+    }).create({ label: "isolated-hidden", signal });
+    await job.stage([
+      { path: "package.json", text: '{ "type": "module" }\n' },
+      { path: "sandbox.env", text: "MODE=test\n" },
+      {
+        path: "tests/private/s1.test.js",
+        text: 'import { test } from "node:test";\ntest("runs", () => {});\n',
+      },
+    ]);
+    await job.seal(hiddenTestFiles("tests/private/s1.test.ts"));
+    const directory = join(root, job.id);
+    assert.equal((await stat(join(directory, "pristine"))).mode & 0o777, 0o700);
+    assert.deepEqual(
+      await readdir(join(directory, "pristine", "tests", "private")),
+      [],
+    );
+    const result = await job.exec({
+      argv: privateTestArgv("tests/private/s1.test.ts"),
+      hidden: { entry: "tests/private/s1.test.js", load: "memory" },
+      limits,
+    });
+    assert.equal(
+      privateTestOutcome(result, result.stdout),
+      "pass",
+      result.stdout,
+    );
+    assert.equal((await stat(join(directory, "fresh"))).mode & 0o777, 0o700);
+    assert.equal(
+      (await stat(join(directory, "fresh", ".sandbox-hidden"))).uid,
+      self.uid,
+    );
+    // Swept once when created; between commands only killed, since a sweep
+    // would remove the job's own directories under the shared temp.
+    assert.deepEqual(events, ["sweep", "kill"]);
+    await job.destroy();
+    assert.deepEqual(events, ["sweep", "kill", "sweep"]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });

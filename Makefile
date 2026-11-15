@@ -178,7 +178,7 @@ ext-deps: node_modules
 ext-watch: ext-deps ## Rebuild the extension on save; F5 in VS Code runs and reloads it
 	@echo "Watching. In VS Code, press F5 (Run VS Code Extension) to launch it."
 	@echo "That window reloads itself on each rebuild (debug.extensionHost.autoReload)."
-	@echo "The extension needs the API running — 'make dev' in another terminal."
+	@echo "For a local stack ('make dev'), set sandboxFactory.platformUrl to http://localhost:5173 there."
 	npm run dev --workspace sandbox-factory-vscode
 
 ext-package: ext-deps ## Build a .vsix into apps/extension/

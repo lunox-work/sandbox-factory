@@ -1,4 +1,7 @@
 /** The deterministic source-analysis contract, shared by every surface. */
+
+import type { CarriedTestLimits } from "./sandbox/carried-tests.js";
+
 export const ANALYSIS_STATUSES = [
   "queued",
   "running",
@@ -250,18 +253,77 @@ export function snapshotBuilt(
  * bump cannot reuse a slice the old release made.
  */
 export const SLICE_TOOL_VERSION = "slice@6+carveout@0.3.1";
-/** Bumped when the generated project, harness or baseline rules change meaning. */
-export const SANDBOX_BUILD_RUN_VERSION = "sandbox_build@12";
+/**
+ * Bumped when the generated project, harness or baseline rules change meaning.
+ * @13: the project carries `TASK.md`, `AGENTS.md`, `CLAUDE.md` and
+ * `.vscode/`, and compiles with source maps (`guide.ts`). A version built
+ * before keeps its stored files and grades as it did: the grading layout,
+ * tree and commands did not change; a draft an older builder built is built
+ * again. Also: confirmed decisions are quoted to the hidden-tests and
+ * reference agents and carried in `TASK.md`, and the manifest records the
+ * publication gates (`PublicationGates`), and `TASK.md` and the README say
+ * to submit by uploading the zipped folder on the contribution page or with
+ * the VS Code extension's Lunox: Submit (an agent: `/mcp/contribute` or a
+ * contributor token on the zip route); one number for all, since none had
+ * shipped at @13. Folded in too: the disclosure scan beyond the vocabulary
+ * (`scanDisclosure`: addresses, hosts, copyright and author lines, ticket
+ * keys, chat links, `TODO(name)`) blocks on what no owner acknowledged,
+ * recorded in the disclosure gate; the bounty's title, summary, spec and
+ * decisions reach the generated files redacted, and a stub's comments too.
+ * Folded in too: a slice requested with `carryTests` has the repository's
+ * own tests of it carried under `tests/public/carried/` when they pass on
+ * the baseline (`carried-tests.ts`), recorded in the manifest's
+ * `carriedTests`; a slice without it builds as before, so does one built
+ * with `carryTests: false`.
+ */
+export const SANDBOX_BUILD_RUN_VERSION = "sandbox_build@13";
 /** Bumped when the scope agent's tools, prompt or proposal shape change meaning. */
 export const SCOPE_TOOL_VERSION = "scope@6";
 /** Bumped when the fixtures agent's tools, prompt or set shape change meaning. */
 export const FIXTURES_TOOL_VERSION = "fixtures@4";
-/** Bumped when the starter agent's tools, prompt, set or project change meaning. */
-export const STARTER_TOOL_VERSION = "sandbox_starter@5";
-/** Bumped when the grading tree, its commands or the verdict change meaning. */
-export const SUBMISSION_GRADE_TOOL_VERSION = "submission_grade@2";
-/** Bumped when an uploaded folder's files, layout or baseline change meaning. */
-export const SANDBOX_IMPORT_TOOL_VERSION = "sandbox_import@1";
+/**
+ * Bumped when the starter agent's tools, prompt, set or project change meaning.
+ * @6: the project carries the contributor guide and source maps, as
+ * `sandbox_build@13`, with its confirmed decisions quoted to the agent and
+ * its publication gates recorded and the upload and extension wording,
+ * folded into the same unshipped number. Also folded in: the accepted
+ * hidden tests are calibrated by a reference agent with them withheld
+ * (duediligence's `calibrate`), the ones it fails dropped or the build
+ * held, recorded in `build-transform.json` as `sandbox_build` records it.
+ * Also folded in: the disclosure scan beyond the vocabulary
+ * (`scanDisclosure`) refuses a candidate whose public files carry an
+ * address, host, author, ticket key or chat link, and the bounty's title,
+ * summary, spec and decisions are redacted of them (`redactDisclosure`)
+ * as a sliced build's. No owner's acknowledgement is read or hashed into
+ * the transform: what the final scan still finds is recorded as
+ * `pending_acknowledgement` (`acknowledgedAt: "publish"`), for
+ * publication to check against the draft's list, never a blocker.
+ */
+export const STARTER_TOOL_VERSION = "sandbox_starter@6";
+/**
+ * Bumped when the grading tree, its commands or the verdict change meaning.
+ * @4: a pass on a sliced version is built and tested again in the
+ * repository's names before its merge patch is written (`carryBack`).
+ * Folded in, unshipped at @4: a pass whose carry renames a word the
+ * contributor wrote by a pair learned from part of a text rule is
+ * `carryBack: "failed"` too, without the second job (`carriedWordHazards`),
+ * and so is one whose carry is refused for the carry's own limit rather
+ * than the contributor's doing (`carryLimitOf`), which was `refused`.
+ * Also folded in: the reversed check puts a version's carried tests (its
+ * manifest's `carriedTests`) back at their repository paths; a version
+ * without them grades as before.
+ */
+export const SUBMISSION_GRADE_TOOL_VERSION = "submission_grade@4";
+/**
+ * Bumped when an uploaded folder's files, layout or baseline change meaning.
+ * @2: the disclosure scan beyond the vocabulary (`scanDisclosure`) over the
+ * folder's public files, every finding recorded in the disclosure gate as
+ * `pending_acknowledgement` (`acknowledgedAt: "publish"`) for publication
+ * to check against the draft's list, never a blocker and no
+ * acknowledgement read, and the descriptor's title, summary and tags
+ * redacted of every finding (`redactDisclosure`). Unshipped, so folded in.
+ */
+export const SANDBOX_IMPORT_TOOL_VERSION = "sandbox_import@2";
 /**
  * Tools that always read a repository snapshot. Grading reads one only for
  * a version sliced from a repository, to carry a passing submission back
@@ -400,6 +462,15 @@ export interface SliceParams extends GraphifyParams {
   readonly budget: SliceBudget;
   /** Whether graphify's INFERRED edges are walked; AST edges always are. */
   readonly includeInferred: boolean;
+  /**
+   * Whether builds of the slice carry the repository's own tests of it as
+   * read-only public tests (`carried-tests.ts`); new requests ask for it.
+   * Absent on a slice requested before tests were carried: its builds
+   * carry none, and build as they did. The walk is the same either way.
+   */
+  readonly carryTests?: boolean;
+  /** At most how many carried tests; absent: `CARRIED_TEST_LIMITS`. */
+  readonly carriedTestLimits?: CarriedTestLimits;
 }
 /**
  * A build names the version it builds and every hash its output must bind
@@ -419,6 +490,23 @@ export interface SandboxBuildParams extends GraphifyParams {
    */
   readonly vocabulary?: readonly string[];
   /**
+   * The workspace's Jira project keys (`PAY`), whose issue keys
+   * (`PAY-123`) the disclosure scan finds in public files
+   * (`scanDisclosure`). Absent on a build queued before the scan, or with
+   * no board connected.
+   */
+  readonly ticketKeys?: readonly string[];
+  /**
+   * The hash of the decisions the approved task's spec holds
+   * (`decisionsText`), set when a person confirmed exactly those: the
+   * worker quotes them to the agents that write the hidden tests, the
+   * reference and the starter as "Decided, confirmed by the client", and
+   * `TASK.md` carries them when the disclosure scans pass them. Absent on
+   * a spec with none, and on a run queued before decisions gated builds;
+   * such a run quotes none as confirmed.
+   */
+  readonly decisionsSha256?: string;
+  /**
    * A succeeded preparation run on the same slice (`FixturesParams` with
    * `pseudonyms`, queued before 2026-10-19): a draft with no fixtures takes its fixtures, and one
    * with no name table its table when the build's checks pass it. A build
@@ -426,6 +514,12 @@ export interface SandboxBuildParams extends GraphifyParams {
    * drafted by rule.
    */
   readonly preparedRunId?: string;
+  /**
+   * `false` when an owner asked for this build without the carried tests
+   * its slice offers (`SliceParams.carryTests`). Absent: it carries what
+   * its slice does.
+   */
+  readonly carryTests?: false;
 }
 /**
  * The bounty an agent run works for: a proposal and one immutable revision
@@ -484,6 +578,10 @@ export interface StarterParams extends GraphifyParams {
    * check.
    */
   readonly vocabulary?: readonly string[];
+  /** As `SandboxBuildParams.ticketKeys`. */
+  readonly ticketKeys?: readonly string[];
+  /** As `SandboxBuildParams.decisionsSha256`. */
+  readonly decisionsSha256?: string;
 }
 /**
  * A submission graded: its files (stored with the submission) applied to
@@ -515,6 +613,8 @@ export interface SandboxImportParams extends GraphifyParams {
   readonly uploadSha256: string;
   readonly recordSha256: string;
   readonly carveoutVersion: string;
+  /** As `SandboxBuildParams.ticketKeys`. */
+  readonly ticketKeys?: readonly string[];
 }
 /** Where an upload's files are kept: under its workspace and version, by hash. */
 export function uploadObjectKey(

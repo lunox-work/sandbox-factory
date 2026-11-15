@@ -210,6 +210,8 @@ export * from "./analysis.js";
 
 /** Sandbox versions: owner-side provenance and build contracts. */
 export * from "./sandbox.js";
+/** Invited contributors: invites, assignments and a contributor's own view. */
+export * from "./contributors.js";
 
 /** Default avatars, computed from an account id rather than stored. */
 export * from "./identicon.js";

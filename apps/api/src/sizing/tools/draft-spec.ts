@@ -194,7 +194,7 @@ export const openQuestionsOutputSchema = notes(
 );
 export const assumptionsOutputSchema = notes(
   SPEC_LIMITS.noteChars,
-  SPEC_LIMITS.assumptions,
+  SPEC_LIMITS.draftAssumptions,
 );
 
 /**
@@ -320,7 +320,7 @@ export const OPEN_QUESTIONS_TOOL_SCHEMA: JsonSchema = {
 export const ASSUMPTIONS_TOOL_SCHEMA: JsonSchema = {
   type: "array",
   description: "What was decided where the ticket was silent.",
-  maxItems: SPEC_LIMITS.assumptions,
+  maxItems: SPEC_LIMITS.draftAssumptions,
   items: line(SPEC_LIMITS.noteChars),
 };
 

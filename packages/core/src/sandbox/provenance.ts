@@ -11,7 +11,12 @@
 
 import type { SliceManifest, BoundaryContract } from "../slice/manifest.js";
 import type { AliasRule } from "./aliases.js";
+import {
+  openDisclosureFindings,
+  type DisclosureAcknowledgement,
+} from "./disclosure.js";
 import type { VersionFixtures } from "./fixtures.js";
+import type { SandboxBuildManifest } from "./build.js";
 
 export const SANDBOX_STATUSES = ["draft", "published", "closed"] as const;
 export type SandboxStatus = (typeof SANDBOX_STATUSES)[number];
@@ -352,6 +357,13 @@ export interface VersionSourceRecord {
   readonly disclosureRunId: string | null;
   readonly approvedBy: string | null;
   readonly approvedAt: string | null;
+  /**
+   * The disclosure findings an owner said may be public
+   * (`DisclosureAcknowledgement`): part of a sliced draft's transform,
+   * which its build does not block on; checked at publication for an
+   * uploaded or generated one (`gatesOf`). Absent: none.
+   */
+  readonly disclosureAcknowledgements?: readonly DisclosureAcknowledgement[];
 }
 
 /**
@@ -369,6 +381,13 @@ export interface TransformConfig {
   readonly acceptanceTests: readonly AcceptanceTest[];
   readonly fixtures: VersionFixtures | null;
   readonly starterSha256?: string;
+  /**
+   * A sliced version's disclosure acknowledgements, which its build reads;
+   * no key at all when there are none, so a version without any hashes as
+   * it did before them. Never an uploaded or generated version's: its
+   * build reads none, and publication checks them (`gatesOf`).
+   */
+  readonly disclosureAcknowledgements?: readonly DisclosureAcknowledgement[];
 }
 
 /** What `transformConfigSha256` hashes, once made canonical. */
@@ -378,7 +397,10 @@ export function transformConfigOf(input: {
   readonly acceptanceTests: readonly AcceptanceTest[];
   readonly fixtures?: VersionFixtures | null;
   readonly starterSha256?: string | null;
+  readonly disclosureAcknowledgements?:
+    readonly DisclosureAcknowledgement[] | null;
 }): TransformConfig {
+  const acknowledgements = input.disclosureAcknowledgements ?? [];
   return {
     schemaVersion: 2,
     aliasRules: input.aliasRules,
@@ -388,6 +410,9 @@ export function transformConfigOf(input: {
     ...(input.starterSha256 == null
       ? {}
       : { starterSha256: input.starterSha256 }),
+    ...(acknowledgements.length === 0
+      ? {}
+      : { disclosureAcknowledgements: acknowledgements }),
   };
 }
 
@@ -401,9 +426,29 @@ export interface AcceptanceTest {
 }
 
 /**
- * Whether a draft may freeze. 5A records the rule; 5D supplies the round
- * trip and disclosure runs and is its first caller. Evidence that names a different manifest or
+ * The gates a version freezes on, as publication names the first that
+ * fails (`PUBLICATION_GATE_CODES`): the build's evidence names this
+ * version's inputs, its baseline passed, its harness and toolchain are
+ * recorded, the no-change round trip passed, the disclosure scan found
+ * nothing, and a person approved this exact candidate.
+ */
+export const FREEZE_GATES = [
+  "build_evidence",
+  "baseline",
+  "harness",
+  "round_trip",
+  "disclosure",
+  "approval",
+] as const;
+export type FreezeGate = (typeof FREEZE_GATES)[number];
+
+/**
+ * Whether a draft may freeze. Evidence that names a different manifest or
  * transform than the record is invalid, because inputs changed after it.
+ * The build run is the run that ran both the round trip and the disclosure
+ * scan (`PublicationGates` in its manifest), so publication records it as
+ * `roundTripRunId` and `disclosureRunId` once each passed (`gatesOf`).
+ * `failed` lists each failing gate once, in `FREEZE_GATES` order.
  */
 export function freezeReadiness(
   source: VersionSourceRecord,
@@ -414,32 +459,141 @@ export function freezeReadiness(
     readonly baselineOk: boolean;
     readonly roundTripOk: boolean;
     readonly disclosureBlocking: number | null;
+    /**
+     * Of those, findings that only wait for an owner's acknowledgement at
+     * publication (`pending_acknowledgement`, nothing else blocking): the
+     * refusal names them rather than blocking findings. Absent: none.
+     */
+    readonly disclosureAwaiting?: number;
   },
-): { ready: boolean; reasons: string[] } {
-  const reasons: string[] = [];
-  if (source.buildRunId === null) reasons.push("No build run is recorded.");
+): { ready: boolean; reasons: string[]; failed: FreezeGate[] } {
+  const found: { gate: FreezeGate; reason: string }[] = [];
+  const fail = (gate: FreezeGate, reason: string) =>
+    found.push({ gate, reason });
+  if (source.buildRunId === null)
+    fail("build_evidence", "No build run is recorded.");
   else {
     if (evidence.buildManifestSha256 !== source.manifestSha256)
-      reasons.push("The build evidence names a different slice manifest.");
+      fail(
+        "build_evidence",
+        "The build evidence names a different slice manifest.",
+      );
     if (evidence.buildTransformSha256 !== source.transformConfigSha256)
-      reasons.push("The build evidence names a different transform.");
+      fail("build_evidence", "The build evidence names a different transform.");
     if (evidence.buildApprovedTaskSha256 !== source.approvedTaskSha256)
-      reasons.push("The build evidence names a different approved task.");
-    if (!evidence.baselineOk) reasons.push("The baseline check did not pass.");
+      fail(
+        "build_evidence",
+        "The build evidence names a different approved task.",
+      );
+    if (!evidence.baselineOk)
+      fail("baseline", "The baseline check did not pass.");
   }
   if (source.harnessSha256 === null)
-    reasons.push("No harness hash is recorded.");
+    fail("harness", "No harness hash is recorded.");
   if (source.toolchainDigest === null)
-    reasons.push("No toolchain digest is recorded.");
+    fail("harness", "No toolchain digest is recorded.");
   if (source.roundTripRunId === null || !evidence.roundTripOk)
-    reasons.push("The no-change round trip has not passed.");
+    fail("round_trip", "The no-change round trip has not passed.");
   if (source.disclosureRunId === null)
-    reasons.push("No disclosure scan is recorded.");
-  else if ((evidence.disclosureBlocking ?? 1) > 0)
-    reasons.push("The disclosure scan has blocking findings.");
+    fail("disclosure", "No disclosure scan is recorded.");
+  else if ((evidence.disclosureBlocking ?? 1) > 0) {
+    const awaiting = evidence.disclosureAwaiting ?? 0;
+    fail(
+      "disclosure",
+      awaiting > 0
+        ? `${awaiting} ${awaiting === 1 ? "finding waits" : "findings wait"} for an owner's acknowledgement.`
+        : "The disclosure scan has blocking findings.",
+    );
+  }
   if (source.approvedBy === null || source.approvedAt === null)
-    reasons.push("The exact candidate has not been approved.");
-  return { ready: reasons.length === 0, reasons };
+    fail("approval", "The exact candidate has not been approved.");
+  return {
+    ready: found.length === 0,
+    reasons: found.map(({ reason }) => reason),
+    failed: FREEZE_GATES.filter((gate) =>
+      found.some((item) => item.gate === gate),
+    ),
+  };
+}
+
+/** The refusal code publication answers for the first failing gate. */
+export const PUBLICATION_GATE_CODES: Readonly<Record<FreezeGate, string>> = {
+  build_evidence: "build_evidence_stale",
+  baseline: "not_ready",
+  harness: "not_ready",
+  round_trip: "round_trip_failed",
+  disclosure: "disclosure_failed",
+  approval: "not_approved",
+};
+
+/**
+ * A version's publication gates, read from its build's manifest, as
+ * `freezeReadiness` takes them: the evidence, and the run ids the source
+ * records for the round trip and the disclosure scan (the build's, each
+ * when it passed). A round trip with nothing to carry to (a generated or
+ * uploaded version) passes. A disclosure gate acknowledged at publication
+ * (`pending_acknowledgement`) passes once the draft's `acknowledgements`
+ * cover every finding it recorded and it recorded them all
+ * (`openDisclosureFindings`); no build again is needed, its files never
+ * having depended on them. `recorded` is false for a build made before
+ * the gates, whose manifest has none.
+ */
+export function gatesOf(
+  buildRunId: string,
+  manifest: Pick<
+    SandboxBuildManifest,
+    | "manifestSha256"
+    | "transformConfigSha256"
+    | "approvedTaskSha256"
+    | "baseline"
+    | "gates"
+  >,
+  acknowledgements: readonly Pick<
+    DisclosureAcknowledgement,
+    "kind" | "value"
+  >[] = [],
+): {
+  readonly recorded: boolean;
+  readonly roundTripRunId: string | null;
+  readonly disclosureRunId: string | null;
+  readonly evidence: Parameters<typeof freezeReadiness>[1];
+} {
+  const gates = manifest.gates;
+  const roundTripOk =
+    gates !== undefined && gates.roundTrip.status !== "failed";
+  const disclosure = gates?.disclosure;
+  const pending =
+    disclosure?.status === "pending_acknowledgement" &&
+    disclosure.acknowledgedAt === "publish"
+      ? openDisclosureFindings(disclosure, acknowledgements)
+      : null;
+  const open =
+    pending === null ? 0 : pending.findings.length + pending.unrecorded;
+  const disclosureOk =
+    disclosure !== undefined &&
+    (disclosure.status === "passed" ||
+      (pending !== null && disclosure.blocking === 0 && open === 0));
+  return {
+    recorded: gates !== undefined,
+    roundTripRunId: roundTripOk ? buildRunId : null,
+    disclosureRunId: gates === undefined ? null : buildRunId,
+    evidence: {
+      buildManifestSha256: manifest.manifestSha256,
+      buildTransformSha256: manifest.transformConfigSha256,
+      buildApprovedTaskSha256: manifest.approvedTaskSha256,
+      baselineOk: manifest.baseline?.ok === true,
+      roundTripOk,
+      disclosureBlocking:
+        disclosure === undefined
+          ? null
+          : disclosureOk
+            ? 0
+            : Math.max(1, disclosure.blocking + open),
+      ...(pending !== null && !disclosureOk && disclosure?.blocking === 0
+        ? { disclosureAwaiting: open }
+        : {}),
+    },
+  };
 }
 
 /**

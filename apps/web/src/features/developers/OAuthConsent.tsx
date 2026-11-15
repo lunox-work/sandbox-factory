@@ -12,13 +12,22 @@
  * the API refuses a workspace the person cannot administer, and every
  * token the app gets is bound to it.
  *
+ * An app asking for `contributions:write` (the contributor MCP endpoint,
+ * `/mcp/contribute`) signs the person in as an invited contributor
+ * instead: the page says so, lists the versions they were invited to, and
+ * sends `contributor` as the choice. That grant binds no workspace and
+ * reaches their contributions alone; the API refuses it mixed with a
+ * workspace's scopes.
+ *
  * A page of its own, outside the shell, like `/device`.
  */
 
-import type { MembershipDto } from "@sandbox-factory/shared";
+import type { ContributionDto, MembershipDto } from "@sandbox-factory/shared";
 import { useEffect, useState } from "react";
 import {
   API_SCOPES,
+  CONTRIBUTOR_CONSENT,
+  CONTRIBUTOR_SCOPE,
   OFFLINE_ACCESS_SCOPE,
   rankAtLeast,
   type ApiScope,
@@ -35,6 +44,7 @@ import {
 } from "@/components/ui/card";
 
 import { authClient } from "../../auth";
+import { useContributionsQuery } from "../../data/query";
 import { useOrganizations } from "../../useOrganizations";
 
 /** The header the API reads the chosen workspace from; see the API's `oauth/provider.ts`. */
@@ -48,15 +58,20 @@ const SCOPE_TEXT: Record<ApiScope, string> = {
   "bounties:write": "Write, edit and approve bounties",
   "pricing:write": "Size and price bounties (spends model calls)",
   "specs:write": "Change specs",
+  "decisions:confirm": "Confirm a posted spec's decisions as you",
   "sandboxes:write": "Analyse repositories and build sandboxes",
   "submissions:write": "Submit work",
   judge: "Judge submissions",
   "webhooks:write": "Manage webhooks",
 };
 
-/** The scopes a consent page's query asks for, split into API and refresh. */
+/**
+ * The scopes a consent page's query asks for, split into API, contributor
+ * and refresh.
+ */
 export function requestedScopes(search: string): {
   api: ApiScope[];
+  contributor: boolean;
   offline: boolean;
 } {
   const asked = new Set(
@@ -64,6 +79,7 @@ export function requestedScopes(search: string): {
   );
   return {
     api: API_SCOPES.filter((scope) => asked.has(scope)),
+    contributor: asked.has(CONTRIBUTOR_SCOPE),
     offline: asked.has(OFFLINE_ACCESS_SCOPE),
   };
 }
@@ -88,17 +104,22 @@ type Step = { kind: "review" } | { kind: "leaving"; approved: boolean };
 export function OAuthConsent({
   search,
   organizations,
+  contributions = null,
   loadError,
 }: {
   /** The signed query Better Auth sent, `?` included. */
   search: string;
   /** The person's workspaces; null while they load. */
   organizations: readonly MembershipDto[] | null;
+  /** The versions the person was invited to; null while they load. */
+  contributions?: readonly ContributionDto[] | null;
   loadError: string | null;
 }) {
   const query = new URLSearchParams(search);
   const clientId = query.get("client_id") ?? "";
   const asked = requestedScopes(search);
+  // Signing in as a contributor: the contributor scope, and no workspace.
+  const asContributor = asked.contributor;
   const administered = (organizations ?? []).filter((entry) =>
     rankAtLeast(entry.role, "admin"),
   );
@@ -139,16 +160,14 @@ export function OAuthConsent({
   async function decide(approve: boolean) {
     setPending(true);
     setError(null);
-    const scope = [
-      ...granted,
-      ...(asked.offline ? [OFFLINE_ACCESS_SCOPE] : []),
-    ];
+    const scope = asContributor
+      ? [CONTRIBUTOR_SCOPE, ...(asked.offline ? [OFFLINE_ACCESS_SCOPE] : [])]
+      : [...granted, ...(asked.offline ? [OFFLINE_ACCESS_SCOPE] : [])];
+    const choice = asContributor ? CONTRIBUTOR_CONSENT : workspace;
     const result = await authClient.$fetch<{ url: string }>("/oauth2/consent", {
       method: "POST",
       headers:
-        approve && workspace !== null
-          ? { [ORGANIZATION_HEADER]: workspace }
-          : {},
+        approve && choice !== null ? { [ORGANIZATION_HEADER]: choice } : {},
       body: {
         accept: approve,
         oauth_query: search.replace(/^\?/, ""),
@@ -168,7 +187,10 @@ export function OAuthConsent({
   }
 
   const name = client?.client_name ?? client?.client_id ?? "An app";
-  const ready = clientId !== "" && client !== null && organizations !== null;
+  const ready =
+    clientId !== "" &&
+    client !== null &&
+    (asContributor ? contributions !== null : organizations !== null);
 
   return (
     <main className="grid min-h-dvh place-items-center px-4">
@@ -194,7 +216,80 @@ export function OAuthConsent({
             !ready &&
             error === null &&
             loadError === null && <LoadingLine />}
-          {ready && step.kind === "review" && (
+          {ready && step.kind === "review" && asContributor && (
+            <form
+              className="flex flex-col gap-4 text-sm"
+              onSubmit={(event) => {
+                event.preventDefault();
+                void decide(true);
+              }}
+            >
+              <p>
+                <strong>{name}</strong> asks to sign in as you, as an invited
+                contributor.
+              </p>
+              <p className="text-muted-foreground">
+                It will reach only the tasks you were invited to: read each
+                one&apos;s project, submit your work and read your own verdicts.
+                Nothing of any workspace you belong to.
+              </p>
+              {asked.api.length > 0 && (
+                <p role="alert">
+                  It also asks for a workspace&apos;s scopes, which a
+                  contributor sign-in never grants. Start again from the app
+                  with only the contributions scope.
+                </p>
+              )}
+              <section aria-labelledby="consent-contributions">
+                <h2 id="consent-contributions" className="mb-1.5 font-medium">
+                  Your contributions
+                </h2>
+                {(contributions ?? []).length === 0 ? (
+                  <p className="text-muted-foreground">
+                    None yet. Open an invite link first; the app can only see
+                    what you were invited to.
+                  </p>
+                ) : (
+                  <ul className="flex flex-col gap-1">
+                    {(contributions ?? []).map((entry) => (
+                      <li key={entry.versionId} className="flex gap-2">
+                        <span className="truncate">
+                          {entry.title ?? "Untitled task"}
+                        </span>
+                        <span className="text-muted-foreground text-xs">
+                          version {entry.version}
+                          {entry.open ? "" : " · closed"}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </section>
+              {asked.offline && (
+                <p className="text-muted-foreground text-xs">
+                  It stays connected until you disconnect it on your
+                  Contributions page.
+                </p>
+              )}
+              <div className="flex gap-2">
+                <Button
+                  type="submit"
+                  disabled={pending || asked.api.length > 0}
+                >
+                  Allow
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  disabled={pending}
+                  onClick={() => void decide(false)}
+                >
+                  Deny
+                </Button>
+              </div>
+            </form>
+          )}
+          {ready && step.kind === "review" && !asContributor && (
             <form
               className="flex flex-col gap-4 text-sm"
               onSubmit={(event) => {
@@ -302,14 +397,30 @@ export function OAuthConsent({
   );
 }
 
-/** The page, with the person's workspaces read as the shell reads them. */
+/**
+ * The page, with the person's workspaces and contributions read as the
+ * shell reads them.
+ */
 export function OAuthConsentPage({ search }: { search: string }) {
   const { organizations, loading, error } = useOrganizations();
+  const contributions = useContributionsQuery();
   return (
     <OAuthConsent
       search={search}
       organizations={loading ? null : organizations}
-      loadError={error}
+      contributions={
+        contributions.isSuccess
+          ? contributions.data
+          : contributions.isError
+            ? []
+            : null
+      }
+      loadError={
+        error ??
+        (contributions.isError && requestedScopes(search).contributor
+          ? "Your contributions could not be read."
+          : null)
+      }
     />
   );
 }

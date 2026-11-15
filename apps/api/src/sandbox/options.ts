@@ -14,10 +14,11 @@
  */
 
 import type {
+  ContributorStore,
+  DecisionConfirmationStore,
   SubmissionMergeStore,
   SubmissionStore,
 } from "@sandbox-factory/db";
-import type { PullRequestWriter } from "@sandbox-factory/github";
 import type {
   AnalysisRunStore,
   ArtifactStore,
@@ -33,6 +34,9 @@ import type {
   StoredBounty,
 } from "@sandbox-factory/db";
 
+import type { MergeBackTargets } from "../github/merge-back.js";
+import type { SubmissionEventEmit } from "../github/merge-ci.js";
+
 export interface SandboxRouteOptions {
   readonly sandboxes: SandboxStore;
   readonly runs: Pick<AnalysisRunStore, "get" | "enqueue">;
@@ -44,23 +48,38 @@ export interface SandboxRouteOptions {
     SubmissionStore,
     "create" | "get" | "list" | "retry"
   >;
+  /**
+   * Invited contributors (`contributors.ts`): their invites and
+   * assignments. Absent, nobody is invited and the contributor routes
+   * answer 404.
+   */
+  readonly contributors?: ContributorStore;
+  /**
+   * The link a claim secret is handed out in: the web app's invite page,
+   * the secret in its fragment. Absent, the page's path alone.
+   */
+  readonly inviteUrl?: (token: string) => string;
+  /**
+   * A person's role in an organization, which a claim reads so a member
+   * never claims a contributor's access to their own workspace. Supplied
+   * by `createApp`, from the store its membership guard reads.
+   */
+  readonly roleOf?: (
+    userId: string,
+    organizationId: string,
+  ) => Promise<string | undefined>;
   /** Merge-backs; absent with `mergeBack`, no pull request is opened. */
-  readonly merges?: Pick<SubmissionMergeStore, "get" | "list" | "record">;
+  readonly merges?: Pick<
+    SubmissionMergeStore,
+    "get" | "list" | "claim" | "finish" | "release" | "setMergeWhen"
+  >;
   /**
    * The repository a merge-back writes to, with a writer whose token is
-   * narrowed to it and `MERGE_BACK_PERMISSIONS`; null when it is gone or
-   * its installation is unhealthy.
+   * narrowed to it and `MERGE_BACK_PERMISSIONS`, and the permissions the
+   * installation still lacks; null when it is gone or its installation is
+   * unhealthy. See `github/merge-back.ts`.
    */
-  readonly mergeBack?: {
-    target(
-      organizationId: string,
-      repoId: string,
-    ): Promise<{
-      readonly fullName: string;
-      readonly defaultBranch: string;
-      readonly writer: Pick<PullRequestWriter, "open">;
-    } | null>;
-  };
+  readonly mergeBack?: MergeBackTargets;
   /**
    * What a build still running has written before its baseline, served as
    * the version's files until it commits. Absent, they arrive at commit.
@@ -68,6 +87,17 @@ export interface SandboxRouteOptions {
   readonly previews?: Pick<AnalysisRunStore, "preview">;
   readonly proposals: Pick<BountyProposalStore, "get" | "liveForBounty">;
   readonly specs: Pick<BountySpecStore, "get">;
+  /**
+   * Confirmations of specs' decisions, which builds and publication check
+   * against the spec a version's task froze (`pricing/decisions.ts`).
+   * Absent, a spec with decisions is refused `decisions_unconfirmed`.
+   */
+  readonly decisions?: Pick<DecisionConfirmationStore, "get">;
+  /** The page where a person confirms a bounty's decisions; absent, its path alone. */
+  readonly decisionsConfirmUrl?: (
+    organizationId: string,
+    bountyId: string,
+  ) => Promise<string>;
   /** The bounty a generated version is written from: its text and stack. */
   readonly bounties: Pick<BountyStore, "get">;
   /**
@@ -82,6 +112,12 @@ export interface SandboxRouteOptions {
   readonly organizationNames?: (
     organizationId: string,
   ) => Promise<readonly string[]>;
+  /**
+   * The project keys of the organization's Jira boards (`PAY`), whose
+   * issue keys a build's disclosure scan finds in public files. Absent,
+   * none are looked for.
+   */
+  readonly ticketKeys?: (organizationId: string) => Promise<readonly string[]>;
   /**
    * The context a bounty holds from its sources (`heldContext`), frozen
    * into each version's task. Absent, a version is taken with none.
@@ -110,6 +146,11 @@ export interface SandboxRouteOptions {
       readonly at: Date;
     },
   ) => void;
+  /**
+   * Owes a workspace webhook event about a submission: the merge route's
+   * `submission.merge_opened`. Absent, none is sent.
+   */
+  readonly onSubmissionEvent?: SubmissionEventEmit;
   /** Asks the profiler for a revision's profile it does not have yet. */
   readonly requestProfile?: (
     organizationId: string,

@@ -15,7 +15,12 @@
 
 import { oauthProviderAuthServerMetadata } from "@better-auth/oauth-provider";
 import type { Hono } from "hono";
-import { API_SCOPES, OFFLINE_ACCESS_SCOPE } from "sandbox-factory";
+import {
+  API_SCOPES,
+  CONTRIBUTOR_SCOPES,
+  MCP_CONTRIBUTOR_PATH,
+  OFFLINE_ACCESS_SCOPE,
+} from "sandbox-factory";
 
 import type { Auth } from "../auth.js";
 import type { AuthVariables } from "../http-context.js";
@@ -40,11 +45,16 @@ export function protectedResource(baseUrl: string, path: string) {
     authorization_servers: [issuerOf(baseUrl)],
     // An MCP client asks for what its endpoint's tools need, and for a
     // refresh token; the person may untick any of them on the consent page.
+    // The contributor endpoint asks for the contributor scope alone.
     scopes_supported: mcp
       ? [...toolsetScopes(path), OFFLINE_ACCESS_SCOPE]
-      : [...API_SCOPES, OFFLINE_ACCESS_SCOPE],
+      : [...API_SCOPES, ...CONTRIBUTOR_SCOPES, OFFLINE_ACCESS_SCOPE],
     bearer_methods_supported: ["header"],
-    resource_name: mcp ? "Lunox MCP" : "Lunox API",
+    resource_name: !mcp
+      ? "Lunox API"
+      : path === MCP_CONTRIBUTOR_PATH
+        ? "Lunox MCP for contributors"
+        : "Lunox MCP",
   };
 }
 

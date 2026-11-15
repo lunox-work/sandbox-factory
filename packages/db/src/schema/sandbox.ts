@@ -35,6 +35,7 @@ import {
   text,
   timestamp,
   unique,
+  uniqueIndex,
 } from "drizzle-orm/pg-core";
 
 import type {
@@ -42,8 +43,10 @@ import type {
   AliasRule,
   StoredApprovedTaskSnapshot,
   DependencyChoice,
+  DisclosureAcknowledgement,
   SandboxStatus,
   ScopeRecord,
+  SubmissionError,
   SubmissionResult,
   SubmissionStatus,
   VersionFixtures,
@@ -202,6 +205,14 @@ export const sandboxVersionSource = pgTable(
       .default([]),
     /** Behaviour for the mocked seams and the dev walkthrough; null when none. */
     fixtures: jsonb("fixtures").$type<VersionFixtures>(),
+    /**
+     * Disclosure findings an owner said may be public, which a build does
+     * not block on; part of the transform (`transformConfigOf`).
+     */
+    disclosureAcknowledgements: jsonb("disclosure_acknowledgements")
+      .$type<DisclosureAcknowledgement[]>()
+      .notNull()
+      .default([]),
     /** Editable paths, generated paths and resolved dependencies. */
     scope: jsonb("scope").$type<ScopeRecord>().notNull(),
     /** Required at freeze; assembled by the build (5B). */
@@ -237,6 +248,93 @@ export const sandboxVersionSource = pgTable(
 );
 
 /**
+ * An invitation for one person outside the workspace to work on one
+ * published version: a contributor, before there is a marketplace. An
+ * owner or admin makes it; whoever signs in and presents its secret claims
+ * it, and gets an assignment below, never a membership. Only the secret's
+ * SHA-256 is kept (`token_sha256`), as for API tokens; the secret is shown
+ * once, in the link. `email_hint` and `label` are the inviter's notes, not
+ * a check. An invite stops admitting claims once revoked, expired or
+ * claimed `max_claims` times.
+ */
+export const contributorInvite = pgTable(
+  "contributor_invite",
+  {
+    id: text("id").primaryKey(),
+    organizationId: owner(),
+    sandboxVersionId: text("sandbox_version_id")
+      .notNull()
+      .references(() => sandboxVersion.id, { onDelete: "cascade" }),
+    createdBy: text("created_by").references(() => user.id, {
+      onDelete: "set null",
+    }),
+    emailHint: text("email_hint"),
+    label: text("label"),
+    tokenSha256: text("token_sha256").notNull(),
+    expiresAt: ts("expires_at").notNull(),
+    maxClaims: integer("max_claims").notNull().default(1),
+    claims: integer("claims").notNull().default(0),
+    revokedAt: ts("revoked_at"),
+    /** The first person to claim it, and when. */
+    claimedBy: text("claimed_by").references(() => user.id, {
+      onDelete: "set null",
+    }),
+    claimedAt: ts("claimed_at"),
+    createdAt: ts("created_at").notNull().defaultNow(),
+  },
+  (t) => [
+    unique("contributor_invite_token_unique").on(t.tokenSha256),
+    index("contributor_invite_version_idx").on(
+      t.organizationId,
+      t.sandboxVersionId,
+    ),
+    check(
+      "contributor_invite_token_hash_check",
+      sql`length(${t.tokenSha256}) = 64`,
+    ),
+    check(
+      "contributor_invite_claims_check",
+      sql`${t.maxClaims} >= 1 AND ${t.claims} >= 0 AND ${t.claims} <= ${t.maxClaims}`,
+    ),
+  ],
+);
+
+/**
+ * A contributor's access to one version: made by claiming an invite, ended
+ * by revoking it (`revoked_at`), which every contributor route reads, so
+ * access ends at once. One live assignment per person and version; a
+ * revoked one stays as the record a later invite's claim sits beside.
+ */
+export const contributorAssignment = pgTable(
+  "contributor_assignment",
+  {
+    id: text("id").primaryKey(),
+    organizationId: owner(),
+    sandboxVersionId: text("sandbox_version_id")
+      .notNull()
+      .references(() => sandboxVersion.id, { onDelete: "cascade" }),
+    userId: text("user_id")
+      .notNull()
+      .references(() => user.id, { onDelete: "cascade" }),
+    inviteId: text("invite_id").references(() => contributorInvite.id, {
+      onDelete: "set null",
+    }),
+    createdAt: ts("created_at").notNull().defaultNow(),
+    revokedAt: ts("revoked_at"),
+  },
+  (t) => [
+    uniqueIndex("contributor_assignment_live_unique")
+      .on(t.sandboxVersionId, t.userId)
+      .where(sql`${t.revokedAt} IS NULL`),
+    index("contributor_assignment_user_idx").on(t.userId),
+    index("contributor_assignment_version_idx").on(
+      t.organizationId,
+      t.sandboxVersionId,
+    ),
+  ],
+);
+
+/**
  * One contributor's attempt at a sandbox version: the protected sandbox,
  * where their patch is applied to the version it was made against and run
  * with the hidden tests. See `sandbox/submission.ts` in core.
@@ -258,6 +356,14 @@ export const submission = pgTable(
     submittedBy: text("submitted_by").references(() => user.id, {
       onDelete: "set null",
     }),
+    /**
+     * The assignment an invited contributor submitted under; null for a
+     * workspace's own owner or admin, and for the CI judge.
+     */
+    assignmentId: text("assignment_id").references(
+      () => contributorAssignment.id,
+      { onDelete: "set null" },
+    ),
     /** `patches/<sandboxVersionId>/<patchSha256>.diff` in the private bucket. */
     patchKey: text("patch_key").notNull(),
     patchSha256: text("patch_sha256").notNull(),
@@ -267,6 +373,11 @@ export const submission = pgTable(
       .default("queued"),
     /** Present once the run passed or failed, and only then. */
     result: jsonb("result").$type<SubmissionResult>(),
+    /**
+     * Why an `errored` submission could not be graded (`SUBMISSION_ERRORS`
+     * in core), and only then: a fixed reason, never the run's log.
+     */
+    errorCode: text("error_code").$type<SubmissionError>(),
     /** The run that applied and tested the patch, while it is kept. */
     runId: text("run_id").references(() => analysisRun.id, {
       onDelete: "set null",
@@ -283,11 +394,22 @@ export const submission = pgTable(
   },
   (t) => [
     unique("submission_retry_of_unique").on(t.retryOf),
-    // The same patch against the same version is the same submission.
-    unique("submission_version_patch_unique").on(
-      t.sandboxVersionId,
-      t.patchSha256,
-    ),
+    /*
+      The same patch against the same version, from the same person, is the
+      same submission. Per person, so one contributor sending the files
+      another sent never finds the other's submission; nulls not distinct,
+      so the CI judge's (no person) still finds its own.
+    */
+    unique("submission_version_patch_unique")
+      .on(t.sandboxVersionId, t.patchSha256, t.submittedBy)
+      .nullsNotDistinct(),
+    /*
+      An invited contributor's first attempt, one per assignment; its one
+      retry (`retry_of`) is the only other.
+    */
+    uniqueIndex("submission_assignment_first_unique")
+      .on(t.assignmentId)
+      .where(sql`${t.assignmentId} IS NOT NULL AND ${t.retryOf} IS NULL`),
     index("submission_organization_id_idx").on(t.organizationId),
     check(
       "submission_status_check",
@@ -298,6 +420,10 @@ export const submission = pgTable(
       sql`(${t.status} in ('passed', 'failed')) = (${t.result} IS NOT NULL)`,
     ),
     check("submission_patch_hash_check", sql`length(${t.patchSha256}) = 64`),
+    check(
+      "submission_error_code_check",
+      sql`${t.errorCode} IS NULL OR (${t.status} = 'errored' AND ${t.errorCode} in ('grading_failed', 'grading_timed_out', 'grading_interrupted'))`,
+    ),
   ],
 );
 
@@ -306,6 +432,9 @@ export type SandboxSourceRow = typeof sandboxSource.$inferSelect;
 export type SandboxVersionRow = typeof sandboxVersion.$inferSelect;
 export type SandboxVersionSourceRow = typeof sandboxVersionSource.$inferSelect;
 export type SubmissionRow = typeof submission.$inferSelect;
+export type ContributorInviteRow = typeof contributorInvite.$inferSelect;
+export type ContributorAssignmentRow =
+  typeof contributorAssignment.$inferSelect;
 
 /**
  * Merge-back (gate 3): the pull request a passing submission was carried
@@ -322,18 +451,76 @@ export const submissionMerge = pgTable(
     /** `owner/name` when it was opened; a renamed repository keeps its pull requests. */
     repositoryFullName: text("repository_full_name").notNull(),
     branch: text("branch").notNull(),
-    commitSha: text("commit_sha").notNull(),
-    pullRequestNumber: integer("pull_request_number").notNull(),
-    pullRequestUrl: text("pull_request_url").notNull(),
+    /**
+     * `pending` from the click until the pull request is recorded, so one
+     * submission never opens two; `opened` once its commit and pull request
+     * are known, and only then.
+     */
+    status: text("status")
+      .$type<"pending" | "opened">()
+      .notNull()
+      .default("opened"),
+    /** While a request is opening it; null once it finished or gave up. */
+    claimedAt: ts("claimed_at"),
+    commitSha: text("commit_sha"),
+    pullRequestNumber: integer("pull_request_number"),
+    pullRequestUrl: text("pull_request_url"),
     openedBy: text("opened_by").references(() => user.id, {
       onDelete: "set null",
     }),
     createdAt: ts("created_at").notNull().defaultNow(),
+    /**
+     * The repository it was opened on, which a GitHub delivery names and
+     * the CI sweep reads through; null for one opened before CI read-back,
+     * which is not followed.
+     */
+    repoId: text("repo_id").references(() => githubRepo.id, {
+      onDelete: "set null",
+    }),
+    /** `ci_passes`: the platform merges it once its CI passes. */
+    mergeWhen: text("merge_when")
+      .$type<"open" | "ci_passes">()
+      .notNull()
+      .default("open"),
+    pullRequestState: text("pull_request_state")
+      .$type<"open" | "merged" | "closed">()
+      .notNull()
+      .default("open"),
+    /** The head commit's CI, as last read back (`merge-ci.ts`). */
+    ciState: text("ci_state")
+      .$type<"pending" | "passing" | "failing" | "none" | "unknown">()
+      .notNull()
+      .default("pending"),
+    ciSummary: jsonb("ci_summary").$type<MergeCiSummaryRecord>(),
+    /** The commit `ci_state` describes: the pull request's head when read. */
+    ciHeadSha: text("ci_head_sha"),
+    ciCheckedAt: ts("ci_checked_at"),
+    mergedCommitSha: text("merged_commit_sha"),
+    mergedAt: ts("merged_at"),
+    /** GitHub's refusal of the platform's merge; the pull request stays open. */
+    mergeError: text("merge_error"),
   },
   (t) => [
     unique("submission_merge_submission_unique").on(t.submissionId),
     index("submission_merge_organization_id_idx").on(t.organizationId),
+    // The CI sweep's and a delivery's reads: open pull requests by repository.
+    index("submission_merge_open_repo_idx")
+      .on(t.repoId)
+      .where(sql`${t.pullRequestState} = 'open' AND ${t.status} = 'opened'`),
+    check(
+      "submission_merge_status_check",
+      sql`${t.status} = 'pending' OR (${t.status} = 'opened' AND ${t.commitSha} IS NOT NULL AND ${t.pullRequestNumber} IS NOT NULL AND ${t.pullRequestUrl} IS NOT NULL)`,
+    ),
   ],
 );
+/** Counts over a pull request's check runs and statuses, as stored. */
+export interface MergeCiSummaryRecord {
+  readonly total: number;
+  readonly passed: number;
+  readonly failed: number;
+  readonly pending: number;
+  readonly failing: readonly string[];
+  readonly detailsUrl: string | null;
+}
 export type SubmissionMergeRow = typeof submissionMerge.$inferSelect;
 export type NewSubmissionRow = typeof submission.$inferInsert;

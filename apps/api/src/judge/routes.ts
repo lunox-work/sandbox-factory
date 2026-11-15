@@ -4,6 +4,12 @@
  * either side (`duediligence ci --platform`, its `action.yml`).
  *
  *   POST /api/judge      { workspace, versionId, files }  → 202 { submission }
+ *
+ * The same files again answer the submission already made (200), and queue
+ * its run when it has none: a 409 `run_limit` is `retryable`. Sent again for
+ * an errored submission (the CI job re-run), it is graded again in place, as
+ * `POST …/submissions/:sid/regrade` does: 202, or 409 `regrade_spent` once
+ * its run has used its attempts.
  *   GET  /api/judge/:id                                    → { submission }
  *
  * Outside `/api/v1`, as GitHub's webhook is: the caller has no session. It
@@ -33,6 +39,7 @@ import type { Context, Env, Hono } from "hono";
 import { submittedFilesText } from "sandbox-factory";
 import { z } from "zod";
 
+import { enqueueGrade, gradeParams, gradeRefused } from "../sandbox/grading.js";
 import type { GithubOidcVerifier } from "./oidc.js";
 
 export interface JudgeRouteOptions {
@@ -64,11 +71,13 @@ const answer = (stored: StoredSubmission) =>
       id: stored.id,
       sandboxVersionId: stored.sandboxVersionId,
       status: stored.status,
+      errorCode: stored.errorCode ?? null,
       verdict: stored.result?.verdict ?? null,
       public: stored.result?.public ?? null,
       hidden: stored.result?.hidden ?? null,
       failedScenarios: [...(stored.result?.failedScenarios ?? [])],
       refused: [...(stored.result?.refused ?? [])],
+      carryBack: stored.result?.carryBack ?? null,
       runId: null,
       retryOf: stored.retryOf,
       merge: null,
@@ -164,35 +173,49 @@ export function mountJudgeRoutes<E extends Env>(
       patchSha256,
     });
     if (!created.ok) return refused(c, 404, "not_found", "Not found.");
-    if (created.created) {
-      const queued = await options.runs.enqueue(
-        workspace,
-        found.stored.source.sourceSnapshotId,
+    // A new submission, or one still waiting whose first enqueue may have
+    // been refused at the active-run limit: the run is cached by the
+    // submission, so a live or ended one is found, never doubled. An
+    // errored one is the platform's failure, and re-running the CI job is
+    // its owner's natural retry: its run (same snapshot, same params) is
+    // queued again while it has attempts, which reopens the submission.
+    const regrade = !created.created && created.submission.status === "errored";
+    if (!created.created && created.submission.status !== "queued" && !regrade)
+      return c.json(answer(created.submission), 200);
+    const queued = await enqueueGrade(
+      options.runs,
+      workspace,
+      found.stored.source.sourceSnapshotId,
+      gradeParams(created.submission, "repository"),
+      null,
+      options.maxActive ?? 3,
+    );
+    if (!queued.ok) return gradeRefused(c, queued);
+    if (
+      regrade &&
+      !queued.created &&
+      queued.run.status !== "queued" &&
+      queued.run.status !== "running"
+    )
+      return c.json(
         {
-          tool: "submission_grade",
-          params: {
-            deadlineMinutes: 60,
-            grader: "submission",
-            submissionId: created.submission.id,
-            sandboxVersionId: versionId,
-            patchSha256,
-            names: "repository",
-          },
-          requestedBy: null,
-          maxActive: options.maxActive ?? 3,
+          error:
+            "The submission's grading run has used its attempts. Push other files to judge them.",
+          code: "regrade_spent",
         },
+        409,
       );
-      if (!queued.ok)
-        return c.json(
-          {
-            error: "The workspace's active analysis limit has been reached.",
-            code: "run_limit",
-          },
-          409,
-        );
+    if (queued.created)
       await options.ensureWorker().catch(() => options.onLaunchError?.());
-    }
-    return c.json(answer(created.submission), created.created ? 202 : 200);
+    // The store errors a waiting submission whose run has ended for good.
+    const current = created.created
+      ? created.submission
+      : ((await options.submissions.get(workspace, created.submission.id)) ??
+        created.submission);
+    return c.json(
+      answer(current),
+      created.created || queued.created ? 202 : 200,
+    );
   });
 
   app.get("/api/judge/:id", async (c) => {

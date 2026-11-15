@@ -76,6 +76,8 @@ interface CachedToken {
 /** How the installation looks to GitHub right now; see `probe`. */
 export interface InstallationState {
   readonly suspendedAt: string | null;
+  /** As granted now, e.g. `{ contents: "write" }`; empty when not said. */
+  readonly permissions: Readonly<Record<string, string>>;
 }
 
 export class InstallationTokens {
@@ -178,8 +180,8 @@ export class InstallationTokens {
 
   /**
    * The installation as GitHub sees it now, asked with the App's JWT rather
-   * than a token: whether it still exists, and whether it is suspended.
-   * `null` once it is uninstalled.
+   * than a token: whether it still exists, whether it is suspended, and
+   * the permissions it has accepted. `null` once it is uninstalled.
    *
    * What the sweep asks about a connection it has flagged, so a flag left
    * by a lost `unsuspend` delivery, or by a refusal that has since passed,
@@ -210,7 +212,10 @@ export class InstallationTokens {
         "GitHub returned an unexpected shape for an installation.",
       );
     }
-    return { suspendedAt: parsed.data.suspended_at ?? null };
+    return {
+      suspendedAt: parsed.data.suspended_at ?? null,
+      permissions: parsed.data.permissions ?? {},
+    };
   }
 
   #jwt(): string {

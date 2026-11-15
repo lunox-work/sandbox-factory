@@ -1,0 +1,345 @@
+{
+  "version": {
+    "sandboxId": "sbx_roundtrip",
+    "versionId": "sbv_roundtrip",
+    "version": 1,
+    "title": "Charge the Northwind fee by amount",
+    "specSummary": "A debit pays one percent of its amount, at least 25 cents; a credit is free.",
+    "tags": [
+      "typescript"
+    ],
+    "complexity": "S"
+  },
+  "manifest": {
+    "schemaVersion": 1,
+    "toolVersion": "slice@6+carveout@0.3.1",
+    "extractorVersion": "typescript@5.9.3",
+    "sourceSnapshotId": "rsn_roundtrip",
+    "sourceCommitSha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "graphRunId": "arn_graph",
+    "graphSha256": "4d3b50b9ce1ae8e5153437c68f7a74d80327c65bd842a6f6817a06d2bc787be5",
+    "walkEngine": "carveout@0.3.1",
+    "params": {
+      "deadlineMinutes": 30,
+      "graphRunId": "arn_graph",
+      "entryPoints": [
+        "src/orvanta/fees.ts"
+      ],
+      "budget": {
+        "maxFiles": 2,
+        "maxDepth": 3
+      },
+      "includeInferred": false,
+      "carryTests": true
+    },
+    "entryPoints": [
+      "src/orvanta/fees.ts"
+    ],
+    "budget": {
+      "maxFiles": 2,
+      "maxDepth": 3
+    },
+    "included": [
+      {
+        "path": "src/orvanta/fees.ts",
+        "blobId": "e2c50bfd8d09882a3b2c93d16f442d24aa93ce79",
+        "sha256": "4bf0ba4befe2c2cdd08be99ed44dd35747150990a4242b283747a212cd0c70f8",
+        "mode": "100644",
+        "sizeBytes": 421,
+        "operations": [
+          "edit"
+        ]
+      }
+    ],
+    "synthetic": [
+      {
+        "path": "__slice__/packages.d.ts",
+        "kind": "shim",
+        "generator": "slice",
+        "generatorVersion": "slice@6+carveout@0.3.1",
+        "sha256": "c7ebaa8a6ea88cf1ed99e3fb5f2bb1737034934c2872f5786cf0cacaa0ea329f",
+        "sizeBytes": 6198
+      },
+      {
+        "path": "stubs/src/orvanta/ledger.d.ts",
+        "kind": "stub",
+        "generator": "typescript-declaration-emit",
+        "generatorVersion": "typescript@5.9.3",
+        "sha256": "c509a6df0802f9fc110a71ac2840d6e55e660cc6560ee3185bfdf381714c46f3",
+        "sizeBytes": 107
+      }
+    ],
+    "requiredBuildInputs": {
+      "configs": [
+        "tsconfig.json"
+      ],
+      "packages": []
+    },
+    "cuts": {
+      "outbound": [
+        {
+          "from": "src/orvanta/fees.ts",
+          "to": "src/orvanta/ledger.ts",
+          "relation": "imports",
+          "specifier": "./ledger.js",
+          "location": "L5",
+          "targetSymbol": null
+        }
+      ],
+      "inbound": [
+        {
+          "from": "test/credit.test.ts",
+          "to": "src/orvanta/fees.ts",
+          "relation": "imports",
+          "specifier": "../src/orvanta/fees.js",
+          "location": "L3",
+          "targetSymbol": null
+        },
+        {
+          "from": "test/fees.test.ts",
+          "to": "src/orvanta/fees.ts",
+          "relation": "imports",
+          "specifier": "../src/orvanta/fees.js",
+          "location": "L3",
+          "targetSymbol": null
+        }
+      ]
+    },
+    "internalImports": [],
+    "externals": {
+      "packages": [],
+      "environment": []
+    },
+    "communities": [],
+    "blockers": [],
+    "policy": {
+      "edit": "included-source-only",
+      "add": "requires-approved-path-mapping",
+      "delete": "requires-explicit-allowance",
+      "rename": "requires-explicit-allowance",
+      "synthetic": "rejected",
+      "unknown": "refused"
+    },
+    "boundaryContractSha256": "e2bbd1a7533e91700dc6ea6d6771e4878adbef276132b1fbe5e4960d38b52ef1",
+    "meta": {
+      "includedFiles": 1,
+      "includedBytes": 421,
+      "outboundCuts": 1,
+      "inboundCuts": 2,
+      "stubCoverage": "full",
+      "externals": 0,
+      "blockers": 0,
+      "ready": true
+    }
+  },
+  "contract": {
+    "schemaVersion": 1,
+    "toolVersion": "slice@6+carveout@0.3.1",
+    "extractorVersion": "typescript@5.9.3",
+    "sourceSnapshotId": "rsn_roundtrip",
+    "sourceCommitSha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "graphRunId": "arn_graph",
+    "language": "typescript",
+    "outbound": [
+      {
+        "module": "src/orvanta/ledger.ts",
+        "symbols": [
+          {
+            "name": "LedgerEntry",
+            "kind": "interface",
+            "declaration": "export interface LedgerEntry {\n    readonly amountCents: number;\n    readonly kind: \"debit\" | \"credit\";\n}"
+          }
+        ],
+        "importedBy": [
+          "src/orvanta/fees.ts"
+        ],
+        "stubPath": "stubs/src/orvanta/ledger.d.ts"
+      }
+    ],
+    "inbound": [
+      {
+        "module": "src/orvanta/fees.ts",
+        "symbols": [
+          {
+            "name": "entryFee",
+            "kind": "function",
+            "declaration": "export declare function entryFee(entry: LedgerEntry): number;"
+          }
+        ],
+        "importedBy": [
+          "test/credit.test.ts",
+          "test/fees.test.ts"
+        ],
+        "stubPath": null
+      }
+    ],
+    "stubCoverage": "full",
+    "compilation": {
+      "attempted": true,
+      "ok": true,
+      "diagnostics": [],
+      "shimmedPackages": []
+    },
+    "blockers": []
+  },
+  "sources": [
+    {
+      "originalPath": "src/orvanta/fees.ts",
+      "path": "src/northwind/fees.ts",
+      "text": "/**\n * Fee rules: https://wiki.example/payments/fees\n * @author maintainer@example.com\n */\nimport type { LedgerEntry } from \"./ledger.js\";\n\n/** The flat Northwind charge on a debit, in cents. */\nconst flatCharge = 25;\n\n/** The Northwind fee on one entry, in cents: a flat charge on each withdrawal. */\nexport function entryFee(entry: LedgerEntry): number {\n  return entry.kind === \"debit\" ? flatCharge : 0;\n}\n"
+    }
+  ],
+  "stubs": [
+    {
+      "module": "src/orvanta/ledger.ts",
+      "path": "src/northwind/ledger.ts",
+      "text": "export interface LedgerEntry {\n    readonly amountCents: number;\n    readonly kind: \"debit\" | \"credit\";\n}\n"
+    }
+  ],
+  "spec": {
+    "feature": "Northwind entry fee",
+    "background": [],
+    "scenarios": [
+      {
+        "id": "s1",
+        "kind": "happy",
+        "title": "a credit is free",
+        "steps": [
+          {
+            "keyword": "Then",
+            "text": "a credit is free"
+          }
+        ],
+        "origin": "draft"
+      },
+      {
+        "id": "s2",
+        "kind": "happy",
+        "title": "a debit pays one percent, rounded",
+        "steps": [
+          {
+            "keyword": "Then",
+            "text": "a debit pays one percent, rounded"
+          }
+        ],
+        "origin": "draft"
+      },
+      {
+        "id": "s3",
+        "kind": "edge",
+        "title": "a small debit pays the 25 cent minimum",
+        "steps": [
+          {
+            "keyword": "Then",
+            "text": "a small debit pays the 25 cent minimum"
+          }
+        ],
+        "origin": "draft"
+      }
+    ],
+    "openQuestions": [],
+    "assumptions": [
+      "The Northwind fee is rounded half up to the cent."
+    ]
+  },
+  "decisions": [
+    "The Northwind fee is rounded half up to the cent."
+  ],
+  "dependencies": [
+    {
+      "name": "src/orvanta/ledger.ts",
+      "kind": "module",
+      "version": null,
+      "resolution": "runtime-mock",
+      "detail": "Generated from its declaration stub (stubs/src/orvanta/ledger.d.ts)."
+    }
+  ],
+  "acceptanceTests": [
+    {
+      "path": "tests/private/s1-credit-is-free.test.ts",
+      "text": "import { test } from \"node:test\";\nimport assert from \"node:assert/strict\";\nimport { entryFee } from \"../../src/northwind/fees.js\";\ntest(\"a credit is free\", () => assert.equal(entryFee({ amountCents: 10000, kind: \"credit\" }), 0));\n",
+      "expectedBaseline": "pass"
+    },
+    {
+      "path": "tests/private/s2-debit-pays-one-percent.test.ts",
+      "text": "import { test } from \"node:test\";\nimport assert from \"node:assert/strict\";\nimport { entryFee } from \"../../src/northwind/fees.js\";\ntest(\"a debit pays one percent, rounded\", () => {\n  assert.equal(entryFee({ amountCents: 10000, kind: \"debit\" }), 100);\n  assert.equal(entryFee({ amountCents: 4250, kind: \"debit\" }), 43);\n});\n",
+      "expectedBaseline": "fail"
+    },
+    {
+      "path": "tests/private/s3-debit-minimum.test.ts",
+      "text": "import { test } from \"node:test\";\nimport assert from \"node:assert/strict\";\nimport { entryFee } from \"../../src/northwind/fees.js\";\ntest(\"a small debit pays the 25 cent minimum\", () => assert.equal(entryFee({ amountCents: 100, kind: \"debit\" }), 25));\n",
+      "expectedBaseline": "pass"
+    }
+  ],
+  "fixtures": [],
+  "scenario": null,
+  "knownSpecifiers": [
+    "assert",
+    "async_hooks",
+    "buffer",
+    "child_process",
+    "cluster",
+    "console",
+    "constants",
+    "crypto",
+    "dgram",
+    "diagnostics_channel",
+    "dns",
+    "domain",
+    "events",
+    "fs",
+    "http",
+    "http2",
+    "https",
+    "inspector",
+    "module",
+    "net",
+    "os",
+    "path",
+    "perf_hooks",
+    "process",
+    "punycode",
+    "querystring",
+    "readline",
+    "repl",
+    "stream",
+    "string_decoder",
+    "sys",
+    "timers",
+    "tls",
+    "trace_events",
+    "tty",
+    "url",
+    "util",
+    "v8",
+    "vm",
+    "wasi",
+    "worker_threads",
+    "zlib"
+  ],
+  "packageModules": {
+    "specifiers": [],
+    "text": ""
+  },
+  "publicNames": {
+    "packages": {},
+    "environment": {}
+  },
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "strict": true,
+    "outDir": "dist",
+    "rootDir": ".",
+    "types": [],
+    "skipLibCheck": true
+  },
+  "carriedTests": [
+    {
+      "path": "tests/public/carried/test/credit.test.ts",
+      "text": "import assert from \"node:assert/strict\";\nimport { test } from \"node:test\";\nimport { entryFee } from \"../../../../src/northwind/fees.js\";\n\n// What the Northwind fee already does, and must keep doing.\ntest(\"a credit pays nothing, whatever its amount\", () => {\n  for (const amountCents of [1, 4_250, 10_000])\n    assert.equal(entryFee({ amountCents, kind: \"credit\" }), 0);\n});\n",
+      "from": "test/credit.test.ts"
+    }
+  ]
+}
