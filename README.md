@@ -1,16 +1,53 @@
-# sandbox-factory
+<h1 align="center">sandbox-factory</h1>
 
-> Write bounties or import them from Jira, price the work, and build task sandboxes.
+<p align="center">
+  <strong>Your backlog, delivered as fixed-price bounties.</strong><br>
+  Write a bounty or import it from Jira, price it, and slice a sandbox a contributor or coding agent can work in.<br>
+  The work is accepted when tests it never saw pass, and comes back as a pull request.
+</p>
 
-[![CI](https://github.com/lunox-work/sandbox-factory/actions/workflows/ci.yml/badge.svg)](https://github.com/lunox-work/sandbox-factory/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
+<p align="center">
+  <a href="https://github.com/lunox-work/sandbox-factory/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/lunox-work/sandbox-factory/ci.yml?branch=main&style=flat-square&label=CI" alt="CI"></a>
+  <a href="https://github.com/lunox-work/sandbox-factory/releases/latest"><img src="https://img.shields.io/github/v/release/lunox-work/sandbox-factory?style=flat-square&label=release&display_name=release" alt="Latest release"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green?style=flat-square" alt="MIT license"></a>
+  <a href="https://platform.lunox.work"><img src="https://img.shields.io/badge/live-platform.lunox.work-111?style=flat-square" alt="Live at platform.lunox.work"></a>
+  <a href="https://github.com/lunox-work/duediligence"><img src="https://img.shields.io/badge/hidden_tests-duediligence-555?style=flat-square" alt="Hidden tests by duediligence"></a>
+  <a href="https://github.com/lunox-work/carveout"><img src="https://img.shields.io/badge/slices-carveout-555?style=flat-square" alt="Slices by carveout"></a>
+</p>
 
-A monorepo holding the API, web app, analysis worker, VS Code extension, and
-shared packages. A bounty is a proposal, which specifies and prices the work,
-and a sandbox, which contributors do it in; both work on their own. Jira and
-GitHub connections enrich them with issue tracking and repository context.
-Shared domain rules cover handles, selection, pricing, analysis, and sandbox
-contracts.
+<p align="center">
+  <a href="#how-a-bounty-flows">How it flows</a> •
+  <a href="#run-it">Run it</a> •
+  <a href="#develop-it">Develop it</a> •
+  <a href="#which-version-am-i-running">Versions</a> •
+  <a href="#documentation">Docs</a> •
+  <a href="https://lunox.work">lunox.work</a>
+</p>
+
+---
+
+## How a bounty flows
+
+A bounty is a proposal, which specifies and prices the work, and a sandbox,
+which contributors do it in; both work on their own. Jira and GitHub
+connections enrich them with issue tracking and repository context, and
+neither is required.
+
+1. **Propose.** Write the bounty, or import a Jira issue. It is sized and
+   priced against a rubric before anyone starts.
+2. **Slice.** For a connected repository, [carveout](https://github.com/lunox-work/carveout)
+   cuts the files the change needs into one folder that installs, builds and
+   tests on its own; the rest of the codebase stays private.
+3. **Work.** A contributor opens the sandbox in the VS Code extension; a
+   coding agent reaches it over the API's MCP tools. Either runs the public
+   tests and submits a patch.
+4. **Judge.** The build writes and calibrates hidden tests from the spec with
+   [duediligence](https://github.com/lunox-work/duediligence). A submission
+   passes only when every test in both suites does.
+5. **Merge back.** Accepted work returns to the client's repository as a pull
+   request, followed through its CI until it merges.
+
+## What is in the repo
 
 | Workspace                                | What it is                                        |
 | ---------------------------------------- | ------------------------------------------------- |

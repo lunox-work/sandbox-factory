@@ -42,7 +42,19 @@
     "fast-check": "^4.10.2",
     "typescript": "^7.0.2"
   },
-  "keywords": [],
+  "keywords": [
+    "sandbox-factory",
+    "lunox",
+    "bounties",
+    "pricing",
+    "sizing",
+    "handles",
+    "sandbox",
+    "hidden-tests",
+    "carveout",
+    "coding-agents",
+    "typescript"
+  ],
   "dependencies": {
     "carveout": "0.3.1"
   }

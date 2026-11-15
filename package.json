@@ -49,5 +49,24 @@
     "turbo": "^2.11.10",
     "typescript": "^7.0.2"
   },
-  "keywords": []
+  "keywords": [
+    "sandbox-factory",
+    "lunox",
+    "bounties",
+    "outsourcing",
+    "contractors",
+    "ai-agents",
+    "coding-agents",
+    "claude-code",
+    "sandbox",
+    "hidden-tests",
+    "acceptance-tests",
+    "duediligence",
+    "carveout",
+    "jira",
+    "github-app",
+    "vscode-extension",
+    "monorepo",
+    "typescript"
+  ]
 }
