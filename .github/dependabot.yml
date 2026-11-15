@@ -19,6 +19,11 @@ updates:
     directory: "/"
     schedule:
       interval: weekly
+    groups:
+      # init, autobuild, analyze and upload-sarif must share one version: a
+      # PR bumping one alone fails CodeQL's Analyze job.
+      codeql-action:
+        patterns: ["github/codeql-action*"]
 
   # Base images are pinned by digest; this keeps the digests current.
   - package-ecosystem: docker
