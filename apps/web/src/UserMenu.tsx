@@ -11,7 +11,7 @@
  * are the facts a bug report needs. See `BuildDetails`.
  */
 
-import { ChevronsUpDown, LogOut, Settings } from "lucide-react";
+import { ChevronsUpDown, CodeXml, LogOut, Settings } from "lucide-react";
 import { useState } from "react";
 
 import { Badge } from "@/components/ui/badge";
@@ -38,7 +38,9 @@ export function UserMenu({
   email,
   image,
   invitationCount = 0,
+  developers = false,
   onAccount,
+  onDevelopers,
   onSignOut,
 }: {
   /**
@@ -47,9 +49,9 @@ export function UserMenu({
    */
   expanded?: boolean | undefined;
   /**
-   * The screen this menu leads to is showing — the account page — so the
-   * trigger is filled like the rail's current destination. Otherwise nothing
-   * in the rail says where you are.
+   * A screen this menu leads to is showing — the account page or the
+   * developer portal — so the trigger is filled like the rail's current
+   * destination. Otherwise nothing in the rail says where you are.
    */
   current?: boolean | undefined;
   /** Seeds the generated avatar when there is no picture. */
@@ -59,7 +61,13 @@ export function UserMenu({
   image?: string | null;
   /** Organizations waiting for an answer; see `SideNav`. */
   invitationCount?: number | undefined;
+  /**
+   * Offer the developer portal under account settings. Off while the
+   * workspace is still onboarding, which stays the one destination until done.
+   */
+  developers?: boolean | undefined;
   onAccount: () => void;
+  onDevelopers?: (() => void) | undefined;
   onSignOut: () => void;
 }) {
   const [open, setOpen] = useState(false);
@@ -205,6 +213,27 @@ export function UserMenu({
             )}
           </a>
         </DropdownMenuItem>
+
+        {/* The workspace's developer portal: API tokens, connected apps, MCP
+            and the API reference. Setup work rather than the daily work, so
+            it sits with settings instead of taking a row in the rail. */}
+        {developers && onDevelopers !== undefined && (
+          <DropdownMenuItem asChild>
+            <a
+              href={pathForScreen("developers")}
+              onClick={(event) => {
+                if (isPlainLeftClick(event)) {
+                  event.preventDefault();
+                  setOpen(false);
+                  onDevelopers();
+                }
+              }}
+            >
+              <CodeXml />
+              Developers
+            </a>
+          </DropdownMenuItem>
+        )}
 
         <DropdownMenuSeparator />
 

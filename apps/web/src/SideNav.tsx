@@ -40,14 +40,7 @@
  * toggling only moves the edge: nothing the eye was tracking jumps.
  */
 
-import {
-  Box,
-  Building2,
-  CodeXml,
-  FolderCode,
-  House,
-  Rocket,
-} from "lucide-react";
+import { Box, Building2, FolderCode, House, Rocket } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import type { MembershipDto } from "@sandbox-factory/shared";
@@ -266,23 +259,6 @@ export function SideNav({
         )}
 
         {/*
-          The developer portal of the workspace in the rail: API tokens,
-          connected apps, MCP and the API reference. Offered with the work,
-          not during onboarding, which stays the one destination until done.
-        */}
-        {!onboardingOnly && (
-          <RailButton
-            label="Developers"
-            href={pathForScreen("developers")}
-            expanded={expanded}
-            current={screen === "developers"}
-            onClick={() => onNavigate("developers")}
-          >
-            <CodeXml strokeWidth={1.6} />
-          </RailButton>
-        )}
-
-        {/*
           An invited contributor's versions: theirs, under no workspace, so
           offered beside onboarding as well as beside the work. Only to
           someone who has one, or is on its page.
@@ -335,16 +311,18 @@ export function SideNav({
         <div className="sm:mt-1 sm:w-full sm:px-2">
           <UserMenu
             expanded={expanded}
-            // The one screen its menu opens. Not one organization's own pages,
+            // The screens its menu opens. Not one organization's own pages,
             // which the switcher above stands for, nor the workspaces list,
             // which has its own row.
-            current={screen === "account"}
+            current={screen === "account" || screen === "developers"}
             userId={userId}
             name={name}
             email={email}
             image={image}
             invitationCount={invitationCount}
+            developers={!onboardingOnly}
             onAccount={() => onNavigate("account")}
+            onDevelopers={() => onNavigate("developers")}
             onSignOut={onSignOut}
           />
         </div>
