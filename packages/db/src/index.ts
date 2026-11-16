@@ -211,6 +211,7 @@ export { createOrganizationStore } from "./organizations.js";
 export { createApiTokenStore } from "./api-tokens.js";
 export type {
   ApiTokenStore,
+  DefaultApiToken,
   NewApiToken,
   ResolvedApiToken,
   StoredApiToken,

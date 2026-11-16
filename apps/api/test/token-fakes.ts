@@ -65,6 +65,9 @@ export function fakeAuth(signOuts: Headers[] = []): Auth {
 
 interface Row extends StoredApiToken {
   readonly hash: string;
+  readonly isDefault?: boolean;
+  /** A default token's secret, as it would decrypt; null for unreadable. */
+  readonly secret?: string | null;
 }
 
 /** Keeps rows in memory, as Postgres would, hash and all. */
@@ -74,7 +77,20 @@ export function memoryTokens(): ApiTokenStore & {
 } {
   const rows: Row[] = [];
   const touches: Array<{ id: string; at: Date }> = [];
-  const stored = ({ hash: _hash, ...row }: Row): StoredApiToken => row;
+  const stored = ({
+    hash: _hash,
+    isDefault: _isDefault,
+    secret: _secret,
+    ...row
+  }: Row): StoredApiToken => row;
+  const liveDefault = (organizationId: string, userId: string) =>
+    rows.find(
+      (row) =>
+        row.organizationId === organizationId &&
+        row.createdBy.id === userId &&
+        row.isDefault === true &&
+        row.revokedAt === null,
+    );
   return {
     rows,
     touches,
@@ -91,6 +107,35 @@ export function memoryTokens(): ApiTokenStore & {
         expiresAt: input.expiresAt,
         lastUsedAt: null,
         revokedAt: null,
+      };
+      rows.push(row);
+      return Promise.resolve(stored(row));
+    },
+    findDefault(organizationId, userId) {
+      const row = liveDefault(organizationId, userId);
+      return Promise.resolve(
+        row === undefined
+          ? undefined
+          : { token: stored(row), secret: row.secret ?? null },
+      );
+    },
+    createDefault(organizationId, input) {
+      if (liveDefault(organizationId, input.createdBy) !== undefined)
+        return Promise.resolve(undefined);
+      const row: Row = {
+        id: `tok_${rows.length + 1}`,
+        organizationId,
+        name: input.name,
+        prefix: input.prefix,
+        hash: input.hash,
+        scopes: [...input.scopes],
+        createdBy: { id: input.createdBy, name: ada.name },
+        createdAt: new Date("2026-11-12T00:00:00.000Z"),
+        expiresAt: input.expiresAt,
+        lastUsedAt: null,
+        revokedAt: null,
+        isDefault: true,
+        secret: input.secret,
       };
       rows.push(row);
       return Promise.resolve(stored(row));

@@ -34,6 +34,18 @@ export class DeveloperClient extends ApiClient {
       }),
     );
   }
+  /**
+   * The caller's default token in the workspace, made on first ask, with its
+   * whole secret: what the portal's quickstart copies.
+   */
+  async defaultToken(owner: string, signal?: AbortSignal) {
+    return createdApiTokenResponseSchema.parse(
+      await this.request(`${ownerPath(owner)}/tokens/default`, {
+        method: "POST",
+        signal,
+      }),
+    );
+  }
   async revokeToken(owner: string, id: string) {
     return apiTokenResponseSchema.parse(
       await this.request(

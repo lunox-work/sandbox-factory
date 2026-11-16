@@ -182,7 +182,7 @@ export async function composePlatform({
   const artifacts = createArtifactStore(db);
   const sandboxStore = createSandboxStore(db);
   const submissions = createSubmissionStore(db);
-  const apiTokens = createApiTokenStore(db);
+  const apiTokens = createApiTokenStore(db, tokenCipher);
   const contributorTokens = createContributorTokenStore(db);
   const contextFor = (organizationId, bounty) =>
     heldContext({ contexts: bountyContexts }, organizationId, bounty);

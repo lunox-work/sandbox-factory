@@ -1,6 +1,7 @@
 /**
  * Workspace API tokens: what a script, CI job or command-line client signs
- * in with. Only the secret's hash is stored; see `schema/developer.ts`.
+ * in with. The secret's hash is the lookup key, and only a person's default
+ * token keeps its secret too, encrypted; see `schema/developer.ts`.
  *
  * Owner first, as every store: each method but `findByHash` takes the
  * organization and puts it in its `WHERE`. `findByHash` is the one that
@@ -11,6 +12,7 @@
 import { and, desc, eq, isNull, lt, or, sql } from "drizzle-orm";
 import type { ApiScope } from "sandbox-factory";
 
+import { TokenCipherError, type TokenCipher } from "./cipher.js";
 import type { Database } from "./errors.js";
 import { generateId } from "./mapping.js";
 import { apiToken, user } from "./schema.js";
@@ -47,8 +49,35 @@ export interface NewApiToken {
   readonly expiresAt: Date | null;
 }
 
+/** A person's default token, with its secret for the portal to copy. */
+export interface DefaultApiToken {
+  readonly token: StoredApiToken;
+  /**
+   * Null when the stored secret no longer decrypts (the key was rotated
+   * without re-encrypting it), so the caller replaces the token.
+   */
+  readonly secret: string | null;
+}
+
 export interface ApiTokenStore {
   create(organizationId: string, input: NewApiToken): Promise<StoredApiToken>;
+  /**
+   * The person's live default token in this workspace, or undefined when
+   * they have none (never made, or revoked).
+   */
+  findDefault(
+    organizationId: string,
+    userId: string,
+  ): Promise<DefaultApiToken | undefined>;
+  /**
+   * Makes the person's default token, keeping `secret` encrypted beside its
+   * hash. Undefined when they already have a live one: a request racing
+   * this one made it first, and the caller reads that one instead.
+   */
+  createDefault(
+    organizationId: string,
+    input: NewApiToken & { readonly secret: string },
+  ): Promise<StoredApiToken | undefined>;
   /** Every token the organization has made, revoked ones too, newest first. */
   list(organizationId: string): Promise<StoredApiToken[]>;
   /**
@@ -109,7 +138,10 @@ function toStored({ createdById, createdByName, ...row }: Row): StoredApiToken {
   return { ...row, createdBy: { id: createdById, name: createdByName } };
 }
 
-export function createApiTokenStore(db: Database): ApiTokenStore {
+export function createApiTokenStore(
+  db: Database,
+  cipher: TokenCipher,
+): ApiTokenStore {
   const one = async (owner: string, id: string) => {
     const [row] = await db
       .select(columns)
@@ -140,6 +172,55 @@ export function createApiTokenStore(db: Database): ApiTokenStore {
         throw new Error("The token's creator no longer exists.");
       }
       return created;
+    },
+
+    async findDefault(owner, userId) {
+      const [row] = await db
+        .select({ ...columns, secretEnc: apiToken.secretEnc })
+        .from(apiToken)
+        .innerJoin(user, eq(user.id, apiToken.createdBy))
+        .where(
+          and(
+            eq(apiToken.organizationId, owner),
+            eq(apiToken.createdBy, userId),
+            eq(apiToken.isDefault, true),
+            isNull(apiToken.revokedAt),
+          ),
+        )
+        .limit(1);
+      if (row === undefined) return undefined;
+      const { secretEnc, ...rest } = row;
+      let secret: string | null;
+      try {
+        secret = cipher.decrypt(secretEnc);
+      } catch (error) {
+        if (!(error instanceof TokenCipherError)) throw error;
+        secret = null;
+      }
+      return { token: toStored(rest), secret };
+    },
+
+    async createDefault(owner, input) {
+      const id = generateId("tok");
+      const inserted = await db
+        .insert(apiToken)
+        .values({
+          id,
+          organizationId: owner,
+          createdBy: input.createdBy,
+          name: input.name,
+          prefix: input.prefix,
+          hash: input.hash,
+          scopes: [...input.scopes],
+          expiresAt: input.expiresAt,
+          isDefault: true,
+          secretEnc: cipher.encrypt(input.secret),
+          keyId: cipher.keyId,
+        })
+        // The partial unique index: a live default already exists.
+        .onConflictDoNothing()
+        .returning({ id: apiToken.id });
+      return inserted.length === 0 ? undefined : one(owner, id);
     },
 
     async list(owner) {

@@ -13,7 +13,11 @@ import type {
   CreateApiTokenInput,
   OAuthGrantDto,
 } from "@sandbox-factory/shared";
-import { keepPreviousData, useQuery } from "@tanstack/react-query";
+import {
+  keepPreviousData,
+  useQuery,
+  useQueryClient,
+} from "@tanstack/react-query";
 
 import { queryKeys, useOwnerQuery, useUserId } from "../../data/query";
 
@@ -29,7 +33,26 @@ export function failureText(error: unknown, fallback: string): string {
     : fallback;
 }
 
+/**
+ * The caller's default token with its whole secret, made on first read. The
+ * quickstart shows its prefix and copies the secret. The list is read again
+ * after, since the first read may have added the token to it.
+ */
+export function useDefaultApiToken(owner: string) {
+  const userId = useUserId();
+  const queryClient = useQueryClient();
+  return useOwnerQuery(owner, "api-token-default", async (id, signal) => {
+    const found = await developer.defaultToken(id, signal);
+    void queryClient.invalidateQueries({
+      queryKey: queryKeys.resource(userId, id, "api-tokens"),
+    });
+    return found;
+  });
+}
+
 export function useApiTokens(owner: string) {
+  const userId = useUserId();
+  const queryClient = useQueryClient();
   const query = useOwnerQuery(owner, "api-tokens", (id, signal) =>
     developer.tokens(id, signal),
   );
@@ -44,6 +67,10 @@ export function useApiTokens(owner: string) {
     query.setData((current) =>
       (current ?? []).map((token) => (token.id === id ? revoked : token)),
     );
+    // It may have been the default, whose copied secret now fails.
+    void queryClient.invalidateQueries({
+      queryKey: queryKeys.resource(userId, owner, "api-token-default"),
+    });
     return revoked;
   }
   return { ...query, create, revoke };

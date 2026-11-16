@@ -50,10 +50,11 @@ export function appOrigin(): string {
   return window.location.origin;
 }
 
-export function curlMe(origin: string): string {
+/** `token` is the bearer written in: a whole secret, or a redacted one. */
+export function curlMe(origin: string, token = "lnx_…"): string {
   return [
     `curl ${origin}/api/v1/me \\`,
-    `  -H "Authorization: Bearer lnx_…"`,
+    `  -H "Authorization: Bearer ${token}"`,
   ].join("\n");
 }
 

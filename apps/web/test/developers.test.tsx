@@ -79,8 +79,19 @@ const ciToken: ApiTokenDto = {
 
 const SECRET = `lnx_${"s".repeat(40)}`;
 
+/** The caller's default token, as `POST .../tokens/default` answers it. */
+const DEFAULT_SECRET = `lnx_${"d".repeat(40)}`;
+const defaultToken: ApiTokenDto = {
+  ...ciToken,
+  id: "tok_default",
+  name: "Default",
+  prefix: "lnx_dddddddd",
+};
+
 interface Server {
   tokens: (typeof ciToken)[];
+  /** "missing" for a server without the route. */
+  defaultToken: "present" | "missing";
   grants: unknown[] | "missing";
   usage: (days: number) => unknown;
   calls: string[];
@@ -96,6 +107,7 @@ function json(body: unknown, status = 200) {
 beforeEach(() => {
   server = {
     tokens: [ciToken],
+    defaultToken: "present",
     grants: [],
     usage: (days) => ({
       window: { from: at, to: at, days },
@@ -118,6 +130,11 @@ beforeEach(() => {
       }
       if (url.endsWith("/github/connections")) return json({ connections: [] });
       if (url.endsWith("/jira/connections")) return json({ connections: [] });
+      if (url.endsWith("/org_1/tokens/default") && method === "POST") {
+        return server.defaultToken === "missing"
+          ? json({ error: "Not found" }, 404)
+          : json({ token: defaultToken, secret: DEFAULT_SECRET });
+      }
       if (url.endsWith("/org_1/tokens") && method === "GET") {
         return json({ tokens: server.tokens });
       }
@@ -251,6 +268,40 @@ test("an owner sees the portal: its pages, nothing unbuilt, and the overview", a
     ),
   ).toBeTruthy();
   expect(screen.getByText(/npx duediligence login/)).toBeTruthy();
+});
+
+test("the API quickstart shows the default token redacted and copies it whole", async () => {
+  showPortal("overview");
+  const origin = window.location.origin;
+  const redacted = await screen.findByText(/Bearer lnx_dddddddd…/);
+  expect(redacted.textContent).toBe(
+    `curl ${origin}/api/v1/me \\\n  -H "Authorization: Bearer lnx_dddddddd…"`,
+  );
+  // The secret is never on the page, only in what the button copies.
+  expect(document.body.textContent?.includes(DEFAULT_SECRET)).toBe(false);
+  expect(screen.getByText(/Copy includes your default token/)).toBeTruthy();
+
+  fireEvent.click(screen.getByRole("button", { name: "Copy API example" }));
+  await waitFor(() =>
+    expect(navigator.clipboard.writeText).toHaveBeenCalledWith(
+      `curl ${origin}/api/v1/me \\\n  -H "Authorization: Bearer ${DEFAULT_SECRET}"`,
+    ),
+  );
+});
+
+test("without a default token the quickstart keeps the placeholder", async () => {
+  server.defaultToken = "missing";
+  showPortal("overview");
+  await waitFor(() =>
+    expect(server.calls).toContain("POST /api/v1/orgs/org_1/tokens/default"),
+  );
+  expect(screen.getByText(/Bearer lnx_…"/)).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "Copy API example" }));
+  await waitFor(() =>
+    expect(navigator.clipboard.writeText).toHaveBeenCalledWith(
+      expect.stringContaining('Bearer lnx_…"'),
+    ),
+  );
 });
 
 test("a member is told the portal is for owners and admins, and reads nothing", () => {

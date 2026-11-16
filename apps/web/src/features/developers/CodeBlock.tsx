@@ -69,11 +69,17 @@ export function CopyButton({
  */
 export function CodeBlock({
   code,
+  copyText,
   label,
   copyLabel,
   className,
 }: {
   code: string;
+  /**
+   * What the button copies, when it is not what is shown: a snippet shown
+   * with its secret redacted and copied with it whole.
+   */
+  copyText?: string | undefined;
   /** Where it goes, above the code. */
   label: string;
   /** The copy button's accessible name; defaults to "Copy" + the label. */
@@ -91,7 +97,10 @@ export function CodeBlock({
         <span className="text-muted-foreground truncate font-mono text-xs">
           {label}
         </span>
-        <CopyButton text={code} label={copyLabel ?? `Copy ${label}`} />
+        <CopyButton
+          text={copyText ?? code}
+          label={copyLabel ?? `Copy ${label}`}
+        />
       </figcaption>
       <pre className="overflow-x-auto p-3 font-mono text-xs leading-5">
         <code>{code}</code>

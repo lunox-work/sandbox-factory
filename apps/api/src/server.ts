@@ -950,7 +950,7 @@ const app = createApp({
   },
   setup: createWorkspaceSetupStore(connection.db),
   flows: { waits: createFlowWaitStore(connection.db) },
-  apiTokens: createApiTokenStore(connection.db),
+  apiTokens: createApiTokenStore(connection.db, tokenCipher),
   oauthGrants: createOAuthGrantStore(connection.db),
   contributorTokens: createContributorTokenStore(connection.db),
   publicUrl: env.BETTER_AUTH_URL,
