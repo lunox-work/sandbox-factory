@@ -214,7 +214,7 @@ test("the portal is at /o/:slug/developers, and /developers without one", () => 
   ).toEqual(["Home", "Workspaces", "Acme", "Developers"]);
 });
 
-test("an owner sees the portal: its pages, coming ones disabled, and the overview", async () => {
+test("an owner sees the portal: its pages, nothing unbuilt, and the overview", async () => {
   const { onNavigate, onOpenConnection } = showPortal("overview");
   const nav = screen.getByRole("navigation", { name: "Developers" });
   expect(
@@ -222,11 +222,10 @@ test("an owner sees the portal: its pages, coming ones disabled, and the overvie
       .getByRole("link", { name: "Overview" })
       .getAttribute("aria-current"),
   ).toBe("page");
-  for (const label of ["Webhooks", "CI", "Audit log"]) {
-    const item = within(nav).getByText(label);
-    expect(item.closest("[aria-disabled='true']")).not.toBeNull();
-    expect(within(nav).queryByRole("link", { name: label })).toBeNull();
-  }
+  // Unbuilt pages are not listed, not even disabled.
+  for (const label of ["Webhooks", "CI", "Audit log"])
+    expect(within(nav).queryByText(label)).toBeNull();
+  expect(within(nav).queryByText(/Coming soon/)).toBeNull();
   fireEvent.click(within(nav).getByRole("link", { name: "API tokens" }));
   expect(onNavigate).toHaveBeenCalledWith("/o/acme/developers/tokens");
 
