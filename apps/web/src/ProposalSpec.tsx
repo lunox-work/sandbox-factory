@@ -235,13 +235,14 @@ export function useDecisions(
   const { specRevision: revision, decisionsSha256 } = read;
   return {
     count: read.decisions.length,
+    items: read.decisions,
     confirmedAt: read.confirmation?.confirmedAt ?? null,
     confirmedVia: read.confirmation?.via ?? null,
     confirmedCredential: read.confirmation?.credential ?? null,
     confirmedByName: read.confirmation?.confirmedByName ?? null,
     state,
     confirm: async () => {
-      if (decisionsSha256 === null) return;
+      if (decisionsSha256 === null) return false;
       setState("pending");
       try {
         await clients.pricing.confirmDecisions(owner, proposalId, {
@@ -259,8 +260,10 @@ export function useDecisions(
           ),
         });
         setState("idle");
+        return true;
       } catch {
         setState("failed");
+        return false;
       }
     },
   };
@@ -304,6 +307,8 @@ export function useDecisionsHeld(
 /** What the Assumptions card offers about confirming them. */
 export interface DecisionsControl {
   readonly count: number;
+  /** The decisions themselves, in order, as a confirmation names them. */
+  readonly items: readonly { readonly key: string; readonly text: string }[];
   /** When a person confirmed these decisions; null until one does. */
   readonly confirmedAt: string | null;
   /**
@@ -319,7 +324,8 @@ export interface DecisionsControl {
   /** Who confirmed them, by name, when it can be read. */
   readonly confirmedByName?: string | null;
   readonly state: "idle" | "pending" | "failed";
-  readonly confirm: () => Promise<void>;
+  /** Confirms them; false when the server refused (the spec moved on). */
+  readonly confirm: () => Promise<boolean>;
 }
 
 /**
