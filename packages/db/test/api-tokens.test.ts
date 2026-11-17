@@ -3,9 +3,14 @@ import { test } from "node:test";
 
 import { getTableConfig } from "drizzle-orm/pg-core";
 
-import { createApiTokenStore } from "../src/api-tokens.js";
+import { createApiTokenStore as createStore } from "../src/api-tokens.js";
+import { createTokenCipher } from "../src/cipher.js";
 import { apiToken, organization, user } from "../src/schema.js";
 import { createFakeDb, createSequencedFakeDb } from "./fake-db.js";
+
+const cipher = createTokenCipher(Buffer.alloc(32, 7).toString("base64"));
+const createApiTokenStore = (db: Parameters<typeof createStore>[0]) =>
+  createStore(db, cipher);
 
 const createdAt = new Date("2026-11-12T00:00:00.000Z");
 const row = {
@@ -34,7 +39,7 @@ const stored = {
   revokedAt: null,
 };
 
-test("a token keeps only its hash, and dies with its workspace or creator", () => {
+test("a token keeps its hash, a default its sealed secret, and dies with its workspace or creator", () => {
   const { columns, foreignKeys } = getTableConfig(apiToken);
   const names = columns.map((column) => column.name).sort();
   assert.deepEqual(names, [
@@ -43,12 +48,15 @@ test("a token keeps only its hash, and dies with its workspace or creator", () =
     "expires_at",
     "hash",
     "id",
+    "is_default",
+    "key_id",
     "last_used_at",
     "name",
     "organization_id",
     "prefix",
     "revoked_at",
     "scopes",
+    "secret_enc",
   ]);
   assert.equal(columns.find((c) => c.name === "hash")?.isUnique, true);
   for (const table of [organization, user]) {
@@ -153,4 +161,84 @@ test("touch writes the use time under the workspace", async () => {
   assert.equal(fake.calls[0]?.kind, "update");
   assert.deepEqual(fake.calls[0]?.values, { lastUsedAt: at });
   assert.equal(fake.calls[0]?.filtered, true);
+});
+
+const defaultInput = {
+  createdBy: "user_1",
+  name: "Default",
+  prefix: "lnx_abcd1234",
+  hash: "12".repeat(32),
+  scopes: ["workspace:read"] as const,
+  expiresAt: null,
+  secret: "lnx_" + "a".repeat(40),
+};
+
+test("createDefault seals the secret beside its hash, and reads the row back", async () => {
+  const fake = createSequencedFakeDb([[{ id: "tok_1" }], [row]]);
+  const created = await createApiTokenStore(fake.db).createDefault(
+    "org_1",
+    defaultInput,
+  );
+  assert.deepEqual(created, stored);
+  const values = fake.calls[0]?.values ?? {};
+  assert.equal(values["isDefault"], true);
+  assert.equal(values["keyId"], cipher.keyId);
+  assert.equal(values["hash"], "12".repeat(32));
+  const sealed = String(values["secretEnc"]);
+  assert.match(sealed, /^v1:/);
+  assert.equal(sealed.includes(defaultInput.secret), false);
+  assert.equal(cipher.decrypt(sealed), defaultInput.secret);
+});
+
+test("createDefault answers undefined when a live default already exists", async () => {
+  const fake = createSequencedFakeDb([[]]);
+  assert.equal(
+    await createApiTokenStore(fake.db).createDefault("org_1", defaultInput),
+    undefined,
+  );
+  assert.equal(fake.calls.length, 1);
+});
+
+test("findDefault answers the person's live default with its secret opened", async () => {
+  const fake = createFakeDb([
+    { ...row, secretEnc: cipher.encrypt(defaultInput.secret) },
+  ]);
+  assert.deepEqual(
+    await createApiTokenStore(fake.db).findDefault("org_1", "user_1"),
+    { token: stored, secret: defaultInput.secret },
+  );
+  assert.equal(fake.calls[0]?.filtered, true);
+  assert.equal(fake.calls[0]?.limited, 1);
+  assert.equal(
+    await createApiTokenStore(createFakeDb([]).db).findDefault(
+      "org_1",
+      "user_1",
+    ),
+    undefined,
+  );
+});
+
+test("findDefault reports a secret another key sealed as unreadable", async () => {
+  const other = createTokenCipher(Buffer.alloc(32, 9).toString("base64"));
+  const fake = createFakeDb([
+    { ...row, secretEnc: other.encrypt(defaultInput.secret) },
+  ]);
+  assert.deepEqual(
+    await createApiTokenStore(fake.db).findDefault("org_1", "user_1"),
+    { token: stored, secret: null },
+  );
+});
+
+test("findDefault does not swallow a failure that is not the cipher's", async () => {
+  const broken = {
+    ...cipher,
+    decrypt: () => {
+      throw new Error("boom");
+    },
+  };
+  const fake = createFakeDb([{ ...row, secretEnc: "v1:x" }]);
+  await assert.rejects(
+    createStore(fake.db, broken).findDefault("org_1", "user_1"),
+    /boom/,
+  );
 });

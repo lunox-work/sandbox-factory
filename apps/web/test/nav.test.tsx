@@ -438,6 +438,23 @@ test("the menu offers account and sign out, but not a second way home", async ()
   expect(screen.queryByRole("menuitem", { name: /Home/ })).toBeNull();
 });
 
+test("the developer portal sits under account settings, not in the rail", async () => {
+  render(<App />);
+  expect(await homeHeading()).toBeTruthy();
+
+  const rail = screen.getByRole("navigation", { name: "Main" });
+  expect(within(rail).queryByRole("link", { name: "Developers" })).toBeNull();
+
+  await openMenu();
+  const items = screen
+    .getAllByRole("menuitem")
+    .map((item) => item.textContent?.trim());
+  const account = items.findIndex((text) =>
+    text?.startsWith("Account settings"),
+  );
+  expect(items[account + 1]).toBe("Developers");
+});
+
 test("the rail marks the screen you are on", async () => {
   render(<App />);
 

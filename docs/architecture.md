@@ -129,9 +129,14 @@ string: exported consts are singular, column properties are camelCase.
   - _Session_: cookie or `bearer()` token, no organization, every scope; roles
     decide, as before.
   - _Workspace API token_: `Authorization: Bearer lnx_…`, table `api_token`
-    (SHA-256 only; secret shown once). Bound to one organization, any other
+    (SHA-256; secret shown once). Bound to one organization, any other
     `:orgId` is 404. Acts as its creator, who must still be owner or admin
     there on every use; `last_used_at` is written at most once a minute.
+    Each owner or admin also has one `is_default` token per workspace
+    (`POST /orgs/:orgId/tokens/default`, session only): made on first ask
+    with every scope and no expiry, its secret also kept in `secret_enc`
+    (`TOKEN_ENCRYPTION_KEY`) so the portal's quickstart copies it whole. A
+    revoked or unreadable one is remade on the next ask.
   - _Device session_: from Better Auth's `device-authorization` plugin
     (`duediligence`, `carveout`, approved at the web app's `/device`);
     `session.device_client_id` marks it. It reaches only `GET /me`,

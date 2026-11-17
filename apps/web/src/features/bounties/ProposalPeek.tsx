@@ -251,6 +251,9 @@ export function ProposalPeek({
   // Read when the peek opens, like the bounty, so the tab opens on it.
   const spec = useProposalSpec(base, proposal.id, proposal.specRevision);
   const decisions = useDecisions(base, proposal.id, proposal.specRevision);
+  // Approve's question about them, held here so `#decisions` can open it.
+  const [decisionsOpen, setDecisionsOpen] = useState(false);
+  const askedFromLink = useRef(false);
   // The repositories the work touches, at the commits it was sized beside.
   const outlines = useRepoSnapshots(
     base,
@@ -493,45 +496,99 @@ export function ProposalPeek({
   const decidable = canDecide && open && proposal.complexity !== "unsized";
   // The decision itself: Approve for a proposed bounty, the way back for an
   // approved one.
+  const approve = () =>
+    act("approve", `/proposals/${proposal.id}/approve`, {
+      expectedRevision: proposal.revision,
+      // The price on screen: one moved since is refused, not approved
+      // unseen.
+      ...(proposal.amountMinor === null ||
+      proposal.currency === null ||
+      proposal.complexity === "unsized"
+        ? {}
+        : {
+            expectedPrice: {
+              complexity: proposal.complexity,
+              amountMinor: proposal.amountMinor,
+              currency: proposal.currency,
+            },
+          }),
+    });
+  const approveDisabled =
+    locked || held !== null || arriving !== null || approveBlocked !== null;
+  /*
+    Decisions the spec made where the bounty was silent, which no person has
+    confirmed: hidden tests are written to them, so the price is not
+    approved without them. Approve asks for them in the same act rather
+    than being refused for them, and `#decisions` (the link an agent hands
+    over) opens the same question.
+  */
+  const unconfirmed =
+    decisions !== undefined &&
+    decisions.count > 0 &&
+    decisions.confirmedAt === null
+      ? decisions
+      : null;
+  // The link an agent hands over lands on `#decisions`: once, and only
+  // where Approve could act, it opens the question there.
+  useEffect(() => {
+    if (
+      askedFromLink.current ||
+      window.location.hash !== "#decisions" ||
+      unconfirmed === null ||
+      !decidable ||
+      approveDisabled
+    )
+      return;
+    askedFromLink.current = true;
+    setDecisionsOpen(true);
+  }, [unconfirmed, decidable, approveDisabled]);
+  const approveButton = (
+    <Button
+      disabled={approveDisabled}
+      aria-busy={acting === "approve" || profiling}
+      {...(unconfirmed === null ? { onClick: () => void approve() } : {})}
+    >
+      {(acting === "approve" || profiling) && (
+        <Loader2 className="animate-spin motion-reduce:animate-none" />
+      )}
+      {acting === "approve"
+        ? "Approving…"
+        : profiling
+          ? "Profiling the code…"
+          : "Approve"}
+    </Button>
+  );
   const decision = !canDecide ? null : open ? (
     decidable && (
       <DisabledReason reason={held ?? arriving ?? approveBlocked}>
-        <Button
-          disabled={
-            locked ||
-            held !== null ||
-            arriving !== null ||
-            approveBlocked !== null
-          }
-          aria-busy={acting === "approve" || profiling}
-          onClick={() =>
-            void act("approve", `/proposals/${proposal.id}/approve`, {
-              expectedRevision: proposal.revision,
-              // The price on screen: one moved since is refused, not
-              // approved unseen.
-              ...(proposal.amountMinor === null ||
-              proposal.currency === null ||
-              proposal.complexity === "unsized"
-                ? {}
-                : {
-                    expectedPrice: {
-                      complexity: proposal.complexity,
-                      amountMinor: proposal.amountMinor,
-                      currency: proposal.currency,
-                    },
-                  }),
-            })
-          }
-        >
-          {(acting === "approve" || profiling) && (
-            <Loader2 className="animate-spin motion-reduce:animate-none" />
-          )}
-          {acting === "approve"
-            ? "Approving…"
-            : profiling
-              ? "Profiling the code…"
-              : "Approve"}
-        </Button>
+        {unconfirmed === null ? (
+          approveButton
+        ) : (
+          <ConfirmDialog
+            trigger={approveButton}
+            open={decisionsOpen}
+            onOpenChange={setDecisionsOpen}
+            tone="default"
+            title={`Confirm ${unconfirmed.count === 1 ? "the decision" : `${unconfirmed.count} decisions`} and approve`}
+            description="Where the bounty was silent, the spec decided these. Hidden tests are written to them, so approving the price confirms them."
+            confirmLabel="Confirm and approve"
+            pendingLabel="Approving…"
+            busy={locked}
+            onConfirm={async () => {
+              if (!(await unconfirmed.confirm()))
+                return "They could not be confirmed. The spec may have changed: close this, read it again and retry.";
+              await approve();
+            }}
+          >
+            <ol className="marker:text-muted-foreground max-h-72 list-decimal space-y-1.5 overflow-y-auto rounded-md border py-3 pr-4 pl-9 text-sm leading-relaxed marker:text-xs marker:tabular-nums">
+              {unconfirmed.items.map(({ key, text }) => (
+                <li key={key} className="pl-1">
+                  {text}
+                </li>
+              ))}
+            </ol>
+          </ConfirmDialog>
+        )}
       </DisabledReason>
     )
   ) : (

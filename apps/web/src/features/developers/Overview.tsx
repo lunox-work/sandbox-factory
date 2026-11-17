@@ -24,6 +24,7 @@ import {
 import { useGithub } from "../../useGithub";
 import { useJira } from "../../useJira";
 import { CodeBlock } from "./CodeBlock";
+import { useDefaultApiToken } from "./data";
 import {
   appOrigin,
   claudeMcpAdd,
@@ -42,6 +43,12 @@ export function Overview({
   onOpenSection: (section: DeveloperSection) => void;
 }) {
   const origin = appOrigin();
+  /*
+    Shown by its prefix, as the token list shows it, and copied whole, so
+    the pasted command works as it is. Until it is read, or if it cannot be,
+    the snippet keeps a placeholder for a token made by hand.
+  */
+  const defaultToken = useDefaultApiToken(organization.id).data;
   return (
     <div className="flex flex-col gap-10">
       <section aria-labelledby="developers-connections">
@@ -82,11 +89,25 @@ export function Overview({
         <div className="mt-4 grid min-w-0 gap-6">
           <Quickstart
             title="API"
-            text="Call any route in the API reference with a workspace token."
+            text={
+              defaultToken === undefined
+                ? "Call any route in the API reference with a workspace token."
+                : "Call any route in the API reference. Copy includes your default token, which acts as you in this workspace."
+            }
           >
             <CodeBlock
               label="Terminal"
-              code={curlMe(origin)}
+              code={curlMe(
+                origin,
+                defaultToken === undefined
+                  ? undefined
+                  : `${defaultToken.token.prefix}…`,
+              )}
+              copyText={
+                defaultToken === undefined
+                  ? undefined
+                  : curlMe(origin, defaultToken.secret)
+              }
               copyLabel="Copy API example"
             />
           </Quickstart>

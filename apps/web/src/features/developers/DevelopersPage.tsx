@@ -8,9 +8,6 @@
  * to manage, and a token acts as an owner or admin. A member sees a line
  * saying so rather than pages of controls the server would refuse. Hiding
  * them is courtesy; the API checks the role on every call.
- *
- * Webhooks, CI and the audit log are listed, disabled, as coming: they are
- * planned pages, and an empty page for each would read as broken.
  */
 
 import type { MembershipDto } from "@sandbox-factory/shared";
@@ -51,9 +48,6 @@ const SECTIONS: ReadonlyArray<{ section: DeveloperSection; label: string }> = [
   { section: "reference", label: "API reference" },
   { section: "usage", label: "Usage" },
 ];
-
-/** Planned pages, shown so the portal's shape is legible, not yet built. */
-const COMING = ["Webhooks", "CI", "Audit log"] as const;
 
 export function DevelopersPage({
   organization,
@@ -159,23 +153,6 @@ function DevelopersNav({
             >
               {label}
             </a>
-          </li>
-        ))}
-        <li
-          aria-hidden="true"
-          className="mx-1 w-px shrink-0 self-stretch bg-current opacity-10 md:mx-2.5 md:my-2 md:h-px md:w-auto"
-        />
-        {COMING.map((label) => (
-          <li key={label} className="shrink-0">
-            <span
-              aria-disabled="true"
-              className="text-muted-foreground/70 flex h-8 cursor-not-allowed items-center gap-2 rounded-md px-2.5 text-sm whitespace-nowrap"
-            >
-              {label}
-              <span className="text-2xs border-border rounded-sm border px-1 leading-4">
-                Coming soon
-              </span>
-            </span>
           </li>
         ))}
       </ul>

@@ -23,7 +23,10 @@ import {
   generateSecret,
   hashSecret,
 } from "../src/api-tokens/secret.js";
-import { CLI_TOKEN_DAYS } from "../src/api-tokens/routes.js";
+import {
+  CLI_TOKEN_DAYS,
+  DEFAULT_TOKEN_NAME,
+} from "../src/api-tokens/routes.js";
 import { createApp } from "../src/routes.js";
 import {
   ada,
@@ -213,6 +216,95 @@ test("creating a token answers its secret once; listing never does", async () =>
   );
 });
 
+test("the default token is made on first ask, then the same one comes back whole", async () => {
+  const { request, tokens, bearer } = setup();
+  const ask = () =>
+    request(`/api/v1/orgs/${ORG}/tokens/default`, {
+      method: "POST",
+      headers: signedIn,
+    });
+  const first = await ask();
+  assert.equal(first.status, 201);
+  assert.equal(first.headers.get("cache-control"), "no-store");
+  const made = createdApiTokenResponseSchema.parse(await first.json());
+  assert.equal(made.token.name, DEFAULT_TOKEN_NAME);
+  assert.deepEqual(made.token.scopes, [...API_SCOPES]);
+  assert.equal(made.token.expiresAt, null);
+  assert.equal(made.token.prefix, displayPrefix(made.secret));
+  assert.equal(tokens.rows[0]?.hash, hashSecret(made.secret));
+
+  const again = await ask();
+  assert.equal(again.status, 200);
+  assert.equal(again.headers.get("cache-control"), "no-store");
+  assert.deepEqual(
+    createdApiTokenResponseSchema.parse(await again.json()),
+    made,
+  );
+  assert.equal(tokens.rows.length, 1);
+
+  // It is a working token, acting as its owner.
+  const me = await request("/api/v1/me", { headers: bearer(made.secret) });
+  assert.equal(me.status, 200);
+  // And another workspace's default is its own.
+  const other = await request(`/api/v1/orgs/${OTHER_ORG}/tokens/default`, {
+    method: "POST",
+    headers: signedIn,
+  });
+  assert.equal(other.status, 201);
+  assert.notEqual(
+    createdApiTokenResponseSchema.parse(await other.json()).secret,
+    made.secret,
+  );
+});
+
+test("a revoked or unreadable default token is replaced on the next ask", async () => {
+  const { request, tokens } = setup();
+  const ask = async () => {
+    const res = await request(`/api/v1/orgs/${ORG}/tokens/default`, {
+      method: "POST",
+      headers: signedIn,
+    });
+    return {
+      status: res.status,
+      body: createdApiTokenResponseSchema.parse(await res.json()),
+    };
+  };
+  const first = await ask();
+  const revoked = await request(
+    `/api/v1/orgs/${ORG}/tokens/${first.body.token.id}/revoke`,
+    { method: "POST", headers: signedIn },
+  );
+  assert.equal(revoked.status, 200);
+  const second = await ask();
+  assert.equal(second.status, 201);
+  assert.notEqual(second.body.secret, first.body.secret);
+
+  // A rotated key leaves a secret nobody can open: revoked and remade.
+  const index = tokens.rows.findIndex((row) => row.id === second.body.token.id);
+  const row = tokens.rows[index];
+  assert.ok(row !== undefined);
+  tokens.rows[index] = { ...row, secret: null };
+  const third = await ask();
+  assert.equal(third.status, 201);
+  assert.notEqual(third.body.secret, second.body.secret);
+  assert.notEqual(
+    tokens.rows.find((candidate) => candidate.id === second.body.token.id)
+      ?.revokedAt,
+    null,
+  );
+});
+
+test("losing every race to make a default token answers a conflict", async () => {
+  const { request, tokens } = setup();
+  tokens.createDefault = () => Promise.resolve(undefined);
+  const res = await request(`/api/v1/orgs/${ORG}/tokens/default`, {
+    method: "POST",
+    headers: signedIn,
+  });
+  assert.equal(res.status, 409);
+  assert.equal((await bodyOf(res)).code, "conflict");
+});
+
 test("a malformed token request is refused with the reason", async () => {
   const { request } = setup();
   const res = await request(`/api/v1/orgs/${ORG}/tokens`, {
@@ -238,6 +330,10 @@ test("only owners and admins manage tokens; a member is refused", async () => {
     ],
     [
       `/api/v1/orgs/${ORG}/tokens/tok_1/revoke`,
+      { method: "POST", headers: signedIn },
+    ],
+    [
+      `/api/v1/orgs/${ORG}/tokens/default`,
       { method: "POST", headers: signedIn },
     ],
   ] as const) {

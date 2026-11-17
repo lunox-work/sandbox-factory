@@ -3,12 +3,14 @@
  *
  * - `GET .../tokens` lists them, revoked ones too, never a secret.
  * - `POST .../tokens` makes one and answers its secret, once.
+ * - `POST .../tokens/default` answers the caller's default token with its
+ *   secret, making it on first ask: the one the portal's quickstart copies.
  * - `POST .../tokens/:id/revoke` stops one working.
  * - `POST .../tokens/cli` mints a command-line client's token with the
  *   session its device sign-in returned, then ends that session.
  *
  * Owners and admins only, and never with a token: a token cannot make,
- * list or revoke tokens. The first three take a person's own session (the
+ * list or revoke tokens. All but `cli` take a person's own session (the
  * guard already refuses tokens and device sessions here, since none of
  * these is in the public registry; the check below is the second layer).
  * The last takes only a device session.
@@ -22,12 +24,15 @@ import {
   type ApiTokenDto,
 } from "@sandbox-factory/shared";
 import type { Context, Hono } from "hono";
-import { cliScopes, type ApiScope } from "sandbox-factory";
+import { API_SCOPES, cliScopes, type ApiScope } from "sandbox-factory";
 
 import { isAtLeastAdmin } from "../access.js";
 import { noteAuditResource } from "../audit/trail.js";
 import type { AuthVariables } from "../http-context.js";
 import { displayPrefix, generateSecret, hashSecret } from "./secret.js";
+
+/** What a person's default token is called in the token list. */
+export const DEFAULT_TOKEN_NAME = "Default";
 
 /** How long a command-line client's token lasts before it signs in again. */
 export const CLI_TOKEN_DAYS = 90;
@@ -145,6 +150,52 @@ export function mountApiTokenRoutes(
       scopes: parsed.data.scopes,
       days: parsed.data.expiresInDays ?? null,
     });
+  });
+
+  /*
+    Every scope and no expiry: the key that works for whatever the API
+    reference shows, as a token its owner made with everything would. A
+    revoked one is replaced on the next ask, and so is one whose secret the
+    current key cannot open, since it could never be copied again.
+  */
+  app.post(`${base}/default`, async (c) => {
+    const refused = refusal(c, "session");
+    if (refused !== null) return refused;
+    const organizationId = c.get("member").organizationId;
+    const userId = c.get("user").id;
+    // A second pass only after losing a race to make it, which then finds
+    // the winner's.
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const found = await options.tokens.findDefault(organizationId, userId);
+      if (found !== undefined && found.secret !== null) {
+        c.header("Cache-Control", "no-store");
+        return c.json({
+          token: toApiTokenDto(found.token),
+          secret: found.secret,
+        });
+      }
+      if (found !== undefined)
+        await options.tokens.revoke(organizationId, found.token.id);
+      const secret = generate();
+      const token = await options.tokens.createDefault(organizationId, {
+        createdBy: userId,
+        name: DEFAULT_TOKEN_NAME,
+        prefix: displayPrefix(secret),
+        hash: hashSecret(secret),
+        scopes: API_SCOPES,
+        expiresAt: null,
+        secret,
+      });
+      if (token !== undefined) {
+        noteAuditResource(c, token.id);
+        c.header("Cache-Control", "no-store");
+        return c.json({ token: toApiTokenDto(token), secret }, 201);
+      }
+    }
+    return c.json(
+      { error: "Could not make a default token; try again.", code: "conflict" },
+      409,
+    );
   });
 
   app.post(`${base}/cli`, async (c) => {

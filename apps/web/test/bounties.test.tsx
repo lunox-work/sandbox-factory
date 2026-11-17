@@ -5268,6 +5268,187 @@ test.each(["ready", "awaiting_approval"])(
   },
 );
 
+/**
+ * A rubric-priced bounty on its Price step whose spec made two decisions
+ * no person confirmed yet, with confirm and approve answered.
+ */
+function unconfirmedDecisionsServer(options: { refuseConfirm?: boolean } = {}) {
+  const draft = {
+    feature: "Invitations",
+    background: [],
+    scenarios: [
+      {
+        id: "s1",
+        kind: "happy",
+        title: "One invitation",
+        steps: [{ keyword: "Then", text: "one email" }],
+        origin: "draft",
+        weight: "heavy",
+      },
+    ],
+    openQuestions: [],
+    assumptions: ["Invitations go by email only.", "One per slot."],
+  } as const;
+  const sized = proposal({
+    specRevision: 1,
+    rubric: assessRubric({ spec: draft, code: { status: "pending" } }),
+  });
+  let confirmedAt: string | null = null;
+  const decisions = () =>
+    json({
+      specRevision: 1,
+      decisions: [
+        { key: "d1", text: "Invitations go by email only." },
+        { key: "d2", text: "One per slot." },
+      ],
+      decisionsSha256: "b".repeat(64),
+      confirmation:
+        confirmedAt === null ? null : { confirmedBy: "user_1", confirmedAt },
+      confirmUrl: "/bounties/acme/bty_7?tab=price#decisions",
+    });
+  const { fetchMock, calls } = server([
+    [
+      "GET",
+      "/bounties/bty_7",
+      () => json({ bounty: detail({ ...SCOPED, proposal: liveProposal() }) }),
+    ],
+    [
+      "POST",
+      "/decisions/confirm",
+      () => {
+        if (options.refuseConfirm === true)
+          return json({ code: "decisions_changed" }, 409);
+        confirmedAt = stamp;
+        return decisions();
+      },
+    ],
+    ["GET", "/decisions", decisions],
+    [
+      "POST",
+      "/proposals/bpr_9/approve",
+      () =>
+        json({
+          proposal: proposal({
+            specRevision: 1,
+            status: "approved",
+            version: 1,
+            revision: 2,
+          }),
+        }),
+    ],
+    [
+      "GET",
+      "/spec",
+      () =>
+        json({
+          spec: {
+            id: "bsp_1",
+            organizationId: "org_1",
+            proposalId: "bpr_9",
+            revision: 1,
+            specHash: "a".repeat(64),
+            specHashVersion: 1,
+            draft,
+            origin: "draft",
+            instruction: null,
+            createdBy: null,
+            runId: "brn_1",
+            actualModel: "claude-sonnet-5",
+            promptVersion: "draft-v1",
+            createdAt: stamp,
+          },
+        }),
+    ],
+    [
+      "GET",
+      "/proposals/bpr_9",
+      () =>
+        json({
+          proposal: sized,
+          freshness: { freshness: "current", checkedAt: stamp },
+          liveSpec: null,
+          writebackOperations: [],
+        }),
+    ],
+  ]);
+  return { fetchMock, calls };
+}
+
+test("Approve asks for the spec's unconfirmed decisions, then confirms and approves in one act", async () => {
+  // With a rubric the scenarios keep their assumptions behind a link, so
+  // Approve is where they are put to a person, not refused for.
+  const { fetchMock, calls } = unconfirmedDecisionsServer();
+  vi.stubGlobal("fetch", fetchMock);
+  window.history.replaceState(null, "", "/bounties/acme/bty_7?tab=price");
+  render(<Shell {...inAcme("admin")} />);
+  const page = await screen.findByTestId("bounty-detail");
+  await userEvent.click(
+    await within(page).findByRole("button", { name: "Approve" }),
+  );
+  const dialog = await screen.findByRole("alertdialog", {
+    name: "Confirm 2 decisions and approve",
+  });
+  expect(dialog.textContent).toContain("Hidden tests are written to them");
+  expect(
+    within(dialog)
+      .getAllByRole("listitem")
+      .map((item) => item.textContent),
+  ).toEqual(["Invitations go by email only.", "One per slot."]);
+  // Nothing is sent until the person says so.
+  expect(calls.some(({ method }) => method === "POST")).toBe(false);
+  await userEvent.click(
+    within(dialog).getByRole("button", { name: "Confirm and approve" }),
+  );
+  await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+  const posts = calls.filter(({ method }) => method === "POST");
+  expect(posts.map(({ url }) => url.replace(/^.*\/proposals\//, ""))).toEqual([
+    "bpr_9/decisions/confirm",
+    "bpr_9/approve",
+  ]);
+  expect(posts[0]?.body).toEqual({
+    specRevision: 1,
+    decisionsSha256: "b".repeat(64),
+  });
+});
+
+test("a refused confirmation keeps the question open, says why, and approves nothing", async () => {
+  const { fetchMock, calls } = unconfirmedDecisionsServer({
+    refuseConfirm: true,
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  window.history.replaceState(null, "", "/bounties/acme/bty_7?tab=price");
+  render(<Shell {...inAcme("admin")} />);
+  const page = await screen.findByTestId("bounty-detail");
+  await userEvent.click(
+    await within(page).findByRole("button", { name: "Approve" }),
+  );
+  const dialog = await screen.findByRole("alertdialog");
+  await userEvent.click(
+    within(dialog).getByRole("button", { name: "Confirm and approve" }),
+  );
+  expect((await within(dialog).findByRole("alert")).textContent).toMatch(
+    /could not be confirmed/,
+  );
+  expect(calls.some(({ url }) => url.endsWith("/approve"))).toBe(false);
+});
+
+test("the confirm link an agent hands over opens the question on the Price step", async () => {
+  const { fetchMock } = unconfirmedDecisionsServer();
+  vi.stubGlobal("fetch", fetchMock);
+  window.history.replaceState(
+    null,
+    "",
+    "/bounties/acme/bty_7?tab=price#decisions",
+  );
+  render(<Shell {...inAcme("admin")} />);
+  expect(
+    await screen.findByRole("alertdialog", {
+      name: "Confirm 2 decisions and approve",
+    }),
+  ).toBeDefined();
+  window.history.replaceState(null, "", "/");
+});
+
 test("a proposal whose code is being measured offers no re-analysis or approval until it is", async () => {
   const spec = {
     feature: "Invitations",

@@ -77,6 +77,19 @@ test("tokens are listed, made and revoked under the workspace", async () => {
   ]);
 });
 
+test("the default token is asked for with a POST, and comes back whole", async () => {
+  const { client, asked } = fake(() => ({
+    token: { ...token, name: "Default" },
+    secret: "lnx_default",
+  }));
+  const found = await client.defaultToken("org /1");
+  assert.equal(found.secret, "lnx_default");
+  assert.equal(found.token.name, "Default");
+  assert.deepEqual(asked, [
+    { url: "/api/v1/orgs/org%20%2F1/tokens/default", method: "POST" },
+  ]);
+});
+
 test("a created token's answer must carry an lnx_ secret", async () => {
   const { client } = fake(() => ({ token, secret: "plain" }));
   await assert.rejects(

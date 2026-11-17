@@ -39,6 +39,7 @@ export function ConfirmDialog({
   onConfirm,
   open: controlledOpen,
   onOpenChange,
+  children,
 }: {
   /**
    * The control that opens this. Rendered as the trigger itself, not wrapped.
@@ -76,6 +77,11 @@ export function ConfirmDialog({
   /** Held by the caller instead, for a dialog opened without a trigger. */
   open?: boolean | undefined;
   onOpenChange?: ((open: boolean) => void) | undefined;
+  /**
+   * What is being confirmed, under the description, when it is more than a
+   * sentence: a list, which the description's paragraph cannot hold.
+   */
+  children?: ReactNode;
 }) {
   const [ownOpen, setOwnOpen] = useState(false);
   const open = controlledOpen ?? ownOpen;
@@ -162,6 +168,8 @@ export function ConfirmDialog({
               {description}
             </AlertDialogPrimitive.Description>
           </div>
+
+          {children}
 
           {typeToConfirm !== undefined && (
             <div className="flex flex-col gap-2">

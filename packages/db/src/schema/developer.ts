@@ -7,8 +7,11 @@
  *
  * A token belongs to one organization and acts as the person who made it,
  * for as long as they stay its owner or admin (checked on every use, in the
- * API). Only a SHA-256 of the secret is kept: the secret is shown once, on
- * create, and a lost one is revoked and replaced, never recovered.
+ * API). A SHA-256 of the secret is the lookup key. A token someone made is
+ * shown once, on create, and a lost one is revoked and replaced, never
+ * recovered. The one exception is each person's default token in a
+ * workspace: its secret is also kept encrypted, so the portal's quickstart
+ * can copy it whole whenever it is opened.
  */
 
 import { sql } from "drizzle-orm";
@@ -23,6 +26,7 @@ import {
   text,
   timestamp,
   unique,
+  uniqueIndex,
 } from "drizzle-orm/pg-core";
 import type { ApiScope } from "sandbox-factory";
 
@@ -50,6 +54,19 @@ export const apiToken = pgTable(
     /** Written at most once a minute, so a busy token is one write a minute. */
     lastUsedAt: timestamp("last_used_at", { withTimezone: true }),
     revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    /**
+     * The person's default token in this workspace: made for them the first
+     * time they open the portal, and the one its quickstart copies.
+     */
+    isDefault: boolean("is_default").notNull().default(false),
+    /**
+     * A default token's secret, encrypted with `TOKEN_ENCRYPTION_KEY` (see
+     * `cipher.ts`), so the portal can copy it again. Null on every other
+     * token, whose secret is never kept.
+     */
+    secretEnc: text("secret_enc"),
+    /** Which key encrypted `secret_enc`, for rotation. */
+    keyId: text("key_id"),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -58,6 +75,16 @@ export const apiToken = pgTable(
     index("api_token_organization_created_idx").on(
       table.organizationId,
       table.createdAt,
+    ),
+    // One live default per person per workspace. Revoking it frees the slot,
+    // so the next visit makes a fresh one; two first visits at once make one.
+    uniqueIndex("api_token_default_unique")
+      .on(table.organizationId, table.createdBy)
+      .where(sql`${table.isDefault} AND ${table.revokedAt} IS NULL`),
+    // Only a default token keeps its secret.
+    check(
+      "api_token_default_secret_check",
+      sql`${table.isDefault} = (${table.secretEnc} IS NOT NULL)`,
     ),
   ],
 );

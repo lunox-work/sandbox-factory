@@ -2,7 +2,10 @@
  * Encryption for stored third-party tokens.
  *
  * `jira_connection` and `github_grant` use this — every rotation of the key
- * must re-encrypt both — and the reason it exists at all is that each holds
+ * must re-encrypt both — and so does `api_token.secret_enc`, a person's
+ * default token, which needs no re-encrypt: one this key cannot open is
+ * revoked and remade on the next ask. The reason it exists at all is that
+ * each of the first two holds
  * a refresh token that is a live credential against a client's data. A
  * leaked Jira row works until the next refresh, and once write-back is
  * enabled (M7) it can edit their bounties. That is worth

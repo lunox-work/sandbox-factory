@@ -652,6 +652,13 @@
       "when": 1794717287278,
       "tag": "0092_proposal_size_labels",
       "breakpoints": true
+    },
+    {
+      "idx": 93,
+      "version": "7",
+      "when": 1794804530114,
+      "tag": "0093_default_api_token",
+      "breakpoints": true
     }
   ]
 }
