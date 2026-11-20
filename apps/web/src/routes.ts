@@ -252,6 +252,9 @@ export function sandboxFilesPath(
  */
 export const PRIVACY_POLICY_URL = "https://lunox.work/privacy/platform";
 
+/** The platform's terms of service, on lunox.work beside the privacy policy. */
+export const TERMS_URL = "https://lunox.work/terms";
+
 /**
  * Whether `pathname` is `/privacy`, which published READMEs and packages
  * name as the platform's policy: the app sends it on to PRIVACY_POLICY_URL.

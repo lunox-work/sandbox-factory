@@ -12,7 +12,7 @@ import { useEffect, useState } from "react";
 import { PROVIDERS, signInWith, type ProviderId } from "./auth";
 import { BuildReadout } from "./BuildReadout";
 import { ProviderIcon } from "./ProviderIcon";
-import { PRIVACY_POLICY_URL } from "./routes";
+import { PRIVACY_POLICY_URL, TERMS_URL } from "./routes";
 
 /**
  * The failures worth explaining, by Better Auth's error code.
@@ -175,6 +175,13 @@ export function SignIn({
           className="hover:text-foreground underline underline-offset-4"
         >
           Privacy policy
+        </a>
+        {" · "}
+        <a
+          href={TERMS_URL}
+          className="hover:text-foreground underline underline-offset-4"
+        >
+          Terms of service
         </a>
       </p>
     </main>
