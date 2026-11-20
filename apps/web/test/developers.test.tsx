@@ -521,9 +521,8 @@ test("the MCP page lists each server with its URL and install snippets", async (
       within(servers).getByRole("listitem", { name: path }).textContent,
     ).toContain(`${origin}${path}`);
   }
-  expect(
-    screen.getByText(/claude plugin install carveout@carveout/),
-  ).toBeTruthy();
+  // The plugins bundle no MCP server for now: no plugin install snippet.
+  expect(screen.queryByText(/claude plugin install/)).toBeNull();
   fireEvent.click(
     screen.getByRole("button", { name: `Copy /mcp/carveout URL` }),
   );

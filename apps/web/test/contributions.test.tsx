@@ -498,14 +498,13 @@ test("the contributions page makes a token for an editor or agent, shown once", 
       /claude mcp add --transport http lunox-contribute .*\/mcp\/contribute$/,
     ),
   ).toBeTruthy();
-  // The agent paths name this app's own origin, the skill, and the
-  // extension's commands as its manifest titles them.
+  // The agent paths name this app's own origin and the extension's
+  // commands as its manifest titles them.
   expect(
     within(section).getByText(
       `claude mcp add --transport http lunox-contribute ${window.location.origin}/mcp/contribute`,
     ),
   ).toBeTruthy();
-  expect(within(section).getByText("lunox-contribute")).toBeTruthy();
   const { VSCODE_COMMANDS } =
     await import("../src/features/contributions/ContributorTokens");
   const manifest = JSON.parse(
