@@ -230,6 +230,33 @@ test("each endpoint lists exactly its toolset", async () => {
       "connect_github",
       "connect_jira",
     ],
+    "/mcp/bouncer": [
+      "list_workspaces",
+      "list_bounties",
+      "get_bounty",
+      "get_proposal",
+      "get_run",
+      "get_usage",
+      "post_bounty",
+      "import_github_issue",
+      "import_jira_issue",
+      "size_bounty",
+      "respec",
+      "get_decisions",
+      "confirm_link",
+      "list_sandboxes",
+      "get_sandbox",
+      "start_sandbox",
+      "prepare",
+      "get_handout",
+      "get_project_files",
+      "create_contributor_invite",
+      "judge",
+      "retry",
+      "regrade",
+      "get_verdict",
+      "get_submission_files",
+    ],
     "/mcp/duediligence": [
       "list_workspaces",
       "list_bounties",
@@ -334,8 +361,13 @@ test("each endpoint lists exactly its toolset", async () => {
         !WRITE_TOOLS.has(tool.name),
         tool.name,
       );
-      // Nothing deletes or overwrites, so every tool says so.
-      assert.equal(tool.annotations?.destructiveHint, false, tool.name);
+      // The directory's rule: a tool that changes data is destructive, so
+      // every write asks first; a read is not.
+      assert.equal(
+        tool.annotations?.destructiveHint,
+        WRITE_TOOLS.has(tool.name),
+        tool.name,
+      );
       // A title for people (the directory asks every tool for one).
       assert.ok((tool.title ?? "").length > 0, tool.name);
       assert.equal(tool.annotations?.title, tool.title, tool.name);
@@ -352,6 +384,8 @@ test("each endpoint lists exactly its toolset", async () => {
 const SIGN_IN_SCOPES: Record<string, string> = {
   "/mcp":
     "workspace:read integrations:write bounties:write pricing:write specs:write decisions:confirm sandboxes:write submissions:write offline_access",
+  "/mcp/bouncer":
+    "workspace:read bounties:write pricing:write specs:write decisions:confirm sandboxes:write submissions:write offline_access",
   "/mcp/duediligence":
     "workspace:read bounties:write pricing:write specs:write decisions:confirm sandboxes:write submissions:write offline_access",
   "/mcp/carveout":
@@ -485,6 +519,7 @@ test("no credential is a 401 that says where to sign in", async () => {
   const { request } = setup();
   for (const path of [
     "/mcp",
+    "/mcp/bouncer",
     "/mcp/duediligence",
     "/mcp/carveout",
     "/mcp/contribute",

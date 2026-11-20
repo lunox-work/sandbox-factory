@@ -1,6 +1,7 @@
 /**
  * The remote MCP server: `POST /mcp` (every workspace tool),
- * `/mcp/duediligence` and `/mcp/carveout` (toolsets), and `/mcp/contribute`
+ * `/mcp/bouncer` (and its old name `/mcp/duediligence`) and `/mcp/carveout`
+ * (toolsets), and `/mcp/contribute`
  * (an invited contributor's own tools); see `tools.ts`.
  *
  * - **Stateless.** Each POST builds a server and a Streamable HTTP

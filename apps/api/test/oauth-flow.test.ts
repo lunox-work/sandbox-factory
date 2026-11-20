@@ -375,6 +375,7 @@ test("the resources are the API's origin and each MCP endpoint", () => {
   assert.deepEqual(oauthResources("https://platform.lunox.work/ignored"), [
     "https://platform.lunox.work",
     "https://platform.lunox.work/mcp",
+    "https://platform.lunox.work/mcp/bouncer",
     "https://platform.lunox.work/mcp/duediligence",
     "https://platform.lunox.work/mcp/carveout",
     "https://platform.lunox.work/mcp/contribute",

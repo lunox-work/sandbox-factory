@@ -199,11 +199,15 @@ function tool<Shape extends z.ZodRawShape>(definition: {
           title: definition.title,
           description: definition.description,
           inputSchema: schema,
+          // The Claude directory asks every tool for a title and either
+          // readOnlyHint or destructiveHint: true for a tool that "modifies
+          // or deletes data". Every write changes the workspace (and some
+          // start model runs it pays for), so each one asks first.
           annotations: writes
             ? {
                 title: definition.title,
                 readOnlyHint: false,
-                destructiveHint: false,
+                destructiveHint: true,
                 idempotentHint: false,
                 openWorldHint: false,
               }
@@ -574,7 +578,7 @@ export const TOOLS = [
     // A spec posted confirmed records its decisions confirmed only with it.
     alsoScopes: ["decisions:confirm"],
     description:
-      "Write a new bounty in the workspace from a title and a description of the work. It is not sized; call size_bounty with its id to price it. With spec, post a spec confirmed in duediligence (spec.md as written, format duediligence, confirmed true once its Decided: items were confirmed): sizing prices that spec and drafts none, and its decisions need no second confirmation. A spec that cannot be stored as written is refused (invalid_spec) with each problem's path. Without a description, the bounty's description is the spec.",
+      "Write a new bounty in the workspace from a title and a description of the work. It is not sized; call size_bounty with its id to price it. With spec, post a spec confirmed in bouncer (spec.md as written, format duediligence, bouncer's wire name; confirmed true once its Decided: items were confirmed): sizing prices that spec and drafts none, and its decisions need no second confirmation. A spec that cannot be stored as written is refused (invalid_spec) with each problem's path. Without a description, the bounty's description is the spec.",
     input: {
       title: z
         .string()
@@ -597,7 +601,7 @@ export const TOOLS = [
       spec: postedSpecSchema
         .optional()
         .describe(
-          "A spec confirmed in duediligence: { document: spec.md's text, format: 'duediligence', confirmed: true once a person confirmed its Decided: items, engine?: { name: 'duediligence', version } }.",
+          "A spec confirmed in bouncer (formerly duediligence, still its wire name): { document: spec.md's text, format: 'duediligence', confirmed: true once a person confirmed its Decided: items, engine?: { name: 'duediligence', version } }.",
         ),
     },
     scoped: true,
@@ -764,7 +768,7 @@ export const TOOLS = [
     title: "Build sandbox version",
     scope: "sandboxes:write",
     description:
-      "Build a draft version: the standalone project, its baseline, and, when it has none, hidden tests written from the approved spec and its confirmed decisions, and calibrated by a reference implementation (duediligence's rule). Refused with decisions_unconfirmed while the spec's decisions wait for a person (confirm_link). It runs in the background; read it with get_run, then get_handout. Publishing stays a person's act in the web app.",
+      "Build a draft version: the standalone project, its baseline, and, when it has none, hidden tests written from the approved spec and its confirmed decisions, and calibrated by a reference implementation (bouncer's rule). Refused with decisions_unconfirmed while the spec's decisions wait for a person (confirm_link). It runs in the background; read it with get_run, then get_handout. Publishing stays a person's act in the web app.",
     input: { versionId: id("version") },
     scoped: true,
     method: "POST",
