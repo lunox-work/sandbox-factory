@@ -126,10 +126,7 @@ export function ContributorTokens() {
       <div className="text-muted-foreground flex flex-col gap-2 text-xs">
         <p>
           In Claude Code, add the contributor MCP server and sign in when it
-          asks; or pass a token to a client that cannot open a browser. The{" "}
-          <code className="text-foreground font-mono">lunox-contribute</code>{" "}
-          skill, in the bouncer-hosted and carveout plugins, walks an agent
-          through a contribution with it.
+          asks; or pass a token to a client that cannot open a browser.
         </p>
         <Snippet text={contributorMcpAdd(origin)} label="Copy command" />
         <Snippet

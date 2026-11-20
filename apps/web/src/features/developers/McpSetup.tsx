@@ -18,7 +18,6 @@ import {
   codexConfig,
   cursorConfig,
   MCP_SERVERS,
-  PLUGIN_INSTALLS,
 } from "./snippets";
 
 export function McpSetup() {
@@ -75,14 +74,7 @@ export function McpSetup() {
             <TabsTrigger value="codex">Codex</TabsTrigger>
           </TabsList>
           <TabsContent value="claude" className="flex min-w-0 flex-col gap-4">
-            <Step text="With a plugin, which brings its skills and its own toolset:">
-              <CodeBlock
-                label="Terminal"
-                code={PLUGIN_INSTALLS.join("\n")}
-                copyLabel="Copy plugin install"
-              />
-            </Step>
-            <Step text="Or the server on its own:">
+            <Step text="Add the server:">
               <CodeBlock
                 label="Terminal"
                 code={claudeMcpAdd(origin)}

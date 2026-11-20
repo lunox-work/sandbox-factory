@@ -21,22 +21,16 @@ export const MCP_SERVERS = [
     path: "/mcp/bouncer",
     title: "bouncer",
     description:
-      "What the bouncer-hosted plugin uses: bounties and their specs' decisions, sizing, building a sandbox with calibrated hidden tests, and judging an implementation against them.",
+      "What bouncer's hosted mode uses: bounties and their specs' decisions, sizing, building a sandbox with calibrated hidden tests, and judging an implementation against them.",
     tools: MCP_TOOLSETS["/mcp/bouncer"],
   },
   {
     path: "/mcp/carveout",
     title: "carveout",
     description:
-      "What the carveout plugin uses: bounties, repositories, slicing one into a sandbox, building and handing it out, and grading a contractor's patch.",
+      "What carveout's hosted mode uses: bounties, repositories, slicing one into a sandbox, building and handing it out, and grading a contractor's patch.",
     tools: MCP_TOOLSETS["/mcp/carveout"],
   },
-] as const;
-
-/** The Claude Code plugins that bring their own MCP server and skills. */
-export const PLUGIN_INSTALLS = [
-  "claude plugin install bouncer-hosted@bouncer",
-  "claude plugin install carveout@carveout",
 ] as const;
 
 /** The command-line clients that sign in by device flow at `/device`. */

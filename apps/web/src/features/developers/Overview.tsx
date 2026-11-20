@@ -25,13 +25,7 @@ import { useGithub } from "../../useGithub";
 import { useJira } from "../../useJira";
 import { CodeBlock } from "./CodeBlock";
 import { useDefaultApiToken } from "./data";
-import {
-  appOrigin,
-  claudeMcpAdd,
-  CLI_LOGINS,
-  curlMe,
-  PLUGIN_INSTALLS,
-} from "./snippets";
+import { appOrigin, claudeMcpAdd, CLI_LOGINS, curlMe } from "./snippets";
 
 export function Overview({
   organization,
@@ -113,11 +107,11 @@ export function Overview({
           </Quickstart>
           <Quickstart
             title="MCP"
-            text="Install a plugin, or add the server to Claude Code; it signs in over OAuth for one workspace."
+            text="Add the server to Claude Code; it signs in over OAuth for one workspace."
           >
             <CodeBlock
               label="Terminal"
-              code={[...PLUGIN_INSTALLS, claudeMcpAdd(origin)].join("\n")}
+              code={claudeMcpAdd(origin)}
               copyLabel="Copy MCP commands"
             />
           </Quickstart>
