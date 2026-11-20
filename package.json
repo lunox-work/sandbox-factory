@@ -43,7 +43,7 @@
     "@playwright/test": "1.65.1",
     "@swc/core": "1.16.22",
     "dependency-cruiser": "18.8.0",
-    "hono": "^4.13.16",
+    "hono": "^4.13.19",
     "husky": "^9.1.7",
     "prettier": "^3.10.1",
     "turbo": "^2.11.11",
