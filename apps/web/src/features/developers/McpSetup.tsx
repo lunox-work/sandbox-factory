@@ -111,7 +111,7 @@ export function McpSetup() {
         </Tabs>
         <p className="text-muted-foreground text-xs">
           For one toolset, swap the URL for{" "}
-          <code className="font-mono">/mcp/duediligence</code> or{" "}
+          <code className="font-mono">/mcp/bouncer</code> or{" "}
           <code className="font-mono">/mcp/carveout</code>.
         </p>
       </section>

@@ -154,7 +154,7 @@ resource "aws_cloudfront_distribution" "main" {
     origin_request_policy_id = "b689b0a8-53d0-40ab-baf2-68738e2966ac"
   }
 
-  # The remote MCP server (/mcp, /mcp/duediligence, /mcp/carveout) and OAuth
+  # The remote MCP server (/mcp, /mcp/bouncer, /mcp/carveout, ...) and OAuth
   # discovery (/.well-known/oauth-authorization-server[/api/auth],
   # /.well-known/oauth-protected-resource[/mcp...]) live at the origin's root,
   # where MCP clients look for them, so they need behaviours of their own.

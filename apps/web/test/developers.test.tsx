@@ -267,7 +267,7 @@ test("an owner sees the portal: its pages, nothing unbuilt, and the overview", a
       new RegExp(`claude mcp add --transport http lunox ${origin}/mcp`),
     ),
   ).toBeTruthy();
-  expect(screen.getByText(/npx duediligence login/)).toBeTruthy();
+  expect(screen.getByText(/npx @lunox-work\/bouncer login/)).toBeTruthy();
 });
 
 test("the API quickstart shows the default token redacted and copies it whole", async () => {
@@ -516,7 +516,7 @@ test("the MCP page lists each server with its URL and install snippets", async (
   showPortal("mcp");
   const origin = window.location.origin;
   const servers = screen.getByRole("list", { name: "MCP servers" });
-  for (const path of ["/mcp", "/mcp/duediligence", "/mcp/carveout"]) {
+  for (const path of ["/mcp", "/mcp/bouncer", "/mcp/carveout"]) {
     expect(
       within(servers).getByRole("listitem", { name: path }).textContent,
     ).toContain(`${origin}${path}`);

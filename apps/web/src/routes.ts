@@ -245,6 +245,21 @@ export function sandboxFilesPath(
     : `${page}?${new URLSearchParams({ path }).toString()}`;
 }
 
+/**
+ * The platform's privacy policy, on lunox.work. It also covers the MCP
+ * server and the carveout and bouncer plugins, and is the policy the Claude
+ * plugin directory lists for them.
+ */
+export const PRIVACY_POLICY_URL = "https://lunox.work/privacy/platform";
+
+/**
+ * Whether `pathname` is `/privacy`, which published READMEs and packages
+ * name as the platform's policy: the app sends it on to PRIVACY_POLICY_URL.
+ */
+export function isPrivacyPath(pathname: string): boolean {
+  return pathname.replace(/\/+$/, "") === "/privacy";
+}
+
 /** Where a command-line client's device sign-in is approved. */
 export const DEVICE_PATH = "/device";
 

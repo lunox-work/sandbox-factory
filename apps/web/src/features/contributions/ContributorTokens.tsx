@@ -128,7 +128,7 @@ export function ContributorTokens() {
           In Claude Code, add the contributor MCP server and sign in when it
           asks; or pass a token to a client that cannot open a browser. The{" "}
           <code className="text-foreground font-mono">lunox-contribute</code>{" "}
-          skill, in the duediligence and carveout plugins, walks an agent
+          skill, in the bouncer-hosted and carveout plugins, walks an agent
           through a contribution with it.
         </p>
         <Snippet text={contributorMcpAdd(origin)} label="Copy command" />

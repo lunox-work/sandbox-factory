@@ -121,6 +121,15 @@ export function isCliClient(value: string): value is CliClient {
   return Object.hasOwn(CLI_CLIENTS, value);
 }
 
+/**
+ * How a person is shown each client: `duediligence` is bouncer's client id,
+ * kept from before its rename so tokens and sign-ins already issued still work.
+ */
+export const CLI_CLIENT_NAMES: Readonly<Record<CliClient, string>> = {
+  duediligence: "bouncer",
+  carveout: "carveout",
+};
+
 /** The scopes `client` may hold. */
 export function cliScopes(client: CliClient): readonly ApiScope[] {
   return CLI_CLIENTS[client];
@@ -128,6 +137,35 @@ export function cliScopes(client: CliClient): readonly ApiScope[] {
 
 /** The MCP endpoint for invited contributors, over their own credential. */
 export const MCP_CONTRIBUTOR_PATH = "/mcp/contribute";
+
+/** What bouncer's hosted mode names: bounties, their specs' decisions, sizing, a sandbox with calibrated hidden tests, and judging. */
+const BOUNCER_TOOLS = [
+  "list_workspaces",
+  "list_bounties",
+  "get_bounty",
+  "get_proposal",
+  "get_run",
+  "get_usage",
+  "post_bounty",
+  "import_github_issue",
+  "import_jira_issue",
+  "size_bounty",
+  "respec",
+  "get_decisions",
+  "confirm_link",
+  "list_sandboxes",
+  "get_sandbox",
+  "start_sandbox",
+  "prepare",
+  "get_handout",
+  "get_project_files",
+  "create_contributor_invite",
+  "judge",
+  "retry",
+  "regrade",
+  "get_verdict",
+  "get_submission_files",
+] as const;
 
 /**
  * The tools each MCP endpoint serves, by path: `/mcp` serves every
@@ -175,33 +213,11 @@ export const MCP_TOOLSETS = {
     "connect_github",
     "connect_jira",
   ],
-  "/mcp/duediligence": [
-    "list_workspaces",
-    "list_bounties",
-    "get_bounty",
-    "get_proposal",
-    "get_run",
-    "get_usage",
-    "post_bounty",
-    "import_github_issue",
-    "import_jira_issue",
-    "size_bounty",
-    "respec",
-    "get_decisions",
-    "confirm_link",
-    "list_sandboxes",
-    "get_sandbox",
-    "start_sandbox",
-    "prepare",
-    "get_handout",
-    "get_project_files",
-    "create_contributor_invite",
-    "judge",
-    "retry",
-    "regrade",
-    "get_verdict",
-    "get_submission_files",
-  ],
+  // bouncer's hosted plugin (bouncer-hosted). `/mcp/duediligence` is the
+  // same toolset under the name bouncer had before its rename, kept for
+  // the plugins installed then.
+  "/mcp/bouncer": BOUNCER_TOOLS,
+  "/mcp/duediligence": BOUNCER_TOOLS,
   // A slice is cut for a bounty with an approved proposal and built before
   // it is handed out, so carveout reaches the bounty, its sizing and
   // decisions, and the build, not only the slice.

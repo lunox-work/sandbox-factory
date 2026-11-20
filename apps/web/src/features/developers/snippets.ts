@@ -18,11 +18,11 @@ export const MCP_SERVERS = [
     tools: MCP_TOOLSETS["/mcp"],
   },
   {
-    path: "/mcp/duediligence",
-    title: "duediligence",
+    path: "/mcp/bouncer",
+    title: "bouncer",
     description:
-      "What the duediligence plugin uses: bounties and their specs' decisions, sizing, building a sandbox with calibrated hidden tests, and judging an implementation against them.",
-    tools: MCP_TOOLSETS["/mcp/duediligence"],
+      "What the bouncer-hosted plugin uses: bounties and their specs' decisions, sizing, building a sandbox with calibrated hidden tests, and judging an implementation against them.",
+    tools: MCP_TOOLSETS["/mcp/bouncer"],
   },
   {
     path: "/mcp/carveout",
@@ -35,13 +35,13 @@ export const MCP_SERVERS = [
 
 /** The Claude Code plugins that bring their own MCP server and skills. */
 export const PLUGIN_INSTALLS = [
-  "claude plugin install duediligence@duediligence",
+  "claude plugin install bouncer-hosted@bouncer",
   "claude plugin install carveout@carveout",
 ] as const;
 
 /** The command-line clients that sign in by device flow at `/device`. */
 export const CLI_LOGINS = [
-  "npx duediligence login",
+  "npx @lunox-work/bouncer login",
   "npx carveout login",
 ] as const;
 

@@ -1,6 +1,6 @@
 /**
  * `/device`: where a signed-in person approves a command-line client's
- * device sign-in (`duediligence login`, `carveout login`).
+ * device sign-in (`bouncer login`, `carveout login`).
  *
  * The client shows a code and opens this page with it in `?user_code=`;
  * a person can also type it. Looking the code up claims it for whoever is
@@ -13,7 +13,7 @@
  */
 
 import { useState } from "react";
-import { cliScopes, isCliClient } from "sandbox-factory";
+import { CLI_CLIENT_NAMES, cliScopes, isCliClient } from "sandbox-factory";
 
 import { ErrorBanner } from "@/components/Message";
 import { Button } from "@/components/ui/button";
@@ -134,9 +134,13 @@ export function DeviceApprovalPage({ initialCode }: { initialCode: string }) {
           {step.kind === "review" && (
             <div className="flex flex-col gap-3 text-sm">
               <p>
-                <strong>{step.client}</strong> asks to sign in as you. It will
-                be able to make itself an API token, in a workspace you own or
-                administer, that can:
+                <strong>
+                  {isCliClient(step.client)
+                    ? CLI_CLIENT_NAMES[step.client]
+                    : step.client}
+                </strong>{" "}
+                asks to sign in as you. It will be able to make itself an API
+                token, in a workspace you own or administer, that can:
               </p>
               <ul className="list-disc pl-5 font-mono text-xs">
                 {(isCliClient(step.client) ? cliScopes(step.client) : []).map(
