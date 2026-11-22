@@ -4,7 +4,7 @@ Status: proposal, 2026-11-12. Delete this file when it lands; contracts move
 into [architecture.md](./docs/architecture.md), the
 [worker contract](./apps/worker/README.md) and the portal's own reference.
 
-Companion plans: `public/duediligence/PLAN.md`, `public/carveout/PLAN.md`.
+Companion plans: `public/bouncer/PLAN.md`, `public/carveout/PLAN.md`.
 
 ## The goal
 
