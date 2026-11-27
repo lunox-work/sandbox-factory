@@ -37,9 +37,9 @@
   "devDependencies": {
     "@sandbox-factory/coverage": "*",
     "@sandbox-factory/tsconfig": "*",
-    "@types/node": "^26.6.6",
+    "@types/node": "^26.6.7",
     "acorn": "^8.19.0",
-    "fast-check": "^4.10.2",
+    "fast-check": "^4.11.0",
     "typescript": "^7.0.2"
   },
   "keywords": [
