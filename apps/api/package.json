@@ -25,7 +25,7 @@
     "@sandbox-factory/shared": "*",
     "better-auth": "^1.7.28",
     "duediligence": "0.6.0",
-    "hono": "^4.13.19",
+    "hono": "^4.13.21",
     "sandbox-factory": "*",
     "sharp": "^0.35.5",
     "zod": "^4.6.7"
